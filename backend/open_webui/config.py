@@ -2795,6 +2795,12 @@ RAG_FULL_CONTEXT = PersistentConfig(
     os.getenv("RAG_FULL_CONTEXT", "False").lower() == "true",
 )
 
+RAG_FULL_CONTEXT_MAX_CHARS = PersistentConfig(
+    "RAG_FULL_CONTEXT_MAX_CHARS",
+    "rag.full_context_max_chars",
+    int(os.getenv("RAG_FULL_CONTEXT_MAX_CHARS", "200000")),
+)
+
 RAG_FILE_MAX_COUNT = PersistentConfig(
     "RAG_FILE_MAX_COUNT",
     "rag.file.max_count",

@@ -385,6 +385,21 @@ def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
     }
 
 
+def estimate_query_result_char_length(query_result: dict | None) -> int:
+    if not query_result:
+        return 0
+
+    documents = query_result.get("documents", [])
+    if not documents or not isinstance(documents, list) or not documents[0]:
+        return 0
+
+    total_chars = 0
+    for doc in documents[0]:
+        if isinstance(doc, str):
+            total_chars += len(doc)
+    return total_chars
+
+
 def get_all_items_from_collections(collection_names: list[str]) -> dict:
     results = []
 
@@ -533,6 +548,50 @@ async def query_collection_with_hybrid_search(
         )
 
     return merge_and_sort_query_results(results, k=k)
+
+
+async def query_collection_with_hybrid_fallback(
+    collection_names: list[str],
+    queries: list[str],
+    embedding_function,
+    k: int,
+    reranking_function,
+    k_reranker: int,
+    r: float,
+    hybrid_bm25_weight: float,
+    enable_hybrid_search: bool,
+    enable_enriched_texts: bool = False,
+) -> dict:
+    query_result = None
+    use_hybrid = bool(enable_hybrid_search)
+
+    if use_hybrid:
+        try:
+            query_result = await query_collection_with_hybrid_search(
+                collection_names=collection_names,
+                queries=queries,
+                embedding_function=embedding_function,
+                k=k,
+                reranking_function=reranking_function,
+                k_reranker=k_reranker,
+                r=r,
+                hybrid_bm25_weight=hybrid_bm25_weight,
+                enable_enriched_texts=enable_enriched_texts,
+            )
+        except Exception:
+            log.debug(
+                "Error when using hybrid search, using non-hybrid search as fallback."
+            )
+
+    if query_result is None:
+        query_result = await query_collection(
+            collection_names=collection_names,
+            queries=queries,
+            embedding_function=embedding_function,
+            k=k,
+        )
+
+    return query_result
 
 
 def generate_openai_batch_embeddings(
@@ -959,10 +1018,14 @@ async def get_sources_from_items(
 
     extracted_collections = []
     query_results = []
+    full_context_max_chars = int(
+        getattr(request.app.state.config, "RAG_FULL_CONTEXT_MAX_CHARS", 200000) or 0
+    )
 
     for item in items:
         query_result = None
         collection_names = []
+        force_hybrid_retrieval = False
 
         if item.get("type") == "text":
             # Raw Text
@@ -1163,45 +1226,109 @@ async def get_sources_from_items(
             # Collection Names List
             collection_names.extend(item["collection_names"])
 
+        query_result_char_length = estimate_query_result_char_length(query_result)
+        if (
+            query_result is not None
+            and full_context
+            and full_context_max_chars > 0
+            and query_result_char_length > full_context_max_chars
+        ):
+            # Full-context can exceed provider context limits on large attachments.
+            # In that case, force deterministic+vector retrieval against indexed collections.
+            if item.get("collection_name"):
+                collection_names.append(item["collection_name"])
+            if item.get("collection_names"):
+                collection_names.extend(item["collection_names"])
+
+            if item.get("type") == "file" and item.get("id"):
+                if item.get("legacy"):
+                    collection_names.append(f"{item['id']}")
+                else:
+                    collection_names.append(f"file-{item['id']}")
+            elif item.get("type") == "collection" and item.get("id"):
+                if item.get("legacy"):
+                    collection_names.extend(item.get("collection_names", []))
+                else:
+                    collection_names.append(item["id"])
+
+            if collection_names:
+                query_result = None
+                force_hybrid_retrieval = True
+                log.info(
+                    f"Switching from full-context to hybrid retrieval for item {item.get('id') or item.get('name') or item.get('type')}: "
+                    + f"{query_result_char_length} chars exceeds max {full_context_max_chars} chars."
+                )
+            else:
+                # If the item is not indexed (no collection available), trim full context
+                # to keep injection under a bounded size.
+                trimmed_documents = []
+                remaining_chars = full_context_max_chars
+                for doc in query_result.get("documents", [[]])[0]:
+                    if not isinstance(doc, str) or remaining_chars <= 0:
+                        continue
+                    trimmed_documents.append(doc[:remaining_chars])
+                    remaining_chars -= len(trimmed_documents[-1])
+
+                if trimmed_documents:
+                    query_result["documents"] = [trimmed_documents]
+                    if query_result.get("metadatas"):
+                        query_result["metadatas"] = [
+                            query_result["metadatas"][0][: len(trimmed_documents)]
+                        ]
+                log.warning(
+                    f"Trimming full-context for non-indexed item {item.get('id') or item.get('name') or item.get('type')}: "
+                    + f"{query_result_char_length} chars exceeds max {full_context_max_chars} chars."
+                )
+
         # If query_result is None
         # Fallback to collection names and vector search the collections
         if query_result is None and collection_names:
-            collection_names = set(collection_names).difference(extracted_collections)
+            collection_names = list(
+                set(collection_names).difference(extracted_collections)
+            )
             if not collection_names:
                 log.debug(f"skipping {item} as it has already been extracted")
                 continue
 
             try:
-                if full_context:
+                if full_context and not force_hybrid_retrieval:
                     query_result = get_all_items_from_collections(collection_names)
-                else:
-                    query_result = None  # Initialize to None
-                    if hybrid_search:
-                        try:
-                            query_result = await query_collection_with_hybrid_search(
-                                collection_names=collection_names,
-                                queries=queries,
-                                embedding_function=embedding_function,
-                                k=k,
-                                reranking_function=reranking_function,
-                                k_reranker=k_reranker,
-                                r=r,
-                                hybrid_bm25_weight=hybrid_bm25_weight,
-                                enable_enriched_texts=request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS,
-                            )
-                        except Exception as e:
-                            log.debug(
-                                "Error when using hybrid search, using non hybrid search as fallback."
-                            )
-
-                    # fallback to non-hybrid search
-                    if not hybrid_search and query_result is None:
-                        query_result = await query_collection(
+                    query_result_char_length = estimate_query_result_char_length(
+                        query_result
+                    )
+                    if (
+                        full_context_max_chars > 0
+                        and query_result_char_length > full_context_max_chars
+                    ):
+                        log.info(
+                            f"Switching from full-context to hybrid retrieval for collections {collection_names}: "
+                            + f"{query_result_char_length} chars exceeds max {full_context_max_chars} chars."
+                        )
+                        query_result = await query_collection_with_hybrid_fallback(
                             collection_names=collection_names,
                             queries=queries,
                             embedding_function=embedding_function,
                             k=k,
+                            reranking_function=reranking_function,
+                            k_reranker=k_reranker,
+                            r=r,
+                            hybrid_bm25_weight=hybrid_bm25_weight,
+                            enable_hybrid_search=True,
+                            enable_enriched_texts=request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS,
                         )
+                else:
+                    query_result = await query_collection_with_hybrid_fallback(
+                        collection_names=collection_names,
+                        queries=queries,
+                        embedding_function=embedding_function,
+                        k=k,
+                        reranking_function=reranking_function,
+                        k_reranker=k_reranker,
+                        r=r,
+                        hybrid_bm25_weight=hybrid_bm25_weight,
+                        enable_hybrid_search=(hybrid_search or force_hybrid_retrieval),
+                        enable_enriched_texts=request.app.state.config.ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS,
+                    )
             except Exception as e:
                 log.exception(e)
 
