@@ -12,10 +12,6 @@ import re
 
 from urllib.parse import quote
 from huggingface_hub import snapshot_download
-from langchain_classic.retrievers import (
-    ContextualCompressionRetriever,
-    EnsembleRetriever,
-)
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
@@ -240,66 +236,160 @@ async def query_doc_with_hybrid_search(
 
         log.debug(f"query_doc_with_hybrid_search:doc {collection_name}")
 
+        original_documents = collection_result.documents[0]
         bm25_texts = (
             get_enriched_texts(collection_result)
             if enable_enriched_texts
-            else collection_result.documents[0]
+            else original_documents
         )
+
+        candidate_k = max(k, k_reranker)
+
+        # Keep content index in metadata so we can restore original document text when
+        # enriched BM25 text is enabled.
+        bm25_metadatas = []
+        for idx, metadata in enumerate(collection_result.metadatas[0]):
+            metadata_copy = dict(metadata or {})
+            metadata_copy["_content_idx"] = idx
+            bm25_metadatas.append(metadata_copy)
 
         bm25_retriever = BM25Retriever.from_texts(
             texts=bm25_texts,
-            metadatas=collection_result.metadatas[0],
+            metadatas=bm25_metadatas,
         )
-        bm25_retriever.k = k
+        bm25_retriever.k = candidate_k
 
         vector_search_retriever = VectorSearchRetriever(
             collection_name=collection_name,
             embedding_function=embedding_function,
-            top_k=k,
+            top_k=candidate_k,
         )
 
-        if hybrid_bm25_weight <= 0:
-            ensemble_retriever = EnsembleRetriever(
-                retrievers=[vector_search_retriever], weights=[1.0]
-            )
-        elif hybrid_bm25_weight >= 1:
-            ensemble_retriever = EnsembleRetriever(
-                retrievers=[bm25_retriever], weights=[1.0]
-            )
-        else:
-            ensemble_retriever = EnsembleRetriever(
-                retrievers=[bm25_retriever, vector_search_retriever],
-                weights=[hybrid_bm25_weight, 1.0 - hybrid_bm25_weight],
-            )
+        lexical_docs = []
+        if hybrid_bm25_weight > 0:
+            lexical_docs = await asyncio.to_thread(bm25_retriever.invoke, query)
+
+            restored_lexical_docs = []
+            for doc in lexical_docs:
+                metadata = dict(doc.metadata or {})
+                content_idx = metadata.pop("_content_idx", None)
+                page_content = doc.page_content
+                if (
+                    isinstance(content_idx, int)
+                    and 0 <= content_idx < len(original_documents)
+                ):
+                    page_content = original_documents[content_idx]
+                restored_lexical_docs.append(
+                    Document(page_content=page_content, metadata=metadata)
+                )
+            lexical_docs = restored_lexical_docs
+
+        vector_docs = []
+        if hybrid_bm25_weight < 1:
+            vector_docs = await vector_search_retriever.ainvoke(query)
+
+        # Stage 1: deterministic lexical shortlist (when enabled)
+        # Stage 2: vector expansion
+        # Stage 3: rerank over merged candidates
+        candidate_docs = []
+        seen_hashes = set()
+        for doc in [*lexical_docs, *vector_docs]:
+            if not isinstance(doc.page_content, str):
+                continue
+            doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
+            if doc_hash in seen_hashes:
+                continue
+            candidate_docs.append(doc)
+            seen_hashes.add(doc_hash)
+
+        if not candidate_docs:
+            return {"documents": [], "metadatas": [], "distances": []}
 
         compressor = RerankCompressor(
             embedding_function=embedding_function,
-            top_n=k_reranker,
+            top_n=candidate_k,
             reranking_function=reranking_function,
             r_score=r,
         )
+        reranked_docs = await compressor.acompress_documents(candidate_docs, query)
 
-        compression_retriever = ContextualCompressionRetriever(
-            base_compressor=compressor, base_retriever=ensemble_retriever
+        lexical_floor_count = 0
+        if hybrid_bm25_weight > 0 and lexical_docs:
+            lexical_floor_count = max(1, int(round(k * min(hybrid_bm25_weight, 1.0))))
+            lexical_floor_count = min(k, len(lexical_docs), lexical_floor_count)
+
+        log.info(
+            "query_doc_with_hybrid_search:stages "
+            + f"lexical={len(lexical_docs)} "
+            + f"vector={len(vector_docs)} "
+            + f"candidates={len(candidate_docs)} "
+            + f"reranked={len(reranked_docs)} "
+            + f"lexical_floor={lexical_floor_count}"
         )
 
-        result = await compression_retriever.ainvoke(query)
+        reranked_by_hash = {}
+        for doc in reranked_docs:
+            if not isinstance(doc.page_content, str):
+                continue
+            doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
+            if doc_hash not in reranked_by_hash:
+                reranked_by_hash[doc_hash] = doc
 
-        distances = [d.metadata.get("score") for d in result]
-        documents = [d.page_content for d in result]
-        metadatas = [d.metadata for d in result]
+        final_docs = []
+        final_hashes = set()
 
-        # retrieve only min(k, k_reranker) items, sort and cut by distance if k < k_reranker
-        if k < k_reranker:
-            sorted_items = sorted(
-                zip(distances, metadatas, documents), key=lambda x: x[0], reverse=True
-            )
-            sorted_items = sorted_items[:k]
+        # Lexical floor: preserve top deterministic hits in final output.
+        for idx, doc in enumerate(lexical_docs[:lexical_floor_count]):
+            if not isinstance(doc.page_content, str):
+                continue
+            doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
+            if doc_hash in final_hashes:
+                continue
 
-            if sorted_items:
-                distances, documents, metadatas = map(list, zip(*sorted_items))
-            else:
-                distances, documents, metadatas = [], [], []
+            selected = reranked_by_hash.pop(doc_hash, None)
+            if selected is None:
+                metadata = dict(doc.metadata or {})
+                if metadata.get("score") is None:
+                    metadata["score"] = 1.0 - (idx * 1e-4)
+                selected = Document(page_content=doc.page_content, metadata=metadata)
+
+            final_docs.append(selected)
+            final_hashes.add(doc_hash)
+
+        # Fill remaining slots with reranked candidates.
+        for doc in reranked_docs:
+            if not isinstance(doc.page_content, str):
+                continue
+            doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
+            if doc_hash in final_hashes:
+                continue
+            final_docs.append(doc)
+            final_hashes.add(doc_hash)
+            if len(final_docs) >= k:
+                break
+
+        # Safety fill if reranker filtered too aggressively.
+        if len(final_docs) < k:
+            for doc in candidate_docs:
+                if not isinstance(doc.page_content, str):
+                    continue
+                doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
+                if doc_hash in final_hashes:
+                    continue
+                metadata = dict(doc.metadata or {})
+                metadata.setdefault("score", 0.0)
+                final_docs.append(
+                    Document(page_content=doc.page_content, metadata=metadata)
+                )
+                final_hashes.add(doc_hash)
+                if len(final_docs) >= k:
+                    break
+
+        final_docs = final_docs[:k]
+
+        distances = [d.metadata.get("score") for d in final_docs]
+        documents = [d.page_content for d in final_docs]
+        metadatas = [d.metadata for d in final_docs]
 
         result = {
             "distances": [distances],
