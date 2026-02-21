@@ -8,6 +8,8 @@ from open_webui.extensions.simon_engine.context_builder import extract_latest_us
 from open_webui.extensions.simon_engine.engine import SimonEngine
 from open_webui.extensions.simon_engine.types import SimonTurnRequest
 from open_webui.models.simon_lex_index import update_worker_settings
+from open_webui.models.users import UserModel, Users
+from open_webui.utils.chat import generate_chat_completion
 
 
 class Pipe:
@@ -58,6 +60,59 @@ class Pipe:
         self.id = "simon-cognitive-engine"
         self.name = "Simon Cognitive Engine"
         self.valves = self.Valves()
+
+    def _resolve_target_model(self, current_model_id: str, request) -> str:
+        target_model = str(getattr(self.valves, "simon_default_model", "") or "").strip()
+        if not target_model:
+            raise RuntimeError("Simon valve 'simon_default_model' is required")
+
+        if target_model == current_model_id:
+            raise RuntimeError("simon_default_model cannot point to the Simon pipe model")
+
+        models = getattr(request.app.state, "MODELS", {}) or {}
+        model_info = models.get(target_model)
+        if not model_info:
+            raise RuntimeError(f"Configured simon_default_model '{target_model}' was not found")
+
+        if model_info.get("pipe"):
+            raise RuntimeError("simon_default_model cannot be a pipe model")
+
+        return target_model
+
+    def _resolve_user_model(self, user_payload: dict[str, Any]) -> UserModel:
+        try:
+            return UserModel(**user_payload)
+        except Exception:
+            user_id = user_payload.get("id")
+            if not user_id:
+                raise RuntimeError("Simon pipe requires a valid user context")
+            user_model = Users.get_user_by_id(user_id)
+            if user_model is None:
+                raise RuntimeError("Simon pipe could not resolve user context")
+            return user_model
+
+    async def _run_task_passthrough(
+        self,
+        *,
+        body: dict,
+        metadata: dict[str, Any],
+        user_payload: dict[str, Any],
+        request,
+    ):
+        target_model = self._resolve_target_model(str(body.get("model") or ""), request)
+        user_model = self._resolve_user_model(user_payload)
+        passthrough_body = {**body, "model": target_model, "metadata": metadata}
+        response = await generate_chat_completion(
+            request,
+            passthrough_body,
+            user=user_model,
+            bypass_filter=False,
+            bypass_system_prompt=False,
+        )
+
+        if isinstance(response, dict):
+            return response
+        return str(response or "")
 
     async def _emit_status(
         self,
@@ -173,6 +228,7 @@ class Pipe:
         body: dict,
         __metadata__: dict | None = None,
         __chat_id__: str | None = None,
+        __task__: str | None = None,
         __event_emitter__=None,
         __user__: dict | None = None,
         __request__=None,
@@ -181,7 +237,16 @@ class Pipe:
             raise RuntimeError("Simon pipe requires __request__ context")
 
         metadata = __metadata__ or {}
+        user_payload = __user__ or {}
         messages = body.get("messages", [])
+
+        if __task__:
+            return await self._run_task_passthrough(
+                body=body,
+                metadata=metadata,
+                user_payload=user_payload,
+                request=__request__,
+            )
 
         chat_id = str(
             __chat_id__
@@ -205,13 +270,13 @@ class Pipe:
             lineage_anchor_message_id=str(lineage_anchor) if lineage_anchor else None,
             messages=messages,
             user_text=user_text,
-            user=__user__ or {},
+            user=user_payload,
             metadata=metadata,
         )
 
         engine = SimonEngine(
             request=__request__,
-            user_payload=__user__ or {},
+            user_payload=user_payload,
             metadata=metadata,
             valves=self.valves,
         )

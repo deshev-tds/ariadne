@@ -632,27 +632,33 @@ def _query_fts(
             params[key] = message_id
         message_filter_sql = f"AND lex.message_id IN ({', '.join(placeholders)})"
 
-    rows = db.execute(
-        text(
-            f"""
-            SELECT
-                lex.message_id,
-                lex.parent_id,
-                lex.role,
-                lex.content_text,
-                lex.created_at,
-                bm25(simon_chat_lex_fts) AS score
-            FROM simon_chat_lex_fts
-            JOIN simon_chat_lex AS lex ON lex.id = simon_chat_lex_fts.rowid
-            WHERE simon_chat_lex_fts MATCH :match_query
-              AND lex.chat_id = :chat_id
-              {message_filter_sql}
-            ORDER BY score ASC
-            LIMIT :limit
-            """
-        ),
-        params,
-    ).fetchall()
+    try:
+        rows = db.execute(
+            text(
+                f"""
+                SELECT
+                    lex.message_id,
+                    lex.parent_id,
+                    lex.role,
+                    lex.content_text,
+                    lex.created_at,
+                    bm25(simon_chat_lex_fts) AS score
+                FROM simon_chat_lex_fts
+                JOIN simon_chat_lex AS lex ON lex.id = simon_chat_lex_fts.rowid
+                WHERE simon_chat_lex_fts MATCH :match_query
+                  AND lex.chat_id = :chat_id
+                  {message_filter_sql}
+                ORDER BY score ASC
+                LIMIT :limit
+                """
+            ),
+            params,
+        ).fetchall()
+    except Exception as exc:
+        # FTS5 MATCH can fail on malformed query syntax.
+        # Keep Simon path resilient and let higher tiers answer.
+        log.debug("Simon FTS query failed: %s", exc)
+        return []
 
     out: list[dict[str, Any]] = []
     for row in rows:
@@ -695,23 +701,36 @@ def recursive_search(
     max_queries = max(1, int(max_queries))
     oversample = max(1, int(oversample))
 
+    def to_match_query(query_value: str, *, use_or: bool) -> str:
+        query_tokens = _fts_tokenize(query_value)
+        if not query_tokens:
+            return ""
+
+        joiner = " OR " if use_or else " AND "
+        # Quote tokens to avoid FTS parser issues with punctuation/operators.
+        return joiner.join(f'"{token}"' for token in query_tokens)
+
     def run_query(target_db: Session, query_value: str, allow_or: bool) -> list[dict[str, Any]]:
         if query_budget["count"] >= max_queries:
             return []
 
         query_budget["count"] += 1
+        and_query = to_match_query(query_value, use_or=False)
+        if not and_query:
+            return []
+
         results = _query_fts(
             target_db,
             chat_id=chat_id,
-            match_query=query_value,
+            match_query=and_query,
             limit=limit * oversample,
             branch_message_ids=branch_message_ids,
         )
         if results or not allow_or:
             return results
 
-        or_query = " OR ".join(_fts_tokenize(query_value))
-        if or_query and or_query != query_value and query_budget["count"] < max_queries:
+        or_query = to_match_query(query_value, use_or=True)
+        if or_query and or_query != and_query and query_budget["count"] < max_queries:
             query_budget["count"] += 1
             return _query_fts(
                 target_db,
