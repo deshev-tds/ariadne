@@ -31,6 +31,10 @@ DEFAULT_FUNCTION_VALVES = {
     "emit_trace_status": False,
     "max_status_events_per_turn": 8,
     "hot_cache_mode": "auto",
+    "freeze_memory_per_session": True,
+    "frozen_memory_k": 3,
+    "frozen_memory_ttl_sec": 21600,
+    "enable_on_demand_retrieval": True,
     "lex_queue_batch_size": 20,
     "lex_queue_poll_ms": 1200,
 }
@@ -116,9 +120,9 @@ def _upsert_function(owner_id: str, content: str) -> None:
     current_valves = Functions.get_function_valves_by_id(FUNCTION_ID) or {}
     next_valves = dict(DEFAULT_FUNCTION_VALVES)
 
-    current_model = current_valves.get("simon_default_model")
-    if isinstance(current_model, str) and current_model.strip():
-        next_valves["simon_default_model"] = current_model.strip()
+    for key, value in current_valves.items():
+        if value is not None:
+            next_valves[key] = value
 
     Functions.update_function_valves_by_id(FUNCTION_ID, next_valves)
 

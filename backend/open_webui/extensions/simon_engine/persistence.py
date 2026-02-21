@@ -37,6 +37,7 @@ def _update_chat_meta(
     retrieval_probe: RetrievalProbe,
     deep_triggered: bool,
     memory_save_success: bool,
+    injection_trace: dict[str, Any] | None,
 ) -> None:
     if not chat_id or chat_id.startswith("local:"):
         return
@@ -78,7 +79,18 @@ def _update_chat_meta(
                 "memory_hits": int(retrieval_probe.metrics.get("memory_hits", 0)),
                 "lexical_hits": int(retrieval_probe.metrics.get("lexical_hits", 0)),
             },
+            **({"injection": injection_trace} if injection_trace else {}),
         }
+
+        if injection_trace:
+            history = list(simon_meta.get("injection_history") or [])
+            history.append(
+                {
+                    "timestamp": int(time.time()),
+                    **injection_trace,
+                }
+            )
+            simon_meta["injection_history"] = history[-40:]
 
         meta["simon"] = simon_meta
         chat.meta = meta
@@ -98,6 +110,7 @@ async def persist_post_flight(
     retrieval_probe: RetrievalProbe,
     deep_triggered: bool,
     hot_enabled: bool,
+    injection_trace: dict[str, Any] | None = None,
 ) -> None:
     memory_save_success = False
 
@@ -129,6 +142,7 @@ async def persist_post_flight(
             retrieval_probe=retrieval_probe,
             deep_triggered=deep_triggered,
             memory_save_success=memory_save_success,
+            injection_trace=injection_trace,
         )
     except Exception as exc:
         log.warning("Simon chat meta update failed: %s", exc)

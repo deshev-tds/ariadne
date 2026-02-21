@@ -42,6 +42,26 @@ class Pipe:
                 }
             },
         )
+        freeze_memory_per_session: bool = Field(
+            default=True,
+            description="Freeze bootstrap memory anchors per chat/session scope",
+        )
+        frozen_memory_k: int = Field(
+            default=3,
+            ge=1,
+            le=12,
+            description="Top-K memories bootstrapped and frozen for the active chat/session",
+        )
+        frozen_memory_ttl_sec: int = Field(
+            default=21600,
+            ge=60,
+            le=86400,
+            description="TTL for frozen chat/session memory anchors (seconds)",
+        )
+        enable_on_demand_retrieval: bool = Field(
+            default=True,
+            description="Allow dynamic retrieval augmentation on explicit recall/deep triggers",
+        )
         lex_queue_batch_size: int = Field(
             default=20,
             ge=1,
