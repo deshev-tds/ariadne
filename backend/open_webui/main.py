@@ -12,7 +12,7 @@ import re
 from uuid import uuid4
 
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from urllib.parse import urlencode, parse_qs, urlparse
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -107,12 +107,19 @@ from open_webui.routers.retrieval import (
 
 
 from sqlalchemy.orm import Session
-from open_webui.internal.db import ScopedSession, engine, get_session
+from open_webui.internal.db import ScopedSession, engine, get_db
 
 from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
+from open_webui.models.simon_lex_index import (
+    DEFAULT_QUEUE_BATCH_SIZE,
+    DEFAULT_QUEUE_POLL_MS,
+    ensure_schema as ensure_simon_lex_schema,
+    is_supported_database as is_simon_lex_supported_database,
+    run_lex_index_worker,
+)
 
 from open_webui.config import (
     # Ollama
@@ -640,6 +647,26 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(periodic_usage_pool_cleanup())
     asyncio.create_task(periodic_session_pool_cleanup())
 
+    app.state.simon_lex_worker_stop_event = None
+    app.state.simon_lex_worker_task = None
+    if is_simon_lex_supported_database():
+        try:
+            with get_db() as db:
+                ensure_simon_lex_schema(db)
+
+            stop_event = asyncio.Event()
+            app.state.simon_lex_worker_stop_event = stop_event
+            app.state.simon_lex_worker_task = asyncio.create_task(
+                run_lex_index_worker(
+                    stop_event=stop_event,
+                    batch_size=DEFAULT_QUEUE_BATCH_SIZE,
+                    poll_ms=DEFAULT_QUEUE_POLL_MS,
+                )
+            )
+            log.info("Simon lexical index worker started")
+        except Exception as e:
+            log.warning(f"Failed to start Simon lexical index worker: {e}")
+
     if app.state.config.ENABLE_BASE_MODELS_CACHE:
         try:
             await get_all_models(
@@ -692,6 +719,15 @@ async def lifespan(app: FastAPI):
 
     if hasattr(app.state, "redis_task_command_listener"):
         app.state.redis_task_command_listener.cancel()
+
+    if getattr(app.state, "simon_lex_worker_stop_event", None) is not None:
+        app.state.simon_lex_worker_stop_event.set()
+
+    worker_task = getattr(app.state, "simon_lex_worker_task", None)
+    if worker_task is not None:
+        worker_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await worker_task
 
 
 app = FastAPI(

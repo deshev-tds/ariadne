@@ -34,6 +34,19 @@ from sqlalchemy.sql.expression import bindparam
 log = logging.getLogger(__name__)
 
 
+def _delete_simon_lex_entries(chat_ids: list[str]) -> None:
+    if not chat_ids:
+        return
+
+    try:
+        from open_webui.models.simon_lex_index import delete_entries_for_chat_id
+
+        for chat_id in chat_ids:
+            delete_entries_for_chat_id(chat_id)
+    except Exception as exc:
+        log.debug("Failed to clear Simon lexical index entries: %s", exc)
+
+
 class Chat(Base):
     __tablename__ = "chat"
 
@@ -1437,6 +1450,7 @@ class ChatTable:
                 db.query(Chat).filter_by(id=id).delete()
                 db.commit()
 
+                _delete_simon_lex_entries([id])
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1450,6 +1464,7 @@ class ChatTable:
                 db.query(Chat).filter_by(id=id, user_id=user_id).delete()
                 db.commit()
 
+                _delete_simon_lex_entries([id])
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1461,6 +1476,8 @@ class ChatTable:
             with get_db_context(db) as db:
                 self.delete_shared_chats_by_user_id(user_id, db=db)
 
+                chat_ids = [row[0] for row in db.query(Chat.id).filter_by(user_id=user_id).all()]
+
                 chat_id_subquery = (
                     db.query(Chat.id).filter_by(user_id=user_id).subquery()
                 )
@@ -1470,6 +1487,7 @@ class ChatTable:
                 db.query(Chat).filter_by(user_id=user_id).delete()
                 db.commit()
 
+                _delete_simon_lex_entries(chat_ids)
                 return True
         except Exception:
             return False
@@ -1479,6 +1497,12 @@ class ChatTable:
     ) -> bool:
         try:
             with get_db_context(db) as db:
+                chat_ids = [
+                    row[0]
+                    for row in db.query(Chat.id)
+                    .filter_by(user_id=user_id, folder_id=folder_id)
+                    .all()
+                ]
                 chat_id_subquery = (
                     db.query(Chat.id)
                     .filter_by(user_id=user_id, folder_id=folder_id)
@@ -1490,6 +1514,7 @@ class ChatTable:
                 db.query(Chat).filter_by(user_id=user_id, folder_id=folder_id).delete()
                 db.commit()
 
+                _delete_simon_lex_entries(chat_ids)
                 return True
         except Exception:
             return False

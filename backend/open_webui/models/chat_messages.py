@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 import uuid
 from typing import Any, Optional
@@ -17,6 +18,8 @@ from sqlalchemy import (
     Index,
     func,
 )
+
+log = logging.getLogger(__name__)
 
 ####################
 # Helpers
@@ -39,6 +42,35 @@ def _normalize_timestamp(timestamp: int) -> float:
         return now
 
     return timestamp
+
+
+def _has_searchable_content(content: Any) -> bool:
+    if isinstance(content, str):
+        return bool(content.strip())
+
+    if isinstance(content, dict):
+        text_value = content.get("text") or content.get("content")
+        return isinstance(text_value, str) and bool(text_value.strip())
+
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, str) and item.strip():
+                return True
+            if isinstance(item, dict):
+                text_value = item.get("text") or item.get("content")
+                if isinstance(text_value, str) and text_value.strip():
+                    return True
+
+    return False
+
+
+def _enqueue_for_simon_index(chat_id: str, message_id: str, priority: int) -> None:
+    try:
+        from open_webui.models.simon_lex_index import enqueue_message
+
+        enqueue_message(chat_id=chat_id, message_id=message_id, priority=priority)
+    except Exception as exc:
+        log.debug("Failed to enqueue Simon lexical index row: %s", exc)
 
 
 ####################
@@ -142,6 +174,8 @@ class ChatMessageTable:
 
             existing = db.get(ChatMessage, composite_id)
             if existing:
+                previous_done = bool(existing.done)
+
                 # Update existing
                 if "role" in data:
                     existing.role = data["role"]
@@ -177,6 +211,32 @@ class ChatMessageTable:
                 existing.updated_at = now
                 db.commit()
                 db.refresh(existing)
+
+                current_role = str(existing.role or "")
+                current_done = bool(existing.done)
+
+                should_enqueue = False
+                priority = 0
+
+                if current_role == "user":
+                    should_enqueue = _has_searchable_content(existing.content)
+                    priority = 3
+                elif current_role == "assistant":
+                    finalized_transition = (not previous_done) and current_done
+                    finalized_content_refresh = (
+                        previous_done
+                        and current_done
+                        and ("content" in data or "output" in data)
+                    )
+                    if (finalized_transition or finalized_content_refresh) and _has_searchable_content(
+                        existing.content
+                    ):
+                        should_enqueue = True
+                        priority = 5
+
+                if should_enqueue:
+                    _enqueue_for_simon_index(chat_id=chat_id, message_id=message_id, priority=priority)
+
                 return ChatMessageModel.model_validate(existing)
             else:
                 # Insert new
@@ -208,6 +268,14 @@ class ChatMessageTable:
                 db.add(message)
                 db.commit()
                 db.refresh(message)
+
+                role = str(message.role or "")
+                done = bool(message.done)
+                if role == "user" and _has_searchable_content(message.content):
+                    _enqueue_for_simon_index(chat_id=chat_id, message_id=message_id, priority=3)
+                elif role == "assistant" and done and _has_searchable_content(message.content):
+                    _enqueue_for_simon_index(chat_id=chat_id, message_id=message_id, priority=5)
+
                 return ChatMessageModel.model_validate(message)
 
     def get_message_by_id(
