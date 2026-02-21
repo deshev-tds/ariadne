@@ -107,7 +107,7 @@ from open_webui.routers.retrieval import (
 
 
 from sqlalchemy.orm import Session
-from open_webui.internal.db import ScopedSession, engine, get_db
+from open_webui.internal.db import ScopedSession, engine, get_db, get_session
 
 from open_webui.models.functions import Functions
 from open_webui.models.models import Models
