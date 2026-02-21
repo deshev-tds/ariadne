@@ -113,7 +113,14 @@ def _upsert_function(owner_id: str, content: str) -> None:
             },
         )
 
-    Functions.update_function_valves_by_id(FUNCTION_ID, DEFAULT_FUNCTION_VALVES)
+    current_valves = Functions.get_function_valves_by_id(FUNCTION_ID) or {}
+    next_valves = dict(DEFAULT_FUNCTION_VALVES)
+
+    current_model = current_valves.get("simon_default_model")
+    if isinstance(current_model, str) and current_model.strip():
+        next_valves["simon_default_model"] = current_model.strip()
+
+    Functions.update_function_valves_by_id(FUNCTION_ID, next_valves)
 
 
 def _upsert_model(owner_id: str) -> None:
