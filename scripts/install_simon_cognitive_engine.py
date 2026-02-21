@@ -28,7 +28,7 @@ PIPE_SOURCE = (
 DEFAULT_FUNCTION_VALVES = {
     "simon_default_model": "",
     "enable_deep_mode": False,
-    "emit_trace_status": True,
+    "emit_trace_status": False,
     "max_status_events_per_turn": 8,
     "hot_cache_mode": "auto",
     "lex_queue_batch_size": 20,

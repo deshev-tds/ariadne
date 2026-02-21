@@ -149,9 +149,13 @@ class SimonEngine:
     async def _stream_inner_response(
         self,
         response: StreamingResponse,
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[tuple[str, str], None]:
         async for data in self._iter_sse_data(response.body_iterator):
-            if not data or data == "[DONE]":
+            if not data:
+                continue
+
+            if data == "[DONE]":
+                yield "data: [DONE]", ""
                 continue
 
             try:
@@ -164,10 +168,9 @@ class SimonEngine:
                 raise RuntimeError(str(detail))
 
             delta = self._extract_delta_from_chunk(payload)
-            if delta:
-                yield delta
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}", delta
 
-    def _status_event(self, action: str, description: str, done: bool = False) -> SimonTurnEvent:
+    def _status_event(self, action: str, description: str, done: bool = True) -> SimonTurnEvent:
         return SimonTurnEvent(
             type="status",
             data={
@@ -205,6 +208,7 @@ class SimonEngine:
             "logit_bias",
             "reasoning_effort",
             "response_format",
+            "stream_options",
         ]
 
         for key in passthrough_keys:
@@ -327,9 +331,15 @@ class SimonEngine:
             final_parts: list[str] = []
 
             if isinstance(response, StreamingResponse):
-                async for delta in self._stream_inner_response(response):
+                saw_done = False
+                async for raw_line, delta in self._stream_inner_response(response):
                     final_parts.append(delta)
-                    yield SimonTurnEvent(type="delta", data=delta)
+                    yield SimonTurnEvent(type="sse", data=raw_line)
+                    if raw_line == "data: [DONE]":
+                        saw_done = True
+
+                if not saw_done:
+                    yield SimonTurnEvent(type="sse", data="data: [DONE]")
             elif isinstance(response, dict):
                 final_text = self._extract_final_text(response)
                 if final_text:

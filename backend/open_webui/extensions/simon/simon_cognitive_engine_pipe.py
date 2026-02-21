@@ -23,7 +23,7 @@ class Pipe:
             description="Enable deep-route retrieval path (deterministic V1 scaffold)",
         )
         emit_trace_status: bool = Field(
-            default=True,
+            default=False,
             description="Emit Simon routing and retrieval status events",
         )
         max_status_events_per_turn: int = Field(
@@ -161,6 +161,10 @@ class Pipe:
                 continue
 
             if event_type == "delta":
+                yield str(event.data)
+                continue
+
+            if event_type == "sse":
                 yield str(event.data)
                 continue
 
