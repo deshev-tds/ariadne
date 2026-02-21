@@ -15,7 +15,7 @@ class SimonTurnRequest(BaseModel):
 
 
 class SimonTurnEvent(BaseModel):
-    type: Literal["status", "delta", "final", "done", "error"]
+    type: Literal["status", "delta", "final", "done", "error", "sse"]
     data: dict[str, Any] | str
 
 
