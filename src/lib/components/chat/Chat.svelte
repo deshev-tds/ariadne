@@ -159,6 +159,45 @@
 	let chatFiles = [];
 	let files = [];
 	let params = {};
+	let chatThinkingEnabled = false;
+
+	$: chatThinkingEnabled =
+		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
+
+	const setChatThinkingEnabled = (enabled: boolean) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		const customParams =
+			typeof nextParams.custom_params === 'object' && nextParams.custom_params !== null
+				? nextParams.custom_params
+				: {};
+		const chatTemplateKwargs =
+			typeof customParams.chat_template_kwargs === 'object' &&
+			customParams.chat_template_kwargs !== null
+				? customParams.chat_template_kwargs
+				: {};
+
+		if (enabled) {
+			chatTemplateKwargs.enable_thinking = true;
+			customParams.chat_template_kwargs = chatTemplateKwargs;
+			nextParams.custom_params = customParams;
+		} else {
+			delete chatTemplateKwargs.enable_thinking;
+
+			if (Object.keys(chatTemplateKwargs).length > 0) {
+				customParams.chat_template_kwargs = chatTemplateKwargs;
+			} else {
+				delete customParams.chat_template_kwargs;
+			}
+
+			if (Object.keys(customParams).length > 0) {
+				nextParams.custom_params = customParams;
+			} else {
+				delete nextParams.custom_params;
+			}
+		}
+
+		params = nextParams;
+	};
 
 	// Message queue for storing messages while generating
 	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
@@ -2659,6 +2698,8 @@
 									{history}
 									{taskIds}
 									{selectedModels}
+									thinkingEnabled={chatThinkingEnabled}
+									{setChatThinkingEnabled}
 									bind:files
 									bind:prompt
 									bind:autoScroll
@@ -2728,6 +2769,8 @@
 								<Placeholder
 									{history}
 									{selectedModels}
+									thinkingEnabled={chatThinkingEnabled}
+									{setChatThinkingEnabled}
 									bind:messageInput
 									bind:files
 									bind:prompt

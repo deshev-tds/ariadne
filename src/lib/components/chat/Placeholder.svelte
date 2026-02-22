@@ -44,6 +44,8 @@
 	export let prompt = '';
 	export let files = [];
 	export let messageInput = null;
+	export let thinkingEnabled = false;
+	export let setChatThinkingEnabled: (enabled: boolean) => void = () => {};
 
 	export let selectedToolIds = [];
 	export let selectedFilterIds = [];
@@ -202,6 +204,8 @@
 					bind:this={messageInput}
 					{history}
 					{selectedModels}
+					{thinkingEnabled}
+					{setChatThinkingEnabled}
 					bind:files
 					bind:prompt
 					bind:autoScroll

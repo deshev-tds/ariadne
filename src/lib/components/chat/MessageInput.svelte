@@ -82,6 +82,7 @@
 	import IntegrationsMenu from './MessageInput/IntegrationsMenu.svelte';
 	import Component from '../icons/Component.svelte';
 	import PlusAlt from '../icons/PlusAlt.svelte';
+	import LightBulb from '../icons/LightBulb.svelte';
 
 	import CommandSuggestionList from './MessageInput/CommandSuggestionList.svelte';
 	import Knobs from '../icons/Knobs.svelte';
@@ -105,6 +106,8 @@
 
 	export let atSelectedModel: Model | undefined = undefined;
 	export let selectedModels: [''];
+	export let thinkingEnabled = false;
+	export let setChatThinkingEnabled: (enabled: boolean) => void = () => {};
 
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
@@ -1582,6 +1585,32 @@
 											</div>
 										</IntegrationsMenu>
 									{/if}
+
+									<div class="ml-1 flex gap-1.5">
+										<Tooltip
+											content={thinkingEnabled
+												? $i18n.t('Thinking mode is enabled for this chat')
+												: $i18n.t('Enable thinking mode for this chat')}
+											placement="top"
+										>
+											<button
+												type="button"
+												id="thinking-toggle-button"
+												aria-label={$i18n.t('Thinking mode')}
+												aria-pressed={thinkingEnabled}
+												class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {thinkingEnabled
+													? 'text-amber-700 bg-amber-100/80 hover:bg-amber-200/80 dark:text-amber-200 dark:bg-amber-700/20 dark:hover:bg-amber-700/30'
+													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+												on:click={async () => {
+													setChatThinkingEnabled(!thinkingEnabled);
+													await tick();
+													document.getElementById('chat-input')?.focus();
+												}}
+											>
+												<LightBulb className="size-4.5" strokeWidth="1.75" />
+											</button>
+										</Tooltip>
+									</div>
 
 									{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves}
 										<div class="ml-1 flex gap-1.5">
