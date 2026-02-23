@@ -8,6 +8,12 @@
 	export let telemetry: any;
 	export let onCreateBranch: Function = () => {};
 
+	const TOKEN_EXPLORER_MAX_ALTERNATIVES = 10;
+	const TOKEN_EXPLORER_ALTERNATIVES_PER_PANE = 5;
+	const ALTERNATIVE_ROW_HEIGHT_PX = 40;
+	const ALTERNATIVE_ROW_GAP_PX = 4;
+	const ALTERNATIVE_PANE_PADDING_PX = 8;
+
 	let activeIndex: number | null = null;
 	let activeAltRank = 0;
 	let popupX = 0;
@@ -17,9 +23,17 @@
 	$: tokens = Array.isArray(telemetry?.tokens) ? telemetry.tokens : [];
 	$: activeToken = activeIndex !== null ? tokens[activeIndex] : null;
 	$: alternatives = Array.isArray(activeToken?.alternatives) ? activeToken.alternatives : [];
+	$: visibleAlternatives = alternatives.slice(0, TOKEN_EXPLORER_MAX_ALTERNATIVES);
+	$: alternativesPaneMaxHeight =
+		TOKEN_EXPLORER_ALTERNATIVES_PER_PANE * ALTERNATIVE_ROW_HEIGHT_PX +
+		(TOKEN_EXPLORER_ALTERNATIVES_PER_PANE - 1) * ALTERNATIVE_ROW_GAP_PX +
+		ALTERNATIVE_PANE_PADDING_PX;
 
-	$: if (alternatives.length > 0 && activeAltRank >= alternatives.length) {
-		activeAltRank = 0;
+	$: if (
+		visibleAlternatives.length > 0 &&
+		!visibleAlternatives.some((alt) => alt?.rank === activeAltRank)
+	) {
+		activeAltRank = visibleAlternatives[0]?.rank ?? 0;
 	}
 
 	const tokenDisplay = (text: unknown) => {
@@ -54,7 +68,7 @@
 		activeIndex = index;
 		activeAltRank = 0;
 		popupX = Math.max(8, Math.min(window.innerWidth - 320, rect.left));
-		popupY = Math.max(8, Math.min(window.innerHeight - 280, rect.bottom + 8));
+		popupY = Math.max(8, Math.min(window.innerHeight - 360, rect.bottom + 8));
 	};
 
 	const closePopup = () => {
@@ -124,16 +138,19 @@
 			</button>
 		</div>
 
-		<div class="max-h-64 overflow-auto p-2">
-			{#if alternatives.length === 0}
+		<div
+			class="overflow-y-auto p-2 flex flex-col gap-1"
+			style={`max-height: ${alternativesPaneMaxHeight}px;`}
+		>
+			{#if visibleAlternatives.length === 0}
 				<div class="text-xs text-gray-500 dark:text-gray-400 p-2">
 					{$i18n.t('No alternatives available.')}
 				</div>
 			{:else}
-				{#each alternatives as alt (alt.rank)}
+				{#each visibleAlternatives as alt (alt.rank)}
 					<button
 						type="button"
-						class="w-full text-left p-2 rounded-lg border mb-1 transition {activeAltRank === alt.rank
+						class="w-full min-h-10 text-left p-2 rounded-lg border transition {activeAltRank === alt.rank
 							? 'border-blue-500 bg-blue-50 dark:bg-blue-950/40'
 							: 'border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800'}"
 						on:click={() => {

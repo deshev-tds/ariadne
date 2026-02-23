@@ -31,8 +31,8 @@ def test_stream_logprobs_normalization():
 
     assert telemetry is not None
     assert telemetry["provider"] == "openai_logprobs"
-    assert telemetry["topK"] == 5
-    assert telemetry["tokenCap"] == 512
+    assert telemetry["topK"] == 10
+    assert telemetry["tokenCap"] == 1024
     assert telemetry["tokens"][0]["text"] == "Given"
     assert telemetry["tokens"][0]["index"] == 0
     assert len(telemetry["tokens"][0]["alternatives"]) == 2
@@ -67,7 +67,7 @@ def test_non_stream_logprobs_normalization():
     assert telemetry["tokens"][0]["alternatives"][1]["text"] == "drive"
 
 
-def test_top_five_alternatives_truncation():
+def test_top_ten_alternatives_truncation():
     state = {"tokens": [], "capped": False}
     top_logprobs = [{"token": f"alt_{idx}", "logprob": -1.0 - idx} for idx in range(12)]
     choice = {
@@ -81,7 +81,7 @@ def test_top_five_alternatives_truncation():
     telemetry = middleware._build_token_telemetry_payload(state)
 
     assert telemetry is not None
-    assert len(telemetry["tokens"][0]["alternatives"]) == 5
+    assert len(telemetry["tokens"][0]["alternatives"]) == 10
     assert telemetry["tokens"][0]["alternatives"][0]["text"] == "x"
 
 

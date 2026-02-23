@@ -17,7 +17,7 @@ export const applyTokenExplorerDefaults = (
 		nextParams.logprobs = true;
 	}
 	if (nextParams.top_logprobs === undefined) {
-		nextParams.top_logprobs = 5;
+		nextParams.top_logprobs = 10;
 	}
 
 	return nextParams;

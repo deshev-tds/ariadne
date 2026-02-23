@@ -10,7 +10,7 @@ describe('tokenExplorer helpers', () => {
 	it('adds logprobs defaults when enabled', () => {
 		const result = applyTokenExplorerDefaults({ temperature: 0.2 }, true);
 		expect(result.logprobs).toBe(true);
-		expect(result.top_logprobs).toBe(5);
+		expect(result.top_logprobs).toBe(10);
 	});
 
 	it('preserves explicit logprobs overrides', () => {
