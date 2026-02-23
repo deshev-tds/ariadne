@@ -3208,6 +3208,60 @@ WEB_SEARCH_CONCURRENT_REQUESTS = PersistentConfig(
     int(os.getenv("WEB_SEARCH_CONCURRENT_REQUESTS", "0")),
 )
 
+ENABLE_WEB_SEARCH_PLANNER = PersistentConfig(
+    "ENABLE_WEB_SEARCH_PLANNER",
+    "rag.web.search.planner.enable",
+    os.getenv("ENABLE_WEB_SEARCH_PLANNER", "True").lower() == "true",
+)
+
+WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES = PersistentConfig(
+    "WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES",
+    "rag.web.search.planner.min_total_queries",
+    int(os.getenv("WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES", "3")),
+)
+
+WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES = PersistentConfig(
+    "WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES",
+    "rag.web.search.planner.max_total_queries",
+    int(os.getenv("WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES", "10")),
+)
+
+WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE = PersistentConfig(
+    "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE",
+    "rag.web.search.planner.max_targeted_domains_per_wave",
+    int(os.getenv("WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE", "4")),
+)
+
+WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE = PersistentConfig(
+    "WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE",
+    "rag.web.search.planner.primary_stop_score",
+    float(os.getenv("WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE", "0.66")),
+)
+
+WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS = PersistentConfig(
+    "WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS",
+    "rag.web.search.planner.primary_stop_trusted_domains",
+    int(os.getenv("WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS", "3")),
+)
+
+WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE = PersistentConfig(
+    "WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE",
+    "rag.web.search.planner.plateau_floor_score",
+    float(os.getenv("WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE", "0.56")),
+)
+
+WEB_SEARCH_PLANNER_PLATEAU_DELTA = PersistentConfig(
+    "WEB_SEARCH_PLANNER_PLATEAU_DELTA",
+    "rag.web.search.planner.plateau_delta",
+    float(os.getenv("WEB_SEARCH_PLANNER_PLATEAU_DELTA", "0.02")),
+)
+
+WEB_SEARCH_PLANNER_PLATEAU_STREAK = PersistentConfig(
+    "WEB_SEARCH_PLANNER_PLATEAU_STREAK",
+    "rag.web.search.planner.plateau_streak",
+    int(os.getenv("WEB_SEARCH_PLANNER_PLATEAU_STREAK", "2")),
+)
+
 
 WEB_LOADER_ENGINE = PersistentConfig(
     "WEB_LOADER_ENGINE",

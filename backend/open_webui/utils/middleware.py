@@ -72,6 +72,10 @@ from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 
 from open_webui.retrieval.utils import get_sources_from_items
+from open_webui.retrieval.web.planner import (
+    build_base_planned_queries,
+    build_web_search_plan,
+)
 
 
 from open_webui.utils.sanitize import sanitize_code
@@ -1601,40 +1605,86 @@ async def chat_web_search_handler(
     user_message = get_last_user_message(messages)
 
     queries = []
-    try:
-        res = await generate_queries(
-            request,
-            {
-                "model": form_data["model"],
-                "messages": messages,
-                "prompt": user_message,
-                "type": "web_search",
-                "chat_id": extra_params.get("__chat_id__"),
-            },
-            user,
-        )
+    plan_payload = None
 
-        response = res["choices"][0]["message"]["content"]
-
+    if request.app.state.config.ENABLE_WEB_SEARCH_PLANNER:
         try:
-            bracket_start = response.find("{")
-            bracket_end = response.rfind("}") + 1
+            plan = build_web_search_plan(
+                user_message,
+                max_targeted_domains=max(
+                    0,
+                    int(
+                        request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE
+                        or 4
+                    ),
+                ),
+            )
+            plan_payload = (
+                plan.model_dump() if hasattr(plan, "model_dump") else plan.dict()  # type: ignore[attr-defined]
+            )
+            queries = [
+                planned.query
+                for planned in build_base_planned_queries(plan, targeted_slots=3)
+            ]
+            queries = [query for query in queries if query and query.strip()]
 
-            if bracket_start == -1 or bracket_end == -1:
-                raise Exception("No JSON object found in the response")
-
-            response = response[bracket_start:bracket_end]
-            queries = json.loads(response)
-            queries = queries.get("queries", [])
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "action": "web_search_plan_generated",
+                        "plan": {
+                            "intent": plan.intent,
+                            "topic": plan.topic,
+                            "time_sensitive": plan.time_sensitive,
+                            "community_requested": plan.community_requested,
+                            "selected_domains": plan.selected_domains,
+                        },
+                        "queries": queries,
+                        "done": False,
+                    },
+                }
+            )
         except Exception as e:
-            queries = [response]
+            log.exception("Web search planner failed; falling back to legacy queries")
+            queries = []
+            plan_payload = None
 
-        if ENABLE_QUERIES_CACHE:
-            request.state.cached_queries = queries
+    if not queries:
+        try:
+            res = await generate_queries(
+                request,
+                {
+                    "model": form_data["model"],
+                    "messages": messages,
+                    "prompt": user_message,
+                    "type": "web_search",
+                    "chat_id": extra_params.get("__chat_id__"),
+                },
+                user,
+            )
 
-    except Exception as e:
-        log.exception(e)
-        queries = [user_message]
+            response = res["choices"][0]["message"]["content"]
+
+            try:
+                bracket_start = response.find("{")
+                bracket_end = response.rfind("}") + 1
+
+                if bracket_start == -1 or bracket_end == -1:
+                    raise Exception("No JSON object found in the response")
+
+                response = response[bracket_start:bracket_end]
+                queries = json.loads(response)
+                queries = queries.get("queries", [])
+            except Exception as e:
+                queries = [response]
+
+        except Exception as e:
+            log.exception(e)
+            queries = [user_message]
+
+    if ENABLE_QUERIES_CACHE:
+        request.state.cached_queries = queries
 
     # Check if generated queries are empty
     if len(queries) == 1 and queries[0].strip() == "":
@@ -1668,11 +1718,12 @@ async def chat_web_search_handler(
     try:
         results = await process_web_search(
             request,
-            SearchForm(queries=queries),
+            SearchForm(queries=queries, plan=plan_payload),
             user=user,
         )
 
         if results:
+            result_queries = results.get("queries", queries)
             files = form_data.get("files", [])
 
             if results.get("collection_names"):
@@ -1682,10 +1733,10 @@ async def chat_web_search_handler(
                     files.append(
                         {
                             "collection_name": collection_name,
-                            "name": ", ".join(queries),
+                            "name": ", ".join(result_queries),
                             "type": "web_search",
                             "urls": results["filenames"],
-                            "queries": queries,
+                            "queries": result_queries,
                         }
                     )
             elif results.get("docs"):
@@ -1694,10 +1745,10 @@ async def chat_web_search_handler(
                 files.append(
                     {
                         "docs": docs,
-                        "name": ", ".join(queries),
+                        "name": ", ".join(result_queries),
                         "type": "web_search",
                         "urls": results["filenames"],
-                        "queries": queries,
+                        "queries": result_queries,
                     }
                 )
 

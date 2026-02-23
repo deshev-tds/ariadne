@@ -9,7 +9,7 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, List, Optional, Sequence, Union
+from typing import Any, Iterator, List, Optional, Sequence, Union
 
 from fastapi import (
     Depends,
@@ -78,6 +78,19 @@ from open_webui.retrieval.web.firecrawl import search_firecrawl
 from open_webui.retrieval.web.external import search_external
 from open_webui.retrieval.web.yandex import search_yandex
 from open_webui.retrieval.web.ydc import search_youcom
+from open_webui.retrieval.web.planner import (
+    PlannedQuery,
+    WebSearchPlan,
+    build_alternate_general_query,
+    build_base_planned_queries,
+    build_community_query,
+    build_freshness_query,
+    build_targeted_query,
+    canonicalize_url,
+    evaluate_signal_quality,
+    is_fluff_query,
+    sanitize_query,
+)
 
 from open_webui.retrieval.utils import (
     get_content_from_url,
@@ -257,6 +270,7 @@ class ProcessUrlForm(CollectionNameForm):
 
 class SearchForm(BaseModel):
     queries: List[str]
+    plan: Optional[dict[str, Any]] = None
 
 
 @router.get("/")
@@ -537,6 +551,15 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "WEB_SEARCH_TRUST_ENV": request.app.state.config.WEB_SEARCH_TRUST_ENV,
             "WEB_SEARCH_RESULT_COUNT": request.app.state.config.WEB_SEARCH_RESULT_COUNT,
             "WEB_SEARCH_CONCURRENT_REQUESTS": request.app.state.config.WEB_SEARCH_CONCURRENT_REQUESTS,
+            "ENABLE_WEB_SEARCH_PLANNER": request.app.state.config.ENABLE_WEB_SEARCH_PLANNER,
+            "WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES,
+            "WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES,
+            "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE,
+            "WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE": request.app.state.config.WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE,
+            "WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS": request.app.state.config.WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS,
+            "WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE,
+            "WEB_SEARCH_PLANNER_PLATEAU_DELTA": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_DELTA,
+            "WEB_SEARCH_PLANNER_PLATEAU_STREAK": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_STREAK,
             "WEB_LOADER_CONCURRENT_REQUESTS": request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
@@ -604,6 +627,15 @@ class WebConfig(BaseModel):
     WEB_SEARCH_TRUST_ENV: Optional[bool] = None
     WEB_SEARCH_RESULT_COUNT: Optional[int] = None
     WEB_SEARCH_CONCURRENT_REQUESTS: Optional[int] = None
+    ENABLE_WEB_SEARCH_PLANNER: Optional[bool] = None
+    WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES: Optional[int] = None
+    WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES: Optional[int] = None
+    WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE: Optional[int] = None
+    WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE: Optional[float] = None
+    WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS: Optional[int] = None
+    WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE: Optional[float] = None
+    WEB_SEARCH_PLANNER_PLATEAU_DELTA: Optional[float] = None
+    WEB_SEARCH_PLANNER_PLATEAU_STREAK: Optional[int] = None
     WEB_LOADER_CONCURRENT_REQUESTS: Optional[int] = None
     WEB_SEARCH_DOMAIN_FILTER_LIST: Optional[List[str]] = []
     BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: Optional[bool] = None
@@ -1112,6 +1144,51 @@ async def update_rag_config(
         request.app.state.config.WEB_SEARCH_CONCURRENT_REQUESTS = (
             form_data.web.WEB_SEARCH_CONCURRENT_REQUESTS
         )
+        request.app.state.config.ENABLE_WEB_SEARCH_PLANNER = (
+            form_data.web.ENABLE_WEB_SEARCH_PLANNER
+            if form_data.web.ENABLE_WEB_SEARCH_PLANNER is not None
+            else request.app.state.config.ENABLE_WEB_SEARCH_PLANNER
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES = (
+            form_data.web.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES
+            if form_data.web.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES = (
+            form_data.web.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES
+            if form_data.web.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE = (
+            form_data.web.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE
+            if form_data.web.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE = (
+            form_data.web.WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE
+            if form_data.web.WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS = (
+            form_data.web.WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS
+            if form_data.web.WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE = (
+            form_data.web.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE
+            if form_data.web.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_DELTA = (
+            form_data.web.WEB_SEARCH_PLANNER_PLATEAU_DELTA
+            if form_data.web.WEB_SEARCH_PLANNER_PLATEAU_DELTA is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_DELTA
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_STREAK = (
+            form_data.web.WEB_SEARCH_PLANNER_PLATEAU_STREAK
+            if form_data.web.WEB_SEARCH_PLANNER_PLATEAU_STREAK is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_STREAK
+        )
         request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS = (
             form_data.web.WEB_LOADER_CONCURRENT_REQUESTS
         )
@@ -1297,6 +1374,15 @@ async def update_rag_config(
             "WEB_SEARCH_TRUST_ENV": request.app.state.config.WEB_SEARCH_TRUST_ENV,
             "WEB_SEARCH_RESULT_COUNT": request.app.state.config.WEB_SEARCH_RESULT_COUNT,
             "WEB_SEARCH_CONCURRENT_REQUESTS": request.app.state.config.WEB_SEARCH_CONCURRENT_REQUESTS,
+            "ENABLE_WEB_SEARCH_PLANNER": request.app.state.config.ENABLE_WEB_SEARCH_PLANNER,
+            "WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES,
+            "WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES,
+            "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE,
+            "WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE": request.app.state.config.WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE,
+            "WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS": request.app.state.config.WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS,
+            "WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE,
+            "WEB_SEARCH_PLANNER_PLATEAU_DELTA": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_DELTA,
+            "WEB_SEARCH_PLANNER_PLATEAU_STREAK": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_STREAK,
             "WEB_LOADER_CONCURRENT_REQUESTS": request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
@@ -2325,6 +2411,192 @@ def search_web(
         raise Exception("No search engine API key found in environment variables")
 
 
+def _search_result_to_item(result: SearchResult) -> dict[str, Any]:
+    return {
+        "link": result.link,
+        "title": result.title,
+        "snippet": result.snippet,
+    }
+
+
+def _flatten_search_results(search_results: list[list[SearchResult]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for result in search_results:
+        if not result:
+            continue
+        for item in result:
+            if item and item.link:
+                items.append(_search_result_to_item(item))
+    return items
+
+
+def _dedupe_items_by_canonical_url(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for item in items:
+        url = item.get("link", "")
+        canonical = canonicalize_url(url)
+        if not canonical or canonical in seen:
+            continue
+        seen.add(canonical)
+        deduped.append(item)
+    return deduped
+
+
+async def _execute_web_search_with_planner(
+    request: Request, form_data: SearchForm, user=None
+) -> tuple[list[list[SearchResult]], list[str], dict[str, Any]]:
+    if not form_data.plan:
+        raise ValueError("Planner payload is missing")
+
+    plan = WebSearchPlan.model_validate(form_data.plan)
+
+    cfg = request.app.state.config
+    min_total_queries = max(1, int(cfg.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES or 3))
+    max_total_queries = max(
+        min_total_queries, int(cfg.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES or 10)
+    )
+    max_targeted_domains = max(
+        0, int(cfg.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE or 4)
+    )
+
+    if max_targeted_domains and len(plan.selected_domains) > max_targeted_domains:
+        plan_payload = (
+            plan.model_dump() if hasattr(plan, "model_dump") else plan.dict()  # type: ignore[attr-defined]
+        )
+        selected_domains = plan.selected_domains[:max_targeted_domains]
+        selected_sources = [
+            source
+            for source in plan.selected_sources
+            if source.domain in set(selected_domains)
+        ]
+        plan_payload["selected_domains"] = selected_domains
+        plan_payload["selected_sources"] = selected_sources
+        plan = WebSearchPlan.model_validate(plan_payload)
+
+    primary_stop_score = float(cfg.WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE or 0.66)
+    primary_stop_trusted_domains = int(
+        cfg.WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS or 3
+    )
+    plateau_floor = float(cfg.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE or 0.56)
+    plateau_delta = float(cfg.WEB_SEARCH_PLANNER_PLATEAU_DELTA or 0.02)
+    plateau_streak_limit = int(cfg.WEB_SEARCH_PLANNER_PLATEAU_STREAK or 2)
+
+    pending_queries = build_base_planned_queries(plan, targeted_slots=3)
+    remaining_targeted_domains = list(plan.selected_domains[3:])
+
+    used_query_strings: set[str] = set()
+    executed_queries: list[str] = []
+    search_results: list[list[SearchResult]] = []
+    score_history: list[float] = []
+    trusted_history: list[int] = []
+
+    prev_score: Optional[float] = None
+    plateau_streak_count = 0
+    stop_reason = "budget_exhausted"
+
+    freshness_used = False
+    community_used = False
+    alternate_general_used = False
+
+    while len(executed_queries) < max_total_queries:
+        candidate: Optional[PlannedQuery] = None
+        if pending_queries:
+            candidate = pending_queries.pop(0)
+        else:
+            weak_signal = True
+            if score_history:
+                weak_signal = (
+                    score_history[-1] < primary_stop_score
+                    or trusted_history[-1] < primary_stop_trusted_domains
+                )
+
+            if remaining_targeted_domains:
+                domain = remaining_targeted_domains.pop(0)
+                candidate = PlannedQuery(
+                    kind="targeted",
+                    domain=domain,
+                    query=build_targeted_query(plan, domain),
+                )
+            elif plan.time_sensitive and not freshness_used:
+                freshness_used = True
+                candidate = PlannedQuery(
+                    kind="freshness", query=build_freshness_query(plan)
+                )
+            elif (plan.community_requested or weak_signal) and not community_used:
+                community_used = True
+                candidate = PlannedQuery(
+                    kind="community", query=build_community_query(plan)
+                )
+            elif not alternate_general_used:
+                alternate_general_used = True
+                candidate = PlannedQuery(
+                    kind="alternate_general", query=build_alternate_general_query(plan)
+                )
+
+        if candidate is None:
+            stop_reason = "no_more_candidates"
+            break
+
+        query = sanitize_query(candidate.query)
+        if not query or is_fluff_query(query):
+            continue
+        if query in used_query_strings:
+            continue
+
+        used_query_strings.add(query)
+        query_results = await run_in_threadpool(
+            search_web,
+            request,
+            request.app.state.config.WEB_SEARCH_ENGINE,
+            query,
+            user,
+        )
+        search_results.append(query_results)
+        executed_queries.append(query)
+
+        deduped_items = _dedupe_items_by_canonical_url(
+            _flatten_search_results(search_results)
+        )
+        quality = evaluate_signal_quality(deduped_items, plan)
+        avg_score = float(quality["avg_top_score"])
+        trusted_domains = int(quality["trusted_unique_domains"])
+
+        score_history.append(avg_score)
+        trusted_history.append(trusted_domains)
+
+        if prev_score is not None:
+            delta = avg_score - prev_score
+            if avg_score >= plateau_floor and delta < plateau_delta:
+                plateau_streak_count += 1
+            else:
+                plateau_streak_count = 0
+        prev_score = avg_score
+
+        if len(executed_queries) >= min_total_queries:
+            if (
+                avg_score >= primary_stop_score
+                and trusted_domains >= primary_stop_trusted_domains
+            ):
+                stop_reason = "quality_threshold_met"
+                break
+
+            if plateau_streak_count >= plateau_streak_limit:
+                stop_reason = "quality_plateau"
+                break
+
+    planner_metrics = {
+        "stop_reason": stop_reason,
+        "executed_queries": executed_queries,
+        "scores": score_history,
+        "trusted_domains": trusted_history,
+        "min_total_queries": min_total_queries,
+        "max_total_queries": max_total_queries,
+    }
+    return search_results, executed_queries, planner_metrics
+
+
 @router.post("/process/web/search")
 async def process_web_search(
     request: Request, form_data: SearchForm, user=Depends(get_verified_user)
@@ -2343,50 +2615,58 @@ async def process_web_search(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
-    urls = []
-    result_items = []
+    urls: list[str] = []
+    result_items: list[SearchResult] = []
+    search_results: list[list[SearchResult]] = []
+    planner_metrics = None
+    effective_queries = list(form_data.queries)
 
     try:
         logging.debug(
             f"trying to web search with {request.app.state.config.WEB_SEARCH_ENGINE, form_data.queries}"
         )
 
-        # Use semaphore to limit concurrent requests based on WEB_SEARCH_CONCURRENT_REQUESTS
-        # 0 or None = unlimited (previous behavior), positive number = limited concurrency
-        # Set to 1 for sequential execution (rate-limited APIs like Brave free tier)
-        concurrent_limit = request.app.state.config.WEB_SEARCH_CONCURRENT_REQUESTS
+        if form_data.plan and request.app.state.config.ENABLE_WEB_SEARCH_PLANNER:
+            search_results, effective_queries, planner_metrics = (
+                await _execute_web_search_with_planner(request, form_data, user)
+            )
+        else:
+            # Use semaphore to limit concurrent requests based on WEB_SEARCH_CONCURRENT_REQUESTS
+            # 0 or None = unlimited (previous behavior), positive number = limited concurrency
+            # Set to 1 for sequential execution (rate-limited APIs like Brave free tier)
+            concurrent_limit = request.app.state.config.WEB_SEARCH_CONCURRENT_REQUESTS
 
-        if concurrent_limit:
-            # Limited concurrency with semaphore
-            semaphore = asyncio.Semaphore(concurrent_limit)
+            if concurrent_limit:
+                # Limited concurrency with semaphore
+                semaphore = asyncio.Semaphore(concurrent_limit)
 
-            async def search_query_with_semaphore(query):
-                async with semaphore:
-                    return await run_in_threadpool(
+                async def search_query_with_semaphore(query):
+                    async with semaphore:
+                        return await run_in_threadpool(
+                            search_web,
+                            request,
+                            request.app.state.config.WEB_SEARCH_ENGINE,
+                            query,
+                            user,
+                        )
+
+                search_tasks = [
+                    search_query_with_semaphore(query) for query in form_data.queries
+                ]
+            else:
+                # Unlimited parallel execution (previous behavior)
+                search_tasks = [
+                    run_in_threadpool(
                         search_web,
                         request,
                         request.app.state.config.WEB_SEARCH_ENGINE,
                         query,
                         user,
                     )
+                    for query in form_data.queries
+                ]
 
-            search_tasks = [
-                search_query_with_semaphore(query) for query in form_data.queries
-            ]
-        else:
-            # Unlimited parallel execution (previous behavior)
-            search_tasks = [
-                run_in_threadpool(
-                    search_web,
-                    request,
-                    request.app.state.config.WEB_SEARCH_ENGINE,
-                    query,
-                    user,
-                )
-                for query in form_data.queries
-            ]
-
-        search_results = await asyncio.gather(*search_tasks)
+            search_results = await asyncio.gather(*search_tasks)
 
         for result in search_results:
             if result:
@@ -2453,6 +2733,8 @@ async def process_web_search(
                 "collection_name": None,
                 "filenames": urls,
                 "items": result_items,
+                "queries": effective_queries,
+                "planner": planner_metrics,
                 "docs": [
                     {
                         "content": doc.page_content,
@@ -2465,7 +2747,7 @@ async def process_web_search(
         else:
             # Create a single collection for all documents
             collection_name = (
-                f"web-search-{calculate_sha256_string('-'.join(form_data.queries))}"[
+                f"web-search-{calculate_sha256_string('-'.join(effective_queries))}"[
                     :63
                 ]
             )
@@ -2487,6 +2769,8 @@ async def process_web_search(
                 "collection_names": [collection_name],
                 "items": result_items,
                 "filenames": urls,
+                "queries": effective_queries,
+                "planner": planner_metrics,
                 "loaded_count": len(docs),
             }
     except Exception as e:

@@ -77,6 +77,25 @@
 			webConfig.PLAYWRIGHT_TIMEOUT = webConfig.PLAYWRIGHT_TIMEOUT.toString();
 		}
 
+		const plannerNumericFields = [
+			'WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES',
+			'WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES',
+			'WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE',
+			'WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE',
+			'WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS',
+			'WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE',
+			'WEB_SEARCH_PLANNER_PLATEAU_DELTA',
+			'WEB_SEARCH_PLANNER_PLATEAU_STREAK'
+		];
+		for (const field of plannerNumericFields) {
+			if (webConfig[field] !== '' && webConfig[field] !== null && webConfig[field] !== undefined) {
+				const parsedValue = Number(webConfig[field]);
+				if (!Number.isNaN(parsedValue)) {
+					webConfig[field] = parsedValue;
+				}
+			}
+		}
+
 		const res = await updateRAGConfig(localStorage.token, {
 			web: webConfig
 		});
@@ -885,6 +904,131 @@
 								bind:value={webConfig.WEB_SEARCH_DOMAIN_FILTER_LIST}
 							/>
 						</div>
+
+						<div class="mb-2.5 flex w-full justify-between">
+							<div class="self-center text-xs font-medium">
+								{$i18n.t('Enable Web Search Planner')}
+							</div>
+							<div class="flex items-center relative">
+								<Switch bind:state={webConfig.ENABLE_WEB_SEARCH_PLANNER} />
+							</div>
+						</div>
+
+						{#if webConfig.ENABLE_WEB_SEARCH_PLANNER}
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="flex gap-2">
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Planner Min Queries')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="1"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES}
+										/>
+									</div>
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Planner Max Queries')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="1"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES}
+										/>
+									</div>
+								</div>
+							</div>
+
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="flex gap-2">
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Max Targeted Domains')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="0"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE}
+										/>
+									</div>
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Primary Stop Score')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											step="0.01"
+											min="0"
+											max="1"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE}
+										/>
+									</div>
+								</div>
+							</div>
+
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="flex gap-2">
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Primary Stop Trusted Domains')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="1"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS}
+										/>
+									</div>
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Plateau Floor Score')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											step="0.01"
+											min="0"
+											max="1"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE}
+										/>
+									</div>
+								</div>
+							</div>
+
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="flex gap-2">
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Plateau Delta')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											step="0.01"
+											min="0"
+											max="1"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_PLATEAU_DELTA}
+										/>
+									</div>
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Plateau Streak')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="1"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_PLATEAU_STREAK}
+										/>
+									</div>
+								</div>
+							</div>
+						{/if}
 					{/if}
 
 					<div class="  mb-2.5 flex w-full justify-between">

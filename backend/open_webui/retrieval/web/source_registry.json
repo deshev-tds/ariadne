@@ -1,0 +1,282 @@
+{
+  "version": 1,
+  "topics": {
+    "science_academic": {
+      "primary": [
+        "pubmed.ncbi.nlm.nih.gov",
+        "ncbi.nlm.nih.gov",
+        "arxiv.org",
+        "doi.org",
+        "crossref.org",
+        "openalex.org",
+        "semanticscholar.org"
+      ],
+      "secondary": [
+        "nature.com",
+        "science.org",
+        "nejm.org",
+        "thelancet.com",
+        "bmj.com",
+        "jamanetwork.com",
+        "plos.org"
+      ],
+      "community": [
+        "reddit.com"
+      ],
+      "use_for": [
+        "peer-reviewed papers",
+        "citations",
+        "study abstracts",
+        "research discovery"
+      ],
+      "avoid_for": [
+        "breaking news without corroboration"
+      ]
+    },
+    "medicine_health": {
+      "primary": [
+        "who.int",
+        "cdc.gov",
+        "ecdc.europa.eu",
+        "nih.gov",
+        "fda.gov",
+        "ema.europa.eu",
+        "ncbi.nlm.nih.gov"
+      ],
+      "secondary": [
+        "nice.org.uk",
+        "nhs.uk",
+        "mayoclinic.org",
+        "clevelandclinic.org",
+        "cochranelibrary.com",
+        "medlineplus.gov"
+      ],
+      "community": [
+        "reddit.com"
+      ],
+      "use_for": [
+        "public health guidance",
+        "drug safety",
+        "clinical evidence"
+      ],
+      "avoid_for": [
+        "unverified anecdotes as medical truth"
+      ]
+    },
+    "software_apis_devops": {
+      "primary": [
+        "github.com",
+        "docs.python.org",
+        "developer.mozilla.org",
+        "kubernetes.io",
+        "docs.aws.amazon.com",
+        "cloud.google.com",
+        "learn.microsoft.com",
+        "docker.com",
+        "docs.docker.com"
+      ],
+      "secondary": [
+        "stackoverflow.com",
+        "serverfault.com",
+        "unix.stackexchange.com"
+      ],
+      "community": [
+        "reddit.com",
+        "news.ycombinator.com"
+      ],
+      "use_for": [
+        "API docs",
+        "error debugging",
+        "implementation details"
+      ],
+      "avoid_for": [
+        "stale unofficial snippets over official docs"
+      ]
+    },
+    "ai_ml_local_llm": {
+      "primary": [
+        "huggingface.co",
+        "github.com",
+        "arxiv.org",
+        "openreview.net",
+        "pytorch.org",
+        "docs.vllm.ai",
+        "onnxruntime.ai"
+      ],
+      "secondary": [
+        "paperswithcode.com",
+        "artificialanalysis.ai",
+        "livebench.ai"
+      ],
+      "community": [
+        "reddit.com",
+        "news.ycombinator.com"
+      ],
+      "use_for": [
+        "model benchmarks",
+        "inference/runtime docs",
+        "reproducible code"
+      ],
+      "avoid_for": [
+        "single-source benchmark claims"
+      ]
+    },
+    "cybersecurity": {
+      "primary": [
+        "cve.org",
+        "nvd.nist.gov",
+        "cisa.gov",
+        "attack.mitre.org",
+        "mitre.org"
+      ],
+      "secondary": [
+        "mandiant.com",
+        "crowdstrike.com",
+        "talosintelligence.com",
+        "unit42.paloaltonetworks.com",
+        "sans.org",
+        "krebsonsecurity.com"
+      ],
+      "community": [
+        "reddit.com"
+      ],
+      "use_for": [
+        "vulnerability intel",
+        "threat advisories",
+        "mitigation guidance"
+      ],
+      "avoid_for": [
+        "unconfirmed exploit rumors"
+      ]
+    },
+    "legal_compliance": {
+      "primary": [
+        "eur-lex.europa.eu",
+        "edpb.europa.eu",
+        "europa.eu",
+        "curia.europa.eu",
+        "ec.europa.eu",
+        "dv.parliament.bg",
+        "cpdp.bg",
+        "parliament.bg",
+        "government.bg"
+      ],
+      "secondary": [
+        "lex.bg",
+        "ico.org.uk",
+        "legislation.gov.uk"
+      ],
+      "community": [],
+      "use_for": [
+        "canonical legal text",
+        "regulator guidance",
+        "official court/publication sources"
+      ],
+      "avoid_for": [
+        "forum interpretations without primary citation"
+      ]
+    },
+    "finance_macro_company": {
+      "primary": [
+        "ecb.europa.eu",
+        "federalreserve.gov",
+        "imf.org",
+        "worldbank.org",
+        "oecd.org",
+        "eurostat.ec.europa.eu",
+        "nsi.bg",
+        "bnb.bg",
+        "sec.gov"
+      ],
+      "secondary": [
+        "reuters.com",
+        "bloomberg.com",
+        "ft.com",
+        "wsj.com"
+      ],
+      "community": [
+        "reddit.com"
+      ],
+      "use_for": [
+        "macro indicators",
+        "official filings",
+        "company disclosures"
+      ],
+      "avoid_for": [
+        "social sentiment as factual source"
+      ]
+    },
+    "hardware_components": {
+      "primary": [
+        "amd.com",
+        "intel.com",
+        "ark.intel.com",
+        "nvidia.com",
+        "asus.com",
+        "msi.com",
+        "gigabyte.com",
+        "lenovo.com",
+        "dell.com",
+        "hp.com",
+        "support.apple.com",
+        "apple.com"
+      ],
+      "secondary": [
+        "notebookcheck.net",
+        "tomshardware.com",
+        "techpowerup.com",
+        "servethehome.com",
+        "gamersnexus.net",
+        "rtings.com"
+      ],
+      "community": [
+        "reddit.com",
+        "forums.tomshardware.com"
+      ],
+      "use_for": [
+        "spec sheets",
+        "vendor compatibility docs",
+        "hardware reviews"
+      ],
+      "avoid_for": [
+        "single anecdotal compatibility reports"
+      ]
+    },
+    "news_current_events": {
+      "primary": [
+        "reuters.com",
+        "apnews.com",
+        "bbc.com"
+      ],
+      "secondary": [
+        "ft.com",
+        "wsj.com",
+        "nytimes.com",
+        "theguardian.com",
+        "arstechnica.com"
+      ],
+      "community": [
+        "reddit.com"
+      ],
+      "use_for": [
+        "event reporting",
+        "multi-source confirmation",
+        "time-sensitive updates"
+      ],
+      "avoid_for": [
+        "community-only claims as source of truth"
+      ]
+    },
+    "general": {
+      "primary": [],
+      "secondary": [],
+      "community": [
+        "reddit.com"
+      ],
+      "use_for": [
+        "fallback category"
+      ],
+      "avoid_for": []
+    }
+  }
+}
