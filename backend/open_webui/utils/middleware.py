@@ -14,6 +14,7 @@ import html
 import inspect
 import re
 import ast
+import math
 
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
@@ -150,6 +151,297 @@ DEFAULT_REASONING_TAGS = [
 ]
 DEFAULT_SOLUTION_TAGS = [("<|begin_of_solution|>", "<|end_of_solution|>")]
 DEFAULT_CODE_INTERPRETER_TAGS = [("<code_interpreter>", "</code_interpreter>")]
+
+TOKEN_TELEMETRY_VERSION = 1
+TOKEN_TELEMETRY_PROVIDER = "openai_logprobs"
+TOKEN_TELEMETRY_TOP_K = 5
+TOKEN_TELEMETRY_TOKEN_CAP = 512
+
+TOKEN_BRANCH_VERSION = 1
+TOKEN_BRANCH_FORCING_STRATEGY = "assistant_prefix_fallback"
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_token_text(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+
+    if not isinstance(item, dict):
+        return ""
+
+    token_text = item.get("token", item.get("text"))
+    if isinstance(token_text, str):
+        return token_text
+
+    token_bytes = item.get("bytes")
+    if isinstance(token_bytes, list):
+        try:
+            return bytes(int(b) for b in token_bytes).decode("utf-8", "replace")
+        except Exception:
+            return ""
+
+    return ""
+
+
+def _compute_probability(logprob: Optional[float], value: Any) -> Optional[float]:
+    prob = _safe_float(value)
+    if prob is not None:
+        return max(0.0, min(1.0, prob))
+
+    if logprob is None:
+        return None
+
+    try:
+        return max(0.0, min(1.0, math.exp(logprob)))
+    except (OverflowError, ValueError):
+        return None
+
+
+def _normalize_logprob_candidate(item: Any, rank: int) -> Optional[dict]:
+    if isinstance(item, str):
+        return {
+            "rank": rank,
+            "text": item,
+            "tokenId": None,
+            "logprob": None,
+            "prob": None,
+        }
+
+    if not isinstance(item, dict):
+        return None
+
+    logprob = _safe_float(item.get("logprob", item.get("log_prob")))
+    candidate = {
+        "rank": rank,
+        "text": _extract_token_text(item),
+        "tokenId": _safe_int(item.get("token_id", item.get("id"))),
+        "logprob": logprob,
+        "prob": _compute_probability(
+            logprob, item.get("prob", item.get("probability"))
+        ),
+    }
+    return candidate
+
+
+def _normalize_logprob_token(entry: dict) -> Optional[dict]:
+    if not isinstance(entry, dict):
+        return None
+
+    logprob = _safe_float(entry.get("logprob", entry.get("log_prob")))
+    selected_token = {
+        "rank": 0,
+        "text": _extract_token_text(entry),
+        "tokenId": _safe_int(entry.get("token_id", entry.get("id"))),
+        "logprob": logprob,
+        "prob": _compute_probability(logprob, entry.get("prob", entry.get("probability"))),
+    }
+
+    top_logprobs = entry.get("top_logprobs", entry.get("alternatives", []))
+    alternatives: list[dict] = [selected_token]
+
+    seen = {(selected_token.get("text"), selected_token.get("tokenId"))}
+    if isinstance(top_logprobs, list):
+        for raw in top_logprobs:
+            normalized = _normalize_logprob_candidate(raw, 0)
+            if not normalized:
+                continue
+
+            key = (normalized.get("text"), normalized.get("tokenId"))
+            if key in seen:
+                continue
+            seen.add(key)
+            alternatives.append(normalized)
+
+            if len(alternatives) >= TOKEN_TELEMETRY_TOP_K:
+                break
+
+    for idx, alt in enumerate(alternatives):
+        alt["rank"] = idx
+
+    return {
+        "text": selected_token.get("text", ""),
+        "tokenId": selected_token.get("tokenId"),
+        "logprob": selected_token.get("logprob"),
+        "prob": selected_token.get("prob"),
+        "alternatives": alternatives[:TOKEN_TELEMETRY_TOP_K],
+    }
+
+
+def _get_choice_logprob_content(choice: dict) -> list[dict]:
+    if not isinstance(choice, dict):
+        return []
+
+    candidates = [
+        choice.get("logprobs", {}).get("content"),
+        choice.get("delta", {}).get("logprobs", {}).get("content"),
+        choice.get("message", {}).get("logprobs", {}).get("content"),
+    ]
+
+    for content in candidates:
+        if isinstance(content, list):
+            return content
+    return []
+
+
+def _append_token_telemetry_from_choice(
+    telemetry_state: dict, choice: dict, visible_content: Optional[str]
+) -> None:
+    if not isinstance(visible_content, str) or visible_content == "":
+        return
+
+    token_entries = _get_choice_logprob_content(choice)
+    if not token_entries:
+        return
+
+    for entry in token_entries:
+        if len(telemetry_state["tokens"]) >= TOKEN_TELEMETRY_TOKEN_CAP:
+            telemetry_state["capped"] = True
+            break
+
+        normalized_token = _normalize_logprob_token(entry)
+        if not normalized_token:
+            continue
+
+        normalized_token["index"] = len(telemetry_state["tokens"])
+        telemetry_state["tokens"].append(normalized_token)
+
+    if len(token_entries) > 0 and len(telemetry_state["tokens"]) >= TOKEN_TELEMETRY_TOKEN_CAP:
+        telemetry_state["capped"] = True
+
+
+def _build_token_telemetry_payload(telemetry_state: dict) -> Optional[dict]:
+    tokens = telemetry_state.get("tokens", [])
+    if not tokens:
+        return None
+
+    return {
+        "version": TOKEN_TELEMETRY_VERSION,
+        "provider": TOKEN_TELEMETRY_PROVIDER,
+        "topK": TOKEN_TELEMETRY_TOP_K,
+        "tokenCap": TOKEN_TELEMETRY_TOKEN_CAP,
+        "capped": bool(telemetry_state.get("capped", False)),
+        "tokens": tokens,
+    }
+
+
+def _extract_non_streaming_token_telemetry(response_data: dict) -> Optional[dict]:
+    choices = response_data.get("choices", [])
+    if not choices:
+        return None
+
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message", {})
+    visible_content = message.get("content")
+
+    telemetry_state = {"tokens": [], "capped": False}
+    _append_token_telemetry_from_choice(telemetry_state, choice, visible_content)
+    return _build_token_telemetry_payload(telemetry_state)
+
+
+def _prepare_branch_prefill(metadata: dict) -> tuple[str, dict]:
+    branch = metadata.get("branch")
+    if not isinstance(branch, dict):
+        raise HTTPException(status_code=400, detail="Invalid branch payload")
+
+    source_message_id = branch.get("source_message_id")
+    fork_index = _safe_int(branch.get("fork_index"))
+    alt_rank = _safe_int(branch.get("alt_rank"))
+
+    if not isinstance(source_message_id, str) or not source_message_id.strip():
+        raise HTTPException(status_code=400, detail="Invalid source_message_id")
+    if fork_index is None or alt_rank is None:
+        raise HTTPException(status_code=400, detail="Invalid branch fork_index/alt_rank")
+
+    chat_id = metadata.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id or chat_id.startswith("local:"):
+        raise HTTPException(
+            status_code=400,
+            detail="Token branching requires a persisted chat context",
+        )
+
+    source_message = Chats.get_message_by_id_and_message_id(chat_id, source_message_id)
+    if not source_message:
+        raise HTTPException(status_code=400, detail="Branch source message not found")
+    if source_message.get("role") != "assistant":
+        raise HTTPException(
+            status_code=400, detail="Branch source message must be an assistant message"
+        )
+
+    parent_message_id = metadata.get("parent_message_id")
+    if source_message.get("parentId") != parent_message_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Branch source message parent does not match current parent",
+        )
+
+    token_telemetry = source_message.get("tokenTelemetry")
+    if not isinstance(token_telemetry, dict):
+        raise HTTPException(
+            status_code=400, detail="Branch source message has no token telemetry"
+        )
+
+    tokens = token_telemetry.get("tokens")
+    if not isinstance(tokens, list) or len(tokens) == 0:
+        raise HTTPException(
+            status_code=400, detail="Branch source message has no token telemetry"
+        )
+    if fork_index < 0 or fork_index >= len(tokens):
+        raise HTTPException(status_code=400, detail="Branch fork_index is out of range")
+
+    token_entry = tokens[fork_index]
+    alternatives = token_entry.get("alternatives")
+    if not isinstance(alternatives, list) or len(alternatives) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Branch source token has no alternatives",
+        )
+    if alt_rank < 0 or alt_rank >= len(alternatives):
+        raise HTTPException(status_code=400, detail="Branch alt_rank is out of range")
+
+    chosen_alt = alternatives[alt_rank]
+    chosen_token_text = chosen_alt.get("text", "")
+    if not isinstance(chosen_token_text, str):
+        chosen_token_text = str(chosen_token_text)
+
+    forced_prefix = "".join(
+        (
+            token.get("text", "")
+            if isinstance(token.get("text", ""), str)
+            else str(token.get("text", ""))
+        )
+        for token in tokens[:fork_index]
+    )
+    forced_prefix = f"{forced_prefix}{chosen_token_text}"
+
+    token_branch = {
+        "version": TOKEN_BRANCH_VERSION,
+        "sourceMessageId": source_message_id,
+        "forkIndex": fork_index,
+        "chosenAltRank": alt_rank,
+        "chosenTokenText": chosen_token_text,
+        "chosenTokenId": _safe_int(chosen_alt.get("tokenId", chosen_alt.get("token_id"))),
+        "forcingStrategy": TOKEN_BRANCH_FORCING_STRATEGY,
+        "createdAt": int(time.time()),
+    }
+
+    return forced_prefix, token_branch
 
 
 def output_id(prefix: str) -> str:
@@ -2028,6 +2320,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 # Strip files field — it's been incorporated into content
                 message.pop("files", None)
 
+    if metadata.get("branch"):
+        forced_prefix, token_branch = _prepare_branch_prefill(metadata)
+        form_data["messages"] = [
+            *form_data.get("messages", []),
+            {"role": "assistant", "content": forced_prefix},
+        ]
+        metadata = {**metadata, "tokenBranch": token_branch}
+
     # Process messages with OR-aligned output items for clean LLM messages
     form_data["messages"] = process_messages_with_output(form_data.get("messages", []))
 
@@ -2899,6 +3199,14 @@ async def non_streaming_chat_response_handler(response, ctx):
     if response_data is None:
         return response
 
+    token_telemetry = _extract_non_streaming_token_telemetry(response_data)
+    token_branch = metadata.get("tokenBranch")
+
+    if token_telemetry:
+        response_data["tokenTelemetry"] = token_telemetry
+    if token_branch:
+        response_data["tokenBranch"] = token_branch
+
     if event_emitter:
         try:
             if "error" in response_data:
@@ -2969,6 +3277,12 @@ async def non_streaming_chat_response_handler(response, ctx):
                                 "content": content,
                                 "output": response_output,
                                 "title": title,
+                                **(
+                                    {"tokenTelemetry": token_telemetry}
+                                    if token_telemetry
+                                    else {}
+                                ),
+                                **({"tokenBranch": token_branch} if token_branch else {}),
                             },
                         }
                     )
@@ -2981,6 +3295,12 @@ async def non_streaming_chat_response_handler(response, ctx):
                             "role": "assistant",
                             "content": content,
                             "output": response_output,
+                            **(
+                                {"tokenTelemetry": token_telemetry}
+                                if token_telemetry
+                                else {}
+                            ),
+                            **({"tokenBranch": token_branch} if token_branch else {}),
                         },
                     )
 
@@ -3348,6 +3668,8 @@ async def streaming_chat_response_handler(response, ctx):
                     output = []
 
             usage = None
+            token_telemetry_state = {"tokens": [], "capped": False}
+            token_branch = metadata.get("tokenBranch")
 
             reasoning_tags_param = metadata.get("params", {}).get("reasoning_tags")
             DETECT_REASONING_TAGS = reasoning_tags_param is not False
@@ -3675,6 +3997,9 @@ async def streaming_chat_response_handler(response, ctx):
                                         )
 
                                     value = delta.get("content")
+                                    _append_token_telemetry_from_choice(
+                                        token_telemetry_state, choices[0], value
+                                    )
 
                                     reasoning_content = (
                                         delta.get("reasoning_content")
@@ -4450,12 +4775,19 @@ async def streaming_chat_response_handler(response, ctx):
                     if item.get("status") == "in_progress":
                         item["status"] = "completed"
 
+                token_telemetry = _build_token_telemetry_payload(token_telemetry_state)
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
                 data = {
                     "done": True,
                     "content": serialize_output(output),
                     "output": output,
                     "title": title,
+                    **(
+                        {"tokenTelemetry": token_telemetry}
+                        if token_telemetry
+                        else {}
+                    ),
+                    **({"tokenBranch": token_branch} if token_branch else {}),
                 }
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
@@ -4467,13 +4799,26 @@ async def streaming_chat_response_handler(response, ctx):
                             "content": serialize_output(output),
                             "output": output,
                             **({"usage": usage} if usage else {}),
+                            **(
+                                {"tokenTelemetry": token_telemetry}
+                                if token_telemetry
+                                else {}
+                            ),
+                            **({"tokenBranch": token_branch} if token_branch else {}),
                         },
                     )
-                elif usage:
+                elif usage or token_telemetry or token_branch:
+                    update_payload = {}
+                    if usage:
+                        update_payload["usage"] = usage
+                    if token_telemetry:
+                        update_payload["tokenTelemetry"] = token_telemetry
+                    if token_branch:
+                        update_payload["tokenBranch"] = token_branch
                     Chats.upsert_message_to_chat_by_id_and_message_id(
                         metadata["chat_id"],
                         metadata["message_id"],
-                        {"usage": usage},
+                        update_payload,
                     )
 
                 # Send a webhook notification if the user is not active

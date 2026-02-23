@@ -1757,6 +1757,7 @@ async def chat_completion(
             "message_id": form_data.pop("id", None),
             "parent_message": form_data.pop("parent_message", None),
             "parent_message_id": form_data.pop("parent_id", None),
+            "branch": form_data.pop("branch", None),
             "session_id": form_data.pop("session_id", None),
             "filter_ids": form_data.pop("filter_ids", []),
             "tool_ids": form_data.get("tool_ids", None),
@@ -1822,6 +1823,105 @@ async def chat_completion(
             detail=str(e),
         )
 
+    def _request_includes_logprob_params(payload: dict) -> bool:
+        if any(key in payload for key in ("logprobs", "log_probs", "top_logprobs")):
+            return True
+
+        for key in ("params", "options"):
+            nested = payload.get(key)
+            if isinstance(nested, dict) and any(
+                item in nested for item in ("logprobs", "log_probs", "top_logprobs")
+            ):
+                return True
+
+        return False
+
+    def _strip_logprob_params(payload: dict) -> tuple[dict, bool]:
+        stripped = dict(payload)
+        changed = False
+
+        for key in ("logprobs", "log_probs", "top_logprobs"):
+            if key in stripped:
+                stripped.pop(key, None)
+                changed = True
+
+        for nested_key in ("params", "options"):
+            nested = stripped.get(nested_key)
+            if not isinstance(nested, dict):
+                continue
+
+            nested_stripped = dict(nested)
+            nested_changed = False
+            for key in ("logprobs", "log_probs", "top_logprobs"):
+                if key in nested_stripped:
+                    nested_stripped.pop(key, None)
+                    nested_changed = True
+
+            if nested_changed:
+                stripped[nested_key] = nested_stripped
+                changed = True
+
+        return stripped, changed
+
+    def _extract_error_detail_from_response(response_obj) -> Optional[str]:
+        response_data = None
+
+        if isinstance(response_obj, dict):
+            response_data = response_obj
+        elif isinstance(response_obj, JSONResponse):
+            body = response_obj.body
+            if isinstance(body, bytes):
+                try:
+                    response_data = json.loads(body.decode("utf-8", "replace"))
+                except Exception:
+                    response_data = None
+
+        if not isinstance(response_data, dict):
+            return None
+
+        error = response_data.get("error")
+        if isinstance(error, dict):
+            detail = (
+                error.get("message")
+                or error.get("detail")
+                or error.get("error")
+                or str(error)
+            )
+            return str(detail) if detail else None
+        if error is not None:
+            return str(error)
+
+        detail = response_data.get("detail")
+        return str(detail) if detail is not None else None
+
+    def _is_unsupported_logprobs_error(error_detail: Optional[str]) -> bool:
+        if not error_detail:
+            return False
+
+        detail = str(error_detail).lower()
+        mentions_logprobs = any(
+            marker in detail
+            for marker in ("logprobs", "log_probs", "top_logprobs", "top logprobs")
+        )
+        if not mentions_logprobs:
+            return False
+
+        return any(
+            marker in detail
+            for marker in (
+                "unsupported",
+                "not support",
+                "unknown",
+                "invalid",
+                "not allowed",
+                "unexpected",
+                "unrecognized",
+                "does not exist",
+                "additional properties",
+                "extra fields",
+            )
+        )
+
     async def process_chat(request, form_data, user, metadata, model):
         try:
             form_data, metadata, events = await process_chat_payload(
@@ -1829,6 +1929,27 @@ async def chat_completion(
             )
 
             response = await chat_completion_handler(request, form_data, user)
+            fallback_retry_success = False
+            if _request_includes_logprob_params(form_data):
+                error_detail = _extract_error_detail_from_response(response)
+                if _is_unsupported_logprobs_error(error_detail):
+                    stripped_form_data, stripped = _strip_logprob_params(form_data)
+                    if stripped:
+                        response = await chat_completion_handler(
+                            request, stripped_form_data, user
+                        )
+                        form_data = stripped_form_data
+                        if not _extract_error_detail_from_response(response):
+                            fallback_retry_success = True
+
+            if fallback_retry_success:
+                events.append(
+                    {
+                        "tokenTelemetryUnavailable": True,
+                        "tokenTelemetryUnavailableReason": "unsupported_logprobs",
+                    }
+                )
+
             if metadata.get("chat_id") and metadata.get("message_id"):
                 try:
                     if not metadata["chat_id"].startswith("local:"):

@@ -767,6 +767,7 @@ def get_azure_allowed_params(api_version: str) -> set[str]:
         "tools",
         "tool_choice",
         "top_p",
+        "logprobs",
         "log_probs",
         "top_logprobs",
         "response_format",
@@ -888,6 +889,9 @@ def convert_to_responses_payload(payload: dict) -> dict:
         "frequency_penalty",
         "presence_penalty",
         "stop",
+        "logprobs",
+        "top_logprobs",
+        "log_probs",
     ):
         responses_payload.pop(unsupported_key, None)
 

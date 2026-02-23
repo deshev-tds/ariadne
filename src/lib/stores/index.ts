@@ -189,6 +189,7 @@ type Settings = {
 	iframeSandboxAllowForms?: boolean;
 	iframeSandboxAllowSameOrigin?: boolean;
 	scrollOnBranchChange?: boolean;
+	tokenExplorerEnabled?: boolean;
 	directConnections?: null;
 	chatBubble?: boolean;
 	copyFormatted?: boolean;

@@ -221,3 +221,26 @@ def test_frozen_memory_disabled_runs_stateless_every_turn(monkeypatch):
     assert calls == ["alpha", "beta"]
     assert first[2] == "stateless"
     assert second[2] == "stateless"
+
+
+def test_build_inner_payload_forwards_logprob_params():
+    engine = SimonEngine(
+        request=SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS={}))),
+        user_payload={},
+        metadata={},
+        valves=SimpleNamespace(),
+    )
+
+    payload = engine._build_inner_payload(
+        body={
+            "temperature": 0.2,
+            "logprobs": True,
+            "top_logprobs": 5,
+        },
+        target_model="demo-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+
+    assert payload["logprobs"] is True
+    assert payload["top_logprobs"] == 5

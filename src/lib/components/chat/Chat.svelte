@@ -97,6 +97,12 @@
 	import Tooltip from '../common/Tooltip.svelte';
 	import Sidebar from '../icons/Sidebar.svelte';
 	import Image from '../common/Image.svelte';
+	import {
+		applyCompletionTokenData,
+		applyTokenExplorerDefaults,
+		buildTokenBranchPayload,
+		type TokenBranchRequest
+	} from './tokenExplorer';
 
 	export let chatIdProp = '';
 
@@ -199,8 +205,8 @@
 		params = nextParams;
 	};
 
-	// Message queue for storing messages while generating
-	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
+		// Message queue for storing messages while generating
+		let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
 
 	$: if (chatIdProp) {
 		navigateHandler();
@@ -1486,8 +1492,29 @@
 		}
 	};
 
-	const chatCompletionEventHandler = async (data, message, chatId) => {
-		const { id, done, choices, content, output, sources, selected_model_id, error, usage } = data;
+		const chatCompletionEventHandler = async (data, message, chatId) => {
+			const {
+				id,
+				done,
+				choices,
+				content,
+				output,
+				sources,
+				selected_model_id,
+				error,
+				usage,
+				tokenTelemetry,
+				tokenBranch,
+				tokenTelemetryUnavailable,
+				tokenTelemetryUnavailableReason
+			} = data;
+
+			applyCompletionTokenData(message, {
+				tokenTelemetry,
+				tokenBranch,
+				tokenTelemetryUnavailable,
+				tokenTelemetryUnavailableReason
+			});
 
 		// Store raw OR-aligned output items from backend
 		if (output) {
@@ -1778,21 +1805,23 @@
 		await sendMessage(history, userMessageId, { newChat: true });
 	};
 
-	const sendMessage = async (
-		_history,
-		parentId: string,
-		{
-			messages = null,
-			modelId = null,
-			modelIdx = null,
-			newChat = false
-		}: {
-			messages?: any[] | null;
-			modelId?: string | null;
-			modelIdx?: number | null;
-			newChat?: boolean;
-		} = {}
-	) => {
+		const sendMessage = async (
+			_history,
+			parentId: string,
+			{
+				messages = null,
+				modelId = null,
+				modelIdx = null,
+				newChat = false,
+				branch = null
+			}: {
+				messages?: any[] | null;
+				modelId?: string | null;
+				modelIdx?: number | null;
+				newChat?: boolean;
+				branch?: TokenBranchRequest | null;
+			} = {}
+		) => {
 		if (autoScroll) {
 			scrollToBottom();
 		}
@@ -1886,15 +1915,16 @@
 					const chatEventEmitter = await getChatEventEmitter(model.id, _chatId);
 
 					scrollToBottom();
-					await sendMessageSocket(
-						model,
-						messages && messages.length > 0
-							? messages
-							: createMessagesList(_history, responseMessageId),
-						_history,
-						responseMessageId,
-						_chatId
-					);
+						await sendMessageSocket(
+							model,
+							messages && messages.length > 0
+								? messages
+								: createMessagesList(_history, responseMessageId),
+							_history,
+							responseMessageId,
+							_chatId,
+							branch
+						);
 
 					if (chatEventEmitter) clearInterval(chatEventEmitter);
 				} else {
@@ -1948,9 +1978,16 @@
 		return features;
 	};
 
-	const sendMessageSocket = async (model, _messages, _history, responseMessageId, _chatId) => {
-		const responseMessage = _history.messages[responseMessageId];
-		const userMessage = _history.messages[responseMessage.parentId];
+		const sendMessageSocket = async (
+			model,
+			_messages,
+			_history,
+			responseMessageId,
+			_chatId,
+			branch: TokenBranchRequest | null = null
+		) => {
+			const responseMessage = _history.messages[responseMessageId];
+			const userMessage = _history.messages[responseMessage.parentId];
 
 		const chatMessageFiles = _messages
 			.filter((message) => message.files)
@@ -2097,24 +2134,37 @@
 			});
 		}
 
-		const res = await generateOpenAIChatCompletion(
-			localStorage.token,
-			{
-				stream: stream,
-				model: model.id,
-				messages: messages,
-				params: {
-					...$settings?.params,
-					...params,
-					stop:
-						(params?.stop ?? $settings?.params?.stop ?? undefined)
-							? (params?.stop.split(',').map((token) => token.trim()) ?? $settings.params.stop).map(
-									(str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"'))
-								)
-							: undefined
-				},
+			const stopParam = params?.stop ?? $settings?.params?.stop ?? undefined;
+			const normalizedStop = stopParam
+				? (
+						Array.isArray(stopParam)
+							? stopParam
+							: typeof stopParam === 'string'
+								? stopParam.split(',').map((token) => token.trim())
+								: [String(stopParam)]
+					).map((str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"')))
+				: undefined;
 
-				files: (files?.length ?? 0) > 0 ? files : undefined,
+			let requestParams = {
+				...$settings?.params,
+				...params,
+				stop: normalizedStop
+			};
+
+			requestParams = applyTokenExplorerDefaults(
+				requestParams,
+				$settings?.tokenExplorerEnabled ?? false
+			);
+
+			const res = await generateOpenAIChatCompletion(
+				localStorage.token,
+				{
+					stream: stream,
+					model: model.id,
+					messages: messages,
+					params: requestParams,
+
+					files: (files?.length ?? 0) > 0 ? files : undefined,
 
 				filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
 				tool_ids: toolIds.length > 0 ? toolIds : undefined,
@@ -2135,9 +2185,10 @@
 				session_id: $socket?.id,
 				chat_id: $chatId,
 
-				id: responseMessageId,
-				parent_id: userMessage?.id ?? null,
-				parent_message: userMessage,
+					id: responseMessageId,
+					parent_id: userMessage?.id ?? null,
+					parent_message: userMessage,
+					...(branch ? { branch } : {}),
 
 				background_tasks: {
 					...(!$temporaryChatEnabled &&
@@ -2352,7 +2403,7 @@
 		}
 	};
 
-	const continueResponse = async () => {
+		const continueResponse = async () => {
 		console.log('continueResponse');
 		const _chatId = JSON.parse(JSON.stringify($chatId));
 
@@ -2365,17 +2416,36 @@
 				.filter((m) => m.id === (responseMessage?.selectedModelId ?? responseMessage.model))
 				.at(0);
 
-			if (model) {
-				await sendMessageSocket(
-					model,
-					createMessagesList(history, responseMessage.id),
-					history,
-					responseMessage.id,
-					_chatId
-				);
+				if (model) {
+					await sendMessageSocket(
+						model,
+						createMessagesList(history, responseMessage.id),
+						history,
+						responseMessage.id,
+						_chatId,
+						null
+					);
+				}
 			}
-		}
-	};
+		};
+
+		const createTokenBranch = async (sourceMessage, forkIndex: number, altRank: number) => {
+			if (!sourceMessage?.id || sourceMessage?.role !== 'assistant') {
+				toast.error($i18n.t('Invalid branch source message'));
+				return;
+			}
+
+			if (!sourceMessage?.parentId) {
+				toast.error($i18n.t('Parent message not found'));
+				return;
+			}
+
+			await sendMessage(history, sourceMessage.parentId, {
+				modelId: sourceMessage.model,
+				modelIdx: sourceMessage.modelIdx,
+				branch: buildTokenBranchPayload(sourceMessage.id, forkIndex, altRank)
+			});
+		};
 
 	const mergeResponses = async (messageId, responses, _chatId) => {
 		console.log('mergeResponses', messageId, responses);
@@ -2679,8 +2749,9 @@
 										{atSelectedModel}
 										{sendMessage}
 										{showMessage}
-										{submitMessage}
-										{continueResponse}
+											{submitMessage}
+											{createTokenBranch}
+											{continueResponse}
 										{regenerateResponse}
 										{mergeResponses}
 										{chatActionHandler}

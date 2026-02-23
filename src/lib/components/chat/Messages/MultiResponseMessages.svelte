@@ -39,6 +39,7 @@
 	export let actionMessage: Function;
 
 	export let submitMessage: Function;
+	export let createTokenBranch: Function = () => {};
 	export let deleteMessage: Function;
 
 	export let continueResponse: Function;
@@ -300,10 +301,11 @@
 									{editMessage}
 									{saveMessage}
 									{rateMessage}
-									{deleteMessage}
-									{actionMessage}
-									{submitMessage}
-									{continueResponse}
+											{deleteMessage}
+											{actionMessage}
+											{submitMessage}
+											{createTokenBranch}
+											{continueResponse}
 									regenerateResponse={async (message, prompt = null) => {
 										regenerateResponse(message, prompt);
 										await tick();
@@ -359,6 +361,7 @@
 										{deleteMessage}
 										{actionMessage}
 										{submitMessage}
+										{createTokenBranch}
 										{continueResponse}
 										regenerateResponse={async (message, prompt = null) => {
 											regenerateResponse(message, prompt);

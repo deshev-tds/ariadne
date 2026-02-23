@@ -46,6 +46,7 @@
 	export let chatActionHandler: Function;
 	export let showMessage: Function = () => {};
 	export let submitMessage: Function = () => {};
+	export let createTokenBranch: Function = () => {};
 	export let addMessages: Function = () => {};
 
 	export let readOnly = false;
@@ -453,8 +454,9 @@
 								{rateMessage}
 								{actionMessage}
 								{saveMessage}
-								{submitMessage}
-								{regenerateResponse}
+									{submitMessage}
+									{createTokenBranch}
+									{regenerateResponse}
 								{continueResponse}
 								{mergeResponses}
 								{addMessages}

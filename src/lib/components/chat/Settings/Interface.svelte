@@ -32,6 +32,7 @@
 	let widescreenMode = false;
 	let splitLargeChunks = false;
 	let scrollOnBranchChange = true;
+	let tokenExplorerEnabled = false;
 	let userLocation = false;
 
 	// Interface
@@ -237,9 +238,10 @@
 
 		landingPageMode = $settings?.landingPageMode ?? '';
 		chatBubble = $settings?.chatBubble ?? true;
-		widescreenMode = $settings?.widescreenMode ?? false;
-		splitLargeChunks = $settings?.splitLargeChunks ?? false;
-		scrollOnBranchChange = $settings?.scrollOnBranchChange ?? true;
+			widescreenMode = $settings?.widescreenMode ?? false;
+			splitLargeChunks = $settings?.splitLargeChunks ?? false;
+			scrollOnBranchChange = $settings?.scrollOnBranchChange ?? true;
+			tokenExplorerEnabled = $settings?.tokenExplorerEnabled ?? false;
 
 		temporaryChatByDefault = $settings?.temporaryChatByDefault ?? false;
 		chatDirection = $settings?.chatDirection ?? 'auto';
@@ -1004,11 +1006,11 @@
 				</div>
 			</div>
 
-			<div>
-				<div class=" py-0.5 flex w-full justify-between">
-					<div id="scroll-on-branch-change-label" class=" self-center text-xs">
-						{$i18n.t('Scroll On Branch Change')}
-					</div>
+				<div>
+					<div class=" py-0.5 flex w-full justify-between">
+						<div id="scroll-on-branch-change-label" class=" self-center text-xs">
+							{$i18n.t('Scroll On Branch Change')}
+						</div>
 
 					<div class="flex items-center gap-2 p-1">
 						<Switch
@@ -1020,12 +1022,31 @@
 							}}
 						/>
 					</div>
+					</div>
 				</div>
-			</div>
 
-			<div>
-				<div class=" py-0.5 flex w-full justify-between">
-					<div id="stylized-pdf-export-label" class=" self-center text-xs">
+				<div>
+					<div class=" py-0.5 flex w-full justify-between">
+						<div id="token-explorer-label" class=" self-center text-xs">
+							{$i18n.t('Token Explorer')}
+						</div>
+
+						<div class="flex items-center gap-2 p-1">
+							<Switch
+								ariaLabelledbyId="token-explorer-label"
+								tooltip={true}
+								bind:state={tokenExplorerEnabled}
+								on:change={() => {
+									saveSettings({ tokenExplorerEnabled });
+								}}
+							/>
+						</div>
+					</div>
+				</div>
+
+				<div>
+					<div class=" py-0.5 flex w-full justify-between">
+						<div id="stylized-pdf-export-label" class=" self-center text-xs">
 						{$i18n.t('Stylized PDF Export')}
 					</div>
 
@@ -1158,7 +1179,8 @@
 						</div>
 					</div>
 				</div>
-			{/if}
+
+				{/if}
 
 			{#if richTextInput}
 				<div>

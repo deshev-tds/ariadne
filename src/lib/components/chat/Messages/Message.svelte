@@ -33,6 +33,7 @@
 	export let rateMessage;
 	export let actionMessage;
 	export let submitMessage;
+	export let createTokenBranch = () => {};
 
 	export let regenerateResponse;
 	export let continueResponse;
@@ -88,11 +89,12 @@
 				{updateChat}
 				{editMessage}
 				{saveMessage}
-				{rateMessage}
-				{actionMessage}
-				{submitMessage}
-				{deleteMessage}
-				{continueResponse}
+						{rateMessage}
+						{actionMessage}
+						{submitMessage}
+						{createTokenBranch}
+						{deleteMessage}
+						{continueResponse}
 				{regenerateResponse}
 				{addMessages}
 				{readOnly}
@@ -114,6 +116,7 @@
 					{rateMessage}
 					{actionMessage}
 					{submitMessage}
+					{createTokenBranch}
 					{deleteMessage}
 					{continueResponse}
 					{regenerateResponse}

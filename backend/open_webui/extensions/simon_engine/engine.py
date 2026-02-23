@@ -301,6 +301,8 @@ class SimonEngine:
             "reasoning_effort",
             "response_format",
             "stream_options",
+            "logprobs",
+            "top_logprobs",
         ]
 
         for key in passthrough_keys:
