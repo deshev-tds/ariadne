@@ -84,6 +84,23 @@ def get_content_from_url(request, url: str) -> str:
     return content, docs
 
 
+CHUNK_HASH_KEY = "_chunk_hash"
+
+
+def _content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _get_document_hash(doc: Document) -> Optional[str]:
+    metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+    metadata_hash = metadata.get(CHUNK_HASH_KEY)
+    if isinstance(metadata_hash, str) and metadata_hash:
+        return metadata_hash
+    if isinstance(doc.page_content, str):
+        return _content_hash(doc.page_content)
+    return None
+
+
 class VectorSearchRetriever(BaseRetriever):
     collection_name: Any
     embedding_function: Any
@@ -122,9 +139,12 @@ class VectorSearchRetriever(BaseRetriever):
 
         results = []
         for idx in range(len(ids)):
+            metadata = dict(metadatas[idx] or {})
+            if isinstance(documents[idx], str):
+                metadata[CHUNK_HASH_KEY] = _content_hash(documents[idx])
             results.append(
                 Document(
-                    metadata=metadatas[idx],
+                    metadata=metadata,
                     page_content=documents[idx],
                 )
             )
@@ -251,6 +271,8 @@ async def query_doc_with_hybrid_search(
         for idx, metadata in enumerate(collection_result.metadatas[0]):
             metadata_copy = dict(metadata or {})
             metadata_copy["_content_idx"] = idx
+            if idx < len(original_documents) and isinstance(original_documents[idx], str):
+                metadata_copy[CHUNK_HASH_KEY] = _content_hash(original_documents[idx])
             bm25_metadatas.append(metadata_copy)
 
         bm25_retriever = BM25Retriever.from_texts(
@@ -294,9 +316,9 @@ async def query_doc_with_hybrid_search(
         candidate_docs = []
         seen_hashes = set()
         for doc in [*lexical_docs, *vector_docs]:
-            if not isinstance(doc.page_content, str):
+            doc_hash = _get_document_hash(doc)
+            if not doc_hash:
                 continue
-            doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
             if doc_hash in seen_hashes:
                 continue
             candidate_docs.append(doc)
@@ -329,9 +351,9 @@ async def query_doc_with_hybrid_search(
 
         reranked_by_hash = {}
         for doc in reranked_docs:
-            if not isinstance(doc.page_content, str):
+            doc_hash = _get_document_hash(doc)
+            if not doc_hash:
                 continue
-            doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
             if doc_hash not in reranked_by_hash:
                 reranked_by_hash[doc_hash] = doc
 
@@ -340,9 +362,9 @@ async def query_doc_with_hybrid_search(
 
         # Lexical floor: preserve top deterministic hits in final output.
         for idx, doc in enumerate(lexical_docs[:lexical_floor_count]):
-            if not isinstance(doc.page_content, str):
+            doc_hash = _get_document_hash(doc)
+            if not doc_hash:
                 continue
-            doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
             if doc_hash in final_hashes:
                 continue
 
@@ -358,9 +380,9 @@ async def query_doc_with_hybrid_search(
 
         # Fill remaining slots with reranked candidates.
         for doc in reranked_docs:
-            if not isinstance(doc.page_content, str):
+            doc_hash = _get_document_hash(doc)
+            if not doc_hash:
                 continue
-            doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
             if doc_hash in final_hashes:
                 continue
             final_docs.append(doc)
@@ -371,9 +393,9 @@ async def query_doc_with_hybrid_search(
         # Safety fill if reranker filtered too aggressively.
         if len(final_docs) < k:
             for doc in candidate_docs:
-                if not isinstance(doc.page_content, str):
+                doc_hash = _get_document_hash(doc)
+                if not doc_hash:
                     continue
-                doc_hash = hashlib.sha256(doc.page_content.encode()).hexdigest()
                 if doc_hash in final_hashes:
                     continue
                 metadata = dict(doc.metadata or {})
@@ -445,18 +467,21 @@ def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
         metadatas = data["metadatas"][0]
 
         for distance, document, metadata in zip(distances, documents, metadatas):
-            if isinstance(document, str):
-                doc_hash = hashlib.sha256(
-                    document.encode()
-                ).hexdigest()  # Compute a hash for uniqueness
+            doc_hash = (
+                metadata.get(CHUNK_HASH_KEY) if isinstance(metadata, dict) else None
+            )
+            if not isinstance(doc_hash, str) or not doc_hash:
+                if not isinstance(document, str):
+                    continue
+                doc_hash = _content_hash(document)
 
-                if doc_hash not in combined.keys():
-                    combined[doc_hash] = (distance, document, metadata)
-                    continue  # if doc is new, no further comparison is needed
+            if doc_hash not in combined.keys():
+                combined[doc_hash] = (distance, document, metadata)
+                continue  # if doc is new, no further comparison is needed
 
-                # if doc is alredy in, but new distance is better, update
-                if distance > combined[doc_hash][0]:
-                    combined[doc_hash] = (distance, document, metadata)
+            # if doc is alredy in, but new distance is better, update
+            if distance > combined[doc_hash][0]:
+                combined[doc_hash] = (distance, document, metadata)
 
     combined = list(combined.values())
     # Sort the list based on distances
