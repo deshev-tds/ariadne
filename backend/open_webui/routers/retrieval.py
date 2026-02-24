@@ -87,10 +87,14 @@ from open_webui.retrieval.web.planner import (
     build_freshness_query,
     build_targeted_query,
     canonicalize_url,
+    clear_source_registry_caches,
     evaluate_intent_coverage,
     evaluate_signal_quality,
     is_fluff_query,
+    load_source_registry,
+    save_source_registry_payload,
     sanitize_query,
+    validate_source_registry_payload,
 )
 
 from open_webui.retrieval.utils import (
@@ -789,6 +793,50 @@ class ConfigForm(BaseModel):
 
     # Web search settings
     web: Optional[WebConfig] = None
+
+
+class SourceRegistryUpdateForm(BaseModel):
+    registry: dict[str, Any]
+
+
+@router.get("/web/search/planner/source-registry")
+async def get_web_search_source_registry(user=Depends(get_admin_user)):
+    try:
+        clear_source_registry_caches()
+        registry = load_source_registry()
+        validation = validate_source_registry_payload(registry)
+        return {
+            "status": True,
+            "registry": registry,
+            "validation": validation,
+        }
+    except Exception as e:
+        log.exception("Failed to load source registry")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(e),
+        )
+
+
+@router.post("/web/search/planner/source-registry")
+async def update_web_search_source_registry(
+    form_data: SourceRegistryUpdateForm,
+    user=Depends(get_admin_user),
+):
+    try:
+        validation = save_source_registry_payload(form_data.registry)
+        registry = load_source_registry()
+        return {
+            "status": True,
+            "registry": registry,
+            "validation": validation,
+        }
+    except Exception as e:
+        log.exception("Failed to update source registry")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(e),
+        )
 
 
 @router.post("/config/update")

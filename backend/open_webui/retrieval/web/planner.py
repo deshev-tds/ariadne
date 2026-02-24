@@ -354,6 +354,11 @@ def load_source_registry() -> dict[str, Any]:
         return {"version": 1, "topics": {}}
 
 
+def clear_source_registry_caches() -> None:
+    load_source_registry.cache_clear()
+    load_normalized_source_registry.cache_clear()
+
+
 def _normalized_freshness_score(value: str) -> float:
     normalized = (value or FRESHNESS_MEDIUM).strip().lower()
     if normalized == FRESHNESS_HIGH:
@@ -594,6 +599,10 @@ def _dedupe_normalized_sources(
 @lru_cache(maxsize=1)
 def load_normalized_source_registry() -> list[NormalizedSource]:
     raw = load_source_registry()
+    return normalize_source_registry_payload(raw)
+
+
+def normalize_source_registry_payload(raw: dict[str, Any]) -> list[NormalizedSource]:
     topics = raw.get("topics", {}) if isinstance(raw.get("topics", {}), dict) else {}
     if not topics:
         return []
@@ -606,6 +615,35 @@ def load_normalized_source_registry() -> list[NormalizedSource]:
         normalized = _normalize_legacy_registry(raw)
 
     return _dedupe_normalized_sources(normalized)
+
+
+def validate_source_registry_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("Source registry payload must be a JSON object")
+
+    normalized = normalize_source_registry_payload(raw)
+    by_topic: dict[str, int] = {}
+    for source in normalized:
+        by_topic[source.topic] = by_topic.get(source.topic, 0) + 1
+
+    return {
+        "topics": len(by_topic),
+        "sources": len(normalized),
+        "sources_by_topic": by_topic,
+        "schema": "rich" if raw.get("schema") else "legacy",
+    }
+
+
+def save_source_registry_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    validation = validate_source_registry_payload(raw)
+    SOURCE_REGISTRY_PATH.write_text(
+        json.dumps(raw, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    clear_source_registry_caches()
+    # Ensure registry is readable immediately after write.
+    _ = load_normalized_source_registry()
+    return validation
 
 
 def domain_from_url(url: str) -> str:

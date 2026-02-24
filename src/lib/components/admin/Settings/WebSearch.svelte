@@ -1,5 +1,10 @@
 <script lang="ts">
-	import { getRAGConfig, updateRAGConfig } from '$lib/apis/retrieval';
+	import {
+		getRAGConfig,
+		getWebSearchSourceRegistry,
+		updateRAGConfig,
+		updateWebSearchSourceRegistry
+	} from '$lib/apis/retrieval';
 	import Switch from '$lib/components/common/Switch.svelte';
 
 	import { models } from '$lib/stores';
@@ -44,6 +49,41 @@
 	let plannerModes = ['rules_only', 'hybrid_rewriter', 'model_only'];
 
 	let webConfig = null;
+	let sourceRegistryRaw = '';
+	let sourceRegistryValidation = null;
+	let sourceRegistryBusy = false;
+
+	const loadSourceRegistry = async () => {
+		sourceRegistryBusy = true;
+		try {
+			const res = await getWebSearchSourceRegistry(localStorage.token);
+			if (res?.registry) {
+				sourceRegistryRaw = JSON.stringify(res.registry, null, 2);
+				sourceRegistryValidation = res?.validation ?? null;
+			}
+		} catch (e) {
+			toast.error(`${$i18n.t('Failed to load source registry')}: ${e}`);
+		} finally {
+			sourceRegistryBusy = false;
+		}
+	};
+
+	const saveSourceRegistry = async () => {
+		sourceRegistryBusy = true;
+		try {
+			const parsed = JSON.parse(sourceRegistryRaw);
+			const res = await updateWebSearchSourceRegistry(localStorage.token, parsed);
+			if (res?.registry) {
+				sourceRegistryRaw = JSON.stringify(res.registry, null, 2);
+				sourceRegistryValidation = res?.validation ?? null;
+			}
+			toast.success($i18n.t('Source registry saved'));
+		} catch (e) {
+			toast.error(`${$i18n.t('Failed to save source registry')}: ${e}`);
+		} finally {
+			sourceRegistryBusy = false;
+		}
+	};
 
 	const submitHandler = async () => {
 		// Convert domain filter string to array before sending
@@ -148,6 +188,8 @@
 				}
 			}
 		}
+
+		await loadSourceRegistry();
 	});
 </script>
 
@@ -1125,6 +1167,43 @@
 								</div>
 								<div class="flex items-center relative">
 									<Switch bind:state={webConfig.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD} />
+								</div>
+							</div>
+
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="self-center text-xs font-medium mb-1">
+									{$i18n.t('Source Registry (JSON)')}
+								</div>
+								{#if sourceRegistryValidation}
+									<div class="text-[11px] text-gray-500 dark:text-gray-400 mb-1">
+										{$i18n.t('Topics')}: {sourceRegistryValidation.topics} | {$i18n.t('Sources')}
+										: {sourceRegistryValidation.sources} | {$i18n.t('Schema')}:
+										{sourceRegistryValidation.schema}
+									</div>
+								{/if}
+								<textarea
+									class="w-full rounded-lg py-2 px-3 text-xs font-mono bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									rows="14"
+									bind:value={sourceRegistryRaw}
+									placeholder={$i18n.t('Planner source registry JSON')}
+								/>
+								<div class="flex gap-2 mt-2">
+									<button
+										type="button"
+										class="px-3 py-1.5 rounded-md text-xs bg-gray-200 hover:bg-gray-300 dark:bg-gray-800 dark:hover:bg-gray-700 disabled:opacity-60"
+										disabled={sourceRegistryBusy}
+										on:click={async () => await loadSourceRegistry()}
+									>
+										{$i18n.t('Reload Registry')}
+									</button>
+									<button
+										type="button"
+										class="px-3 py-1.5 rounded-md text-xs bg-black text-white hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200 disabled:opacity-60"
+										disabled={sourceRegistryBusy}
+										on:click={async () => await saveSourceRegistry()}
+									>
+										{$i18n.t('Save Registry')}
+									</button>
 								</div>
 							</div>
 						{/if}

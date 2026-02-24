@@ -117,6 +117,29 @@ def test_registry_normalization_supports_legacy_schema(monkeypatch):
     assert any(source.domain == "reddit.com" for source in normalized)
 
 
+def test_save_source_registry_payload_writes_and_reloads(tmp_path, monkeypatch):
+    planner_module.clear_source_registry_caches()
+    target = tmp_path / "source_registry.json"
+    monkeypatch.setattr(planner_module, "SOURCE_REGISTRY_PATH", target)
+
+    payload = {
+        "version": 1,
+        "topics": {
+            "software_apis_devops": {
+                "primary": ["docs.aws.amazon.com"],
+                "secondary": ["stackoverflow.com"],
+                "community": ["reddit.com"],
+            }
+        },
+    }
+
+    validation = planner_module.save_source_registry_payload(payload)
+    loaded = planner_module.load_source_registry()
+
+    assert validation["sources"] == 3
+    assert loaded["topics"]["software_apis_devops"]["primary"] == ["docs.aws.amazon.com"]
+
+
 @pytest.mark.parametrize(
     "rich_registry",
     [
