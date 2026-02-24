@@ -3305,6 +3305,66 @@ WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD = PersistentConfig(
     == "true",
 )
 
+ENABLE_WEB_SEARCH_EVIDENCE_SATURATION = PersistentConfig(
+    "ENABLE_WEB_SEARCH_EVIDENCE_SATURATION",
+    "rag.web.search.evidence_saturation.enable",
+    os.getenv("ENABLE_WEB_SEARCH_EVIDENCE_SATURATION", "False").lower() == "true",
+)
+
+WEB_SEARCH_EVIDENCE_MAX_TOKENS = PersistentConfig(
+    "WEB_SEARCH_EVIDENCE_MAX_TOKENS",
+    "rag.web.search.evidence_saturation.max_tokens",
+    int(os.getenv("WEB_SEARCH_EVIDENCE_MAX_TOKENS", "8192")),
+)
+
+WEB_SEARCH_EVIDENCE_CHUNK_TOKENS = PersistentConfig(
+    "WEB_SEARCH_EVIDENCE_CHUNK_TOKENS",
+    "rag.web.search.evidence_saturation.chunk_tokens",
+    int(os.getenv("WEB_SEARCH_EVIDENCE_CHUNK_TOKENS", "768")),
+)
+
+WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE = PersistentConfig(
+    "WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE",
+    "rag.web.search.evidence_saturation.max_chunks_per_source",
+    int(os.getenv("WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE", "3")),
+)
+
+WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS = PersistentConfig(
+    "WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS",
+    "rag.web.search.evidence_saturation.judge_every_chunks",
+    int(os.getenv("WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS", "2")),
+)
+
+WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS = PersistentConfig(
+    "WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS",
+    "rag.web.search.evidence_saturation.judge_min_chunks",
+    int(os.getenv("WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS", "2")),
+)
+
+WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE = PersistentConfig(
+    "WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE",
+    "rag.web.search.evidence_saturation.judge_confidence",
+    float(os.getenv("WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE", "0.7")),
+)
+
+WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS = PersistentConfig(
+    "WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS",
+    "rag.web.search.evidence_saturation.judge_timeout_ms",
+    int(os.getenv("WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS", "2500")),
+)
+
+WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS = PersistentConfig(
+    "WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS",
+    "rag.web.search.evidence_saturation.judge_max_completion_tokens",
+    int(os.getenv("WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS", "128")),
+)
+
+WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS = PersistentConfig(
+    "WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS",
+    "rag.web.search.evidence_saturation.judge_max_input_chars",
+    int(os.getenv("WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS", "16000")),
+)
+
 
 WEB_LOADER_ENGINE = PersistentConfig(
     "WEB_LOADER_ENGINE",

@@ -118,21 +118,30 @@
 			webConfig.PLAYWRIGHT_TIMEOUT = webConfig.PLAYWRIGHT_TIMEOUT.toString();
 		}
 
-		const plannerNumericFields = [
-			'WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES',
-			'WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES',
-			'WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE',
-			'WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE',
+			const plannerNumericFields = [
+				'WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES',
+				'WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES',
+				'WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE',
+				'WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE',
 			'WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS',
 			'WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE',
 			'WEB_SEARCH_PLANNER_PLATEAU_DELTA',
 			'WEB_SEARCH_PLANNER_PLATEAU_STREAK',
 			'WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES',
-			'WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS',
-			'WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS',
-			'WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS',
-			'WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE'
-		];
+				'WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS',
+				'WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS',
+				'WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS',
+				'WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE',
+				'WEB_SEARCH_EVIDENCE_MAX_TOKENS',
+				'WEB_SEARCH_EVIDENCE_CHUNK_TOKENS',
+				'WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE',
+				'WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS',
+				'WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS',
+				'WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE',
+				'WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS',
+				'WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS',
+				'WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS'
+			];
 		for (const field of plannerNumericFields) {
 			if (webConfig[field] !== '' && webConfig[field] !== null && webConfig[field] !== undefined) {
 				const parsedValue = Number(webConfig[field]);
@@ -1161,19 +1170,153 @@
 								/>
 							</div>
 
-							<div class="mb-2.5 flex w-full justify-between">
-								<div class="self-center text-xs font-medium">
-									{$i18n.t('Intent Coverage Guard')}
+								<div class="mb-2.5 flex w-full justify-between">
+									<div class="self-center text-xs font-medium">
+										{$i18n.t('Intent Coverage Guard')}
+									</div>
+									<div class="flex items-center relative">
+										<Switch bind:state={webConfig.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD} />
+									</div>
 								</div>
-								<div class="flex items-center relative">
-									<Switch bind:state={webConfig.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD} />
-								</div>
-							</div>
 
-							<div class="mb-2.5 flex w-full flex-col">
-								<div class="self-center text-xs font-medium mb-1">
-									{$i18n.t('Source Registry (JSON)')}
+								<div class="mb-2.5 flex w-full justify-between">
+									<div class="self-center text-xs font-medium">
+										{$i18n.t('Evidence Saturation Gate')}
+									</div>
+									<div class="flex items-center relative">
+										<Switch bind:state={webConfig.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION} />
+									</div>
 								</div>
+
+								{#if webConfig.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION}
+									<div class="mb-2.5 flex w-full flex-col">
+										<div class="flex gap-2">
+											<div class="w-full">
+												<div class="self-center text-xs font-medium mb-1">
+													{$i18n.t('Evidence Max Tokens')}
+												</div>
+												<input
+													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+													type="number"
+													min="256"
+													bind:value={webConfig.WEB_SEARCH_EVIDENCE_MAX_TOKENS}
+												/>
+											</div>
+											<div class="w-full">
+												<div class="self-center text-xs font-medium mb-1">
+													{$i18n.t('Evidence Chunk Tokens')}
+												</div>
+												<input
+													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+													type="number"
+													min="64"
+													bind:value={webConfig.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS}
+												/>
+											</div>
+										</div>
+									</div>
+
+									<div class="mb-2.5 flex w-full flex-col">
+										<div class="flex gap-2">
+											<div class="w-full">
+												<div class="self-center text-xs font-medium mb-1">
+													{$i18n.t('Max Chunks Per Source')}
+												</div>
+												<input
+													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+													type="number"
+													min="1"
+													bind:value={webConfig.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE}
+												/>
+											</div>
+											<div class="w-full">
+												<div class="self-center text-xs font-medium mb-1">
+													{$i18n.t('Judge Every Chunks')}
+												</div>
+												<input
+													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+													type="number"
+													min="1"
+													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS}
+												/>
+											</div>
+										</div>
+									</div>
+
+									<div class="mb-2.5 flex w-full flex-col">
+										<div class="flex gap-2">
+											<div class="w-full">
+												<div class="self-center text-xs font-medium mb-1">
+													{$i18n.t('Judge Min Chunks')}
+												</div>
+												<input
+													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+													type="number"
+													min="1"
+													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS}
+												/>
+											</div>
+											<div class="w-full">
+												<div class="self-center text-xs font-medium mb-1">
+													{$i18n.t('Judge Confidence')}
+												</div>
+												<input
+													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+													type="number"
+													step="0.01"
+													min="0"
+													max="1"
+													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE}
+												/>
+											</div>
+										</div>
+									</div>
+
+									<div class="mb-2.5 flex w-full flex-col">
+										<div class="flex gap-2">
+											<div class="w-full">
+												<div class="self-center text-xs font-medium mb-1">
+													{$i18n.t('Judge Timeout (ms)')}
+												</div>
+												<input
+													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+													type="number"
+													min="100"
+													step="100"
+													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS}
+												/>
+											</div>
+											<div class="w-full">
+												<div class="self-center text-xs font-medium mb-1">
+													{$i18n.t('Judge Max Tokens')}
+												</div>
+												<input
+													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+													type="number"
+													min="32"
+													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS}
+												/>
+											</div>
+										</div>
+									</div>
+
+									<div class="mb-2.5 flex w-full flex-col">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Judge Max Input Chars')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="512"
+											bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS}
+										/>
+									</div>
+								{/if}
+
+								<div class="mb-2.5 flex w-full flex-col">
+									<div class="self-center text-xs font-medium mb-1">
+										{$i18n.t('Source Registry (JSON)')}
+									</div>
 								{#if sourceRegistryValidation}
 									<div class="text-[11px] text-gray-500 dark:text-gray-400 mb-1">
 										{$i18n.t('Topics')}: {sourceRegistryValidation.topics} | {$i18n.t('Sources')}

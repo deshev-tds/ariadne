@@ -572,6 +572,16 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS,
             "WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE,
             "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD": request.app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD,
+            "ENABLE_WEB_SEARCH_EVIDENCE_SATURATION": request.app.state.config.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION,
+            "WEB_SEARCH_EVIDENCE_MAX_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_TOKENS,
+            "WEB_SEARCH_EVIDENCE_CHUNK_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS,
+            "WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE": request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE,
+            "WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS,
+            "WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS,
+            "WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE,
+            "WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS,
+            "WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS,
+            "WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS,
             "WEB_LOADER_CONCURRENT_REQUESTS": request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
@@ -655,6 +665,16 @@ class WebConfig(BaseModel):
     WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS: Optional[int] = None
     WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE: Optional[float] = None
     WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD: Optional[bool] = None
+    ENABLE_WEB_SEARCH_EVIDENCE_SATURATION: Optional[bool] = None
+    WEB_SEARCH_EVIDENCE_MAX_TOKENS: Optional[int] = None
+    WEB_SEARCH_EVIDENCE_CHUNK_TOKENS: Optional[int] = None
+    WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE: Optional[int] = None
+    WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS: Optional[int] = None
+    WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS: Optional[int] = None
+    WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE: Optional[float] = None
+    WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS: Optional[int] = None
+    WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS: Optional[int] = None
+    WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS: Optional[int] = None
     WEB_LOADER_CONCURRENT_REQUESTS: Optional[int] = None
     WEB_SEARCH_DOMAIN_FILTER_LIST: Optional[List[str]] = []
     BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: Optional[bool] = None
@@ -1287,6 +1307,56 @@ async def update_rag_config(
             if form_data.web.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD is not None
             else request.app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD
         )
+        request.app.state.config.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION = (
+            form_data.web.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION
+            if form_data.web.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION is not None
+            else request.app.state.config.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION
+        )
+        request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_TOKENS = (
+            form_data.web.WEB_SEARCH_EVIDENCE_MAX_TOKENS
+            if form_data.web.WEB_SEARCH_EVIDENCE_MAX_TOKENS is not None
+            else request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_TOKENS
+        )
+        request.app.state.config.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS = (
+            form_data.web.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS
+            if form_data.web.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS is not None
+            else request.app.state.config.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS
+        )
+        request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE = (
+            form_data.web.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE
+            if form_data.web.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE is not None
+            else request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE
+        )
+        request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS = (
+            form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS
+            if form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS is not None
+            else request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS
+        )
+        request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS = (
+            form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS
+            if form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS is not None
+            else request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS
+        )
+        request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE = (
+            form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE
+            if form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE is not None
+            else request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE
+        )
+        request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS = (
+            form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS
+            if form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS is not None
+            else request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS
+        )
+        request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS = (
+            form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS
+            if form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS is not None
+            else request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS
+        )
+        request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS = (
+            form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS
+            if form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS is not None
+            else request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS
+        )
         request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS = (
             form_data.web.WEB_LOADER_CONCURRENT_REQUESTS
         )
@@ -1488,6 +1558,16 @@ async def update_rag_config(
             "WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS,
             "WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE,
             "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD": request.app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD,
+            "ENABLE_WEB_SEARCH_EVIDENCE_SATURATION": request.app.state.config.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION,
+            "WEB_SEARCH_EVIDENCE_MAX_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_TOKENS,
+            "WEB_SEARCH_EVIDENCE_CHUNK_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS,
+            "WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE": request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE,
+            "WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS,
+            "WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS,
+            "WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE,
+            "WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS,
+            "WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS,
+            "WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS,
             "WEB_LOADER_CONCURRENT_REQUESTS": request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,

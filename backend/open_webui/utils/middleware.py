@@ -15,6 +15,7 @@ import inspect
 import re
 import ast
 import math
+import hashlib
 
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
@@ -1725,6 +1726,435 @@ async def _run_web_search_rewriter(
     raise ValueError("Rewriter failed without specific error")
 
 
+def _estimate_tokens_from_text(text: str) -> int:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return 0
+    # Lightweight approximation used only for context budgeting.
+    return max(1, math.ceil(len(cleaned) / 4))
+
+
+def _extract_json_payload(raw_output: str) -> Optional[dict[str, Any]]:
+    content = (raw_output or "").strip()
+    if not content:
+        return None
+    try:
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+
+    json_start = content.find("{")
+    json_end = content.rfind("}")
+    if json_start < 0 or json_end < json_start:
+        return None
+    try:
+        payload = json.loads(content[json_start : json_end + 1])
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _build_round_robin_web_chunks(
+    sources: list[dict[str, Any]],
+    *,
+    chunk_chars: int,
+    max_chunks_per_source: int,
+) -> list[dict[str, Any]]:
+    chunk_chars = max(256, int(chunk_chars))
+    max_chunks_per_source = max(1, int(max_chunks_per_source))
+
+    cursors: list[dict[str, Any]] = []
+    for source_idx, source in enumerate(sources):
+        docs = source.get("document") or []
+        metadatas = source.get("metadata") or []
+        distances = source.get("distances") or []
+        for doc_idx, doc in enumerate(docs):
+            if not isinstance(doc, str) or not doc.strip():
+                continue
+            metadata = (
+                metadatas[doc_idx]
+                if doc_idx < len(metadatas) and isinstance(metadatas[doc_idx], dict)
+                else {}
+            )
+            distance = distances[doc_idx] if doc_idx < len(distances) else None
+            cursors.append(
+                {
+                    "source_idx": source_idx,
+                    "source": source.get("source") or {},
+                    "metadata": metadata,
+                    "distance": distance,
+                    "doc_text": doc,
+                    "offset": 0,
+                    "doc_idx": doc_idx,
+                }
+            )
+
+    source_chunk_counts: dict[int, int] = {}
+    chunks: list[dict[str, Any]] = []
+
+    while True:
+        emitted_any = False
+        for cursor in cursors:
+            source_idx = cursor["source_idx"]
+            if source_chunk_counts.get(source_idx, 0) >= max_chunks_per_source:
+                continue
+
+            doc_text = cursor["doc_text"]
+            start = cursor["offset"]
+            if start >= len(doc_text):
+                continue
+
+            end = min(start + chunk_chars, len(doc_text))
+            cursor["offset"] = end
+            chunk_text = doc_text[start:end].strip()
+            if not chunk_text:
+                continue
+
+            source_chunk_counts[source_idx] = source_chunk_counts.get(source_idx, 0) + 1
+            chunks.append(
+                {
+                    "source_idx": source_idx,
+                    "source": cursor["source"],
+                    "metadata": cursor["metadata"],
+                    "distance": cursor["distance"],
+                    "doc_idx": cursor["doc_idx"],
+                    "text": chunk_text,
+                }
+            )
+            emitted_any = True
+
+        if not emitted_any:
+            break
+
+    return chunks
+
+
+def _format_evidence_for_judge(
+    selected_chunks: list[dict[str, Any]], *, max_input_chars: int
+) -> str:
+    remaining = max(256, int(max_input_chars))
+    parts: list[str] = []
+
+    for idx, chunk in enumerate(selected_chunks, start=1):
+        metadata = chunk.get("metadata") or {}
+        source = chunk.get("source") or {}
+        source_id = metadata.get("source") or source.get("id") or "N/A"
+        source_name = metadata.get("title") or source.get("name") or ""
+
+        header = f"[{idx}] source={source_id}"
+        if source_name:
+            header += f" title={source_name}"
+        header += "\n"
+
+        if remaining <= len(header):
+            break
+
+        body_budget = remaining - len(header) - 2
+        body = (chunk.get("text") or "")[:body_budget].strip()
+        if not body:
+            continue
+
+        block = f"{header}{body}\n\n"
+        parts.append(block)
+        remaining -= len(block)
+        if remaining <= 0:
+            break
+
+    return "".join(parts).strip()
+
+
+def _parse_evidence_judge_output(raw_output: str) -> dict[str, Any]:
+    payload = _extract_json_payload(raw_output) or {}
+    confidence = payload.get("confidence", 0.0)
+    try:
+        confidence = float(confidence)
+    except Exception:
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+
+    missing_facets: list[str] = []
+    if isinstance(payload.get("missing_facets"), list):
+        missing_facets = [
+            str(item).strip()
+            for item in payload["missing_facets"]
+            if isinstance(item, str) and item.strip()
+        ]
+
+    enough = bool(payload.get("enough", False))
+    reason = str(payload.get("reason", "")).strip()
+    return {
+        "enough": enough,
+        "confidence": confidence,
+        "missing_facets": missing_facets,
+        "reason": reason,
+    }
+
+
+async def _run_web_search_evidence_judge(
+    request: Request,
+    *,
+    user: Any,
+    active_model_id: str,
+    user_message: str,
+    evidence_text: str,
+    timeout_ms: int,
+    max_completion_tokens: int,
+) -> dict[str, Any]:
+    models = _resolve_models_for_task(request)
+    if active_model_id not in models:
+        return {
+            "enough": False,
+            "confidence": 0.0,
+            "missing_facets": [],
+            "reason": "active_model_not_found",
+            "model_used": None,
+            "fallback_used": False,
+            "error": "active_model_not_found",
+        }
+
+    fallback_model_id = get_task_model_id(
+        active_model_id,
+        request.app.state.config.TASK_MODEL,
+        request.app.state.config.TASK_MODEL_EXTERNAL,
+        models,
+    )
+    candidate_model_ids = [active_model_id]
+    if fallback_model_id and fallback_model_id not in candidate_model_ids:
+        candidate_model_ids.append(fallback_model_id)
+
+    timeout_seconds = max(0.5, float(timeout_ms) / 1000.0)
+    prompt = (
+        "Decide if current web evidence is sufficient to answer the user request.\n"
+        "Return strict JSON only with keys: enough(boolean), confidence(number 0..1), "
+        "missing_facets(array of strings), reason(string).\n\n"
+        f"User request:\n{user_message}\n\n"
+        f"Evidence chunks:\n{evidence_text}"
+    )
+
+    last_error: Optional[Exception] = None
+    for idx, model_id in enumerate(candidate_model_ids):
+        payload = {
+            "model": model_id,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a retrieval evidence sufficiency judge. Output strict JSON only."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "temperature": 0.0,
+            "max_completion_tokens": max(32, int(max_completion_tokens)),
+            "think": False,
+            "params": {
+                "think": False,
+                "custom_params": {
+                    "chat_template_kwargs": {
+                        "enable_thinking": False,
+                    }
+                },
+            },
+            "metadata": {
+                **(
+                    request.state.metadata
+                    if hasattr(request.state, "metadata")
+                    else {}
+                ),
+                "task": "web_search_evidence_judge",
+                "task_body": {"type": "web_search_evidence_judge"},
+            },
+        }
+        try:
+            response = await asyncio.wait_for(
+                generate_chat_completion(request, form_data=payload, user=user),
+                timeout=timeout_seconds,
+            )
+            parsed = _parse_evidence_judge_output(
+                _extract_completion_message_content(response)
+            )
+            parsed["model_used"] = model_id
+            parsed["fallback_used"] = idx > 0
+            parsed["error"] = None
+            return parsed
+        except Exception as e:
+            last_error = e
+
+    return {
+        "enough": False,
+        "confidence": 0.0,
+        "missing_facets": [],
+        "reason": "judge_failed",
+        "model_used": None,
+        "fallback_used": False,
+        "error": str(last_error) if last_error else "judge_failed",
+    }
+
+
+def _rebuild_sources_from_selected_chunks(
+    sources: list[dict[str, Any]], selected_chunks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    buckets: dict[int, dict[str, Any]] = {}
+    for chunk in selected_chunks:
+        source_idx = int(chunk["source_idx"])
+        if source_idx not in buckets:
+            source_item = sources[source_idx]
+            bucket = {
+                "source": source_item.get("source") or {},
+                "document": [],
+                "metadata": [],
+            }
+            if "distances" in source_item:
+                bucket["distances"] = []
+            buckets[source_idx] = bucket
+
+        bucket = buckets[source_idx]
+        bucket["document"].append(chunk["text"])
+        bucket["metadata"].append(chunk.get("metadata") or {})
+        if "distances" in bucket:
+            bucket["distances"].append(chunk.get("distance"))
+
+    return [buckets[idx] for idx in sorted(buckets.keys())]
+
+
+async def _apply_web_search_evidence_saturation(
+    request: Request,
+    *,
+    user: Any,
+    active_model_id: str,
+    user_message: str,
+    sources: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    cfg = request.app.state.config
+
+    max_tokens = max(256, int(getattr(cfg, "WEB_SEARCH_EVIDENCE_MAX_TOKENS", 8192) or 8192))
+    chunk_tokens = max(
+        64, int(getattr(cfg, "WEB_SEARCH_EVIDENCE_CHUNK_TOKENS", 768) or 768)
+    )
+    max_chunks_per_source = max(
+        1,
+        int(getattr(cfg, "WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE", 3) or 3),
+    )
+    judge_every_chunks = max(
+        1, int(getattr(cfg, "WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS", 2) or 2)
+    )
+    judge_min_chunks = max(
+        1, int(getattr(cfg, "WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS", 2) or 2)
+    )
+    judge_confidence = float(
+        getattr(cfg, "WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE", 0.7) or 0.7
+    )
+    judge_timeout_ms = max(
+        500, int(getattr(cfg, "WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS", 2500) or 2500)
+    )
+    judge_max_completion_tokens = max(
+        32,
+        int(
+            getattr(cfg, "WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS", 128) or 128
+        ),
+    )
+    judge_max_input_chars = max(
+        512,
+        int(getattr(cfg, "WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS", 16000) or 16000),
+    )
+
+    candidates = _build_round_robin_web_chunks(
+        sources,
+        chunk_chars=chunk_tokens * 4,
+        max_chunks_per_source=max_chunks_per_source,
+    )
+    if not candidates:
+        return sources, {
+            "enabled": True,
+            "stop_reason": "no_candidates",
+            "chunks_available": 0,
+            "chunks_selected": 0,
+            "estimated_tokens_selected": 0,
+            "max_tokens": max_tokens,
+            "judge_checks": 0,
+            "judge_last": None,
+        }
+
+    selected_chunks: list[dict[str, Any]] = []
+    selected_tokens = 0
+    seen_chunk_hashes: set[str] = set()
+    judge_checks = 0
+    last_judge: Optional[dict[str, Any]] = None
+    stop_reason = "budget_exhausted"
+
+    for candidate in candidates:
+        token_cost = _estimate_tokens_from_text(candidate["text"])
+        if token_cost <= 0:
+            continue
+        if selected_tokens + token_cost > max_tokens:
+            stop_reason = "token_budget_reached"
+            break
+
+        chunk_hash = hashlib.sha1(candidate["text"].encode("utf-8")).hexdigest()
+        if chunk_hash in seen_chunk_hashes:
+            continue
+        seen_chunk_hashes.add(chunk_hash)
+
+        selected_chunks.append(candidate)
+        selected_tokens += token_cost
+
+        if len(selected_chunks) < judge_min_chunks:
+            continue
+        if len(selected_chunks) % judge_every_chunks != 0:
+            continue
+
+        evidence_text = _format_evidence_for_judge(
+            selected_chunks, max_input_chars=judge_max_input_chars
+        )
+        if not evidence_text:
+            continue
+
+        judge_result = await _run_web_search_evidence_judge(
+            request,
+            user=user,
+            active_model_id=active_model_id,
+            user_message=user_message,
+            evidence_text=evidence_text,
+            timeout_ms=judge_timeout_ms,
+            max_completion_tokens=judge_max_completion_tokens,
+        )
+        judge_checks += 1
+        last_judge = judge_result
+
+        if (
+            judge_result.get("enough")
+            and float(judge_result.get("confidence", 0.0)) >= judge_confidence
+        ):
+            stop_reason = "judge_enough"
+            break
+
+    if not selected_chunks:
+        return sources, {
+            "enabled": True,
+            "stop_reason": "no_selection",
+            "chunks_available": len(candidates),
+            "chunks_selected": 0,
+            "estimated_tokens_selected": 0,
+            "max_tokens": max_tokens,
+            "judge_checks": judge_checks,
+            "judge_last": last_judge,
+        }
+
+    saturated_sources = _rebuild_sources_from_selected_chunks(sources, selected_chunks)
+    return saturated_sources, {
+        "enabled": True,
+        "stop_reason": stop_reason,
+        "chunks_available": len(candidates),
+        "chunks_selected": len(selected_chunks),
+        "estimated_tokens_selected": selected_tokens,
+        "max_tokens": max_tokens,
+        "judge_checks": judge_checks,
+        "judge_last": last_judge,
+    }
+
+
 async def chat_web_search_handler(
     request: Request, form_data: dict, extra_params: dict, user
 ):
@@ -2319,6 +2749,9 @@ async def chat_completion_files_handler(
     if files := body.get("metadata", {}).get("files", None):
         # Check if all files are in full context mode
         all_full_context = all(item.get("context") == "full" for item in files)
+        has_web_search_files = any(
+            (isinstance(item, dict) and item.get("type") == "web_search") for item in files
+        )
 
         queries = []
         if not all_full_context:
@@ -2394,6 +2827,40 @@ async def chat_completion_files_handler(
             )
         except Exception as e:
             log.exception(e)
+
+        if (
+            sources
+            and has_web_search_files
+            and bool(
+                getattr(
+                    request.app.state.config,
+                    "ENABLE_WEB_SEARCH_EVIDENCE_SATURATION",
+                    False,
+                )
+            )
+        ):
+            try:
+                sources, saturation_meta = await _apply_web_search_evidence_saturation(
+                    request,
+                    user=user,
+                    active_model_id=body["model"],
+                    user_message=get_last_user_message(body["messages"]),
+                    sources=sources,
+                )
+
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "web_search_evidence_saturation",
+                            "meta": saturation_meta,
+                            "done": False,
+                            "hidden": True,
+                        },
+                    }
+                )
+            except Exception as e:
+                log.exception("web_search evidence saturation failed: %s", e)
 
         log.debug(f"rag_contexts:sources: {sources}")
 
