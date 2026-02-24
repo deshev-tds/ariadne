@@ -87,6 +87,7 @@ from open_webui.retrieval.web.planner import (
     build_freshness_query,
     build_targeted_query,
     canonicalize_url,
+    evaluate_intent_coverage,
     evaluate_signal_quality,
     is_fluff_query,
     sanitize_query,
@@ -560,6 +561,13 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE,
             "WEB_SEARCH_PLANNER_PLATEAU_DELTA": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_DELTA,
             "WEB_SEARCH_PLANNER_PLATEAU_STREAK": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_STREAK,
+            "WEB_SEARCH_PLANNER_MODE": request.app.state.config.WEB_SEARCH_PLANNER_MODE,
+            "WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES,
+            "WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS,
+            "WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS,
+            "WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS,
+            "WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE,
+            "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD": request.app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD,
             "WEB_LOADER_CONCURRENT_REQUESTS": request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
@@ -636,6 +644,13 @@ class WebConfig(BaseModel):
     WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE: Optional[float] = None
     WEB_SEARCH_PLANNER_PLATEAU_DELTA: Optional[float] = None
     WEB_SEARCH_PLANNER_PLATEAU_STREAK: Optional[int] = None
+    WEB_SEARCH_PLANNER_MODE: Optional[str] = None
+    WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES: Optional[int] = None
+    WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS: Optional[int] = None
+    WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS: Optional[int] = None
+    WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS: Optional[int] = None
+    WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE: Optional[float] = None
+    WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD: Optional[bool] = None
     WEB_LOADER_CONCURRENT_REQUESTS: Optional[int] = None
     WEB_SEARCH_DOMAIN_FILTER_LIST: Optional[List[str]] = []
     BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: Optional[bool] = None
@@ -1189,6 +1204,41 @@ async def update_rag_config(
             if form_data.web.WEB_SEARCH_PLANNER_PLATEAU_STREAK is not None
             else request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_STREAK
         )
+        request.app.state.config.WEB_SEARCH_PLANNER_MODE = (
+            form_data.web.WEB_SEARCH_PLANNER_MODE
+            if form_data.web.WEB_SEARCH_PLANNER_MODE is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_MODE
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES = (
+            form_data.web.WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES
+            if form_data.web.WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS = (
+            form_data.web.WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS
+            if form_data.web.WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS = (
+            form_data.web.WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS
+            if form_data.web.WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS = (
+            form_data.web.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS
+            if form_data.web.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE = (
+            form_data.web.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE
+            if form_data.web.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE
+        )
+        request.app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD = (
+            form_data.web.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD
+            if form_data.web.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD is not None
+            else request.app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD
+        )
         request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS = (
             form_data.web.WEB_LOADER_CONCURRENT_REQUESTS
         )
@@ -1383,6 +1433,13 @@ async def update_rag_config(
             "WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE,
             "WEB_SEARCH_PLANNER_PLATEAU_DELTA": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_DELTA,
             "WEB_SEARCH_PLANNER_PLATEAU_STREAK": request.app.state.config.WEB_SEARCH_PLANNER_PLATEAU_STREAK,
+            "WEB_SEARCH_PLANNER_MODE": request.app.state.config.WEB_SEARCH_PLANNER_MODE,
+            "WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES,
+            "WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS,
+            "WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS,
+            "WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS,
+            "WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE,
+            "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD": request.app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD,
             "WEB_LOADER_CONCURRENT_REQUESTS": request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
@@ -2482,15 +2539,46 @@ async def _execute_web_search_with_planner(
     plateau_floor = float(cfg.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE or 0.56)
     plateau_delta = float(cfg.WEB_SEARCH_PLANNER_PLATEAU_DELTA or 0.02)
     plateau_streak_limit = int(cfg.WEB_SEARCH_PLANNER_PLATEAU_STREAK or 2)
+    planner_mode = str(
+        getattr(cfg, "WEB_SEARCH_PLANNER_MODE", plan.mode or "hybrid_rewriter")
+    ).strip() or "hybrid_rewriter"
+    enable_intent_coverage_guard = bool(
+        getattr(cfg, "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD", True)
+    )
 
-    pending_queries = build_base_planned_queries(plan, targeted_slots=3)
-    remaining_targeted_domains = list(plan.selected_domains[3:])
+    allowed_targeted_domain_set = {
+        (domain or "").strip().lower() for domain in plan.selected_domains
+    }
+    pending_queries = (
+        [
+            candidate
+            for candidate in plan.planned_queries
+            if (
+                candidate.kind != "targeted"
+                or not candidate.domain
+                or (candidate.domain.strip().lower() in allowed_targeted_domain_set)
+            )
+        ]
+        if plan.planned_queries
+        else build_base_planned_queries(plan, targeted_slots=3)
+    )
+    targeted_in_pending = {
+        (candidate.domain or "").strip().lower()
+        for candidate in pending_queries
+        if candidate.kind == "targeted" and candidate.domain
+    }
+    remaining_targeted_domains = [
+        domain
+        for domain in plan.selected_domains
+        if domain.strip().lower() not in targeted_in_pending
+    ]
 
     used_query_strings: set[str] = set()
     executed_queries: list[str] = []
     search_results: list[list[SearchResult]] = []
     score_history: list[float] = []
     trusted_history: list[int] = []
+    intent_coverage_history: list[dict[str, Any]] = []
 
     prev_score: Optional[float] = None
     plateau_streak_count = 0
@@ -2562,9 +2650,11 @@ async def _execute_web_search_with_planner(
         quality = evaluate_signal_quality(deduped_items, plan)
         avg_score = float(quality["avg_top_score"])
         trusted_domains = int(quality["trusted_unique_domains"])
+        intent_coverage = evaluate_intent_coverage(quality["scored_items"], plan)
 
         score_history.append(avg_score)
         trusted_history.append(trusted_domains)
+        intent_coverage_history.append(intent_coverage)
 
         if prev_score is not None:
             delta = avg_score - prev_score
@@ -2578,6 +2668,10 @@ async def _execute_web_search_with_planner(
             if (
                 avg_score >= primary_stop_score
                 and trusted_domains >= primary_stop_trusted_domains
+                and (
+                    not enable_intent_coverage_guard
+                    or intent_coverage.get("complete", True)
+                )
             ):
                 stop_reason = "quality_threshold_met"
                 break
@@ -2587,10 +2681,16 @@ async def _execute_web_search_with_planner(
                 break
 
     planner_metrics = {
+        "mode": plan.mode or planner_mode,
+        "rewriter_model_used": plan.rewriter_model_used,
+        "rewriter_fallback_used": plan.rewriter_fallback_used,
+        "fallback_reason": plan.fallback_reason,
         "stop_reason": stop_reason,
         "executed_queries": executed_queries,
         "scores": score_history,
         "trusted_domains": trusted_history,
+        "intent_coverage_history": intent_coverage_history,
+        "enable_intent_coverage_guard": enable_intent_coverage_guard,
         "min_total_queries": min_total_queries,
         "max_total_queries": max_total_queries,
     }

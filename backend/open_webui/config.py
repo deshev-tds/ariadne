@@ -3262,6 +3262,49 @@ WEB_SEARCH_PLANNER_PLATEAU_STREAK = PersistentConfig(
     int(os.getenv("WEB_SEARCH_PLANNER_PLATEAU_STREAK", "2")),
 )
 
+WEB_SEARCH_PLANNER_MODE = PersistentConfig(
+    "WEB_SEARCH_PLANNER_MODE",
+    "rag.web.search.planner.mode",
+    os.getenv("WEB_SEARCH_PLANNER_MODE", "hybrid_rewriter"),
+)
+
+WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES = PersistentConfig(
+    "WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES",
+    "rag.web.search.planner.rewriter.max_queries",
+    int(os.getenv("WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES", "6")),
+)
+
+WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS = PersistentConfig(
+    "WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS",
+    "rag.web.search.planner.rewriter.timeout_ms",
+    int(os.getenv("WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS", "3500")),
+)
+
+WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS = PersistentConfig(
+    "WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS",
+    "rag.web.search.planner.rewriter.max_repair_attempts",
+    int(os.getenv("WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS", "1")),
+)
+
+WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS = PersistentConfig(
+    "WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS",
+    "rag.web.search.planner.rewriter.max_completion_tokens",
+    int(os.getenv("WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS", "384")),
+)
+
+WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE = PersistentConfig(
+    "WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE",
+    "rag.web.search.planner.rewriter.temperature",
+    float(os.getenv("WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE", "0.0")),
+)
+
+WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD = PersistentConfig(
+    "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD",
+    "rag.web.search.planner.enable_intent_coverage_guard",
+    os.getenv("WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD", "True").lower()
+    == "true",
+)
+
 
 WEB_LOADER_ENGINE = PersistentConfig(
     "WEB_LOADER_ENGINE",

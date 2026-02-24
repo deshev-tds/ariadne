@@ -41,6 +41,7 @@
 		'youcom'
 	];
 	let webLoaderEngines = ['playwright', 'firecrawl', 'tavily', 'external'];
+	let plannerModes = ['rules_only', 'hybrid_rewriter', 'model_only'];
 
 	let webConfig = null;
 
@@ -85,7 +86,12 @@
 			'WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS',
 			'WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE',
 			'WEB_SEARCH_PLANNER_PLATEAU_DELTA',
-			'WEB_SEARCH_PLANNER_PLATEAU_STREAK'
+			'WEB_SEARCH_PLANNER_PLATEAU_STREAK',
+			'WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES',
+			'WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS',
+			'WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS',
+			'WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS',
+			'WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE'
 		];
 		for (const field of plannerNumericFields) {
 			if (webConfig[field] !== '' && webConfig[field] !== null && webConfig[field] !== undefined) {
@@ -1026,6 +1032,99 @@
 											bind:value={webConfig.WEB_SEARCH_PLANNER_PLATEAU_STREAK}
 										/>
 									</div>
+								</div>
+							</div>
+
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="self-center text-xs font-medium mb-1">
+									{$i18n.t('Planner Mode')}
+								</div>
+								<select
+									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									bind:value={webConfig.WEB_SEARCH_PLANNER_MODE}
+								>
+									{#each plannerModes as mode}
+										<option value={mode}>{mode}</option>
+									{/each}
+								</select>
+							</div>
+
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="flex gap-2">
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Rewriter Max Queries')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="1"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES}
+										/>
+									</div>
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Rewriter Timeout (ms)')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="100"
+											step="100"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS}
+										/>
+									</div>
+								</div>
+							</div>
+
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="flex gap-2">
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Rewriter Repair Attempts')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="0"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS}
+										/>
+									</div>
+									<div class="w-full">
+										<div class="self-center text-xs font-medium mb-1">
+											{$i18n.t('Rewriter Max Tokens')}
+										</div>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											type="number"
+											min="64"
+											step="1"
+											bind:value={webConfig.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS}
+										/>
+									</div>
+								</div>
+							</div>
+
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="self-center text-xs font-medium mb-1">
+									{$i18n.t('Rewriter Temperature')}
+								</div>
+								<input
+									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="0.1"
+									min="0"
+									max="2"
+									bind:value={webConfig.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE}
+								/>
+							</div>
+
+							<div class="mb-2.5 flex w-full justify-between">
+								<div class="self-center text-xs font-medium">
+									{$i18n.t('Intent Coverage Guard')}
+								</div>
+								<div class="flex items-center relative">
+									<Switch bind:state={webConfig.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD} />
 								</div>
 							</div>
 						{/if}

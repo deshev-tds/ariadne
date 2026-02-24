@@ -73,8 +73,13 @@ from open_webui.models.models import Models
 
 from open_webui.retrieval.utils import get_sources_from_items
 from open_webui.retrieval.web.planner import (
+    PLANNER_MODES,
+    build_planned_queries_from_rewriter,
     build_base_planned_queries,
+    build_rewriter_prompt,
     build_web_search_plan,
+    parse_rewriter_output,
+    validate_or_repair_rewriter_queries,
 )
 
 
@@ -1586,6 +1591,140 @@ async def chat_memory_handler(
     return form_data
 
 
+def _normalize_web_search_planner_mode(raw_mode: Any) -> str:
+    mode = (str(raw_mode or "hybrid_rewriter")).strip().lower()
+    return mode if mode in PLANNER_MODES else "hybrid_rewriter"
+
+
+def _extract_completion_message_content(response: Any) -> str:
+    if isinstance(response, dict):
+        choices = response.get("choices", [])
+        if choices and isinstance(choices[0], dict):
+            message = choices[0].get("message", {})
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+    if hasattr(response, "body"):
+        try:
+            payload = json.loads(response.body.decode("utf-8"))
+            if isinstance(payload, dict):
+                return str(payload.get("detail", ""))
+        except Exception:
+            pass
+    return ""
+
+
+def _resolve_models_for_task(request: Request) -> dict[str, dict]:
+    if getattr(request.state, "direct", False) and hasattr(request.state, "model"):
+        return {request.state.model["id"]: request.state.model}
+    return request.app.state.MODELS
+
+
+async def _run_web_search_rewriter(
+    request: Request,
+    *,
+    user: Any,
+    active_model_id: str,
+    user_message: str,
+    plan,
+    max_queries: int,
+    timeout_ms: int,
+    max_repair_attempts: int,
+    max_completion_tokens: int,
+    temperature: float,
+    chat_id: Optional[str],
+) -> tuple[list, dict[str, Any]]:
+    models = _resolve_models_for_task(request)
+    if active_model_id not in models:
+        raise ValueError(f"Active model not found for rewriter: {active_model_id}")
+
+    fallback_model_id = get_task_model_id(
+        active_model_id,
+        request.app.state.config.TASK_MODEL,
+        request.app.state.config.TASK_MODEL_EXTERNAL,
+        models,
+    )
+    candidate_model_ids = [active_model_id]
+    if fallback_model_id and fallback_model_id not in candidate_model_ids:
+        candidate_model_ids.append(fallback_model_id)
+
+    prompt = build_rewriter_prompt(
+        user_message=user_message,
+        plan=plan,
+        max_queries=max_queries,
+    )
+    timeout_seconds = max(0.5, timeout_ms / 1000.0)
+    last_error: Optional[Exception] = None
+
+    for idx, model_id in enumerate(candidate_model_ids):
+        payload = {
+            "model": model_id,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Rewrite web search queries only. Return strict JSON with key "
+                        "'queries'. Do not include markdown or explanations."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            "stream": False,
+            "temperature": temperature,
+            "max_completion_tokens": max_completion_tokens,
+            "think": False,
+            "params": {
+                "think": False,
+                "custom_params": {
+                    "chat_template_kwargs": {
+                        "enable_thinking": False,
+                    }
+                },
+            },
+            "metadata": {
+                **(
+                    request.state.metadata
+                    if hasattr(request.state, "metadata")
+                    else {}
+                ),
+                "task": "web_search_query_rewriter",
+                "chat_id": chat_id,
+                "task_body": {
+                    "type": "web_search_query_rewriter",
+                    "max_queries": max_queries,
+                },
+            },
+        }
+
+        try:
+            response = await asyncio.wait_for(
+                generate_chat_completion(request, form_data=payload, user=user),
+                timeout=timeout_seconds,
+            )
+            raw_output = _extract_completion_message_content(response)
+            parsed_queries = parse_rewriter_output(raw_output)
+            validated_queries = validate_or_repair_rewriter_queries(
+                parsed_queries,
+                plan,
+                max_queries=max_queries,
+                max_repair_attempts=max_repair_attempts,
+            )
+            return validated_queries, {
+                "model_used": model_id,
+                "fallback_used": idx > 0,
+                "raw_output": raw_output,
+            }
+        except Exception as e:
+            last_error = e
+
+    if last_error:
+        raise last_error
+    raise ValueError("Rewriter failed without specific error")
+
+
 async def chat_web_search_handler(
     request: Request, form_data: dict, extra_params: dict, user
 ):
@@ -1619,13 +1758,97 @@ async def chat_web_search_handler(
                     ),
                 ),
             )
+            planner_mode = _normalize_web_search_planner_mode(
+                getattr(request.app.state.config, "WEB_SEARCH_PLANNER_MODE", "hybrid_rewriter")
+            )
+            plan.mode = planner_mode
+
+            planned_queries = build_base_planned_queries(plan, targeted_slots=3)
+            rewriter_raw_output = None
+
+            if planner_mode in {"hybrid_rewriter", "model_only"}:
+                try:
+                    rewriter_queries, rewriter_meta = await _run_web_search_rewriter(
+                        request,
+                        user=user,
+                        active_model_id=form_data["model"],
+                        user_message=user_message,
+                        plan=plan,
+                        max_queries=max(
+                            1,
+                            int(
+                                getattr(
+                                    request.app.state.config,
+                                    "WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES",
+                                    6,
+                                )
+                                or 6
+                            ),
+                        ),
+                        timeout_ms=max(
+                            500,
+                            int(
+                                getattr(
+                                    request.app.state.config,
+                                    "WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS",
+                                    3500,
+                                )
+                                or 3500
+                            ),
+                        ),
+                        max_repair_attempts=max(
+                            0,
+                            int(
+                                getattr(
+                                    request.app.state.config,
+                                    "WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS",
+                                    1,
+                                )
+                                or 1
+                            ),
+                        ),
+                        max_completion_tokens=max(
+                            64,
+                            int(
+                                getattr(
+                                    request.app.state.config,
+                                    "WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS",
+                                    384,
+                                )
+                                or 384
+                            ),
+                        ),
+                        temperature=float(
+                            getattr(
+                                request.app.state.config,
+                                "WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE",
+                                0.0,
+                            )
+                            or 0.0
+                        ),
+                        chat_id=extra_params.get("__chat_id__"),
+                    )
+                    planned_queries = build_planned_queries_from_rewriter(
+                        plan,
+                        rewriter_queries,
+                        targeted_slots=3,
+                    )
+                    plan.rewriter_model_used = rewriter_meta.get("model_used")
+                    plan.rewriter_fallback_used = bool(
+                        rewriter_meta.get("fallback_used")
+                    )
+                    rewriter_raw_output = rewriter_meta.get("raw_output")
+                except Exception as e:
+                    plan.mode = "rules_only"
+                    plan.fallback_reason = f"rewriter_failed:{str(e)}"
+                    planned_queries = build_base_planned_queries(plan, targeted_slots=3)
+
+            plan.planned_queries = planned_queries
             plan_payload = (
                 plan.model_dump() if hasattr(plan, "model_dump") else plan.dict()  # type: ignore[attr-defined]
             )
-            queries = [
-                planned.query
-                for planned in build_base_planned_queries(plan, targeted_slots=3)
-            ]
+
+            queries = [planned.query for planned in planned_queries]
             queries = [query for query in queries if query and query.strip()]
 
             await event_emitter(
@@ -1634,12 +1857,20 @@ async def chat_web_search_handler(
                     "data": {
                         "action": "web_search_plan_generated",
                         "plan": {
+                            "mode": plan.mode,
                             "intent": plan.intent,
                             "topic": plan.topic,
                             "time_sensitive": plan.time_sensitive,
                             "community_requested": plan.community_requested,
                             "selected_domains": plan.selected_domains,
+                            "rewriter_model_used": plan.rewriter_model_used,
+                            "rewriter_fallback_used": plan.rewriter_fallback_used,
+                            "fallback_reason": plan.fallback_reason,
+                            "anchors": plan.anchors,
+                            "intent_requirements": plan.intent_requirements,
+                            "allowed_domains_ranked": plan.allowed_domains_ranked,
                         },
+                        "rewriter_raw_output": rewriter_raw_output,
                         "queries": queries,
                         "done": False,
                     },

@@ -18,6 +18,8 @@ def make_planner_config(**overrides):
         "WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE": 0.56,
         "WEB_SEARCH_PLANNER_PLATEAU_DELTA": 0.02,
         "WEB_SEARCH_PLANNER_PLATEAU_STREAK": 2,
+        "WEB_SEARCH_PLANNER_MODE": "rules_only",
+        "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD": True,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -217,6 +219,50 @@ async def test_planner_prioritizes_freshness_over_community_for_single_extra_slo
 
     assert len(executed_queries) == 6
     assert "latest updates" in executed_queries[5]
+
+
+@pytest.mark.asyncio
+async def test_intent_coverage_guard_blocks_primary_stop_until_evidence_is_present(
+    monkeypatch,
+):
+    config = make_planner_config(
+        WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES=6,
+        WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE=1.0,
+    )
+    request = make_request(config)
+    plan = make_plan(
+        selected_domains=["docs.aws.amazon.com", "kubernetes.io", "github.com"],
+        preserve_tokens=["eks", "aws-cni"],
+    )
+    plan["intent_requirements"] = ["github_issues"]
+    form_data = retrieval_module.SearchForm(queries=["seed"], plan=plan)
+
+    def fake_search_web(request, engine, query, user=None):
+        if "site:github.com" in query:
+            return [
+                SearchResult(
+                    link="https://github.com/aws/amazon-vpc-cni-k8s/issues/2749",
+                    title="failed to assign an IP address to container - Issue #2749",
+                    snippet="plugin type aws-cni failed add",
+                )
+            ]
+        return [
+            SearchResult(
+                link="https://docs.aws.amazon.com/eks/latest/userguide/managing-vpc-cni.html",
+                title="Amazon VPC CNI - Amazon EKS",
+                snippet="official guide for aws-cni on eks",
+            )
+        ]
+
+    monkeypatch.setattr(retrieval_module, "search_web", fake_search_web)
+
+    _, executed_queries, metrics = await retrieval_module._execute_web_search_with_planner(
+        request, form_data, user=None
+    )
+
+    assert len(executed_queries) >= 3
+    assert metrics["intent_coverage_history"][-1]["covered"]["issues"] is True
+    assert metrics["stop_reason"] in {"quality_threshold_met", "quality_plateau"}
 
 
 @pytest.mark.asyncio
