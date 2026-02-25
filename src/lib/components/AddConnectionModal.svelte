@@ -43,6 +43,10 @@
 	let enable = true;
 	let apiVersion = '';
 	let apiType = ''; // '' = chat completions (default), 'responses' = Responses API
+	let moeExpertsEnabled = false;
+	let moeExpertsProbePath = '/props?model={model}';
+	let moeExpertsApplyParamKey = 'num_experts';
+	let moeExpertsTimeoutMs = 1200;
 
 	let headers = '';
 
@@ -185,7 +189,17 @@
 				auth_type,
 				headers: headers ? JSON.parse(headers) : undefined,
 				...(!ollama && azure ? { azure: true, api_version: apiVersion } : {}),
-				...(apiType ? { api_type: apiType } : {})
+				...(apiType ? { api_type: apiType } : {}),
+				...(!ollama && !direct
+					? {
+							moe_experts: {
+								enabled: moeExpertsEnabled,
+								probe_path: moeExpertsProbePath,
+								apply_param_key: moeExpertsApplyParamKey || 'num_experts',
+								timeout_ms: moeExpertsTimeoutMs
+							}
+						}
+					: {})
 			}
 		};
 
@@ -200,6 +214,10 @@
 		prefixId = '';
 		tags = [];
 		modelIds = [];
+		moeExpertsEnabled = false;
+		moeExpertsProbePath = '/props?model={model}';
+		moeExpertsApplyParamKey = 'num_experts';
+		moeExpertsTimeoutMs = 1200;
 	};
 
 	const init = () => {
@@ -224,6 +242,12 @@
 				azure = connection.config?.azure ?? false;
 				apiVersion = connection.config?.api_version ?? '';
 				apiType = connection.config?.api_type ?? '';
+				moeExpertsEnabled = connection.config?.moe_experts?.enabled ?? false;
+				moeExpertsProbePath =
+					connection.config?.moe_experts?.probe_path ?? '/props?model={model}';
+				moeExpertsApplyParamKey =
+					connection.config?.moe_experts?.apply_param_key ?? 'num_experts';
+				moeExpertsTimeoutMs = connection.config?.moe_experts?.timeout_ms ?? 1200;
 			}
 		}
 	};
@@ -569,6 +593,60 @@
 											{$i18n.t('Chat Completions')}
 										{/if}
 									</button>
+								</div>
+							</div>
+						{/if}
+
+						{#if !ollama && !direct}
+							<div class="mt-2 border border-gray-100 dark:border-gray-850/40 rounded-lg p-2.5">
+								<div class="flex items-center justify-between">
+									<div
+										class={`text-xs text-gray-500
+								${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : ''}`}
+									>
+										{$i18n.t('MoE Experts')}
+									</div>
+
+									<div class="flex items-center gap-2">
+										<div class="text-xs text-gray-500">
+											{$i18n.t('Enable')}
+										</div>
+										<Switch bind:state={moeExpertsEnabled} />
+									</div>
+								</div>
+
+								<div class="mt-2">
+									<label
+										for="moe-probe-path-input"
+										class={`mb-0.5 text-xs text-gray-500
+								${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : ''}`}
+										>{$i18n.t('Probe Path')}</label
+									>
+									<input
+										id="moe-probe-path-input"
+										class={`w-full text-sm bg-transparent ${($settings?.highContrastMode ?? false) ? 'placeholder:text-gray-700 dark:placeholder:text-gray-100' : 'outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700'}`}
+										type="text"
+										bind:value={moeExpertsProbePath}
+										placeholder="/props?model={model}"
+										autocomplete="off"
+									/>
+								</div>
+
+								<div class="mt-2">
+									<label
+										for="moe-apply-key-input"
+										class={`mb-0.5 text-xs text-gray-500
+								${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : ''}`}
+										>{$i18n.t('Apply Param Key')}</label
+									>
+									<input
+										id="moe-apply-key-input"
+										class={`w-full text-sm bg-transparent ${($settings?.highContrastMode ?? false) ? 'placeholder:text-gray-700 dark:placeholder:text-gray-100' : 'outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700'}`}
+										type="text"
+										bind:value={moeExpertsApplyParamKey}
+										placeholder="num_experts"
+										autocomplete="off"
+									/>
 								</div>
 							</div>
 						{/if}

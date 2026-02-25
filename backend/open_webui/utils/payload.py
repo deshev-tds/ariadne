@@ -123,6 +123,7 @@ def apply_model_params_to_body_openai(params: dict, form_data: dict) -> dict:
 
 def apply_model_params_to_body_ollama(params: dict, form_data: dict) -> dict:
     params = remove_open_webui_params(params)
+    params.pop("moe_experts_level", None)
 
     custom_params = params.pop("custom_params", {})
     if custom_params:

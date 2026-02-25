@@ -102,6 +102,7 @@ export const DEFAULT_CAPABILITIES = {
 	web_search: true,
 	image_generation: true,
 	code_interpreter: true,
+	moe_experts_control: false,
 	citations: true,
 	status_updates: true,
 	usage: undefined,

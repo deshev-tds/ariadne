@@ -31,6 +31,12 @@
 			label: $i18n.t('Code Interpreter'),
 			description: $i18n.t('Model can execute code and perform calculations')
 		},
+		moe_experts_control: {
+			label: $i18n.t('MoE Experts Control'),
+			description: $i18n.t(
+				'Shows qualitative experts control in Chat Controls and enables runtime MoE experts probing for compatible OpenAI connections.'
+			)
+		},
 		usage: {
 			label: $i18n.t('Usage'),
 			description: $i18n.t(
@@ -60,6 +66,7 @@
 		web_search?: boolean;
 		image_generation?: boolean;
 		code_interpreter?: boolean;
+		moe_experts_control?: boolean;
 		usage?: boolean;
 		citations?: boolean;
 		status_updates?: boolean;

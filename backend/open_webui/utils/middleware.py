@@ -2928,6 +2928,10 @@ def apply_params_to_form_data(form_data, model):
         params = deep_update(params, custom_params)
 
     if model.get("owned_by") == "ollama":
+        # OpenAI-only qualitative control, never forward to Ollama options.
+        params.pop("moe_experts_level", None)
+
+    if model.get("owned_by") == "ollama":
         # Ollama specific parameters
         form_data["options"] = params
     else:

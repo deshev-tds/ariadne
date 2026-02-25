@@ -36,6 +36,10 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL, STATIC_DIR
 from open_webui.internal.db import get_session
+from open_webui.routers.openai import (
+    probe_moe_experts_for_model,
+    public_moe_experts_probe_response,
+)
 from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
@@ -161,6 +165,37 @@ async def get_model_tags(
     tags = [tag for tag in tags_set]
     tags.sort()
     return tags
+
+
+@router.get("/moe-experts")
+async def get_moe_experts(
+    request: Request,
+    model_id: Optional[str] = None,
+    user=Depends(get_verified_user),
+):
+    if not model_id:
+        return {
+            "supported": False,
+            "reason": "model_id is required",
+            "model_id": model_id,
+            "current": None,
+            "default": None,
+            "presets": None,
+        }
+
+    try:
+        probe_response = await probe_moe_experts_for_model(request, user, model_id)
+        return public_moe_experts_probe_response(probe_response)
+    except Exception as e:
+        log.exception(e)
+        return {
+            "supported": False,
+            "reason": "Probe request failed",
+            "model_id": model_id,
+            "current": None,
+            "default": None,
+            "presets": None,
+        }
 
 
 ############################

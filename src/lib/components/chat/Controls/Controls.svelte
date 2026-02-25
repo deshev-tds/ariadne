@@ -8,6 +8,7 @@
 	import Valves from '$lib/components/chat/Controls/Valves.svelte';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import Collapsible from '$lib/components/common/Collapsible.svelte';
+	import { getModelMoeExperts, type MoeExpertsProbeResponse } from '$lib/apis/models';
 
 	import { user, settings } from '$lib/stores';
 	export let models = [];
@@ -15,6 +16,79 @@
 	export let params = {};
 
 	let showValves = false;
+	let showAdvancedParams = true;
+
+	let moeExpertsProbe: MoeExpertsProbeResponse | null = null;
+	let moeExpertsLoading = false;
+	let moeExpertsProbeRequestNonce = 0;
+	let lastMoeProbeTriggerKey = '';
+
+	const loadMoeExpertsProbe = async (modelId: string) => {
+		const nonce = ++moeExpertsProbeRequestNonce;
+		moeExpertsLoading = true;
+
+		try {
+			const response = await getModelMoeExperts(localStorage.token, modelId);
+			if (nonce !== moeExpertsProbeRequestNonce) return;
+			moeExpertsProbe = response;
+		} catch (error) {
+			if (nonce !== moeExpertsProbeRequestNonce) return;
+			moeExpertsProbe = {
+				supported: false,
+				reason: $i18n.t('Probe request failed'),
+				model_id: modelId
+			};
+		} finally {
+			if (nonce === moeExpertsProbeRequestNonce) {
+				moeExpertsLoading = false;
+			}
+		}
+	};
+
+	$: selectedModel = models.length === 1 ? models[0] : null;
+	$: selectedModelId = selectedModel?.id ?? null;
+	$: moeExpertsCapabilityEnabled =
+		models.length === 1
+			? (selectedModel?.info?.meta?.capabilities?.moe_experts_control ?? false) === true
+			: models.some((model) => (model?.info?.meta?.capabilities?.moe_experts_control ?? false) === true);
+	$: moeExpertsSingleModelRequired =
+		models.length !== 1 ||
+		(selectedModel?.owned_by ?? '') === 'arena' ||
+		(selectedModel?.arena ?? false) === true;
+	$: moeExpertsProbeRequired =
+		moeExpertsCapabilityEnabled && !moeExpertsSingleModelRequired && showAdvancedParams;
+
+	$: {
+		const triggerKey = moeExpertsProbeRequired && selectedModelId ? selectedModelId : '';
+		if (triggerKey && triggerKey !== lastMoeProbeTriggerKey) {
+			lastMoeProbeTriggerKey = triggerKey;
+			void loadMoeExpertsProbe(triggerKey);
+		} else if (!triggerKey) {
+			lastMoeProbeTriggerKey = '';
+			moeExpertsLoading = false;
+		}
+	}
+
+	$: activeMoeExpertsProbe =
+		selectedModelId && moeExpertsProbe?.model_id === selectedModelId ? moeExpertsProbe : null;
+	$: moeExpertsControlEnabled =
+		moeExpertsProbeRequired &&
+		!moeExpertsLoading &&
+		(activeMoeExpertsProbe?.supported ?? false) === true;
+	$: moeExpertsControlReason =
+		moeExpertsCapabilityEnabled && moeExpertsSingleModelRequired
+			? $i18n.t('single model required')
+			: moeExpertsCapabilityEnabled && !moeExpertsControlEnabled && !moeExpertsLoading
+				? activeMoeExpertsProbe?.reason ?? $i18n.t('Probe unavailable')
+				: null;
+
+	$: if (
+		moeExpertsCapabilityEnabled &&
+		moeExpertsSingleModelRequired &&
+		(params?.moe_experts_level ?? 'default') !== 'default'
+	) {
+		params.moe_experts_level = 'default';
+	}
 </script>
 
 <div class=" dark:text-white">
@@ -92,10 +166,22 @@
 			{/if}
 
 			{#if $user?.role === 'admin' || ($user?.permissions.chat?.params ?? true)}
-				<Collapsible title={$i18n.t('Advanced Params')} open={true} buttonClassName="w-full">
+				<Collapsible
+					title={$i18n.t('Advanced Params')}
+					bind:open={showAdvancedParams}
+					buttonClassName="w-full"
+				>
 					<div class="text-sm mt-1.5" slot="content">
 						<div>
-							<AdvancedParams admin={$user?.role === 'admin'} custom={true} bind:params />
+							<AdvancedParams
+								admin={$user?.role === 'admin'}
+								custom={true}
+								moeExpertsControlVisible={moeExpertsCapabilityEnabled}
+								moeExpertsControlEnabled={moeExpertsControlEnabled}
+								moeExpertsControlReason={moeExpertsControlReason}
+								moeExpertsProbe={moeExpertsControlEnabled ? activeMoeExpertsProbe : null}
+								bind:params
+							/>
 						</div>
 					</div>
 				</Collapsible>

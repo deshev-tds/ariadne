@@ -3,6 +3,7 @@
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
+	import { withMoeExpertsLevel, type MoeExpertsProbe } from './moeExperts';
 	import { getContext } from 'svelte';
 
 	const i18n = getContext('i18n');
@@ -11,12 +12,24 @@
 
 	export let admin = false;
 	export let custom = false;
+	export let moeExpertsControlVisible = false;
+	export let moeExpertsControlEnabled = false;
+	export let moeExpertsControlReason: string | null = null;
+	export let moeExpertsProbe: MoeExpertsProbe | null = null;
+
+	const moeExpertsLevels: Array<{ value: 'few' | 'default' | 'many' | 'a_lot'; label: string }> = [
+		{ value: 'few', label: 'A few experts' },
+		{ value: 'default', label: 'Default experts' },
+		{ value: 'many', label: 'Many experts' },
+		{ value: 'a_lot', label: 'A lot of experts' }
+	];
 
 	const defaultParams = {
 		// Advanced
 		stream_response: null, // Set stream responses for this model individually
 		stream_delta_chunk_size: null, // Set the chunk size for streaming responses
 		function_calling: null,
+		moe_experts_level: null,
 		reasoning_tags: null,
 		seed: null,
 		stop: null,
@@ -175,6 +188,54 @@
 			</div>
 		</Tooltip>
 	</div>
+
+	{#if moeExpertsControlVisible}
+		<div class="py-0.5 w-full justify-between">
+			<Tooltip
+				content={moeExpertsControlEnabled
+					? $i18n.t(
+							'Select a qualitative MoE experts level. Numeric values come from a runtime probe for the selected model.'
+						)
+					: moeExpertsControlReason ?? $i18n.t('MoE experts control unavailable')}
+				placement="top-start"
+				className="inline-tooltip"
+			>
+				<div class="flex w-full justify-between">
+					<div class="self-center text-xs font-medium">
+						{$i18n.t('MoE Experts')}
+					</div>
+					{#if moeExpertsProbe?.supported && moeExpertsProbe?.current != null && moeExpertsProbe?.default != null}
+						<div class="self-center text-[11px] text-gray-500">
+							{$i18n.t('current {{CURRENT}} / default {{DEFAULT}}', {
+								CURRENT: moeExpertsProbe.current,
+								DEFAULT: moeExpertsProbe.default
+							})}
+						</div>
+					{/if}
+				</div>
+			</Tooltip>
+
+			<div class="mt-1 grid grid-cols-2 gap-1">
+				{#each moeExpertsLevels as level}
+					<button
+						type="button"
+						class="px-2 py-1 rounded-md text-[11px] transition border {(params?.moe_experts_level ??
+						'default') === level.value
+							? 'bg-black text-white dark:bg-white dark:text-black border-transparent'
+							: 'bg-transparent text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-850/50'} {moeExpertsControlEnabled
+							? ''
+							: 'opacity-60 cursor-not-allowed'}"
+						disabled={!moeExpertsControlEnabled}
+						on:click={() => {
+							params = withMoeExpertsLevel(params ?? {}, level.value);
+						}}
+					>
+						{$i18n.t(level.label)}
+					</button>
+				{/each}
+			</div>
+		</div>
+	{/if}
 
 	<div class=" py-0.5 w-full justify-between">
 		<Tooltip

@@ -1,5 +1,19 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 
+export type MoeExpertsProbeResponse = {
+	supported: boolean;
+	reason: string | null;
+	model_id: string;
+	current?: number | null;
+	default?: number | null;
+	presets?: {
+		few: number;
+		default: number;
+		many: number;
+		a_lot: number;
+	} | null;
+};
+
 export const getModelItems = async (
 	token: string = '',
 	query,
@@ -76,6 +90,40 @@ export const getModelTags = async (token: string = '') => {
 		})
 		.then((json) => {
 			return json;
+		})
+		.catch((err) => {
+			error = err;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getModelMoeExperts = async (
+	token: string = '',
+	modelId: string
+): Promise<MoeExpertsProbeResponse> => {
+	let error = null;
+
+	const searchParams = new URLSearchParams();
+	searchParams.append('model_id', modelId);
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/models/moe-experts?${searchParams.toString()}`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
 		})
 		.catch((err) => {
 			error = err;

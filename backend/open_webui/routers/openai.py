@@ -2,8 +2,9 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Optional
-from urllib.parse import urlparse
+import time
+from typing import Any, Optional
+from urllib.parse import quote, urlparse
 
 import aiohttp
 from aiocache import cached
@@ -60,6 +61,14 @@ from open_webui.utils.headers import include_user_info_headers
 from open_webui.utils.anthropic import is_anthropic_url, get_anthropic_models
 
 log = logging.getLogger(__name__)
+
+MOE_EXPERTS_LEVELS = ("few", "default", "many", "a_lot")
+MOE_EXPERTS_DEFAULT_APPLY_PARAM_KEY = "num_experts"
+MOE_EXPERTS_DEFAULT_TIMEOUT_MS = 1200
+MOE_EXPERTS_TIMEOUT_CAP_MS = 3000
+MOE_EXPERTS_CACHE_TTL_SECONDS = 30
+_MOE_EXPERTS_PROBE_CACHE: dict[tuple[int, str], tuple[float, dict]] = {}
+_MOE_EXPERTS_PROBE_CACHE_LOCK = asyncio.Lock()
 
 
 ##########################################
@@ -197,6 +206,430 @@ def get_microsoft_entra_id_access_token():
     except Exception as e:
         log.error(f"Error getting Microsoft Entra ID access token: {e}")
         return None
+
+
+def get_openai_api_config_by_index(request: Request, idx: int) -> dict:
+    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
+    return request.app.state.config.OPENAI_API_CONFIGS.get(
+        str(idx),
+        request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
+    )
+
+
+def strip_model_prefix(model_id: str, prefix_id: Optional[str]) -> str:
+    if not prefix_id:
+        return model_id
+
+    prefix = f"{prefix_id}."
+    if model_id.startswith(prefix):
+        return model_id[len(prefix) :]
+
+    return model_id
+
+
+def build_moe_experts_response(
+    *,
+    model_id: str,
+    apply_param_key: str,
+    supported: bool,
+    reason: Optional[str] = None,
+    current: Optional[int] = None,
+    default: Optional[int] = None,
+    presets: Optional[dict[str, int]] = None,
+) -> dict:
+    return {
+        "supported": supported,
+        "reason": reason,
+        "model_id": model_id,
+        "current": current if supported else None,
+        "default": default if supported else None,
+        "presets": presets if supported else None,
+        "apply_param_key": apply_param_key,
+    }
+
+
+def public_moe_experts_probe_response(probe_response: dict) -> dict:
+    return {
+        "supported": probe_response.get("supported", False),
+        "reason": probe_response.get("reason"),
+        "model_id": probe_response.get("model_id"),
+        "current": probe_response.get("current"),
+        "default": probe_response.get("default"),
+        "presets": probe_response.get("presets"),
+    }
+
+
+def _get_moe_experts_settings(api_config: dict) -> dict:
+    moe_config = api_config.get("moe_experts", {})
+    if not isinstance(moe_config, dict):
+        moe_config = {}
+
+    enabled = bool(moe_config.get("enabled", False))
+    probe_path = moe_config.get("probe_path") or ""
+
+    apply_param_key = (
+        moe_config.get("apply_param_key") or MOE_EXPERTS_DEFAULT_APPLY_PARAM_KEY
+    )
+    if not isinstance(apply_param_key, str):
+        apply_param_key = MOE_EXPERTS_DEFAULT_APPLY_PARAM_KEY
+    apply_param_key = apply_param_key.strip() or MOE_EXPERTS_DEFAULT_APPLY_PARAM_KEY
+
+    timeout_raw = moe_config.get("timeout_ms", MOE_EXPERTS_DEFAULT_TIMEOUT_MS)
+    try:
+        timeout_ms = int(timeout_raw)
+    except Exception:
+        timeout_ms = MOE_EXPERTS_DEFAULT_TIMEOUT_MS
+    timeout_ms = max(1, min(timeout_ms, MOE_EXPERTS_TIMEOUT_CAP_MS))
+
+    return {
+        "enabled": enabled,
+        "probe_path": probe_path,
+        "apply_param_key": apply_param_key,
+        "timeout_ms": timeout_ms,
+    }
+
+
+def _is_valid_moe_probe_path(probe_path: str) -> bool:
+    if not isinstance(probe_path, str):
+        return False
+
+    if not probe_path.startswith("/") or probe_path.startswith("//"):
+        return False
+
+    parsed = urlparse(probe_path)
+    if parsed.scheme or parsed.netloc:
+        return False
+
+    return True
+
+
+def _build_moe_probe_path(probe_path: str, raw_model_id: str) -> str:
+    encoded_model_id = quote(raw_model_id, safe="")
+    return probe_path.replace("{model}", encoded_model_id)
+
+
+def _coerce_moe_experts_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, int):
+        return value if value >= 0 else None
+
+    if isinstance(value, float) and value.is_integer() and value >= 0:
+        return int(value)
+
+    return None
+
+
+def _normalize_moe_experts_probe_payload(
+    payload: Any,
+    *,
+    model_id: str,
+    apply_param_key: str,
+) -> dict:
+    unsupported = lambda reason: build_moe_experts_response(
+        model_id=model_id,
+        apply_param_key=apply_param_key,
+        supported=False,
+        reason=reason,
+    )
+
+    if not isinstance(payload, dict):
+        return unsupported("Probe response must be a JSON object")
+
+    if payload.get("supported") is False:
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            reason = "Model does not support MoE experts control"
+        return unsupported(reason)
+
+    presets_raw = payload.get("presets")
+    if not isinstance(presets_raw, dict):
+        return unsupported("Probe response missing presets")
+
+    presets: dict[str, int] = {}
+    for level in MOE_EXPERTS_LEVELS:
+        coerced = _coerce_moe_experts_int(presets_raw.get(level))
+        if coerced is None:
+            return unsupported(f"Probe response missing valid '{level}' preset")
+        presets[level] = coerced
+
+    default_value = _coerce_moe_experts_int(payload.get("default"))
+    if default_value is None:
+        default_value = presets.get("default")
+
+    current_value = _coerce_moe_experts_int(payload.get("current"))
+    if current_value is None:
+        current_value = default_value
+
+    if default_value is None or current_value is None:
+        return unsupported("Probe response missing current/default experts values")
+
+    return build_moe_experts_response(
+        model_id=model_id,
+        apply_param_key=apply_param_key,
+        supported=True,
+        reason=None,
+        current=current_value,
+        default=default_value,
+        presets=presets,
+    )
+
+
+async def _get_cached_moe_experts_probe(idx: int, raw_model_id: str) -> Optional[dict]:
+    cache_key = (idx, raw_model_id)
+    now = time.monotonic()
+
+    async with _MOE_EXPERTS_PROBE_CACHE_LOCK:
+        cache_value = _MOE_EXPERTS_PROBE_CACHE.get(cache_key)
+        if cache_value is None:
+            return None
+
+        expires_at, payload = cache_value
+        if expires_at <= now:
+            _MOE_EXPERTS_PROBE_CACHE.pop(cache_key, None)
+            return None
+
+        return dict(payload)
+
+
+async def _set_cached_moe_experts_probe(idx: int, raw_model_id: str, payload: dict):
+    cache_key = (idx, raw_model_id)
+    expires_at = time.monotonic() + MOE_EXPERTS_CACHE_TTL_SECONDS
+    async with _MOE_EXPERTS_PROBE_CACHE_LOCK:
+        _MOE_EXPERTS_PROBE_CACHE[cache_key] = (expires_at, dict(payload))
+
+
+async def resolve_openai_connection_for_model(
+    request: Request, user: UserModel, model_id: str
+) -> Optional[dict]:
+    openai_models = request.app.state.OPENAI_MODELS
+    if not openai_models or model_id not in openai_models:
+        await get_all_models(request, user=user)
+        openai_models = request.app.state.OPENAI_MODELS
+
+    resolved_model_id = model_id
+    if resolved_model_id not in openai_models:
+        model_info = Models.get_model_by_id(model_id)
+        if model_info and model_info.base_model_id:
+            resolved_model_id = model_info.base_model_id
+
+    model = openai_models.get(resolved_model_id)
+    if model is None:
+        return None
+
+    idx = model.get("urlIdx")
+    if idx is None:
+        return None
+
+    api_base_urls = request.app.state.config.OPENAI_API_BASE_URLS
+    api_keys = request.app.state.config.OPENAI_API_KEYS
+    if idx >= len(api_base_urls) or idx >= len(api_keys):
+        return None
+
+    api_config = get_openai_api_config_by_index(request, idx)
+    raw_model_id = strip_model_prefix(
+        resolved_model_id,
+        api_config.get("prefix_id"),
+    )
+
+    return {
+        "idx": idx,
+        "url": api_base_urls[idx],
+        "key": api_keys[idx],
+        "api_config": api_config,
+        "raw_model_id": raw_model_id,
+        "resolved_model_id": resolved_model_id,
+    }
+
+
+async def probe_moe_experts_for_connection(
+    request: Request,
+    user: UserModel,
+    *,
+    idx: int,
+    url: str,
+    key: str,
+    api_config: dict,
+    raw_model_id: str,
+    requested_model_id: Optional[str] = None,
+) -> dict:
+    requested_model_id = requested_model_id or raw_model_id
+    moe_settings = _get_moe_experts_settings(api_config)
+    apply_param_key = moe_settings["apply_param_key"]
+
+    unsupported = lambda reason: build_moe_experts_response(
+        model_id=requested_model_id,
+        apply_param_key=apply_param_key,
+        supported=False,
+        reason=reason,
+    )
+
+    if not moe_settings["enabled"]:
+        return unsupported("MoE experts probe is disabled for this connection")
+
+    probe_path = moe_settings["probe_path"]
+    if not _is_valid_moe_probe_path(probe_path):
+        return unsupported("Invalid MoE experts probe path")
+
+    cached = await _get_cached_moe_experts_probe(idx, raw_model_id)
+    if cached is not None:
+        cached["model_id"] = requested_model_id
+        cached["apply_param_key"] = apply_param_key
+        return cached
+
+    probe_request_path = _build_moe_probe_path(probe_path, raw_model_id)
+    if not _is_valid_moe_probe_path(probe_request_path):
+        probe_result = unsupported("Invalid MoE experts probe path")
+        await _set_cached_moe_experts_probe(idx, raw_model_id, probe_result)
+        return probe_result
+
+    request_url = f"{url.rstrip('/')}{probe_request_path}"
+    timeout_ms = moe_settings["timeout_ms"]
+
+    try:
+        headers, cookies = await get_headers_and_cookies(
+            request, url, key, api_config, user=user
+        )
+
+        timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
+        async with aiohttp.ClientSession(
+            trust_env=True,
+            timeout=timeout,
+        ) as session:
+            async with session.get(
+                request_url,
+                headers=headers,
+                cookies=cookies,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as response:
+                if response.status != 200:
+                    probe_result = unsupported(
+                        f"Probe request failed with HTTP {response.status}"
+                    )
+                    await _set_cached_moe_experts_probe(idx, raw_model_id, probe_result)
+                    return probe_result
+
+                try:
+                    payload = await response.json()
+                except Exception:
+                    probe_result = unsupported("Probe response is not valid JSON")
+                    await _set_cached_moe_experts_probe(idx, raw_model_id, probe_result)
+                    return probe_result
+
+                probe_result = _normalize_moe_experts_probe_payload(
+                    payload,
+                    model_id=requested_model_id,
+                    apply_param_key=apply_param_key,
+                )
+                await _set_cached_moe_experts_probe(idx, raw_model_id, probe_result)
+                return probe_result
+    except asyncio.TimeoutError:
+        probe_result = unsupported(f"Probe timed out after {timeout_ms}ms")
+        await _set_cached_moe_experts_probe(idx, raw_model_id, probe_result)
+        return probe_result
+    except Exception as e:
+        log.exception(e)
+        probe_result = unsupported("Probe request failed")
+        await _set_cached_moe_experts_probe(idx, raw_model_id, probe_result)
+        return probe_result
+
+
+async def probe_moe_experts_for_model(
+    request: Request, user: UserModel, model_id: str
+) -> dict:
+    if not model_id:
+        return build_moe_experts_response(
+            model_id=model_id,
+            apply_param_key=MOE_EXPERTS_DEFAULT_APPLY_PARAM_KEY,
+            supported=False,
+            reason="model_id is required",
+        )
+
+    resolved_connection = await resolve_openai_connection_for_model(
+        request, user, model_id
+    )
+    if not resolved_connection:
+        return build_moe_experts_response(
+            model_id=model_id,
+            apply_param_key=MOE_EXPERTS_DEFAULT_APPLY_PARAM_KEY,
+            supported=False,
+            reason="Model is not available on a server-managed OpenAI connection",
+        )
+
+    return await probe_moe_experts_for_connection(
+        request,
+        user,
+        idx=resolved_connection["idx"],
+        url=resolved_connection["url"],
+        key=resolved_connection["key"],
+        api_config=resolved_connection["api_config"],
+        raw_model_id=resolved_connection["raw_model_id"],
+        requested_model_id=model_id,
+    )
+
+
+async def apply_moe_experts_level_to_payload(
+    request: Request,
+    user: UserModel,
+    payload: dict,
+    *,
+    requested_model_id: str,
+    idx: int,
+    url: str,
+    key: str,
+    api_config: dict,
+    raw_model_id: str,
+    capability_enabled: bool = True,
+) -> dict:
+    level = payload.pop("moe_experts_level", None)
+    if level is None:
+        return payload
+
+    if not isinstance(level, str):
+        return payload
+
+    level = level.strip()
+    if level not in MOE_EXPERTS_LEVELS:
+        return payload
+
+    apply_param_key = _get_moe_experts_settings(api_config)["apply_param_key"]
+
+    # Prevent duplicate canonical + mapped keys in emitted payload.
+    payload.pop(MOE_EXPERTS_DEFAULT_APPLY_PARAM_KEY, None)
+    if apply_param_key != MOE_EXPERTS_DEFAULT_APPLY_PARAM_KEY:
+        payload.pop(apply_param_key, None)
+
+    if not capability_enabled:
+        return payload
+
+    if level == "default":
+        return payload
+
+    probe = await probe_moe_experts_for_connection(
+        request,
+        user,
+        idx=idx,
+        url=url,
+        key=key,
+        api_config=api_config,
+        raw_model_id=raw_model_id,
+        requested_model_id=requested_model_id,
+    )
+    if not probe.get("supported"):
+        return payload
+
+    presets = probe.get("presets")
+    if not isinstance(presets, dict):
+        return payload
+
+    experts_value = presets.get(level)
+    if not isinstance(experts_value, int):
+        return payload
+
+    mapped_key = probe.get("apply_param_key") or apply_param_key
+    payload[mapped_key] = experts_value
+    return payload
 
 
 ##########################################
@@ -1022,16 +1455,36 @@ async def generate_chat_completion(
         )
 
     # Get the API config for the model
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(
-            request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
-        ),  # Legacy support
+    api_config = get_openai_api_config_by_index(request, idx)
+
+    payload["model"] = strip_model_prefix(
+        payload["model"],
+        api_config.get("prefix_id"),
     )
 
-    prefix_id = api_config.get("prefix_id", None)
-    if prefix_id:
-        payload["model"] = payload["model"].replace(f"{prefix_id}.", "")
+    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
+    key = request.app.state.config.OPENAI_API_KEYS[idx]
+    moe_capability_enabled = (
+        (metadata or {})
+        .get("model", {})
+        .get("info", {})
+        .get("meta", {})
+        .get("capabilities", {})
+        .get("moe_experts_control", False)
+    )
+
+    payload = await apply_moe_experts_level_to_payload(
+        request=request,
+        user=user,
+        payload=payload,
+        requested_model_id=model_id,
+        idx=idx,
+        url=url,
+        key=key,
+        api_config=api_config,
+        raw_model_id=payload["model"],
+        capability_enabled=moe_capability_enabled,
+    )
 
     # Add user info to the payload if the model is a pipeline
     if "pipeline" in model and model.get("pipeline"):
@@ -1041,9 +1494,6 @@ async def generate_chat_completion(
             "email": user.email,
             "role": user.role,
         }
-
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
 
     # Check if model is a reasoning model that needs special handling
     if is_openai_reasoning_model(payload["model"]):
