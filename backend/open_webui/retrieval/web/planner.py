@@ -317,6 +317,7 @@ class WebSearchPlan(BaseModel):
     planned_queries: list[PlannedQuery] = Field(default_factory=list)
     rewriter_model_used: Optional[str] = None
     rewriter_fallback_used: bool = False
+    rewriter_retry_count: int = 0
     fallback_reason: Optional[str] = None
 
 
@@ -973,17 +974,26 @@ def _build_allowed_domains_ranked(
     return domains
 
 
-def build_web_search_plan(user_message: str, max_targeted_domains: int = 4) -> WebSearchPlan:
+def build_web_search_plan(
+    user_message: str,
+    conversation_context: Optional[str] = None,
+    max_targeted_domains: int = 4,
+) -> WebSearchPlan:
     exact_query = sanitize_query(user_message)
     if not exact_query:
         exact_query = "web search"
 
+    context_text = sanitize_query(conversation_context or "", max_length=2000)
+    planner_text = sanitize_query(
+        f"{context_text} {user_message}".strip(), max_length=4000
+    ) or exact_query
+
     intent, topic, time_sensitive, community_requested, _ = classify_intent_and_topic(
-        user_message
+        planner_text
     )
-    anchors = extract_query_anchors(user_message)
-    intent_requirements = derive_intent_requirements(user_message)
-    preserve_tokens = extract_preserve_tokens(user_message)
+    anchors = extract_query_anchors(planner_text)
+    intent_requirements = derive_intent_requirements(planner_text)
+    preserve_tokens = extract_preserve_tokens(planner_text)
 
     for anchor_group in (
         anchors.get("error_strings", []),
@@ -1055,6 +1065,7 @@ def build_rewriter_prompt(
     *,
     user_message: str,
     plan: WebSearchPlan,
+    conversation_context: Optional[str] = None,
     max_queries: int,
 ) -> str:
     max_queries = max(1, int(max_queries))
@@ -1081,6 +1092,10 @@ def build_rewriter_prompt(
         },
         "inputs": {
             "user_message": user_message,
+            "conversation_context": sanitize_query(
+                conversation_context or "",
+                max_length=1600,
+            ),
             "intent": plan.intent,
             "topic": plan.topic,
             "time_sensitive": plan.time_sensitive,
@@ -1093,6 +1108,8 @@ def build_rewriter_prompt(
         "instructions": [
             "Create concise, search-engine-ready queries only.",
             "Do not drop or alter preserved tokens.",
+            "Resolve this/that/it/those references using conversation_context.",
+            "Keep concrete object/domain disambiguators (for example dryer/laundry/dryer balls) when context indicates them.",
             "Prefer one exact query first, then targeted/official/issues/current_fix as relevant, then general.",
             "Never invent domains outside allowed_domains.",
             "Return strictly valid JSON with top-level key 'queries'.",
