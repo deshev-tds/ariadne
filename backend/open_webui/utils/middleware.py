@@ -2579,6 +2579,10 @@ async def chat_web_search_handler(
                         "description": "Searched {{count}} sites",
                         "urls": results["filenames"],
                         "items": results.get("items", []),
+                        "queries": result_queries,
+                        "plan": plan_payload,
+                        "planner": results.get("planner"),
+                        "loaded_count": results.get("loaded_count"),
                         "done": True,
                     },
                 }
