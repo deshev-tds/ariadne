@@ -4,7 +4,10 @@ from types import SimpleNamespace
 import pytest
 
 import open_webui.utils.middleware as middleware
-from open_webui.retrieval.web.planner import build_web_search_plan
+from open_webui.retrieval.web.planner import (
+    build_web_search_plan,
+    parse_rewriter_output,
+)
 
 
 def _make_request(*, enable_planner: bool) -> SimpleNamespace:
@@ -397,3 +400,33 @@ async def test_rewriter_context_disambiguation_supports_dryer_community_query(mo
     query_text = queries[0].query.lower()
     assert "dryer" in query_text
     assert "site:reddit.com" in query_text
+
+
+def test_parse_rewriter_output_supports_line_protocol():
+    raw = """
+    exact||spiky dryer balls reduce drying time energy
+    targeted|reddit.com|spiky dryer balls user feedback site:reddit.com
+    current_fix: dryer balls effectiveness recent tests 2025 2026
+    """
+    queries = parse_rewriter_output(raw)
+
+    assert len(queries) == 3
+    assert queries[0].kind == "exact"
+    assert queries[1].domain == "reddit.com"
+    assert "site:reddit.com" in queries[1].query.lower()
+
+
+def test_parse_rewriter_output_keeps_json_compatibility():
+    raw = json.dumps(
+        {
+            "queries": [
+                {"kind": "exact", "query": "eks aws-vpc-cni known issue"},
+                "eks aws cni current fix",
+            ]
+        }
+    )
+    queries = parse_rewriter_output(raw)
+
+    assert len(queries) == 2
+    assert queries[0].kind == "exact"
+    assert queries[1].kind == "general"

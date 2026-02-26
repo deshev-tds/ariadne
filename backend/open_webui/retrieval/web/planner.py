@@ -339,6 +339,18 @@ class NormalizedSource(BaseModel):
     prefer_for_community_signals: bool = False
 
 
+PLANNED_QUERY_KINDS = {
+    "exact",
+    "official",
+    "issues",
+    "current_fix",
+    "general",
+    "targeted",
+    "freshness",
+    "community",
+}
+
+
 def normalize_domain(domain: str) -> str:
     normalized = domain.strip().lower()
     if normalized.startswith("www."):
@@ -1075,15 +1087,15 @@ def build_rewriter_prompt(
         "task": "rewrite_search_queries",
         "constraints": {
             "output_format": {
-                "queries": [
-                    {
-                        "kind": "exact|official|issues|current_fix|general|targeted|freshness|community",
-                        "query": "string",
-                        "domain": "optional domain from allowed_domains",
-                    }
-                ]
+                "line_protocol": "one query per line",
+                "preferred_line_shape": "kind|domain|query",
+                "allowed_kinds": sorted(PLANNED_QUERY_KINDS),
+                "alternatives": [
+                    "kind|query",
+                    "query",
+                ],
             },
-            "json_only": True,
+            "json_allowed": True,
             "no_markdown": True,
             "max_queries": max_queries,
             "preserve_tokens_exactly": plan.preserve_tokens,
@@ -1112,7 +1124,9 @@ def build_rewriter_prompt(
             "Keep concrete object/domain disambiguators (for example dryer/laundry/dryer balls) when context indicates them.",
             "Prefer one exact query first, then targeted/official/issues/current_fix as relevant, then general.",
             "Never invent domains outside allowed_domains.",
-            "Return strictly valid JSON with top-level key 'queries'.",
+            "Return plain text lines only, one query per line.",
+            "Preferred format is kind|domain|query (domain can be empty as kind||query).",
+            "Do not return markdown bullets, numbering, or explanations.",
         ],
     }
     return json.dumps(prompt_payload, ensure_ascii=True)
@@ -1192,11 +1206,26 @@ def build_base_planned_queries(plan: WebSearchPlan, targeted_slots: int = 3) -> 
     return _finalize_planned_query_candidates(planned, plan.preserve_tokens)
 
 
-def parse_rewriter_output(raw_text: str) -> list[PlannedQuery]:
-    content = (raw_text or "").strip()
-    if not content:
-        raise ValueError("Rewriter output is empty")
+def _normalize_planned_query_kind(value: str) -> str:
+    kind = sanitize_query(value).lower()
+    return kind if kind in PLANNED_QUERY_KINDS else "general"
 
+
+def _looks_like_rewriter_query(value: str) -> bool:
+    text = sanitize_query(value)
+    if not text:
+        return False
+    if len(text) < 4:
+        return False
+    lowered = text.lower()
+    if lowered in {"query", "queries", "none", "n/a", "null", "not-json"}:
+        return False
+    if len(re.findall(r"\S+", text)) < 2 and "site:" not in lowered:
+        return False
+    return True
+
+
+def _parse_rewriter_output_json(content: str) -> list[PlannedQuery]:
     json_start = content.find("{")
     json_end = content.rfind("}")
     if json_start == -1 or json_end == -1 or json_start >= json_end:
@@ -1210,16 +1239,21 @@ def parse_rewriter_output(raw_text: str) -> list[PlannedQuery]:
     parsed: list[PlannedQuery] = []
     for item in queries_raw:
         if isinstance(item, str):
-            parsed.append(PlannedQuery(kind="general", query=item))
+            if _looks_like_rewriter_query(item):
+                parsed.append(PlannedQuery(kind="general", query=sanitize_query(item)))
             continue
 
         if not isinstance(item, dict):
             continue
 
+        query = sanitize_query(str(item.get("query", "")))
+        if not _looks_like_rewriter_query(query):
+            continue
+
         parsed.append(
             PlannedQuery(
-                kind=sanitize_query(str(item.get("kind", "general"))).lower() or "general",
-                query=sanitize_query(str(item.get("query", ""))),
+                kind=_normalize_planned_query_kind(str(item.get("kind", "general"))),
+                query=query,
                 domain=normalize_domain(str(item.get("domain", "")))
                 if item.get("domain")
                 else None,
@@ -1227,9 +1261,81 @@ def parse_rewriter_output(raw_text: str) -> list[PlannedQuery]:
         )
 
     if not parsed:
-        raise ValueError("Rewriter output did not contain valid queries")
-
+        raise ValueError("Rewriter JSON output did not contain valid queries")
     return parsed
+
+
+def _parse_rewriter_output_lines(content: str) -> list[PlannedQuery]:
+    parsed: list[PlannedQuery] = []
+
+    for raw_line in content.splitlines():
+        line = (raw_line or "").strip()
+        if not line or line.startswith("```"):
+            continue
+
+        line = re.sub(r"^\s*[-*•]\s*", "", line)
+        line = re.sub(r"^\s*\d+[.)]\s*", "", line)
+        line = sanitize_query(line, max_length=MAX_QUERY_LENGTH * 2)
+        if not line:
+            continue
+
+        if line.lower().startswith("queries:"):
+            line = sanitize_query(line.split(":", 1)[1])
+            if not line:
+                continue
+
+        kind = "general"
+        domain: Optional[str] = None
+        query = line
+
+        colon_match = re.match(
+            r"^(exact|official|issues|current_fix|general|targeted|freshness|community)\s*:\s*(.+)$",
+            line,
+            re.IGNORECASE,
+        )
+        if colon_match:
+            kind = _normalize_planned_query_kind(colon_match.group(1))
+            query = colon_match.group(2)
+        elif "|" in line:
+            parts = [segment.strip() for segment in line.split("|", 2)]
+            if len(parts) == 3 and parts[0].lower() in PLANNED_QUERY_KINDS:
+                kind = _normalize_planned_query_kind(parts[0])
+                domain = normalize_domain(parts[1]) if parts[1] else None
+                query = parts[2]
+            elif len(parts) == 2 and parts[0].lower() in PLANNED_QUERY_KINDS:
+                kind = _normalize_planned_query_kind(parts[0])
+                query = parts[1]
+            elif len(parts) == 3 and parts[1]:
+                possible_domain = normalize_domain(parts[1])
+                if "." in possible_domain:
+                    domain = possible_domain
+                query = parts[2]
+
+        query = sanitize_query(query)
+        if not _looks_like_rewriter_query(query):
+            continue
+
+        parsed.append(PlannedQuery(kind=kind, query=query, domain=domain))
+
+    if not parsed:
+        raise ValueError("Rewriter line output did not contain valid queries")
+    return parsed
+
+
+def parse_rewriter_output(raw_text: str) -> list[PlannedQuery]:
+    content = (raw_text or "").strip()
+    if not content:
+        raise ValueError("Rewriter output is empty")
+
+    try:
+        return _parse_rewriter_output_json(content)
+    except Exception as json_error:
+        try:
+            return _parse_rewriter_output_lines(content)
+        except Exception as line_error:
+            raise ValueError(
+                f"Rewriter output parsing failed: {json_error}; {line_error}"
+            ) from line_error
 
 
 def _repair_rewriter_queries(

@@ -1805,8 +1805,9 @@ async def _run_web_search_rewriter(
                 {
                     "role": "system",
                     "content": (
-                        "Rewrite web search queries only. Return strict JSON with key "
-                        "'queries'. Do not include markdown or explanations."
+                        "Rewrite web search queries only. Return plain text with one query "
+                        "per line. Preferred format: kind|domain|query. "
+                        "Do not include markdown or explanations."
                     ),
                 },
                 {
