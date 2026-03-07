@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import socket
 import ssl
@@ -32,6 +33,7 @@ from open_webui.config import (
     ENABLE_RAG_LOCAL_WEB_FETCH,
     PLAYWRIGHT_WS_URL,
     PLAYWRIGHT_TIMEOUT,
+    PLAYWRIGHT_REMOVE_SELECTORS,
     WEB_LOADER_ENGINE,
     WEB_LOADER_TIMEOUT,
     FIRECRAWL_API_BASE_URL,
@@ -653,6 +655,37 @@ class SafeWebBaseLoader(WebBaseLoader):
         return [document async for document in self.alazy_load()]
 
 
+def _normalize_playwright_remove_selectors(
+    selectors: Union[List[Any], str, None],
+) -> List[str]:
+    if isinstance(selectors, list):
+        return [
+            str(selector).strip()
+            for selector in selectors
+            if str(selector).strip()
+        ]
+
+    if isinstance(selectors, str):
+        selectors = selectors.strip()
+        if not selectors:
+            return []
+
+        try:
+            parsed_selectors = json.loads(selectors)
+            if isinstance(parsed_selectors, list):
+                return [
+                    str(selector).strip()
+                    for selector in parsed_selectors
+                    if str(selector).strip()
+                ]
+        except Exception:
+            pass
+
+        return [selector.strip() for selector in selectors.split(",") if selector.strip()]
+
+    return []
+
+
 def get_web_loader(
     urls: Union[str, Sequence[str]],
     verify_ssl: bool = True,
@@ -693,6 +726,11 @@ def get_web_loader(
     if WEB_LOADER_ENGINE.value == "playwright":
         WebLoaderClass = SafePlaywrightURLLoader
         web_loader_args["playwright_timeout"] = PLAYWRIGHT_TIMEOUT.value
+        remove_selectors = _normalize_playwright_remove_selectors(
+            PLAYWRIGHT_REMOVE_SELECTORS.value
+        )
+        if remove_selectors:
+            web_loader_args["remove_selectors"] = remove_selectors
         if PLAYWRIGHT_WS_URL.value:
             web_loader_args["playwright_ws_url"] = PLAYWRIGHT_WS_URL.value
 

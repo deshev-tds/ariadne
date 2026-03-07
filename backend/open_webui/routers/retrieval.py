@@ -625,6 +625,7 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "ENABLE_WEB_LOADER_SSL_VERIFICATION": request.app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION,
             "PLAYWRIGHT_WS_URL": request.app.state.config.PLAYWRIGHT_WS_URL,
             "PLAYWRIGHT_TIMEOUT": request.app.state.config.PLAYWRIGHT_TIMEOUT,
+            "PLAYWRIGHT_REMOVE_SELECTORS": request.app.state.config.PLAYWRIGHT_REMOVE_SELECTORS,
             "FIRECRAWL_API_KEY": request.app.state.config.FIRECRAWL_API_KEY,
             "FIRECRAWL_API_BASE_URL": request.app.state.config.FIRECRAWL_API_BASE_URL,
             "FIRECRAWL_TIMEOUT": request.app.state.config.FIRECRAWL_TIMEOUT,
@@ -718,6 +719,7 @@ class WebConfig(BaseModel):
     ENABLE_WEB_LOADER_SSL_VERIFICATION: Optional[bool] = None
     PLAYWRIGHT_WS_URL: Optional[str] = None
     PLAYWRIGHT_TIMEOUT: Optional[int] = None
+    PLAYWRIGHT_REMOVE_SELECTORS: Optional[List[str]] = None
     FIRECRAWL_API_KEY: Optional[str] = None
     FIRECRAWL_API_BASE_URL: Optional[str] = None
     FIRECRAWL_TIMEOUT: Optional[str] = None
@@ -1431,6 +1433,9 @@ async def update_rag_config(
         )
         request.app.state.config.PLAYWRIGHT_WS_URL = form_data.web.PLAYWRIGHT_WS_URL
         request.app.state.config.PLAYWRIGHT_TIMEOUT = form_data.web.PLAYWRIGHT_TIMEOUT
+        request.app.state.config.PLAYWRIGHT_REMOVE_SELECTORS = (
+            form_data.web.PLAYWRIGHT_REMOVE_SELECTORS
+        )
         request.app.state.config.FIRECRAWL_API_KEY = form_data.web.FIRECRAWL_API_KEY
         request.app.state.config.FIRECRAWL_API_BASE_URL = (
             form_data.web.FIRECRAWL_API_BASE_URL
@@ -1610,6 +1615,7 @@ async def update_rag_config(
             "ENABLE_WEB_LOADER_SSL_VERIFICATION": request.app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION,
             "PLAYWRIGHT_WS_URL": request.app.state.config.PLAYWRIGHT_WS_URL,
             "PLAYWRIGHT_TIMEOUT": request.app.state.config.PLAYWRIGHT_TIMEOUT,
+            "PLAYWRIGHT_REMOVE_SELECTORS": request.app.state.config.PLAYWRIGHT_REMOVE_SELECTORS,
             "FIRECRAWL_API_KEY": request.app.state.config.FIRECRAWL_API_KEY,
             "FIRECRAWL_API_BASE_URL": request.app.state.config.FIRECRAWL_API_BASE_URL,
             "FIRECRAWL_TIMEOUT": request.app.state.config.FIRECRAWL_TIMEOUT,

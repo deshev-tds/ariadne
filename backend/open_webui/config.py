@@ -3676,6 +3676,48 @@ PLAYWRIGHT_TIMEOUT = PersistentConfig(
     int(os.environ.get("PLAYWRIGHT_TIMEOUT", "10000")),
 )
 
+DEFAULT_PLAYWRIGHT_REMOVE_SELECTORS = [
+    "script",
+    "style",
+    "noscript",
+    "header",
+    "footer",
+    "nav",
+    '[role="navigation"]',
+    '[aria-label*="cookie" i]',
+    '[class*="cookie" i]',
+    '[id*="cookie" i]',
+    '[class*="consent" i]',
+    '[id*="consent" i]',
+]
+
+playwright_remove_selectors_env = os.environ.get("PLAYWRIGHT_REMOVE_SELECTORS", "").strip()
+if playwright_remove_selectors_env:
+    try:
+        parsed_playwright_remove_selectors = json.loads(playwright_remove_selectors_env)
+        if isinstance(parsed_playwright_remove_selectors, list):
+            playwright_remove_selectors = [
+                str(selector).strip()
+                for selector in parsed_playwright_remove_selectors
+                if str(selector).strip()
+            ]
+        else:
+            raise ValueError("PLAYWRIGHT_REMOVE_SELECTORS must be a JSON array or CSV")
+    except Exception:
+        playwright_remove_selectors = [
+            selector.strip()
+            for selector in playwright_remove_selectors_env.split(",")
+            if selector.strip()
+        ]
+else:
+    playwright_remove_selectors = DEFAULT_PLAYWRIGHT_REMOVE_SELECTORS
+
+PLAYWRIGHT_REMOVE_SELECTORS = PersistentConfig(
+    "PLAYWRIGHT_REMOVE_SELECTORS",
+    "rag.web.loader.playwright_remove_selectors",
+    playwright_remove_selectors,
+)
+
 FIRECRAWL_API_KEY = PersistentConfig(
     "FIRECRAWL_API_KEY",
     "rag.web.loader.firecrawl_api_key",
