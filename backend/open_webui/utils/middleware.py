@@ -1137,6 +1137,8 @@ def handle_responses_streaming_event(
 
 OWUI_SOURCE_KEY_ATTR_RE = re.compile(r'\bowui_key="([^"]+)"')
 OWUI_SOURCE_HASH_LEN = 32
+OWUI_WEB_FULL_CONTEXT_ONCE_MAX_CHATS = 2048
+_WEB_FULL_CONTEXT_ONCE_KEYS_BY_CHAT: dict[str, set[str]] = {}
 
 
 def _normalize_http_url(value: Any) -> Optional[str]:
@@ -1297,6 +1299,53 @@ def _build_effective_files_for_web_full_context_once(
         pending_web_files.append(item)
 
     return [*non_web_files, *pending_web_files], non_web_files, pending_web_files
+
+
+def _get_chat_id_for_web_full_context_once(body: dict) -> Optional[str]:
+    metadata = body.get("metadata") if isinstance(body, dict) else None
+    if not isinstance(metadata, dict):
+        return None
+    chat_id = metadata.get("chat_id")
+    return chat_id if isinstance(chat_id, str) and chat_id else None
+
+
+def _get_cached_web_keys_for_chat(chat_id: Optional[str]) -> set[str]:
+    if not chat_id:
+        return set()
+    return set(_WEB_FULL_CONTEXT_ONCE_KEYS_BY_CHAT.get(chat_id, set()))
+
+
+def _merge_cached_web_keys_for_chat(chat_id: Optional[str], keys: set[str]) -> None:
+    if not chat_id or not keys:
+        return
+
+    web_keys = {key for key in keys if isinstance(key, str) and key.startswith("web:")}
+    if not web_keys:
+        return
+
+    current = _WEB_FULL_CONTEXT_ONCE_KEYS_BY_CHAT.get(chat_id, set())
+    _WEB_FULL_CONTEXT_ONCE_KEYS_BY_CHAT[chat_id] = set(current).union(web_keys)
+
+    # Guard memory in long-lived processes. Remove oldest inserted key set.
+    if len(_WEB_FULL_CONTEXT_ONCE_KEYS_BY_CHAT) > OWUI_WEB_FULL_CONTEXT_ONCE_MAX_CHATS:
+        oldest_chat_id = next(iter(_WEB_FULL_CONTEXT_ONCE_KEYS_BY_CHAT))
+        if oldest_chat_id != chat_id:
+            _WEB_FULL_CONTEXT_ONCE_KEYS_BY_CHAT.pop(oldest_chat_id, None)
+
+
+def _extract_web_source_keys_from_sources(sources: list[dict]) -> set[str]:
+    keys: set[str] = set()
+
+    for source in sources or []:
+        documents = source.get("document", []) if isinstance(source, dict) else []
+        metadatas = source.get("metadata", []) if isinstance(source, dict) else []
+        for doc_index, doc in enumerate(documents):
+            metadata = metadatas[doc_index] if doc_index < len(metadatas) else {}
+            key = _build_source_owui_key(source, metadata, doc, doc_index)
+            if key.startswith("web:"):
+                keys.add(key)
+
+    return keys
 
 
 def _build_source_owui_key(
@@ -3187,12 +3236,20 @@ async def chat_completion_files_handler(
 ) -> tuple[dict, dict[str, list]]:
     __event_emitter__ = extra_params["__event_emitter__"]
     sources = []
+    web_full_context_once_chat_id: Optional[str] = None
 
     if files := body.get("metadata", {}).get("files", None):
         files_for_retrieval = list(files)
         if RAG_WEB_FULL_CONTEXT_ONCE:
-            injected_keys = _extract_owui_source_keys_from_messages(
+            web_full_context_once_chat_id = _get_chat_id_for_web_full_context_once(body)
+            injected_keys_from_messages = _extract_owui_source_keys_from_messages(
                 body.get("messages", [])
+            )
+            _merge_cached_web_keys_for_chat(
+                web_full_context_once_chat_id, injected_keys_from_messages
+            )
+            injected_keys = injected_keys_from_messages.union(
+                _get_cached_web_keys_for_chat(web_full_context_once_chat_id)
             )
             files_for_retrieval, _, pending_web_files = (
                 _build_effective_files_for_web_full_context_once(
@@ -3337,6 +3394,11 @@ async def chat_completion_files_handler(
                 log.exception("web_search evidence saturation failed: %s", e)
 
         log.debug(f"rag_contexts:sources: {sources}")
+        if RAG_WEB_FULL_CONTEXT_ONCE:
+            _merge_cached_web_keys_for_chat(
+                web_full_context_once_chat_id,
+                _extract_web_source_keys_from_sources(sources),
+            )
 
         unique_ids = set()
         for source in sources or []:

@@ -5,6 +5,13 @@ import pytest
 import open_webui.utils.middleware as middleware
 
 
+@pytest.fixture(autouse=True)
+def _clear_web_full_context_once_cache():
+    middleware._WEB_FULL_CONTEXT_ONCE_KEYS_BY_CHAT.clear()
+    yield
+    middleware._WEB_FULL_CONTEXT_ONCE_KEYS_BY_CHAT.clear()
+
+
 async def _noop_event_emitter(_event):
     return None
 
@@ -103,6 +110,62 @@ async def test_web_full_context_once_skips_same_attachment_on_follow_up(monkeypa
         "model": "active-model",
         "messages": _build_messages_with_source(request, url),
         "metadata": {"files": [_make_web_item(url)]},
+    }
+    _, flags_second = await middleware.chat_completion_files_handler(
+        request=request,
+        body=body_second,
+        extra_params={"__event_emitter__": event_emitter},
+        user=user,
+    )
+
+    assert len(calls) == 1
+    assert flags_second["sources"] == []
+    assert any(
+        event.get("data", {}).get("action") == "sources_retrieved"
+        and event.get("data", {}).get("count") == 0
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_web_full_context_once_skips_via_chat_cache_without_source_markers(
+    monkeypatch,
+):
+    request = _make_request()
+    user = SimpleNamespace(id="u1")
+    events = []
+    calls = []
+    url = "https://www.bbc.com/news/live/ceqvwrydzpqt?page=2"
+    chat_id = "chat-42"
+
+    async def event_emitter(event):
+        events.append(event)
+
+    async def fake_get_sources_from_items(*_args, **kwargs):
+        calls.append(kwargs["items"])
+        return [_make_source(url)]
+
+    monkeypatch.setattr(middleware, "get_sources_from_items", fake_get_sources_from_items)
+    monkeypatch.setattr(middleware, "RAG_WEB_FULL_CONTEXT_ONCE", True)
+
+    body_first = {
+        "model": "active-model",
+        "messages": [{"role": "user", "content": "summarize"}],
+        "metadata": {"chat_id": chat_id, "files": [_make_web_item(url)]},
+    }
+    _, flags_first = await middleware.chat_completion_files_handler(
+        request=request,
+        body=body_first,
+        extra_params={"__event_emitter__": event_emitter},
+        user=user,
+    )
+    assert len(calls) == 1
+    assert len(flags_first["sources"]) == 1
+
+    body_second = {
+        "model": "active-model",
+        "messages": [{"role": "user", "content": "follow-up question"}],
+        "metadata": {"chat_id": chat_id, "files": [_make_web_item(url)]},
     }
     _, flags_second = await middleware.chat_completion_files_handler(
         request=request,
