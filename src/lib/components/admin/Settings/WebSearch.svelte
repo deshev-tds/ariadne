@@ -7,7 +7,6 @@
 	} from '$lib/apis/retrieval';
 	import Switch from '$lib/components/common/Switch.svelte';
 
-	import { models } from '$lib/stores';
 	import { onMount, getContext } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
@@ -16,7 +15,7 @@
 
 	const i18n = getContext('i18n');
 
-	export let saveHandler: Function;
+	export let saveHandler: () => void = () => {};
 
 	let webSearchEngines = [
 		'ollama_cloud',
@@ -163,7 +162,7 @@
 			}
 		}
 
-		const res = await updateRAGConfig(localStorage.token, {
+		await updateRAGConfig(localStorage.token, {
 			web: webConfig
 		});
 
@@ -1346,12 +1345,12 @@
 										{sourceRegistryValidation.schema}
 									</div>
 								{/if}
-								<textarea
-									class="w-full rounded-lg py-2 px-3 text-xs font-mono bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-									rows="14"
-									bind:value={sourceRegistryRaw}
-									placeholder={$i18n.t('Planner source registry JSON')}
-								/>
+									<textarea
+										class="w-full rounded-lg py-2 px-3 text-xs font-mono bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										rows="14"
+										bind:value={sourceRegistryRaw}
+										placeholder={$i18n.t('Planner source registry JSON')}
+									></textarea>
 								<div class="flex gap-2 mt-2">
 									<button
 										type="button"
@@ -1515,14 +1514,14 @@
 
 								<div class="flex w-full">
 									<div class="flex-1">
-										<input
-											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-											placeholder={$i18n.t(
-												'e.g. script,style,noscript,header,footer,nav,[role=\"navigation\"]'
-											)}
-											bind:value={webConfig.PLAYWRIGHT_REMOVE_SELECTORS}
-											autocomplete="off"
-										/>
+											<input
+												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+												placeholder={$i18n.t(
+													'e.g. script,style,noscript,header,footer,nav,[role="navigation"]'
+												)}
+												bind:value={webConfig.PLAYWRIGHT_REMOVE_SELECTORS}
+												autocomplete="off"
+											/>
 									</div>
 								</div>
 							</div>
