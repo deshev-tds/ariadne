@@ -16,6 +16,7 @@ import re
 import ast
 import math
 import hashlib
+from urllib.parse import urlsplit, urlunsplit
 
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
@@ -143,6 +144,7 @@ from open_webui.env import (
     ENABLE_REALTIME_CHAT_SAVE,
     ENABLE_QUERIES_CACHE,
     RAG_SYSTEM_CONTEXT,
+    RAG_WEB_FULL_CONTEXT_ONCE,
     ENABLE_FORWARD_USER_INFO_HEADERS,
     FORWARD_SESSION_INFO_HEADER_CHAT_ID,
     FORWARD_SESSION_INFO_HEADER_MESSAGE_ID,
@@ -1133,6 +1135,207 @@ def handle_responses_streaming_event(
     else:
         return current_output, None
 
+OWUI_SOURCE_KEY_ATTR_RE = re.compile(r'\bowui_key="([^"]+)"')
+OWUI_SOURCE_HASH_LEN = 32
+
+
+def _normalize_http_url(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+
+    candidate = value.strip()
+    if not candidate:
+        return None
+
+    try:
+        parsed = urlsplit(candidate)
+    except Exception:
+        return None
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+
+    path = parsed.path or "/"
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+
+    return urlunsplit((scheme, parsed.netloc.lower(), path, parsed.query, ""))
+
+
+def _hash_source_key(prefix: str, payload: str) -> str:
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:OWUI_SOURCE_HASH_LEN]
+    return f"{prefix}:{digest}"
+
+
+def _build_web_source_key_from_url(value: Any) -> Optional[str]:
+    normalized = _normalize_http_url(value)
+    if not normalized:
+        return None
+    return _hash_source_key("web", normalized)
+
+
+def _get_web_candidate_urls_from_item(item: dict) -> list[str]:
+    if not isinstance(item, dict):
+        return []
+
+    candidates: list[Any] = []
+    item_type = item.get("type")
+
+    if item_type == "web_search":
+        urls = item.get("urls")
+        if isinstance(urls, list):
+            candidates.extend(urls)
+
+        docs = item.get("docs")
+        if isinstance(docs, list):
+            for doc in docs:
+                if not isinstance(doc, dict):
+                    continue
+                metadata = doc.get("metadata")
+                if isinstance(metadata, dict):
+                    candidates.extend(
+                        [metadata.get("source"), metadata.get("url"), metadata.get("link")]
+                    )
+
+        candidates.extend([item.get("url"), item.get("name")])
+
+    elif item_type == "text" and item.get("context") == "full":
+        candidates.extend([item.get("url"), item.get("name")])
+        file_meta = (item.get("file", {}) or {}).get("meta", {})
+        if isinstance(file_meta, dict):
+            candidates.extend(
+                [file_meta.get("source"), file_meta.get("url"), file_meta.get("name")]
+            )
+
+    normalized_urls: list[str] = []
+    seen_urls: set[str] = set()
+    for candidate in candidates:
+        normalized = _normalize_http_url(candidate)
+        if not normalized or normalized in seen_urls:
+            continue
+        seen_urls.add(normalized)
+        normalized_urls.append(normalized)
+
+    return normalized_urls
+
+
+def _build_web_source_keys_from_item(item: dict) -> set[str]:
+    keys = set()
+    for normalized_url in _get_web_candidate_urls_from_item(item):
+        key = _build_web_source_key_from_url(normalized_url)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _is_web_full_context_once_item(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+
+    item_type = item.get("type")
+    if item_type == "web_search":
+        return bool(_get_web_candidate_urls_from_item(item))
+
+    return (
+        item_type == "text"
+        and item.get("context") == "full"
+        and bool(_get_web_candidate_urls_from_item(item))
+    )
+
+
+def _extract_owui_source_keys_from_messages(messages: list[dict]) -> set[str]:
+    keys: set[str] = set()
+
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+
+        content = message.get("content")
+        text_parts: list[str] = []
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+
+        for text in text_parts:
+            for match in OWUI_SOURCE_KEY_ATTR_RE.finditer(text):
+                keys.add(match.group(1))
+
+    return keys
+
+
+def _build_effective_files_for_web_full_context_once(
+    files: list[dict], injected_keys: set[str]
+) -> tuple[list[dict], list[dict], list[dict]]:
+    non_web_files: list[dict] = []
+    pending_web_files: list[dict] = []
+    seen_pending_signatures: set[tuple[str, ...]] = set()
+
+    for item in files:
+        if not _is_web_full_context_once_item(item):
+            non_web_files.append(item)
+            continue
+
+        web_keys = _build_web_source_keys_from_item(item)
+        if not web_keys:
+            non_web_files.append(item)
+            continue
+
+        if web_keys.issubset(injected_keys):
+            continue
+
+        signature = tuple(sorted(web_keys))
+        if signature in seen_pending_signatures:
+            continue
+        seen_pending_signatures.add(signature)
+        pending_web_files.append(item)
+
+    return [*non_web_files, *pending_web_files], non_web_files, pending_web_files
+
+
+def _build_source_owui_key(
+    source: dict, metadata: Optional[dict], doc: Any, doc_index: int
+) -> str:
+    metadata_dict = metadata if isinstance(metadata, dict) else {}
+    source_info = source.get("source", {}) if isinstance(source, dict) else {}
+    if not isinstance(source_info, dict):
+        source_info = {}
+
+    url_candidates: list[Any] = [
+        metadata_dict.get("source"),
+        metadata_dict.get("url"),
+        metadata_dict.get("link"),
+        source_info.get("url"),
+        source_info.get("name"),
+    ]
+
+    source_urls = source_info.get("urls")
+    if isinstance(source_urls, list) and doc_index < len(source_urls):
+        url_candidates.append(source_urls[doc_index])
+
+    for candidate in url_candidates:
+        key = _build_web_source_key_from_url(candidate)
+        if key:
+            return key
+
+    fallback_payload = json.dumps(
+        {
+            "source": source_info,
+            "metadata": metadata_dict,
+            "doc_index": doc_index,
+            "doc_preview": doc[:256] if isinstance(doc, str) else str(doc)[:256],
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    return _hash_source_key("src", fallback_payload)
+
 
 def apply_source_context_to_messages(
     request: Request,
@@ -1156,15 +1359,19 @@ def apply_source_context_to_messages(
     citation_idx = {}
 
     for source in sources:
-        for doc, meta in zip(source.get("document", []), source.get("metadata", [])):
+        for doc_index, (doc, meta) in enumerate(
+            zip(source.get("document", []), source.get("metadata", []))
+        ):
             src_id = meta.get("source") or source.get("source", {}).get("id") or "N/A"
             if src_id not in citation_idx:
                 citation_idx[src_id] = len(citation_idx) + 1
             src_name = source.get("source", {}).get("name")
             body = doc if include_content else ""
+            owui_key = _build_source_owui_key(source, meta, doc, doc_index)
             context_string += (
                 f'<source id="{citation_idx[src_id]}"'
                 + (f' name="{src_name}"' if src_name else "")
+                + (f' owui_key="{owui_key}"' if owui_key else "")
                 + f">{body}</source>\n"
             )
 
@@ -2982,10 +3189,42 @@ async def chat_completion_files_handler(
     sources = []
 
     if files := body.get("metadata", {}).get("files", None):
+        files_for_retrieval = list(files)
+        if RAG_WEB_FULL_CONTEXT_ONCE:
+            injected_keys = _extract_owui_source_keys_from_messages(
+                body.get("messages", [])
+            )
+            files_for_retrieval, _, pending_web_files = (
+                _build_effective_files_for_web_full_context_once(
+                    files_for_retrieval, injected_keys
+                )
+            )
+
+            if not files_for_retrieval:
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "sources_retrieved",
+                            "count": 0,
+                            "done": True,
+                        },
+                    }
+                )
+                log.debug(
+                    "Skipping retrieval: all web full-context sources already injected "
+                    f"(pending_web_files={len(pending_web_files)})"
+                )
+                return body, {"sources": []}
+
         # Check if all files are in full context mode
-        all_full_context = all(item.get("context") == "full" for item in files)
+        all_full_context = all(
+            isinstance(item, dict) and item.get("context") == "full"
+            for item in files_for_retrieval
+        )
         has_web_search_files = any(
-            (isinstance(item, dict) and item.get("type") == "web_search") for item in files
+            (isinstance(item, dict) and item.get("type") == "web_search")
+            for item in files_for_retrieval
         )
 
         queries = []
@@ -3037,7 +3276,7 @@ async def chat_completion_files_handler(
             # Directly await async get_sources_from_items (no thread needed - fully async now)
             sources = await get_sources_from_items(
                 request=request,
-                items=files,
+                items=files_for_retrieval,
                 queries=queries,
                 embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
                     query, prefix=prefix, user=user
