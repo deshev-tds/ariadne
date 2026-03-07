@@ -1413,9 +1413,21 @@ async def get_sources_from_items(
         # If query_result is None
         # Fallback to collection names and vector search the collections
         if query_result is None and collection_names:
-            collection_names = list(
-                set(collection_names).difference(extracted_collections)
-            )
+            # Preserve original order for deterministic prompt/context construction.
+            extracted_set = set(extracted_collections)
+            seen_collection_names = set()
+            filtered_collection_names = []
+            for collection_name in collection_names:
+                if (
+                    not collection_name
+                    or collection_name in extracted_set
+                    or collection_name in seen_collection_names
+                ):
+                    continue
+                seen_collection_names.add(collection_name)
+                filtered_collection_names.append(collection_name)
+
+            collection_names = filtered_collection_names
             if not collection_names:
                 log.debug(f"skipping {item} as it has already been extracted")
                 continue
