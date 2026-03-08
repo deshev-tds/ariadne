@@ -65,6 +65,7 @@
 	import { AudioQueue } from '$lib/utils/audio';
 
 	import {
+		archiveChatById,
 		createNewChat,
 		getAllTags,
 		getChatById,
@@ -110,6 +111,7 @@
 		buildTokenBranchPayload,
 		type TokenBranchRequest
 	} from './tokenExplorer';
+	import { getBanners } from '$lib/apis/configs';
 
 	export let chatIdProp = '';
 
@@ -213,8 +215,8 @@
 		params = nextParams;
 	};
 
-		// Message queue for storing messages while generating
-		let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
+	// Message queue for storing messages while generating
+	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
 
 	$: if (chatIdProp) {
 		navigateHandler();
@@ -450,11 +452,14 @@
 	};
 
 	const terminalEventHandler = (type: string, data: any) => {
-		if (!data?.path) return;
 		if (type === 'terminal:display_file') {
+			if (!data?.path) return;
 			displayFileHandler(data.path, { showControls, showFileNavPath });
-		} else if (type === 'terminal:write_file') {
+		} else if (type === 'terminal:write_file' || type === 'terminal:replace_file_content') {
+			if (!data?.path) return;
 			showFileNavDir.set(data.path);
+		} else if (type === 'terminal:run_command') {
+			showFileNavDir.set('/');
 		}
 	};
 
@@ -689,6 +694,13 @@
 			if (p.url.pathname === '/') {
 				await tick();
 				initNewChat();
+
+				// Re-fetch banners on navigation to homepage so newly configured banners appear
+				try {
+					banners.set(await getBanners(localStorage.token).catch(() => []));
+				} catch (e) {
+					console.error('Failed to refresh banners:', e);
+				}
 			}
 
 			stopAudio();
@@ -967,15 +979,19 @@
 		}
 	};
 
-	$: if (history) {
-		cancelAnimationFrame(contentsRAF);
-		contentsRAF = requestAnimationFrame(() => {
-			getContents();
-			contentsRAF = null;
-		});
-	} else {
-		artifactContents.set([]);
-	}
+	const onHistoryChange = (history) => {
+		if (history) {
+			cancelAnimationFrame(contentsRAF);
+			contentsRAF = requestAnimationFrame(() => {
+				getContents();
+				contentsRAF = null;
+			});
+		} else {
+			artifactContents.set([]);
+		}
+	};
+
+	$: onHistoryChange(history);
 
 	const getContents = () => {
 		const messages = history ? createMessagesList(history, history.currentId) : [];
@@ -1574,29 +1590,29 @@
 		}
 	};
 
-		const chatCompletionEventHandler = async (data, message, chatId) => {
-			const {
-				id,
-				done,
-				choices,
-				content,
-				output,
-				sources,
-				selected_model_id,
-				error,
-				usage,
-				tokenTelemetry,
-				tokenBranch,
-				tokenTelemetryUnavailable,
-				tokenTelemetryUnavailableReason
-			} = data;
+	const chatCompletionEventHandler = async (data, message, chatId) => {
+		const {
+			id,
+			done,
+			choices,
+			content,
+			output,
+			sources,
+			selected_model_id,
+			error,
+			usage,
+			tokenTelemetry,
+			tokenBranch,
+			tokenTelemetryUnavailable,
+			tokenTelemetryUnavailableReason
+		} = data;
 
-			applyCompletionTokenData(message, {
-				tokenTelemetry,
-				tokenBranch,
-				tokenTelemetryUnavailable,
-				tokenTelemetryUnavailableReason
-			});
+		applyCompletionTokenData(message, {
+			tokenTelemetry,
+			tokenBranch,
+			tokenTelemetryUnavailable,
+			tokenTelemetryUnavailableReason
+		});
 
 		// Store raw OR-aligned output items from backend
 		if (output) {
@@ -1627,27 +1643,29 @@
 						navigator.vibrate(5);
 					}
 
-					// Emit chat event for TTS
-					const messageContentParts = getMessageContentParts(
-						removeAllDetails(message.content),
-						$config?.audio?.tts?.split_on ?? 'punctuation'
-					);
-					messageContentParts.pop();
-
-					// dispatch only last sentence and make sure it hasn't been dispatched before
-					if (
-						messageContentParts.length > 0 &&
-						messageContentParts[messageContentParts.length - 1] !== message.lastSentence
-					) {
-						message.lastSentence = messageContentParts[messageContentParts.length - 1];
-						eventTarget.dispatchEvent(
-							new CustomEvent('chat', {
-								detail: {
-									id: message.id,
-									content: messageContentParts[messageContentParts.length - 1]
-								}
-							})
+					// Emit chat event for TTS (only when call overlay is active)
+					if ($showCallOverlay) {
+						const messageContentParts = getMessageContentParts(
+							removeAllDetails(message.content),
+							$config?.audio?.tts?.split_on ?? 'punctuation'
 						);
+						messageContentParts.pop();
+
+						// dispatch only last sentence and make sure it hasn't been dispatched before
+						if (
+							messageContentParts.length > 0 &&
+							messageContentParts[messageContentParts.length - 1] !== message.lastSentence
+						) {
+							message.lastSentence = messageContentParts[messageContentParts.length - 1];
+							eventTarget.dispatchEvent(
+								new CustomEvent('chat', {
+									detail: {
+										id: message.id,
+										content: messageContentParts[messageContentParts.length - 1]
+									}
+								})
+							);
+						}
 					}
 				}
 			}
@@ -1661,27 +1679,29 @@
 				navigator.vibrate(5);
 			}
 
-			// Emit chat event for TTS
-			const messageContentParts = getMessageContentParts(
-				removeAllDetails(message.content),
-				$config?.audio?.tts?.split_on ?? 'punctuation'
-			);
-			messageContentParts.pop();
-
-			// dispatch only last sentence and make sure it hasn't been dispatched before
-			if (
-				messageContentParts.length > 0 &&
-				messageContentParts[messageContentParts.length - 1] !== message.lastSentence
-			) {
-				message.lastSentence = messageContentParts[messageContentParts.length - 1];
-				eventTarget.dispatchEvent(
-					new CustomEvent('chat', {
-						detail: {
-							id: message.id,
-							content: messageContentParts[messageContentParts.length - 1]
-						}
-					})
+			// Emit chat event for TTS (only when call overlay is active)
+			if ($showCallOverlay) {
+				const messageContentParts = getMessageContentParts(
+					removeAllDetails(message.content),
+					$config?.audio?.tts?.split_on ?? 'punctuation'
 				);
+				messageContentParts.pop();
+
+				// dispatch only last sentence and make sure it hasn't been dispatched before
+				if (
+					messageContentParts.length > 0 &&
+					messageContentParts[messageContentParts.length - 1] !== message.lastSentence
+				) {
+					message.lastSentence = messageContentParts[messageContentParts.length - 1];
+					eventTarget.dispatchEvent(
+						new CustomEvent('chat', {
+							detail: {
+								id: message.id,
+								content: messageContentParts[messageContentParts.length - 1]
+							}
+						})
+					);
+				}
 			}
 		}
 
@@ -1708,18 +1728,20 @@
 				document.getElementById(`speak-button-${message.id}`)?.click();
 			}
 
-			// Emit chat event for TTS
-			let lastMessageContentPart =
-				getMessageContentParts(
-					removeAllDetails(message.content),
-					$config?.audio?.tts?.split_on ?? 'punctuation'
-				)?.at(-1) ?? '';
-			if (lastMessageContentPart) {
-				eventTarget.dispatchEvent(
-					new CustomEvent('chat', {
-						detail: { id: message.id, content: lastMessageContentPart }
-					})
-				);
+			// Emit chat event for TTS (only when call overlay is active)
+			if ($showCallOverlay) {
+				let lastMessageContentPart =
+					getMessageContentParts(
+						removeAllDetails(message.content),
+						$config?.audio?.tts?.split_on ?? 'punctuation'
+					)?.at(-1) ?? '';
+				if (lastMessageContentPart) {
+					eventTarget.dispatchEvent(
+						new CustomEvent('chat', {
+							detail: { id: message.id, content: lastMessageContentPart }
+						})
+					);
+				}
 			}
 			eventTarget.dispatchEvent(
 				new CustomEvent('chat:finish', {
@@ -1887,23 +1909,23 @@
 		await sendMessage(history, userMessageId, { newChat: true });
 	};
 
-		const sendMessage = async (
-			_history,
-			parentId: string,
-			{
-				messages = null,
-				modelId = null,
-				modelIdx = null,
-				newChat = false,
-				branch = null
-			}: {
-				messages?: any[] | null;
-				modelId?: string | null;
-				modelIdx?: number | null;
-				newChat?: boolean;
-				branch?: TokenBranchRequest | null;
-			} = {}
-		) => {
+	const sendMessage = async (
+		_history,
+		parentId: string,
+		{
+			messages = null,
+			modelId = null,
+			modelIdx = null,
+			newChat = false,
+			branch = null
+		}: {
+			messages?: any[] | null;
+			modelId?: string | null;
+			modelIdx?: number | null;
+			newChat?: boolean;
+			branch?: TokenBranchRequest | null;
+		} = {}
+	) => {
 		if (autoScroll) {
 			scrollToBottom();
 		}
@@ -1997,16 +2019,16 @@
 					const chatEventEmitter = await getChatEventEmitter(model.id, _chatId);
 
 					scrollToBottom();
-						await sendMessageSocket(
-							model,
-							messages && messages.length > 0
-								? messages
-								: createMessagesList(_history, responseMessageId),
-							_history,
-							responseMessageId,
-							_chatId,
-							branch
-						);
+					await sendMessageSocket(
+						model,
+						messages && messages.length > 0
+							? messages
+							: createMessagesList(_history, responseMessageId),
+						_history,
+						responseMessageId,
+						_chatId,
+						branch
+					);
 
 					if (chatEventEmitter) clearInterval(chatEventEmitter);
 				} else {
@@ -2060,16 +2082,27 @@
 		return features;
 	};
 
-		const sendMessageSocket = async (
-			model,
-			_messages,
-			_history,
-			responseMessageId,
-			_chatId,
-			branch: TokenBranchRequest | null = null
-		) => {
-			const responseMessage = _history.messages[responseMessageId];
-			const userMessage = _history.messages[responseMessage.parentId];
+	const getStopTokens = () => {
+		const stop = params?.stop ?? $settings?.params?.stop;
+		if (!stop) return undefined;
+
+		const tokens = Array.isArray(stop) ? stop : stop.split(',').map((s) => s.trim());
+
+		return tokens
+			.filter(Boolean)
+			.map((token) => decodeURIComponent(JSON.parse(`"${token.replace(/"/g, '\\"')}"`)));
+	};
+
+	const sendMessageSocket = async (
+		model,
+		_messages,
+		_history,
+		responseMessageId,
+		_chatId,
+		branch: TokenBranchRequest | null = null
+	) => {
+		const responseMessage = _history.messages[responseMessageId];
+		const userMessage = _history.messages[responseMessage.parentId];
 
 		const chatMessageFiles = _messages
 			.filter((message) => message.files)
@@ -2216,41 +2249,26 @@
 			});
 		}
 
-				const stopParam = params?.stop ?? $settings?.params?.stop ?? undefined;
-				const normalizedStop = stopParam
-					? (
-							Array.isArray(stopParam)
-								? stopParam
-								: typeof stopParam === 'string'
-									? stopParam.split(',').map((token) => token.trim())
-									: [String(stopParam)]
-						).map((str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"')))
-					: undefined;
+		const activeTerminalId = $selectedTerminalId ?? null;
+		let requestParams = {
+			...$settings?.params,
+			...params,
+			stop: getStopTokens()
+		};
 
-				// Use the user-selected terminal from the dropdown
-				const activeTerminalId = $selectedTerminalId ?? null;
+		requestParams = applyTokenExplorerDefaults(
+			requestParams,
+			$settings?.tokenExplorerEnabled ?? false
+		);
 
-			let requestParams = {
-				...$settings?.params,
-				...params,
-				stop: normalizedStop
-			};
-
-			requestParams = applyTokenExplorerDefaults(
-				requestParams,
-				$settings?.tokenExplorerEnabled ?? false
-			);
-
-			const res = await generateOpenAIChatCompletion(
-				localStorage.token,
-				{
-					stream: stream,
-					model: model.id,
-					messages: messages,
-					params: requestParams,
-
-					files: (files?.length ?? 0) > 0 ? files : undefined,
-
+		const res = await generateOpenAIChatCompletion(
+			localStorage.token,
+			{
+				stream: stream,
+				model: model.id,
+				messages: messages,
+				params: requestParams,
+				files: (files?.length ?? 0) > 0 ? files : undefined,
 				filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
 				tool_ids: toolIds.length > 0 ? toolIds : undefined,
 				skill_ids: skillIds.length > 0 ? skillIds : undefined,
@@ -2259,7 +2277,6 @@
 					...($toolServers ?? []).filter(
 						(server, idx) => toolServerIds.includes(idx) || toolServerIds.includes(server?.id)
 					),
-					// Direct terminal servers — always included when enabled (not routed through selectedToolIds)
 					...($terminalServers ?? []).filter((t) => !t.id)
 				],
 				features: getFeatures(),
@@ -2271,15 +2288,12 @@
 					)
 				},
 				model_item: $models.find((m) => m.id === model.id),
-
 				session_id: $socket?.id,
 				chat_id: $chatId,
-
-					id: responseMessageId,
-					parent_id: userMessage?.id ?? null,
-					parent_message: userMessage,
-					...(branch ? { branch } : {}),
-
+				id: responseMessageId,
+				parent_id: userMessage?.id ?? null,
+				parent_message: userMessage,
+				...(branch ? { branch } : {}),
 				background_tasks: {
 					...(!$temporaryChatEnabled &&
 					(messages.length == 1 ||
@@ -2294,7 +2308,6 @@
 						: {}),
 					follow_up_generation: $settings?.autoFollowUps ?? true
 				},
-
 				...(stream && (model.info?.meta?.capabilities?.usage ?? false)
 					? {
 							stream_options: {
@@ -2493,7 +2506,7 @@
 		}
 	};
 
-		const continueResponse = async () => {
+	const continueResponse = async () => {
 		console.log('continueResponse');
 		const _chatId = JSON.parse(JSON.stringify($chatId));
 
@@ -2506,36 +2519,35 @@
 				.filter((m) => m.id === (responseMessage?.selectedModelId ?? responseMessage.model))
 				.at(0);
 
-				if (model) {
-					await sendMessageSocket(
-						model,
-						createMessagesList(history, responseMessage.id),
-						history,
-						responseMessage.id,
-						_chatId,
-						null
-					);
-				}
+			if (model) {
+				await sendMessageSocket(
+					model,
+					createMessagesList(history, responseMessage.id),
+					history,
+					responseMessage.id,
+					_chatId
+				);
 			}
-		};
+		}
+	};
 
-		const createTokenBranch = async (sourceMessage, forkIndex: number, altRank: number) => {
-			if (!sourceMessage?.id || sourceMessage?.role !== 'assistant') {
-				toast.error($i18n.t('Invalid branch source message'));
-				return;
-			}
+	const createTokenBranch = async (sourceMessage, forkIndex: number, altRank: number) => {
+		if (!sourceMessage?.id || sourceMessage?.role !== 'assistant') {
+			toast.error($i18n.t('Invalid branch source message'));
+			return;
+		}
 
-			if (!sourceMessage?.parentId) {
-				toast.error($i18n.t('Parent message not found'));
-				return;
-			}
+		if (!sourceMessage?.parentId) {
+			toast.error($i18n.t('Parent message not found'));
+			return;
+		}
 
-			await sendMessage(history, sourceMessage.parentId, {
-				modelId: sourceMessage.model,
-				modelIdx: sourceMessage.modelIdx,
-				branch: buildTokenBranchPayload(sourceMessage.id, forkIndex, altRank)
-			});
-		};
+		await sendMessage(history, sourceMessage.parentId, {
+			modelId: sourceMessage.model,
+			modelIdx: sourceMessage.modelIdx,
+			branch: buildTokenBranchPayload(sourceMessage.id, forkIndex, altRank)
+		});
+	};
 
 	const mergeResponses = async (messageId, responses, _chatId) => {
 		console.log('mergeResponses', messageId, responses);
@@ -2694,6 +2706,25 @@
 			toast.error($i18n.t('Failed to move chat'));
 		}
 	};
+
+	const archiveChatHandler = async (id: string) => {
+		try {
+			await archiveChatById(localStorage.token, id);
+			currentChatPage.set(1);
+			initNewChat();
+			await goto('/');
+			getChatList(localStorage.token, $currentChatPage).then((chats) => {
+				chats.set(chats);
+			});
+			getPinnedChatList(localStorage.token).then((pinnedChats) => {
+				pinnedChats.set(pinnedChats);
+			});
+			toast.success($i18n.t('Chat archived.'));
+		} catch (error) {
+			console.error('Error archiving chat:', error);
+			toast.error($i18n.t('Failed to archive chat.'));
+		}
+	};
 </script>
 
 <svelte:head>
@@ -2776,7 +2807,7 @@
 						bind:selectedModels
 						shareEnabled={!!history.currentId}
 						{initNewChat}
-						archiveChatHandler={() => {}}
+						{archiveChatHandler}
 						{moveChatHandler}
 						onSaveTempChat={async () => {
 							try {
@@ -2842,9 +2873,9 @@
 										{atSelectedModel}
 										{sendMessage}
 										{showMessage}
-											{submitMessage}
-											{createTokenBranch}
-											{continueResponse}
+										{submitMessage}
+										{createTokenBranch}
+										{continueResponse}
 										{regenerateResponse}
 										{mergeResponses}
 										{chatActionHandler}
@@ -2991,6 +3022,7 @@
 					{stopResponse}
 					{showMessage}
 					{eventTarget}
+					{codeInterpreterEnabled}
 				/>
 			</PaneGroup>
 		</div>

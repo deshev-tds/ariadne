@@ -5,7 +5,7 @@ import uuid
 from typing import Optional
 
 from sqlalchemy.orm import Session
-from open_webui.internal.db import Base, JSONField, get_db, get_db_context
+from open_webui.internal.db import Base, JSONField, get_db_context
 from open_webui.models.tags import TagModel, Tag, Tags
 from open_webui.models.folders import Folders
 from open_webui.models.chat_messages import ChatMessage, ChatMessages
@@ -32,19 +32,6 @@ from sqlalchemy.sql.expression import bindparam
 ####################
 
 log = logging.getLogger(__name__)
-
-
-def _delete_simon_lex_entries(chat_ids: list[str]) -> None:
-    if not chat_ids:
-        return
-
-    try:
-        from open_webui.models.simon_lex_index import delete_entries_for_chat_id
-
-        for chat_id in chat_ids:
-            delete_entries_for_chat_id(chat_id)
-    except Exception as exc:
-        log.debug("Failed to clear Simon lexical index entries: %s", exc)
 
 
 class Chat(Base):
@@ -747,13 +734,13 @@ class ChatTable:
                         raise ValueError("Invalid order_by field")
 
                     if direction.lower() == "asc":
-                        query = query.order_by(getattr(Chat, order_by).asc())
+                        query = query.order_by(getattr(Chat, order_by).asc(), Chat.id)
                     elif direction.lower() == "desc":
-                        query = query.order_by(getattr(Chat, order_by).desc())
+                        query = query.order_by(getattr(Chat, order_by).desc(), Chat.id)
                     else:
                         raise ValueError("Invalid direction for ordering")
             else:
-                query = query.order_by(Chat.updated_at.desc())
+                query = query.order_by(Chat.updated_at.desc(), Chat.id)
 
             query = query.with_entities(
                 Chat.id, Chat.title, Chat.updated_at, Chat.created_at
@@ -806,13 +793,13 @@ class ChatTable:
                         raise ValueError("Invalid order_by field")
 
                     if direction.lower() == "asc":
-                        query = query.order_by(getattr(Chat, order_by).asc())
+                        query = query.order_by(getattr(Chat, order_by).asc(), Chat.id)
                     elif direction.lower() == "desc":
-                        query = query.order_by(getattr(Chat, order_by).desc())
+                        query = query.order_by(getattr(Chat, order_by).desc(), Chat.id)
                     else:
                         raise ValueError("Invalid direction for ordering")
             else:
-                query = query.order_by(Chat.updated_at.desc())
+                query = query.order_by(Chat.updated_at.desc(), Chat.id)
 
             # Select only the columns needed for SharedChatResponse
             # to avoid loading the heavy chat JSON blob
@@ -867,13 +854,13 @@ class ChatTable:
 
                 if order_by and direction and getattr(Chat, order_by):
                     if direction.lower() == "asc":
-                        query = query.order_by(getattr(Chat, order_by).asc())
+                        query = query.order_by(getattr(Chat, order_by).asc(), Chat.id)
                     elif direction.lower() == "desc":
-                        query = query.order_by(getattr(Chat, order_by).desc())
+                        query = query.order_by(getattr(Chat, order_by).desc(), Chat.id)
                     else:
                         raise ValueError("Invalid direction for ordering")
             else:
-                query = query.order_by(Chat.updated_at.desc())
+                query = query.order_by(Chat.updated_at.desc(), Chat.id)
 
             if skip:
                 query = query.offset(skip)
@@ -905,7 +892,7 @@ class ChatTable:
             if not include_archived:
                 query = query.filter_by(archived=False)
 
-            query = query.order_by(Chat.updated_at.desc()).with_entities(
+            query = query.order_by(Chat.updated_at.desc(), Chat.id).with_entities(
                 Chat.id, Chat.title, Chat.updated_at, Chat.created_at
             )
 
@@ -1052,14 +1039,18 @@ class ChatTable:
                 if order_by and direction:
                     if hasattr(Chat, order_by):
                         if direction.lower() == "asc":
-                            query = query.order_by(getattr(Chat, order_by).asc())
+                            query = query.order_by(
+                                getattr(Chat, order_by).asc(), Chat.id
+                            )
                         elif direction.lower() == "desc":
-                            query = query.order_by(getattr(Chat, order_by).desc())
+                            query = query.order_by(
+                                getattr(Chat, order_by).desc(), Chat.id
+                            )
                 else:
-                    query = query.order_by(Chat.updated_at.desc())
+                    query = query.order_by(Chat.updated_at.desc(), Chat.id)
 
             else:
-                query = query.order_by(Chat.updated_at.desc())
+                query = query.order_by(Chat.updated_at.desc(), Chat.id)
 
             total = query.count()
 
@@ -1201,7 +1192,7 @@ class ChatTable:
             if folder_ids:
                 query = query.filter(Chat.folder_id.in_(folder_ids))
 
-            query = query.order_by(Chat.updated_at.desc())
+            query = query.order_by(Chat.updated_at.desc(), Chat.id)
 
             # Check if the database dialect is either 'sqlite' or 'postgresql'
             dialect_name = db.bind.dialect.name
@@ -1322,7 +1313,7 @@ class ChatTable:
             query = query.filter(or_(Chat.pinned == False, Chat.pinned == None))
             query = query.filter_by(archived=False)
 
-            query = query.order_by(Chat.updated_at.desc())
+            query = query.order_by(Chat.updated_at.desc(), Chat.id)
 
             if skip:
                 query = query.offset(skip)
@@ -1529,8 +1520,6 @@ class ChatTable:
                 db.query(ChatMessage).filter_by(chat_id=id).delete()
                 db.query(Chat).filter_by(id=id).delete()
                 db.commit()
-
-                _delete_simon_lex_entries([id])
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1543,8 +1532,6 @@ class ChatTable:
                 db.query(ChatMessage).filter_by(chat_id=id).delete()
                 db.query(Chat).filter_by(id=id, user_id=user_id).delete()
                 db.commit()
-
-                _delete_simon_lex_entries([id])
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1556,8 +1543,6 @@ class ChatTable:
             with get_db_context(db) as db:
                 self.delete_shared_chats_by_user_id(user_id, db=db)
 
-                chat_ids = [row[0] for row in db.query(Chat.id).filter_by(user_id=user_id).all()]
-
                 chat_id_subquery = (
                     db.query(Chat.id).filter_by(user_id=user_id).subquery()
                 )
@@ -1566,8 +1551,6 @@ class ChatTable:
                 ).delete(synchronize_session=False)
                 db.query(Chat).filter_by(user_id=user_id).delete()
                 db.commit()
-
-                _delete_simon_lex_entries(chat_ids)
                 return True
         except Exception:
             return False
@@ -1577,12 +1560,6 @@ class ChatTable:
     ) -> bool:
         try:
             with get_db_context(db) as db:
-                chat_ids = [
-                    row[0]
-                    for row in db.query(Chat.id)
-                    .filter_by(user_id=user_id, folder_id=folder_id)
-                    .all()
-                ]
                 chat_id_subquery = (
                     db.query(Chat.id)
                     .filter_by(user_id=user_id, folder_id=folder_id)
@@ -1593,8 +1570,6 @@ class ChatTable:
                 ).delete(synchronize_session=False)
                 db.query(Chat).filter_by(user_id=user_id, folder_id=folder_id).delete()
                 db.commit()
-
-                _delete_simon_lex_entries(chat_ids)
                 return True
         except Exception:
             return False
