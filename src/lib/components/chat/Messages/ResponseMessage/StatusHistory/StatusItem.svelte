@@ -122,6 +122,22 @@
 					{/if}
 				</div>
 			</div>
+		{:else if status?.action === 'sources_reused' && status?.count !== undefined}
+			<div class="flex flex-col justify-center -space-y-0.5">
+				<div
+					class="{(done || status?.done) === false
+						? 'shimmer'
+						: ''} text-gray-500 dark:text-gray-500 text-base line-clamp-1 text-wrap"
+				>
+					{#if status.count === 1}
+						{$i18n.t('Reused 1 source')}
+					{:else}
+						{$i18n.t('Reused {{count}} sources', {
+							count: status.count
+						})}
+					{/if}
+				</div>
+			</div>
 		{:else}
 			<div class="flex flex-col justify-center -space-y-0.5">
 				<div

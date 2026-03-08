@@ -121,8 +121,8 @@ async def test_web_full_context_once_skips_same_attachment_on_follow_up(monkeypa
     assert len(calls) == 1
     assert flags_second["sources"] == []
     assert any(
-        event.get("data", {}).get("action") == "sources_retrieved"
-        and event.get("data", {}).get("count") == 0
+        event.get("data", {}).get("action") == "sources_reused"
+        and event.get("data", {}).get("count") == 1
         for event in events
     )
 
@@ -177,8 +177,8 @@ async def test_web_full_context_once_skips_via_chat_cache_without_source_markers
     assert len(calls) == 1
     assert flags_second["sources"] == []
     assert any(
-        event.get("data", {}).get("action") == "sources_retrieved"
-        and event.get("data", {}).get("count") == 0
+        event.get("data", {}).get("action") == "sources_reused"
+        and event.get("data", {}).get("count") == 1
         for event in events
     )
 

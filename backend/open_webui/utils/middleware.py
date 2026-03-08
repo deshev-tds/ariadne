@@ -3258,12 +3258,24 @@ async def chat_completion_files_handler(
             )
 
             if not files_for_retrieval:
+                reused_keys: set[str] = set()
+                for item in files:
+                    if not _is_web_full_context_once_item(item):
+                        continue
+                    reused_keys.update(
+                        {
+                            key
+                            for key in _build_web_source_keys_from_item(item)
+                            if key in injected_keys
+                        }
+                    )
+
                 await __event_emitter__(
                     {
                         "type": "status",
                         "data": {
-                            "action": "sources_retrieved",
-                            "count": 0,
+                            "action": "sources_reused",
+                            "count": len(reused_keys),
                             "done": True,
                         },
                     }

@@ -1579,6 +1579,8 @@
 	"Retrieved {{count}} sources_one": "",
 	"Retrieved {{count}} sources_other": "",
 	"Retrieved 1 source": "",
+	"Reused {{count}} sources": "",
+	"Reused 1 source": "",
 	"Rich Text Input for Chat": "Богат текстов вход за чат",
 	"Role": "Роля",
 	"RTL": "RTL",
