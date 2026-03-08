@@ -1007,6 +1007,13 @@ async def get_admin_config(request: Request, user=Depends(get_admin_user)):
         "PENDING_USER_OVERLAY_CONTENT": request.app.state.config.PENDING_USER_OVERLAY_CONTENT,
         "RESPONSE_WATERMARK": request.app.state.config.RESPONSE_WATERMARK,
         "ENABLE_CACHE_PROMPT": request.app.state.config.ENABLE_CACHE_PROMPT,
+        "ENABLE_CONTEXT_MAINTENANCE": request.app.state.config.ENABLE_CONTEXT_MAINTENANCE,
+        "CONTEXT_MAINTENANCE_MAX_CTX_CAP": request.app.state.config.CONTEXT_MAINTENANCE_MAX_CTX_CAP,
+        "CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS,
+        "CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS,
+        "CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS,
+        "CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS,
+        "CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS,
     }
 
 
@@ -1034,6 +1041,13 @@ class AdminConfig(BaseModel):
     PENDING_USER_OVERLAY_CONTENT: Optional[str] = None
     RESPONSE_WATERMARK: Optional[str] = None
     ENABLE_CACHE_PROMPT: bool
+    ENABLE_CONTEXT_MAINTENANCE: bool
+    CONTEXT_MAINTENANCE_MAX_CTX_CAP: Optional[int | str] = None
+    CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS: int
+    CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS: int
+    CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS: int
+    CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS: int
+    CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS: int
 
 
 @router.post("/admin/config")
@@ -1089,6 +1103,29 @@ async def update_admin_config(
 
     request.app.state.config.RESPONSE_WATERMARK = form_data.RESPONSE_WATERMARK
     request.app.state.config.ENABLE_CACHE_PROMPT = form_data.ENABLE_CACHE_PROMPT
+    request.app.state.config.ENABLE_CONTEXT_MAINTENANCE = (
+        form_data.ENABLE_CONTEXT_MAINTENANCE
+    )
+    request.app.state.config.CONTEXT_MAINTENANCE_MAX_CTX_CAP = (
+        int(form_data.CONTEXT_MAINTENANCE_MAX_CTX_CAP)
+        if form_data.CONTEXT_MAINTENANCE_MAX_CTX_CAP
+        else ""
+    )
+    request.app.state.config.CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS = (
+        form_data.CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS
+    )
+    request.app.state.config.CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS = (
+        form_data.CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS
+    )
+    request.app.state.config.CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS = (
+        form_data.CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS
+    )
+    request.app.state.config.CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS = (
+        form_data.CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS
+    )
+    request.app.state.config.CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS = (
+        form_data.CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS
+    )
 
     return {
         "SHOW_ADMIN_DETAILS": request.app.state.config.SHOW_ADMIN_DETAILS,
@@ -1114,6 +1151,13 @@ async def update_admin_config(
         "PENDING_USER_OVERLAY_CONTENT": request.app.state.config.PENDING_USER_OVERLAY_CONTENT,
         "RESPONSE_WATERMARK": request.app.state.config.RESPONSE_WATERMARK,
         "ENABLE_CACHE_PROMPT": request.app.state.config.ENABLE_CACHE_PROMPT,
+        "ENABLE_CONTEXT_MAINTENANCE": request.app.state.config.ENABLE_CONTEXT_MAINTENANCE,
+        "CONTEXT_MAINTENANCE_MAX_CTX_CAP": request.app.state.config.CONTEXT_MAINTENANCE_MAX_CTX_CAP,
+        "CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS,
+        "CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS,
+        "CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS,
+        "CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS,
+        "CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS,
     }
 
 

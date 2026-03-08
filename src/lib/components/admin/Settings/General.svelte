@@ -724,6 +724,93 @@
 
 					<div class="mb-2.5 flex w-full items-center justify-between pr-2">
 						<div class=" self-center text-xs font-medium">
+							{$i18n.t('Enable Context Maintenance')}
+						</div>
+
+						<Switch bind:state={adminConfig.ENABLE_CONTEXT_MAINTENANCE} />
+					</div>
+
+					<div class="-mt-1 mb-2.5 text-xs text-gray-400 dark:text-gray-500">
+						{$i18n.t(
+							'Summarizes older chat turns when prompt pressure is high, while preserving recent raw context.'
+						)}
+					</div>
+
+					{#if adminConfig.ENABLE_CONTEXT_MAINTENANCE}
+						<div class="grid grid-cols-1 gap-2 mb-3">
+							<div>
+								<div class="mb-1 text-xs font-medium">
+									{$i18n.t('Context Maintenance Max Context Cap')}
+								</div>
+								<input
+									class="w-full rounded-lg bg-transparent px-3 py-2 text-sm outline-none ring-1 ring-gray-200 dark:ring-gray-800"
+									type="number"
+									bind:value={adminConfig.CONTEXT_MAINTENANCE_MAX_CTX_CAP}
+									placeholder={$i18n.t('Leave empty to trust provider metadata')}
+								/>
+							</div>
+
+							<div class="grid grid-cols-2 gap-2">
+								<div>
+									<div class="mb-1 text-xs font-medium">
+										{$i18n.t('Output Reserve Tokens')}
+									</div>
+									<input
+										class="w-full rounded-lg bg-transparent px-3 py-2 text-sm outline-none ring-1 ring-gray-200 dark:ring-gray-800"
+										type="number"
+										bind:value={adminConfig.CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS}
+									/>
+								</div>
+
+								<div>
+									<div class="mb-1 text-xs font-medium">
+										{$i18n.t('Safety Reserve Tokens')}
+									</div>
+									<input
+										class="w-full rounded-lg bg-transparent px-3 py-2 text-sm outline-none ring-1 ring-gray-200 dark:ring-gray-800"
+										type="number"
+										bind:value={adminConfig.CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS}
+									/>
+								</div>
+
+								<div>
+									<div class="mb-1 text-xs font-medium">
+										{$i18n.t('RAG Reserve Tokens')}
+									</div>
+									<input
+										class="w-full rounded-lg bg-transparent px-3 py-2 text-sm outline-none ring-1 ring-gray-200 dark:ring-gray-800"
+										type="number"
+										bind:value={adminConfig.CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS}
+									/>
+								</div>
+
+								<div>
+									<div class="mb-1 text-xs font-medium">
+										{$i18n.t('Soft Margin Tokens')}
+									</div>
+									<input
+										class="w-full rounded-lg bg-transparent px-3 py-2 text-sm outline-none ring-1 ring-gray-200 dark:ring-gray-800"
+										type="number"
+										bind:value={adminConfig.CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS}
+									/>
+								</div>
+
+								<div>
+									<div class="mb-1 text-xs font-medium">
+										{$i18n.t('Anchor Budget Tokens')}
+									</div>
+									<input
+										class="w-full rounded-lg bg-transparent px-3 py-2 text-sm outline-none ring-1 ring-gray-200 dark:ring-gray-800"
+										type="number"
+										bind:value={adminConfig.CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS}
+									/>
+								</div>
+							</div>
+						</div>
+					{/if}
+
+					<div class="mb-2.5 flex w-full items-center justify-between pr-2">
+						<div class=" self-center text-xs font-medium">
 							{$i18n.t('Folders')}
 						</div>
 

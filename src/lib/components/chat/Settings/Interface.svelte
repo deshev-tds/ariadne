@@ -25,7 +25,7 @@
 
 	// Addons
 	let titleAutoGenerate = true;
-	let autoFollowUps = true;
+	let contextMaintenance = true;
 	let autoTags = true;
 
 	let responseAutoCopy = false;
@@ -200,7 +200,8 @@
 	onMount(async () => {
 		titleAutoGenerate = $settings?.title?.auto ?? true;
 		autoTags = $settings?.autoTags ?? true;
-		autoFollowUps = $settings?.autoFollowUps ?? true;
+		contextMaintenance =
+			$settings?.contextMaintenance ?? $config?.features?.enable_context_maintenance ?? true;
 
 		highContrastMode = $settings?.highContrastMode ?? false;
 
@@ -799,17 +800,17 @@
 
 			<div>
 				<div class=" py-0.5 flex w-full justify-between">
-					<div class=" self-center text-xs" id="follow-up-auto-generation-label">
-						{$i18n.t('Follow-Up Auto-Generation')}
+					<div class=" self-center text-xs" id="context-maintenance-label">
+						{$i18n.t('Context Maintenance')}
 					</div>
 
 					<div class="flex items-center gap-2 p-1">
 						<Switch
-							ariaLabelledbyId="follow-up-auto-generation-label"
+							ariaLabelledbyId="context-maintenance-label"
 							tooltip={true}
-							bind:state={autoFollowUps}
+							bind:state={contextMaintenance}
 							on:change={() => {
-								saveSettings({ autoFollowUps });
+								saveSettings({ contextMaintenance });
 							}}
 						/>
 					</div>

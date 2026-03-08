@@ -88,6 +88,12 @@ from open_webui.retrieval.web.planner import (
 
 from open_webui.utils.sanitize import sanitize_code
 from open_webui.utils.chat import generate_chat_completion
+from open_webui.utils.context_maintenance import (
+    build_inline_maintained_messages,
+    get_chat_maintenance_state,
+    inject_image_files_into_history,
+    run_background_context_maintenance,
+)
 from open_webui.utils.task import (
     get_task_model_id,
     query_generation_template,
@@ -3653,6 +3659,41 @@ def load_messages_from_db(chat_id: str, message_id: str) -> Optional[list[dict]]
     ]
 
 
+def load_raw_messages_from_db(chat_id: str, message_id: str) -> Optional[list[dict]]:
+    messages_map = Chats.get_messages_map_by_chat_id(chat_id)
+    if not messages_map:
+        return None
+
+    db_messages = get_message_list(messages_map, message_id)
+    if not db_messages:
+        return None
+
+    return [dict(message) for message in db_messages]
+
+
+def _resolve_user_ui_settings(user: Any) -> dict[str, Any]:
+    settings = getattr(user, "settings", None)
+    if settings is None and isinstance(user, dict):
+        settings = user.get("settings")
+
+    if hasattr(settings, "ui"):
+        return dict(getattr(settings, "ui") or {})
+    if isinstance(settings, dict):
+        return dict(settings.get("ui") or {})
+    return {}
+
+
+def _resolve_context_maintenance_enabled(request, user, tasks: Optional[dict] = None) -> bool:
+    if isinstance(tasks, dict) and "context_maintenance" in tasks:
+        return bool(tasks["context_maintenance"])
+
+    ui_settings = _resolve_user_ui_settings(user)
+    if "contextMaintenance" in ui_settings:
+        return bool(ui_settings["contextMaintenance"])
+
+    return bool(getattr(request.app.state.config, "ENABLE_CONTEXT_MAINTENANCE", True))
+
+
 def process_messages_with_output(messages: list[dict]) -> list[dict]:
     """
     Process messages with OR-aligned output items for LLM consumption.
@@ -3692,39 +3733,73 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # which the frontend strips, causing tool calls to be merged into content.
     chat_id = metadata.get("chat_id")
     parent_message_id = metadata.get("parent_message_id")
+    system_message = get_system_message(form_data.get("messages", []))
+    raw_history_messages = None
 
     if chat_id and parent_message_id and not chat_id.startswith("local:"):
-        db_messages = load_messages_from_db(chat_id, parent_message_id)
-        if db_messages:
-            system_message = get_system_message(form_data.get("messages", []))
+        raw_history_messages = load_raw_messages_from_db(chat_id, parent_message_id)
+        if raw_history_messages:
+            raw_history_messages = inject_image_files_into_history(raw_history_messages)
+            replay_messages = [
+                {
+                    key: value
+                    for key, value in message.items()
+                    if key in ("role", "content", "output", "files", "tool_calls", "tool_call_id")
+                }
+                for message in raw_history_messages
+            ]
             form_data["messages"] = (
-                [system_message, *db_messages] if system_message else db_messages
+                [system_message, *replay_messages]
+                if system_message
+                else replay_messages
             )
 
-            # Inject image files into content as image_url parts (mirrors frontend logic)
-            for message in form_data["messages"]:
-                image_files = [
-                    f
-                    for f in message.get("files", [])
-                    if f.get("type") == "image"
-                    or (f.get("content_type") or "").startswith("image/")
-                ]
-                if message.get("role") == "user" and image_files:
-                    text_content = message.get("content", "")
-                    if isinstance(text_content, str):
-                        message["content"] = [
-                            {"type": "text", "text": text_content},
-                            *[
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f["url"]},
-                                }
-                                for f in image_files
-                                if f.get("url")
-                            ],
-                        ]
-                # Strip files field — it's been incorporated into content
-                message.pop("files", None)
+    event_emitter = get_event_emitter(metadata)
+    event_caller = get_event_call(metadata)
+
+    if _resolve_context_maintenance_enabled(request, user):
+        history_messages = raw_history_messages
+        if history_messages is None:
+            history_messages = [
+                dict(message)
+                for message in form_data.get("messages", [])
+                if message.get("role") in {"user", "assistant", "tool"}
+            ]
+
+        if history_messages:
+            form_data["messages"], maintenance_result = await build_inline_maintained_messages(
+                request,
+                user=user,
+                model=model,
+                form_data=form_data,
+                metadata=metadata,
+                system_message=system_message,
+                history_messages=history_messages,
+                summary_state=get_chat_maintenance_state(chat_id) if chat_id else None,
+            )
+
+            if event_emitter and maintenance_result.get("summary_refreshed"):
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "context_maintenance",
+                            "description": "Condensing earlier turns...",
+                            "done": True,
+                        },
+                    }
+                )
+            elif event_emitter and maintenance_result.get("fallback_used"):
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "context_maintenance",
+                            "description": "Context maintenance failed; using recent context only",
+                            "done": True,
+                        },
+                    }
+                )
 
     if metadata.get("branch"):
         forced_prefix, token_branch = _prepare_branch_prefill(metadata)
@@ -3747,10 +3822,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             pass
 
     form_data = await convert_url_images_to_base64(form_data)
-
-    event_emitter = get_event_emitter(metadata)
-    event_caller = get_event_call(metadata)
-
     extra_params = {
         "__event_emitter__": event_emitter,
         "__event_call__": event_caller,
@@ -4437,6 +4508,9 @@ async def background_tasks_handler(ctx):
     metadata = ctx["metadata"]
     tasks = ctx["tasks"]
     event_emitter = ctx["event_emitter"]
+    context_maintenance_enabled = _resolve_context_maintenance_enabled(
+        request, user, tasks
+    )
 
     message = None
     messages = []
@@ -4485,10 +4559,13 @@ async def background_tasks_handler(ctx):
             message["model"] = form_data.get("model")
 
     if message and "model" in message:
-        if tasks and messages:
+        if messages:
             if (
+                tasks
+                and
                 TASKS.FOLLOW_UP_GENERATION in tasks
                 and tasks[TASKS.FOLLOW_UP_GENERATION]
+                and not context_maintenance_enabled
             ):
                 res = await generate_follow_ups(
                     request,
@@ -4538,10 +4615,30 @@ async def background_tasks_handler(ctx):
                     except Exception as e:
                         pass
 
+            if (
+                context_maintenance_enabled
+                and not metadata.get("chat_id", "").startswith("local:")
+                and metadata.get("chat_id")
+                and metadata.get("message_id")
+            ):
+                model_id = message.get("model")
+                active_model = request.app.state.MODELS.get(model_id) if model_id else None
+                if active_model:
+                    asyncio.create_task(
+                        run_background_context_maintenance(
+                            request=request,
+                            user=user,
+                            model=active_model,
+                            chat_id=metadata["chat_id"],
+                            message_id=metadata["message_id"],
+                            event_emitter=event_emitter,
+                        )
+                    )
+
             if not metadata.get("chat_id", "").startswith(
                 "local:"
             ):  # Only update titles and tags for non-temp chats
-                if TASKS.TITLE_GENERATION in tasks:
+                if tasks and TASKS.TITLE_GENERATION in tasks:
                     user_message = get_last_user_message(messages)
                     if user_message and len(user_message) > 100:
                         user_message = user_message[:100] + "..."
@@ -4609,7 +4706,11 @@ async def background_tasks_handler(ctx):
                             }
                         )
 
-                if TASKS.TAGS_GENERATION in tasks and tasks[TASKS.TAGS_GENERATION]:
+                if (
+                    tasks
+                    and TASKS.TAGS_GENERATION in tasks
+                    and tasks[TASKS.TAGS_GENERATION]
+                ):
                     res = await generate_chat_tags(
                         request,
                         {

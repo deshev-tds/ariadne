@@ -1344,6 +1344,48 @@ ENABLE_CACHE_PROMPT = PersistentConfig(
     os.environ.get("ENABLE_CACHE_PROMPT", "False").lower() == "true",
 )
 
+ENABLE_CONTEXT_MAINTENANCE = PersistentConfig(
+    "ENABLE_CONTEXT_MAINTENANCE",
+    "chat.context_maintenance.enable",
+    os.environ.get("ENABLE_CONTEXT_MAINTENANCE", "True").lower() == "true",
+)
+
+CONTEXT_MAINTENANCE_MAX_CTX_CAP = PersistentConfig(
+    "CONTEXT_MAINTENANCE_MAX_CTX_CAP",
+    "chat.context_maintenance.max_ctx_cap",
+    os.environ.get("CONTEXT_MAINTENANCE_MAX_CTX_CAP", ""),
+)
+
+CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS = PersistentConfig(
+    "CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS",
+    "chat.context_maintenance.output_reserve_tokens",
+    int(os.environ.get("CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS", "8192")),
+)
+
+CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS = PersistentConfig(
+    "CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS",
+    "chat.context_maintenance.safety_reserve_tokens",
+    int(os.environ.get("CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS", "4096")),
+)
+
+CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS = PersistentConfig(
+    "CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS",
+    "chat.context_maintenance.rag_reserve_tokens",
+    int(os.environ.get("CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS", "12288")),
+)
+
+CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS = PersistentConfig(
+    "CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS",
+    "chat.context_maintenance.soft_margin_tokens",
+    int(os.environ.get("CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS", "8192")),
+)
+
+CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS = PersistentConfig(
+    "CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS",
+    "chat.context_maintenance.anchor_budget_tokens",
+    int(os.environ.get("CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS", "2048")),
+)
+
 
 USER_PERMISSIONS_WORKSPACE_MODELS_ACCESS = (
     os.environ.get("USER_PERMISSIONS_WORKSPACE_MODELS_ACCESS", "False").lower()
@@ -1983,7 +2025,7 @@ JSON format: { "follow_ups": ["Question 1?", "Question 2?", "Question 3?"] }
 ENABLE_FOLLOW_UP_GENERATION = PersistentConfig(
     "ENABLE_FOLLOW_UP_GENERATION",
     "task.follow_up.enable",
-    os.environ.get("ENABLE_FOLLOW_UP_GENERATION", "True").lower() == "true",
+    os.environ.get("ENABLE_FOLLOW_UP_GENERATION", "False").lower() == "true",
 )
 
 ENABLE_TAGS_GENERATION = PersistentConfig(

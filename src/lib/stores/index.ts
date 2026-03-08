@@ -191,6 +191,7 @@ type Settings = {
 	memory?: boolean;
 	autoTags?: boolean;
 	autoFollowUps?: boolean;
+	contextMaintenance?: boolean;
 	splitLargeChunks?(body: any, splitLargeChunks: any): unknown;
 	backgroundImageUrl?: null;
 	landingPageMode?: string;

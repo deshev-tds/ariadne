@@ -2297,16 +2297,18 @@
 				background_tasks: {
 					...(!$temporaryChatEnabled &&
 					(messages.length == 1 ||
-						(messages.length == 2 &&
-							messages.at(0)?.role === 'system' &&
-							messages.at(1)?.role === 'user')) &&
+					(messages.length == 2 &&
+						messages.at(0)?.role === 'system' &&
+						messages.at(1)?.role === 'user')) &&
 					(selectedModels[0] === model.id || atSelectedModel !== undefined)
 						? {
 								title_generation: $settings?.title?.auto ?? true,
 								tags_generation: $settings?.autoTags ?? true
 							}
 						: {}),
-					follow_up_generation: $settings?.autoFollowUps ?? true
+					follow_up_generation: $settings?.autoFollowUps ?? false,
+					context_maintenance:
+						$settings?.contextMaintenance ?? $config?.features?.enable_context_maintenance ?? true
 				},
 				...(stream && (model.info?.meta?.capabilities?.usage ?? false)
 					? {
