@@ -914,9 +914,6 @@ async def run_background_context_maintenance(
         _ACTIVE_MAINTENANCE_JOBS.add(job_key)
 
     try:
-        await emit_context_status(
-            event_emitter, "Context maintenance scheduled", done=False
-        )
         messages_map = Chats.get_messages_map_by_chat_id(chat_id) or {}
         history_messages = inject_image_files_into_history(
             get_message_list(messages_map, message_id)
@@ -945,11 +942,11 @@ async def run_background_context_maintenance(
             budgets=budgets,
             probe=probe,
         ) or not is_summary_refresh_needed(history_messages, state):
-            await emit_context_status(
-                event_emitter, "Context maintenance scheduled", done=True
-            )
             return
 
+        await emit_context_status(
+            event_emitter, "Context maintenance scheduled", done=False
+        )
         await emit_context_status(
             event_emitter, "Condensing earlier turns...", done=False
         )
