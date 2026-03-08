@@ -5,6 +5,7 @@ import pytest
 from open_webui.utils.context_maintenance import (
     build_context_maintenance_payload,
     extract_model_ctx_cap,
+    extract_n_ctx_from_props,
     is_summary_refresh_needed,
     parse_prometheus_metrics,
     resolve_effective_ctx_cap,
@@ -43,6 +44,30 @@ def test_parse_prometheus_metrics_extracts_kv_fields():
         "llamacpp:kv_cache_usage_ratio": 0.81,
         "llamacpp:kv_cache_tokens": 32768.0,
     }
+
+
+def test_parse_prometheus_metrics_ignores_non_kv_metrics():
+    metrics = parse_prometheus_metrics(
+        """
+        llamacpp:prompt_tokens_total 5061
+        llamacpp:requests_processing 1
+        llamacpp:n_tokens_max 3618
+        """
+    )
+
+    assert metrics == {}
+
+
+def test_extract_n_ctx_from_props_supports_llamacpp_shape():
+    props = {
+        "default_generation_settings": {
+            "params": {
+                "n_ctx": 65536,
+            }
+        }
+    }
+
+    assert extract_n_ctx_from_props(props) == 65536
 
 
 def test_resolve_effective_ctx_cap_respects_admin_cap():

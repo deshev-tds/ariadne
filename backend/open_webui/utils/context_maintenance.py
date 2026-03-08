@@ -100,6 +100,28 @@ def parse_prometheus_metrics(text: str) -> dict[str, float]:
     return metrics
 
 
+def extract_n_ctx_from_props(props: dict[str, Any] | None) -> Optional[int]:
+    if not isinstance(props, dict):
+        return None
+
+    candidates = [
+        props.get("n_ctx"),
+        props.get("default_generation_settings", {})
+        .get("params", {})
+        .get("n_ctx"),
+    ]
+
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except Exception:
+            continue
+
+    return None
+
+
 def estimate_tokens_from_history_message(message: dict[str, Any]) -> int:
     if not isinstance(message, dict):
         return 0
@@ -457,7 +479,9 @@ async def load_llamacpp_probe(
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             try:
-                async with session.get(f"{base_url}/metrics") as response:
+                async with session.get(
+                    f"{base_url}/metrics", params={"model": model_id}
+                ) as response:
                     if response.status == 200:
                         metrics = parse_prometheus_metrics(await response.text())
                         if metrics:
@@ -478,8 +502,9 @@ async def load_llamacpp_probe(
                     ) as response:
                         if response.status == 200:
                             props = await response.json()
-                            if isinstance(props, dict) and props.get("n_ctx"):
-                                result["n_ctx"] = int(props["n_ctx"])
+                            ctx = extract_n_ctx_from_props(props)
+                            if ctx:
+                                result["n_ctx"] = ctx
                 except Exception:
                     pass
 
