@@ -140,7 +140,7 @@ export const shortcuts: ShortcutRegistry = {
 	},
 	[Shortcut.REGENERATE_RESPONSE]: {
 		name: 'Regenerate Response',
-		keys: ['mod', 'R'],
+		keys: ['alt', 'R'],
 		category: 'Message'
 	},
 	[Shortcut.STOP_GENERATING]: {
