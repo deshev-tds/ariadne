@@ -22,6 +22,9 @@ DEFAULT_RECALL_TIMEOUT_MS = 150
 DEFAULT_RECALL_MAX_HITS = 3
 DEFAULT_RECALL_SNIPPET_TOKEN_BUDGET = 300
 _RECALL_STATUS_ACTION = "chat_recall"
+_AMBIGUOUS_REFERENTIAL_MAX_TOKENS = 25
+_BRANCH_RECENT_MIN_MESSAGES = 8
+_BRANCH_RECENT_MAX_MESSAGES = 20
 
 _EXPLICIT_REFERENCE_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -37,6 +40,22 @@ _CONTINUATION_PATTERNS = [
     for pattern in [
         r"\b(continue|same|as before|stick with|keep using|use the same)\b",
         r"\b(продължи|същото|както преди|както решихме|остани на|ползвай пак)\b",
+    ]
+]
+
+_AMBIGUOUS_REFERENTIAL_PATTERNS = [
+    re.compile(
+        pattern,
+        re.IGNORECASE,
+    )
+    for pattern in [
+        r"\b(?:the|that)\s+(?:other|previous|old|first)(?:\s+(?:one|tool|version|config|option|endpoint))?\b",
+        r"\b(?:as|like)\s+we\s+(?:discussed|talked about|used|did)\b",
+        r"\bwhat\s+happened\s+(?:to|with)\b",
+        r"\b(?:оня|онова|онзи|този)\s+(?:другия|стария|предишния)(?:\s+(?:дето|който|вариант|тул))?\b",
+        r"\b(?:стария|предишния)\s+(?:вариант|тул|конфиг|endpoint|ендпойнт)\b",
+        r"\bкакто\s+(?:говорихме|обсъждахме|правихме)\b",
+        r"\bкакво\s+стана\s+(?:с|със)\b",
     ]
 ]
 
@@ -176,6 +195,10 @@ def _continuation_query_tokens(text_value: str) -> list[str]:
     ]
 
 
+def _normalized_word_count(text_value: str) -> int:
+    return len(_WORD_RE.findall(text_value or ""))
+
+
 def _extract_entities(text_value: str) -> list[str]:
     candidates: list[str] = []
     for match in _BACKTICK_RE.findall(text_value or ""):
@@ -202,20 +225,83 @@ def _extract_entities(text_value: str) -> list[str]:
     return out
 
 
+def _has_local_resolution(
+    *,
+    context_text: str,
+    entities: list[str],
+    user_text: str,
+) -> bool:
+    if any(entity.lower() in context_text for entity in entities):
+        return True
+
+    query_tokens = _query_tokens(user_text)
+    if not query_tokens:
+        return False
+
+    overlap = sum(1 for token in query_tokens if token in context_text)
+    return overlap >= min(2, len(query_tokens))
+
+
+def _is_ambiguous_referential(
+    *,
+    user_text: str,
+    context_text: str,
+    entities: list[str],
+) -> bool:
+    if _normalized_word_count(user_text) > _AMBIGUOUS_REFERENTIAL_MAX_TOKENS:
+        return False
+
+    if entities:
+        return False
+
+    if not any(pattern.search(user_text) for pattern in _AMBIGUOUS_REFERENTIAL_PATTERNS):
+        return False
+
+    if _has_local_resolution(
+        context_text=context_text,
+        entities=entities,
+        user_text=user_text,
+    ):
+        return False
+
+    return True
+
+
 def detect_recall_need(messages: list[dict[str, Any]]) -> dict[str, Any]:
     if not messages:
-        return {"trigger": False, "reason": "empty_messages", "query_text": "", "explicit": False}
+        return {
+            "trigger": False,
+            "reason": "empty_messages",
+            "mode": "none",
+            "query_text": "",
+            "depth": 0,
+            "explicit": False,
+        }
 
     latest_user_index = next(
         (idx for idx in range(len(messages) - 1, -1, -1) if messages[idx].get("role") == "user"),
         None,
     )
     if latest_user_index is None:
-        return {"trigger": False, "reason": "no_latest_user", "query_text": "", "explicit": False}
+        return {
+            "trigger": False,
+            "reason": "no_latest_user",
+            "mode": "none",
+            "query_text": "",
+            "depth": 0,
+            "explicit": False,
+        }
 
     user_text = _message_text(messages[latest_user_index]).strip()
     if not user_text:
-        return {"trigger": False, "reason": "empty_latest_user", "query_text": "", "explicit": False}
+        return {
+            "trigger": False,
+            "reason": "empty_latest_user",
+            "mode": "none",
+            "query_text": "",
+            "depth": 0,
+            "explicit": False,
+        }
 
     recall_intent, explicit_recall, recall_query = detect_archive_recall(user_text)
     explicit_reference = explicit_recall or any(
@@ -227,7 +313,9 @@ def detect_recall_need(messages: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "trigger": True,
             "reason": "explicit_reference",
+            "mode": "fts",
             "query_text": query_text,
+            "depth": 2,
             "explicit": True,
         }
 
@@ -240,7 +328,9 @@ def detect_recall_need(messages: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "trigger": True,
             "reason": "entity_lookup_gap",
-            "query_text": query_text,
+            "mode": "fts",
+            "query_text": " ".join(missing_entities),
+            "depth": 1,
             "explicit": False,
             "entities": missing_entities,
         }
@@ -252,11 +342,94 @@ def detect_recall_need(messages: list[dict[str, Any]]) -> dict[str, Any]:
             return {
                 "trigger": True,
                 "reason": "constraint_continuation_gap",
-                "query_text": query_text,
+                "mode": "fts",
+                "query_text": " ".join(query_tokens) if query_tokens else query_text,
+                "depth": 1,
                 "explicit": False,
             }
 
-    return {"trigger": False, "reason": "live_context_sufficient", "query_text": query_text, "explicit": False}
+    if _is_ambiguous_referential(
+        user_text=user_text,
+        context_text=context_text,
+        entities=entities,
+    ):
+        return {
+            "trigger": True,
+            "reason": "ambiguous_referential_gap",
+            "mode": "branch_recent",
+            "query_text": "",
+            "depth": 0,
+            "explicit": False,
+        }
+
+    return {
+        "trigger": False,
+        "reason": "live_context_sufficient",
+        "mode": "none",
+        "query_text": query_text,
+        "depth": 0,
+        "explicit": False,
+    }
+
+
+def _build_branch_recent_hits(
+    *,
+    branch_message_ids: list[str] | None,
+    messages: list[dict[str, Any]],
+    max_hits: int,
+) -> list[dict[str, Any]]:
+    if not branch_message_ids or not messages:
+        return []
+
+    message_lookup: dict[str, dict[str, Any]] = {}
+    ordered_ids: list[str] = []
+    for message in messages:
+        message_id = str(message.get("id") or "").strip()
+        if not message_id:
+            continue
+        message_lookup[message_id] = message
+        ordered_ids.append(message_id)
+
+    latest_user_index = next(
+        (idx for idx in range(len(messages) - 1, -1, -1) if messages[idx].get("role") == "user"),
+        None,
+    )
+    if latest_user_index is None:
+        return []
+
+    latest_user_id = str(messages[latest_user_index].get("id") or "").strip()
+    cutoff_index = (
+        branch_message_ids.index(latest_user_id)
+        if latest_user_id and latest_user_id in branch_message_ids
+        else len(branch_message_ids)
+    )
+    candidate_ids = branch_message_ids[:cutoff_index]
+    if not candidate_ids:
+        return []
+
+    recent_window = candidate_ids[-max(_BRANCH_RECENT_MIN_MESSAGES, min(_BRANCH_RECENT_MAX_MESSAGES, len(candidate_ids))):]
+    hits: list[dict[str, Any]] = []
+    for message_id in reversed(recent_window):
+        message = message_lookup.get(message_id)
+        if not message:
+            continue
+        role = str(message.get("role") or "").strip()
+        if role == "system":
+            continue
+        content = _message_text(message).strip()
+        if not content:
+            continue
+        hits.append(
+            {
+                "message_id": message_id,
+                "role": role or "assistant",
+                "content": content,
+            }
+        )
+        if len(hits) >= max_hits:
+            break
+
+    return hits
 
 
 def _trim_snippet_to_budget(snippet: str, budget_tokens: int) -> str:
@@ -406,19 +579,28 @@ async def maybe_apply_chat_recall(
     )
 
     try:
-        hits = await asyncio.wait_for(
-            asyncio.to_thread(
-                recursive_search,
-                chat_id,
-                trigger["query_text"],
-                branch_message_ids=list(branch_message_ids or []),
-                limit=max(settings["max_hits"] * 2, 4),
-                depth=2 if trigger.get("explicit") else 1,
-                max_queries=10 if trigger.get("explicit") else 6,
-                max_branches=4 if trigger.get("explicit") else 3,
-            ),
-            timeout=settings["timeout_ms"] / 1000.0,
-        )
+        if trigger.get("mode") == "branch_recent":
+            hits = _build_branch_recent_hits(
+                branch_message_ids=branch_message_ids,
+                messages=messages,
+                max_hits=max(settings["max_hits"], 2),
+            )
+        elif trigger.get("mode") == "fts":
+            hits = await asyncio.wait_for(
+                asyncio.to_thread(
+                    recursive_search,
+                    chat_id,
+                    trigger["query_text"],
+                    branch_message_ids=list(branch_message_ids or []),
+                    limit=max(settings["max_hits"] * 2, 4),
+                    depth=max(0, int(trigger.get("depth", 1))),
+                    max_queries=10 if trigger.get("explicit") else 6,
+                    max_branches=4 if trigger.get("explicit") else 3,
+                ),
+                timeout=settings["timeout_ms"] / 1000.0,
+            )
+        else:
+            hits = []
     except asyncio.TimeoutError:
         result["timed_out"] = True
         await emit_chat_recall_status(

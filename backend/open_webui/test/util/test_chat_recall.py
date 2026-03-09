@@ -48,6 +48,8 @@ def test_detect_recall_need_on_explicit_reference():
     assert result["trigger"] is True
     assert result["reason"] == "explicit_reference"
     assert result["explicit"] is True
+    assert result["mode"] == "fts"
+    assert result["depth"] == 2
 
 
 def test_detect_recall_need_on_entity_lookup_gap():
@@ -61,6 +63,9 @@ def test_detect_recall_need_on_entity_lookup_gap():
     assert result["trigger"] is True
     assert result["reason"] == "entity_lookup_gap"
     assert "/srv/app/config.yaml" in result["entities"]
+    assert result["mode"] == "fts"
+    assert result["depth"] == 1
+    assert "/srv/app/config.yaml" in result["query_text"]
 
 
 def test_detect_recall_need_on_constraint_continuation_gap():
@@ -73,6 +78,8 @@ def test_detect_recall_need_on_constraint_continuation_gap():
 
     assert result["trigger"] is True
     assert result["reason"] == "constraint_continuation_gap"
+    assert result["mode"] == "fts"
+    assert result["depth"] == 1
 
 
 def test_detect_recall_need_skips_when_live_context_is_sufficient():
@@ -85,6 +92,63 @@ def test_detect_recall_need_skips_when_live_context_is_sufficient():
 
     assert result["trigger"] is False
     assert result["reason"] == "live_context_sufficient"
+    assert result["mode"] == "none"
+
+
+def test_detect_recall_need_on_ambiguous_referential_gap():
+    result = detect_recall_need(
+        [
+            _message("assistant", "We compared several tools and configs.", "m1"),
+            _message("user", "Какво стана с оня другия тул?", "m2"),
+        ]
+    )
+
+    assert result["trigger"] is True
+    assert result["reason"] == "ambiguous_referential_gap"
+    assert result["mode"] == "branch_recent"
+    assert result["depth"] == 0
+    assert result["query_text"] == ""
+
+
+def test_detect_recall_need_skips_ambiguous_referential_when_turn_is_long():
+    result = detect_recall_need(
+        [
+            _message("assistant", "We compared several tools and configs.", "m1"),
+            _message(
+                "user",
+                "Use the old config, add a new route, update auth, rewrite the middleware, "
+                "add tests, and make sure the admin UI explains all of it clearly for operators and developers.",
+                "m2",
+            ),
+        ]
+    )
+
+    assert result["trigger"] is False
+    assert result["mode"] == "none"
+
+
+def test_detect_recall_need_skips_single_vague_token():
+    result = detect_recall_need(
+        [
+            _message("assistant", "We compared several tools and configs.", "m1"),
+            _message("user", "другия", "m2"),
+        ]
+    )
+
+    assert result["trigger"] is False
+    assert result["mode"] == "none"
+
+
+def test_detect_recall_need_skips_ambiguous_referential_when_locally_resolved():
+    result = detect_recall_need(
+        [
+            _message("assistant", "We should keep using the old config for nginx.", "m1"),
+            _message("user", "Use the old config.", "m2"),
+        ]
+    )
+
+    assert result["trigger"] is False
+    assert result["mode"] == "none"
 
 
 def test_build_evidence_message_formats_hits_as_evidence():
@@ -148,6 +212,41 @@ def test_maybe_apply_chat_recall_injects_evidence(monkeypatch):
     assert updated[1]["role"] == "system"
     assert "Evidence from earlier conversation:" in updated[1]["content"]
     assert updated[2]["role"] == "user"
+
+
+def test_maybe_apply_chat_recall_branch_recent_skips_fts(monkeypatch):
+    request = _make_request(ENABLE_CHAT_RECALL=True)
+    messages = [
+        _message("assistant", "We first tried nmap.", "m1"),
+        _message("assistant", "Then we switched to ffuf because it worked better.", "m2"),
+        _message("user", "Какво стана с оня другия тул?", "m3"),
+    ]
+
+    async def _emitter(_event):
+        return None
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("recursive_search should not be called for branch_recent mode")
+
+    monkeypatch.setattr("open_webui.utils.chat_recall.is_supported_database", lambda: True)
+    monkeypatch.setattr("open_webui.utils.chat_recall.recursive_search", _boom)
+
+    updated, result = asyncio.run(
+        maybe_apply_chat_recall(
+            request=request,
+            chat_id="chat-1",
+            branch_message_ids=["m1", "m2", "m3"],
+            messages=messages,
+            event_emitter=_emitter,
+        )
+    )
+
+    assert result["triggered"] is True
+    assert result["reason"] == "ambiguous_referential_gap"
+    assert result["evidence_injected"] is True
+    assert updated[2]["role"] == "system"
+    assert "[turn m2 | assistant]" in updated[2]["content"]
+    assert updated[3]["role"] == "user"
 
 
 def test_maybe_apply_chat_recall_times_out_and_falls_back(monkeypatch):
