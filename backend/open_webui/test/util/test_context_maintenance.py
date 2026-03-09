@@ -17,15 +17,16 @@ from open_webui.utils.context_maintenance import (
 
 
 def _make_request(**overrides):
-    config = SimpleNamespace(
-        CONTEXT_MAINTENANCE_MAX_CTX_CAP="",
-        CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS=8192,
-        CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS=4096,
-        CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS=12288,
-        CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS=8192,
-        CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS=2048,
-        **overrides,
-    )
+    config_values = {
+        "CONTEXT_MAINTENANCE_MAX_CTX_CAP": "",
+        "CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS": 8192,
+        "CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS": 4096,
+        "CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS": 12288,
+        "CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS": 8192,
+        "CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS": 2048,
+    }
+    config_values.update(overrides)
+    config = SimpleNamespace(**config_values)
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=config)))
 
 
