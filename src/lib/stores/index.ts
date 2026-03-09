@@ -192,6 +192,7 @@ type Settings = {
 	autoTags?: boolean;
 	autoFollowUps?: boolean;
 	contextMaintenance?: boolean;
+	chatRecall?: boolean;
 	splitLargeChunks?(body: any, splitLargeChunks: any): unknown;
 	backgroundImageUrl?: null;
 	landingPageMode?: string;

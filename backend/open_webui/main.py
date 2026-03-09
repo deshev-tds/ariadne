@@ -466,7 +466,11 @@ from open_webui.config import (
     WEBUI_URL,
     RESPONSE_WATERMARK,
     ENABLE_CACHE_PROMPT,
+    ENABLE_CHAT_RECALL,
     ENABLE_CONTEXT_MAINTENANCE,
+    CHAT_RECALL_MAX_HITS,
+    CHAT_RECALL_SNIPPET_TOKEN_BUDGET,
+    CHAT_RECALL_TIMEOUT_MS,
     CONTEXT_MAINTENANCE_MAX_CTX_CAP,
     CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS,
     CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS,
@@ -544,6 +548,8 @@ from open_webui.env import (
     ENABLE_EASTER_EGGS,
     LOG_FORMAT,
 )
+from open_webui.models.simon_lex_index import is_supported_database as simon_lex_supported
+from open_webui.models.simon_lex_index import run_lex_index_worker
 
 
 from open_webui.utils.models import (
@@ -677,6 +683,12 @@ async def lifespan(app: FastAPI):
             redis_task_command_listener(app)
         )
 
+    if simon_lex_supported():
+        app.state.simon_lex_stop_event = asyncio.Event()
+        app.state.simon_lex_worker = asyncio.create_task(
+            run_lex_index_worker(stop_event=app.state.simon_lex_stop_event)
+        )
+
     if THREAD_POOL_SIZE and THREAD_POOL_SIZE > 0:
         limiter = anyio.to_thread.current_default_thread_limiter()
         limiter.total_tokens = THREAD_POOL_SIZE
@@ -741,6 +753,10 @@ async def lifespan(app: FastAPI):
 
     if hasattr(app.state, "redis_task_command_listener"):
         app.state.redis_task_command_listener.cancel()
+    if hasattr(app.state, "simon_lex_stop_event"):
+        app.state.simon_lex_stop_event.set()
+    if hasattr(app.state, "simon_lex_worker"):
+        app.state.simon_lex_worker.cancel()
 
 
 app = FastAPI(
@@ -892,6 +908,12 @@ app.state.config.PENDING_USER_OVERLAY_TITLE = PENDING_USER_OVERLAY_TITLE
 
 app.state.config.RESPONSE_WATERMARK = RESPONSE_WATERMARK
 app.state.config.ENABLE_CACHE_PROMPT = ENABLE_CACHE_PROMPT
+app.state.config.ENABLE_CHAT_RECALL = ENABLE_CHAT_RECALL
+app.state.config.CHAT_RECALL_TIMEOUT_MS = CHAT_RECALL_TIMEOUT_MS
+app.state.config.CHAT_RECALL_MAX_HITS = CHAT_RECALL_MAX_HITS
+app.state.config.CHAT_RECALL_SNIPPET_TOKEN_BUDGET = (
+    CHAT_RECALL_SNIPPET_TOKEN_BUDGET
+)
 app.state.config.ENABLE_CONTEXT_MAINTENANCE = ENABLE_CONTEXT_MAINTENANCE
 app.state.config.CONTEXT_MAINTENANCE_MAX_CTX_CAP = CONTEXT_MAINTENANCE_MAX_CTX_CAP
 app.state.config.CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS = (
@@ -2409,6 +2431,7 @@ async def get_app_config(request: Request):
                     "enable_message_rating": app.state.config.ENABLE_MESSAGE_RATING,
                     "enable_user_webhooks": app.state.config.ENABLE_USER_WEBHOOKS,
                     "enable_user_status": app.state.config.ENABLE_USER_STATUS,
+                    "enable_chat_recall": app.state.config.ENABLE_CHAT_RECALL,
                     "enable_context_maintenance": app.state.config.ENABLE_CONTEXT_MAINTENANCE,
                     "enable_admin_export": ENABLE_ADMIN_EXPORT,
                     "enable_admin_chat_access": ENABLE_ADMIN_CHAT_ACCESS,

@@ -94,6 +94,12 @@ from open_webui.utils.context_maintenance import (
     inject_image_files_into_history,
     run_background_context_maintenance,
 )
+from open_webui.utils.chat_recall import (
+    enqueue_branch_backfill,
+    extract_branch_message_ids,
+    maybe_apply_chat_recall,
+    resolve_chat_recall_enabled,
+)
 from open_webui.utils.task import (
     get_task_model_id,
     query_generation_template,
@@ -3694,6 +3700,10 @@ def _resolve_context_maintenance_enabled(request, user, tasks: Optional[dict] = 
     return bool(getattr(request.app.state.config, "ENABLE_CONTEXT_MAINTENANCE", True))
 
 
+def _resolve_chat_recall_enabled(request, user) -> bool:
+    return resolve_chat_recall_enabled(request, user)
+
+
 def process_messages_with_output(messages: list[dict]) -> list[dict]:
     """
     Process messages with OR-aligned output items for LLM consumption.
@@ -3756,6 +3766,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     event_emitter = get_event_emitter(metadata)
     event_caller = get_event_call(metadata)
+    chat_recall_enabled = _resolve_chat_recall_enabled(request, user)
+
+    if chat_recall_enabled and raw_history_messages:
+        try:
+            enqueue_branch_backfill(chat_id, raw_history_messages)
+        except Exception as exc:
+            log.debug("Failed to enqueue chat recall backfill for %s: %s", chat_id, exc)
 
     if _resolve_context_maintenance_enabled(request, user):
         history_messages = raw_history_messages
@@ -3800,6 +3817,25 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         },
                     }
                 )
+
+    if chat_recall_enabled:
+        branch_message_ids = (
+            extract_branch_message_ids(raw_history_messages) if raw_history_messages else None
+        )
+        form_data["messages"], recall_result = await maybe_apply_chat_recall(
+            request=request,
+            chat_id=chat_id,
+            branch_message_ids=branch_message_ids,
+            messages=form_data.get("messages", []),
+            event_emitter=event_emitter,
+        )
+        if recall_result.get("evidence_injected"):
+            log.debug(
+                "Chat recall injected %s hits for chat %s (%s)",
+                recall_result.get("hit_count", 0),
+                chat_id,
+                recall_result.get("reason"),
+            )
 
     if metadata.get("branch"):
         forced_prefix, token_branch = _prepare_branch_prefill(metadata)

@@ -9,6 +9,11 @@ from open_webui.internal.db import Base, JSONField, get_db_context
 from open_webui.models.tags import TagModel, Tag, Tags
 from open_webui.models.folders import Folders
 from open_webui.models.chat_messages import ChatMessage, ChatMessages
+from open_webui.models.simon_lex_index import (
+    delete_entries_for_chat_id,
+    delete_entries_for_chat_ids,
+    enqueue_message,
+)
 from open_webui.utils.misc import sanitize_data_for_db, sanitize_text_for_db
 
 from pydantic import BaseModel, ConfigDict
@@ -328,6 +333,7 @@ class ChatTable:
                             user_id=user_id,
                             data=message,
                         )
+                        enqueue_message(id, message_id, priority=1)
             except Exception as e:
                 log.warning(
                     f"Failed to write initial messages to chat_message table: {e}"
@@ -389,6 +395,7 @@ class ChatTable:
                                 user_id=user_id,
                                 data=message,
                             )
+                            enqueue_message(chat_obj.id, message_id, priority=1)
             except Exception as e:
                 log.warning(
                     f"Failed to write imported messages to chat_message table: {e}"
@@ -513,6 +520,7 @@ class ChatTable:
                 user_id=user_id,
                 data=history["messages"][message_id],
             )
+            enqueue_message(id, message_id, priority=2)
         except Exception as e:
             log.warning(f"Failed to write to chat_message table: {e}")
 
@@ -1520,6 +1528,7 @@ class ChatTable:
                 db.query(ChatMessage).filter_by(chat_id=id).delete()
                 db.query(Chat).filter_by(id=id).delete()
                 db.commit()
+                delete_entries_for_chat_id(id, db=db)
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1532,6 +1541,7 @@ class ChatTable:
                 db.query(ChatMessage).filter_by(chat_id=id).delete()
                 db.query(Chat).filter_by(id=id, user_id=user_id).delete()
                 db.commit()
+                delete_entries_for_chat_id(id, db=db)
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1542,6 +1552,7 @@ class ChatTable:
         try:
             with get_db_context(db) as db:
                 self.delete_shared_chats_by_user_id(user_id, db=db)
+                chat_ids = [row[0] for row in db.query(Chat.id).filter_by(user_id=user_id).all()]
 
                 chat_id_subquery = (
                     db.query(Chat.id).filter_by(user_id=user_id).subquery()
@@ -1551,6 +1562,7 @@ class ChatTable:
                 ).delete(synchronize_session=False)
                 db.query(Chat).filter_by(user_id=user_id).delete()
                 db.commit()
+                delete_entries_for_chat_ids(chat_ids, db=db)
                 return True
         except Exception:
             return False
@@ -1560,6 +1572,12 @@ class ChatTable:
     ) -> bool:
         try:
             with get_db_context(db) as db:
+                chat_ids = [
+                    row[0]
+                    for row in db.query(Chat.id)
+                    .filter_by(user_id=user_id, folder_id=folder_id)
+                    .all()
+                ]
                 chat_id_subquery = (
                     db.query(Chat.id)
                     .filter_by(user_id=user_id, folder_id=folder_id)
@@ -1570,6 +1588,7 @@ class ChatTable:
                 ).delete(synchronize_session=False)
                 db.query(Chat).filter_by(user_id=user_id, folder_id=folder_id).delete()
                 db.commit()
+                delete_entries_for_chat_ids(chat_ids, db=db)
                 return True
         except Exception:
             return False

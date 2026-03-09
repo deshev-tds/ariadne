@@ -1021,6 +1021,10 @@ async def get_admin_config(request: Request, user=Depends(get_admin_user)):
         "PENDING_USER_OVERLAY_CONTENT": request.app.state.config.PENDING_USER_OVERLAY_CONTENT,
         "RESPONSE_WATERMARK": request.app.state.config.RESPONSE_WATERMARK,
         "ENABLE_CACHE_PROMPT": request.app.state.config.ENABLE_CACHE_PROMPT,
+        "ENABLE_CHAT_RECALL": request.app.state.config.ENABLE_CHAT_RECALL,
+        "CHAT_RECALL_TIMEOUT_MS": request.app.state.config.CHAT_RECALL_TIMEOUT_MS,
+        "CHAT_RECALL_MAX_HITS": request.app.state.config.CHAT_RECALL_MAX_HITS,
+        "CHAT_RECALL_SNIPPET_TOKEN_BUDGET": request.app.state.config.CHAT_RECALL_SNIPPET_TOKEN_BUDGET,
         "ENABLE_CONTEXT_MAINTENANCE": request.app.state.config.ENABLE_CONTEXT_MAINTENANCE,
         "CONTEXT_MAINTENANCE_MAX_CTX_CAP": request.app.state.config.CONTEXT_MAINTENANCE_MAX_CTX_CAP,
         "CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS,
@@ -1055,6 +1059,10 @@ class AdminConfig(BaseModel):
     PENDING_USER_OVERLAY_CONTENT: Optional[str] = None
     RESPONSE_WATERMARK: Optional[str] = None
     ENABLE_CACHE_PROMPT: bool
+    ENABLE_CHAT_RECALL: bool
+    CHAT_RECALL_TIMEOUT_MS: int
+    CHAT_RECALL_MAX_HITS: int
+    CHAT_RECALL_SNIPPET_TOKEN_BUDGET: int
     ENABLE_CONTEXT_MAINTENANCE: bool
     CONTEXT_MAINTENANCE_MAX_CTX_CAP: Optional[int | str] = None
     CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS: int
@@ -1117,6 +1125,12 @@ async def update_admin_config(
 
     request.app.state.config.RESPONSE_WATERMARK = form_data.RESPONSE_WATERMARK
     request.app.state.config.ENABLE_CACHE_PROMPT = form_data.ENABLE_CACHE_PROMPT
+    request.app.state.config.ENABLE_CHAT_RECALL = form_data.ENABLE_CHAT_RECALL
+    request.app.state.config.CHAT_RECALL_TIMEOUT_MS = form_data.CHAT_RECALL_TIMEOUT_MS
+    request.app.state.config.CHAT_RECALL_MAX_HITS = form_data.CHAT_RECALL_MAX_HITS
+    request.app.state.config.CHAT_RECALL_SNIPPET_TOKEN_BUDGET = (
+        form_data.CHAT_RECALL_SNIPPET_TOKEN_BUDGET
+    )
     request.app.state.config.ENABLE_CONTEXT_MAINTENANCE = (
         form_data.ENABLE_CONTEXT_MAINTENANCE
     )
@@ -1165,6 +1179,10 @@ async def update_admin_config(
         "PENDING_USER_OVERLAY_CONTENT": request.app.state.config.PENDING_USER_OVERLAY_CONTENT,
         "RESPONSE_WATERMARK": request.app.state.config.RESPONSE_WATERMARK,
         "ENABLE_CACHE_PROMPT": request.app.state.config.ENABLE_CACHE_PROMPT,
+        "ENABLE_CHAT_RECALL": request.app.state.config.ENABLE_CHAT_RECALL,
+        "CHAT_RECALL_TIMEOUT_MS": request.app.state.config.CHAT_RECALL_TIMEOUT_MS,
+        "CHAT_RECALL_MAX_HITS": request.app.state.config.CHAT_RECALL_MAX_HITS,
+        "CHAT_RECALL_SNIPPET_TOKEN_BUDGET": request.app.state.config.CHAT_RECALL_SNIPPET_TOKEN_BUDGET,
         "ENABLE_CONTEXT_MAINTENANCE": request.app.state.config.ENABLE_CONTEXT_MAINTENANCE,
         "CONTEXT_MAINTENANCE_MAX_CTX_CAP": request.app.state.config.CONTEXT_MAINTENANCE_MAX_CTX_CAP,
         "CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS": request.app.state.config.CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS,

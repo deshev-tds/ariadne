@@ -1361,6 +1361,30 @@ ENABLE_CONTEXT_MAINTENANCE = PersistentConfig(
     os.environ.get("ENABLE_CONTEXT_MAINTENANCE", "True").lower() == "true",
 )
 
+ENABLE_CHAT_RECALL = PersistentConfig(
+    "ENABLE_CHAT_RECALL",
+    "chat.recall.enable",
+    os.environ.get("ENABLE_CHAT_RECALL", "False").lower() == "true",
+)
+
+CHAT_RECALL_TIMEOUT_MS = PersistentConfig(
+    "CHAT_RECALL_TIMEOUT_MS",
+    "chat.recall.timeout_ms",
+    int(os.environ.get("CHAT_RECALL_TIMEOUT_MS", "150")),
+)
+
+CHAT_RECALL_MAX_HITS = PersistentConfig(
+    "CHAT_RECALL_MAX_HITS",
+    "chat.recall.max_hits",
+    int(os.environ.get("CHAT_RECALL_MAX_HITS", "3")),
+)
+
+CHAT_RECALL_SNIPPET_TOKEN_BUDGET = PersistentConfig(
+    "CHAT_RECALL_SNIPPET_TOKEN_BUDGET",
+    "chat.recall.snippet_token_budget",
+    int(os.environ.get("CHAT_RECALL_SNIPPET_TOKEN_BUDGET", "300")),
+)
+
 CONTEXT_MAINTENANCE_MAX_CTX_CAP = PersistentConfig(
     "CONTEXT_MAINTENANCE_MAX_CTX_CAP",
     "chat.context_maintenance.max_ctx_cap",

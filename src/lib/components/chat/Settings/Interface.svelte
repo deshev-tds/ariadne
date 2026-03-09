@@ -26,6 +26,7 @@
 	// Addons
 	let titleAutoGenerate = true;
 	let contextMaintenance = true;
+	let chatRecall = false;
 	let autoTags = true;
 
 	let responseAutoCopy = false;
@@ -202,6 +203,7 @@
 		autoTags = $settings?.autoTags ?? true;
 		contextMaintenance =
 			$settings?.contextMaintenance ?? $config?.features?.enable_context_maintenance ?? true;
+		chatRecall = $settings?.chatRecall ?? $config?.features?.enable_chat_recall ?? false;
 
 		highContrastMode = $settings?.highContrastMode ?? false;
 
@@ -811,6 +813,25 @@
 							bind:state={contextMaintenance}
 							on:change={() => {
 								saveSettings({ contextMaintenance });
+							}}
+						/>
+					</div>
+				</div>
+			</div>
+
+			<div>
+				<div class=" py-0.5 flex w-full justify-between">
+					<div class=" self-center text-xs" id="chat-recall-label">
+						{$i18n.t('Chat Recall')}
+					</div>
+
+					<div class="flex items-center gap-2 p-1">
+						<Switch
+							ariaLabelledbyId="chat-recall-label"
+							tooltip={true}
+							bind:state={chatRecall}
+							on:change={() => {
+								saveSettings({ chatRecall });
 							}}
 						/>
 					</div>

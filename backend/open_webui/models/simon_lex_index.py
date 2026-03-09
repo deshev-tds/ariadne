@@ -4,16 +4,14 @@ import asyncio
 import hashlib
 import logging
 import re
-import time
 import threading
+import time
 from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from open_webui.internal.db import engine, get_db_context
-from open_webui.models.chats import Chats
-
 log = logging.getLogger(__name__)
 
 EXTRACTOR_VERSION = 1
@@ -287,6 +285,87 @@ def enqueue_message(
         db.commit()
 
 
+def get_indexed_message_ids(
+    chat_id: str,
+    message_ids: list[str],
+    *,
+    include_queue: bool = True,
+    db: Optional[Session] = None,
+) -> set[str]:
+    if not is_supported_database():
+        return set()
+
+    normalized_ids = [str(message_id).strip() for message_id in message_ids if str(message_id).strip()]
+    if not chat_id or not normalized_ids:
+        return set()
+
+    with get_db_context(db) as db:
+        ensure_schema(db)
+
+        params: dict[str, Any] = {"chat_id": chat_id}
+        placeholders: list[str] = []
+        for idx, message_id in enumerate(normalized_ids):
+            key = f"message_id_{idx}"
+            placeholders.append(f":{key}")
+            params[key] = message_id
+
+        in_clause = ", ".join(placeholders)
+        indexed = db.execute(
+            text(
+                f"""
+                SELECT message_id
+                FROM simon_chat_lex
+                WHERE chat_id = :chat_id
+                  AND message_id IN ({in_clause})
+                """
+            ),
+            params,
+        ).fetchall()
+
+        out = {str(row[0]) for row in indexed}
+        if not include_queue:
+            return out
+
+        queued = db.execute(
+            text(
+                f"""
+                SELECT message_id
+                FROM simon_chat_lex_queue
+                WHERE chat_id = :chat_id
+                  AND message_id IN ({in_clause})
+                """
+            ),
+            params,
+        ).fetchall()
+        out.update(str(row[0]) for row in queued)
+        return out
+
+
+def enqueue_missing_messages(
+    chat_id: str,
+    message_ids: list[str],
+    *,
+    priority: int = 0,
+    db: Optional[Session] = None,
+) -> int:
+    if not is_supported_database():
+        return 0
+
+    normalized_ids = [str(message_id).strip() for message_id in message_ids if str(message_id).strip()]
+    if not chat_id or not normalized_ids:
+        return 0
+
+    with get_db_context(db) as db:
+        existing = get_indexed_message_ids(chat_id, normalized_ids, db=db)
+        enqueued = 0
+        for message_id in normalized_ids:
+            if message_id in existing:
+                continue
+            enqueue_message(chat_id, message_id, priority=priority, db=db)
+            enqueued += 1
+        return enqueued
+
+
 def delete_entries_for_chat_id(chat_id: str, db: Optional[Session] = None) -> None:
     if not is_supported_database() or not chat_id:
         return
@@ -310,6 +389,44 @@ def delete_entries_for_chat_id(chat_id: str, db: Optional[Session] = None) -> No
         db.execute(
             text("DELETE FROM simon_chat_lex_queue WHERE chat_id = :chat_id"),
             {"chat_id": chat_id},
+        )
+        db.commit()
+
+
+def delete_entries_for_chat_ids(chat_ids: list[str], db: Optional[Session] = None) -> None:
+    normalized_ids = [str(chat_id).strip() for chat_id in chat_ids if str(chat_id).strip()]
+    if not is_supported_database() or not normalized_ids:
+        return
+
+    with get_db_context(db) as db:
+        ensure_schema(db)
+
+        params: dict[str, Any] = {}
+        placeholders: list[str] = []
+        for idx, chat_id in enumerate(normalized_ids):
+            key = f"chat_id_{idx}"
+            placeholders.append(f":{key}")
+            params[key] = chat_id
+
+        in_clause = ", ".join(placeholders)
+        db.execute(
+            text(
+                f"""
+                DELETE FROM simon_chat_lex_fts
+                WHERE rowid IN (
+                    SELECT id FROM simon_chat_lex WHERE chat_id IN ({in_clause})
+                )
+                """
+            ),
+            params,
+        )
+        db.execute(
+            text(f"DELETE FROM simon_chat_lex WHERE chat_id IN ({in_clause})"),
+            params,
+        )
+        db.execute(
+            text(f"DELETE FROM simon_chat_lex_queue WHERE chat_id IN ({in_clause})"),
+            params,
         )
         db.commit()
 
@@ -481,6 +598,8 @@ def process_queue_batch(batch_size: int = 20) -> int:
             attempts = int(row[3] or 0)
 
             try:
+                from open_webui.models.chats import Chats
+
                 message = Chats.get_message_by_id_and_message_id(chat_id, message_id)
                 if not message:
                     _delete_queue_row(db, queue_id)

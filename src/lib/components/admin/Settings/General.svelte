@@ -811,6 +811,59 @@
 
 					<div class="mb-2.5 flex w-full items-center justify-between pr-2">
 						<div class=" self-center text-xs font-medium">
+							{$i18n.t('Enable Chat Recall')}
+						</div>
+
+						<Switch bind:state={adminConfig.ENABLE_CHAT_RECALL} />
+					</div>
+
+					<div class="-mt-1 mb-2.5 text-xs text-gray-400 dark:text-gray-500">
+						{$i18n.t(
+							'Runs a bounded exact recall search over earlier chat turns only when the current context may be missing evidence.'
+						)}
+					</div>
+
+					{#if adminConfig.ENABLE_CHAT_RECALL}
+						<div class="grid grid-cols-1 gap-2 mb-3">
+							<div class="grid grid-cols-3 gap-2">
+								<div>
+									<div class="mb-1 text-xs font-medium">
+										{$i18n.t('Recall Timeout (ms)')}
+									</div>
+									<input
+										class="w-full rounded-lg bg-transparent px-3 py-2 text-sm outline-none ring-1 ring-gray-200 dark:ring-gray-800"
+										type="number"
+										bind:value={adminConfig.CHAT_RECALL_TIMEOUT_MS}
+									/>
+								</div>
+
+								<div>
+									<div class="mb-1 text-xs font-medium">
+										{$i18n.t('Recall Max Hits')}
+									</div>
+									<input
+										class="w-full rounded-lg bg-transparent px-3 py-2 text-sm outline-none ring-1 ring-gray-200 dark:ring-gray-800"
+										type="number"
+										bind:value={adminConfig.CHAT_RECALL_MAX_HITS}
+									/>
+								</div>
+
+								<div>
+									<div class="mb-1 text-xs font-medium">
+										{$i18n.t('Recall Snippet Token Budget')}
+									</div>
+									<input
+										class="w-full rounded-lg bg-transparent px-3 py-2 text-sm outline-none ring-1 ring-gray-200 dark:ring-gray-800"
+										type="number"
+										bind:value={adminConfig.CHAT_RECALL_SNIPPET_TOKEN_BUDGET}
+									/>
+								</div>
+							</div>
+						</div>
+					{/if}
+
+					<div class="mb-2.5 flex w-full items-center justify-between pr-2">
+						<div class=" self-center text-xs font-medium">
 							{$i18n.t('Folders')}
 						</div>
 
