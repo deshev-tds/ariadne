@@ -1,239 +1,259 @@
-# Open WebUI 👋
+# Open WebUI Fork for Local Context, Recall, Voice, and Token Inspection
 
-![GitHub stars](https://img.shields.io/github/stars/open-webui/open-webui?style=social)
-![GitHub forks](https://img.shields.io/github/forks/open-webui/open-webui?style=social)
-![GitHub watchers](https://img.shields.io/github/watchers/open-webui/open-webui?style=social)
-![GitHub repo size](https://img.shields.io/github/repo-size/open-webui/open-webui)
-![GitHub language count](https://img.shields.io/github/languages/count/open-webui/open-webui)
-![GitHub top language](https://img.shields.io/github/languages/top/open-webui/open-webui)
-![GitHub last commit](https://img.shields.io/github/last-commit/open-webui/open-webui?color=red)
-[![Discord](https://img.shields.io/badge/Discord-Open_WebUI-blue?logo=discord&logoColor=white)](https://discord.gg/5rJgQTnV4s)
-[![](https://img.shields.io/static/v1?label=Sponsor&message=%E2%9D%A4&logo=GitHub&color=%23fe8e86)](https://github.com/sponsors/tjbck)
+This repository is a fork of Open WebUI, built for a different priority set than the upstream project README optimizes for.
 
-![Open WebUI Banner](./banner.png)
+Upstream Open WebUI is a strong base platform and UI for self-hosted LLM workflows. This fork keeps that base, but diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, and generation inspection that is useful during real debugging rather than only during demos.
 
-**Open WebUI is an [extensible](https://docs.openwebui.com/features/extensibility/plugin), feature-rich, and user-friendly self-hosted AI platform designed to operate entirely offline.** It supports various LLM runners like **Ollama** and **OpenAI-compatible APIs**, with **built-in inference engine** for RAG, making it a **powerful AI deployment solution**.
+If you care about local models, long technical chats, prompt-budget hygiene, and being able to inspect or deliberately fork a response path, this fork is trying to make those workflows less opaque and less fragile.
 
-Passionate about open-source AI? [Join our team →](https://careers.openwebui.com/)
+## Why This Fork Exists
 
-![Open WebUI Demo](./demo.png)
+The upstream project is broad. This fork is narrow on purpose.
 
-> [!TIP]  
-> **Looking for an [Enterprise Plan](https://docs.openwebui.com/enterprise)?** – **[Speak with Our Sales Team Today!](https://docs.openwebui.com/enterprise)**
->
-> Get **enhanced capabilities**, including **custom theming and branding**, **Service Level Agreement (SLA) support**, **Long-Term Support (LTS) versions**, and **more!**
+The main idea is that local LLM UX falls apart in a few predictable places:
 
-For more information, be sure to check out our [Open WebUI Documentation](https://docs.openwebui.com/).
+- context windows fill up long before the conversation is actually "done"
+- summary alone is not memory
+- local TTS often sounds either too synthetic or too heavyweight
+- token-level generation is usually hidden, even when you need to inspect or steer it
 
-## Key Features of Open WebUI ⭐
+So this fork biases toward:
 
-- 🚀 **Effortless Setup**: Install seamlessly using Docker or Kubernetes (kubectl, kustomize or helm) for a hassle-free experience with support for both `:ollama` and `:cuda` tagged images.
+- server-side context hygiene
+- bounded recall instead of blind replay
+- lightweight but good local TTS
+- generation observability and deliberate branching
 
-- 🤝 **Ollama/OpenAI API Integration**: Effortlessly integrate OpenAI-compatible APIs for versatile conversations alongside Ollama models. Customize the OpenAI API URL to link with **LMStudio, GroqCloud, Mistral, OpenRouter, and more**.
+It is not trying to replace upstream Open WebUI. It is trying to make a specific local workflow sharper.
 
-- 🛡️ **Granular Permissions and User Groups**: By allowing administrators to create detailed user roles and permissions, we ensure a secure user environment. This granularity not only enhances security but also allows for customized user experiences, fostering a sense of ownership and responsibility amongst users.
+## What Changed from Upstream
 
-- 📱 **Responsive Design**: Enjoy a seamless experience across Desktop PC, Laptop, and Mobile devices.
+The important divergences are not cosmetic.
 
-- 📱 **Progressive Web App (PWA) for Mobile**: Enjoy a native app-like experience on your mobile device with our PWA, providing offline access on localhost and a seamless user interface.
+- Server-side context maintenance was added so long chats do not simply degrade or fail once the prompt gets too large.
+- Summary generation was changed from a loose recap into a structured state snapshot.
+- Exact recall was added so older raw facts can be recovered when they fall out of the live prompt window.
+- Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
+- Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
+- Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
+- An opt-in Simon Cognitive Engine path was embedded as a separate experimental layer for more aggressive retrieval and cognitive routing ideas.
 
-- ✒️🔢 **Full Markdown and LaTeX Support**: Elevate your LLM experience with comprehensive Markdown and LaTeX capabilities for enriched interaction.
+The rest of this README explains the rationale behind those changes.
 
-- 🎤📹 **Hands-Free Voice/Video Call**: Experience seamless communication with integrated hands-free voice and video call features using multiple Speech-to-Text providers (Local Whisper, OpenAI, Deepgram, Azure) and Text-to-Speech engines (Azure, ElevenLabs, OpenAI, Transformers, WebAPI), allowing for dynamic and interactive chat environments.
+## Context and Memory in This Fork
 
-- 🛠️ **Model Builder**: Easily create Ollama models via the Web UI. Create and add custom characters/agents, customize chat elements, and import models effortlessly through [Open WebUI Community](https://openwebui.com/) integration.
+This fork now treats context as a layered system, not as "replay everything until the model breaks".
 
-- 🐍 **Native Python Function Calling Tool**: Enhance your LLMs with built-in code editor support in the tools workspace. Bring Your Own Function (BYOF) by simply adding your pure Python functions, enabling seamless integration with LLMs.
+### Stage 1: Context Compaction
 
-- 💾 **Persistent Artifact Storage**: Built-in key-value storage API for artifacts, enabling features like journals, trackers, leaderboards, and collaborative tools with both personal and shared data scopes across sessions.
+The first change was server-side context maintenance.
 
-- 📚 **Local RAG Integration**: Dive into the future of chat interactions with groundbreaking Retrieval Augmented Generation (RAG) support using your choice of 9 vector databases and multiple content extraction engines (Tika, Docling, Document Intelligence, Mistral OCR, External loaders). Load documents directly into chat or add files to your document library, effortlessly accessing them using the `#` command before a query.
+Instead of replaying the entire branch forever, the server keeps:
 
-- 🔍 **Web Search for RAG**: Perform web searches using 15+ providers including `SearXNG`, `Google PSE`, `Brave Search`, `Kagi`, `Mojeek`, `Tavily`, `Perplexity`, `serpstack`, `serper`, `Serply`, `DuckDuckGo`, `SearchApi`, `SerpApi`, `Bing`, `Jina`, `Exa`, `Sougou`, `Azure AI Search`, and `Ollama Cloud`, injecting results directly into your chat experience.
+- the system prompt
+- a smart anchor from the start of the chat
+- a recent raw tail of messages
+- a rolling summary for the older middle
 
-- 🌐 **Web Browsing Capability**: Seamlessly integrate websites into your chat experience using the `#` command followed by a URL. This feature allows you to incorporate web content directly into your conversations, enhancing the richness and depth of your interactions.
+This maintenance can happen inline when the request would overflow, and in the background after a turn when the history is approaching the configured budget.
 
-- 🎨 **Image Generation & Editing Integration**: Create and edit images using multiple engines including OpenAI's DALL-E, Gemini, ComfyUI (local), and AUTOMATIC1111 (local), with support for both generation and prompt-based editing workflows.
+The goal was straightforward: do not wait for the backend runner to guess what to trim semantically, and do not bluntly drop the oldest turns if the opening contract of the chat still matters.
 
-- ⚙️ **Many Models Conversations**: Effortlessly engage with various models simultaneously, harnessing their unique strengths for optimal responses. Enhance your experience by leveraging a diverse set of models in parallel.
+### Stage 2: Structured State Snapshot
 
-- 🔐 **Role-Based Access Control (RBAC)**: Ensure secure access with restricted permissions; only authorized individuals can access your Ollama, and exclusive model creation/pulling rights are reserved for administrators.
+The second change was not a new memory system. It was a better recap format.
 
-- 🗄️ **Flexible Database & Storage Options**: Choose from SQLite (with optional encryption), PostgreSQL, or configure cloud storage backends (S3, Google Cloud Storage, Azure Blob Storage) for scalable deployments.
+Instead of asking the model for a narrative summary, this fork asks for a structured state snapshot with sections such as:
 
-- 🔍 **Advanced Vector Database Support**: Select from 9 vector database options including ChromaDB, PGVector, Qdrant, Milvus, Elasticsearch, OpenSearch, Pinecone, S3Vector, and Oracle 23ai for optimal RAG performance.
+- User Objectives
+- Constraints and Preferences
+- Decisions and Conclusions
+- Open Questions and Unresolved Work
+- Stable Facts and Assumptions
 
-- 🔐 **Enterprise Authentication**: Full support for LDAP/Active Directory integration, SCIM 2.0 automated provisioning, and SSO via trusted headers alongside OAuth providers. Enterprise-grade user and group provisioning through SCIM 2.0 protocol, enabling seamless integration with identity providers like Okta, Azure AD, and Google Workspace for automated user lifecycle management.
+That change matters because models generally behave better when earlier conversation state is presented as explicit structure rather than a prose recap. It reduces drift and makes selective attention less fragile.
 
-- ☁️ **Cloud-Native Integration**: Native support for Google Drive and OneDrive/SharePoint file picking, enabling seamless document import from enterprise cloud storage.
+### Stage 3: Exact Recall
 
-- 📊 **Production Observability**: Built-in OpenTelemetry support for traces, metrics, and logs, enabling comprehensive monitoring with your existing observability stack.
+The third change adds a real recall layer on top of working memory.
 
-- ⚖️ **Horizontal Scalability**: Redis-backed session management and WebSocket support for multi-worker and multi-node deployments behind load balancers.
+Working memory still looks like this:
 
-- 🌐🌍 **Multilingual Support**: Experience Open WebUI in your preferred language with our internationalization (i18n) support. Join us in expanding our supported languages! We're actively seeking contributors!
+- system prompt
+- anchor
+- structured snapshot
+- recent raw tail
 
-- 🧩 **Pipelines, Open WebUI Plugin Support**: Seamlessly integrate custom logic and Python libraries into Open WebUI using [Pipelines Plugin Framework](https://github.com/open-webui/pipelines). Launch your Pipelines instance, set the OpenAI URL to the Pipelines URL, and explore endless possibilities. [Examples](https://github.com/open-webui/pipelines/tree/main/examples) include **Function Calling**, User **Rate Limiting** to control access, **Usage Monitoring** with tools like Langfuse, **Live Translation with LibreTranslate** for multilingual support, **Toxic Message Filtering** and much more.
+But if that live state does not provide enough evidence, the server can now recover older raw facts from earlier turns and inject them back into the prompt as evidence.
 
-- 🌟 **Continuous Updates**: We are committed to improving Open WebUI with regular updates, fixes, and new features.
+This recall layer is intentionally bounded and conservative. It is not an always-on retrieval ritual before every response.
 
-Want to learn more about Open WebUI's features? Check out our [Open WebUI documentation](https://docs.openwebui.com/features) for a comprehensive overview!
+It currently has two modes:
 
----
+- `FTS recall`
+  Used for explicit references, missing entities, and continuation cases where there is a useful lexical query.
 
-We are incredibly grateful for the generous support of our sponsors. Their contributions help us to maintain and improve our project, ensuring we can continue to deliver quality work to our community. Thank you!
+- `branch_recent recall`
+  Used for vague referential phrases like "the other tool" or "the old config", where sending pronoun-heavy text into FTS would likely fail.
 
-## How to Install 🚀
+Recovered snippets are injected as evidence, not as narrative:
 
-### Installation via Python pip 🐍
-
-Open WebUI can be installed using pip, the Python package installer. Before proceeding, ensure you're using **Python 3.11** to avoid compatibility issues.
-
-1. **Install Open WebUI**:
-   Open your terminal and run the following command to install Open WebUI:
-
-   ```bash
-   pip install open-webui
-   ```
-
-2. **Running Open WebUI**:
-   After installation, you can start Open WebUI by executing:
-
-   ```bash
-   open-webui serve
-   ```
-
-This will start the Open WebUI server, which you can access at [http://localhost:8080](http://localhost:8080)
-
-### Quick Start with Docker 🐳
-
-> [!NOTE]  
-> Please note that for certain Docker environments, additional configurations might be needed. If you encounter any connection issues, our detailed guide on [Open WebUI Documentation](https://docs.openwebui.com/) is ready to assist you.
-
-> [!WARNING]
-> When using Docker to install Open WebUI, make sure to include the `-v open-webui:/app/backend/data` in your Docker command. This step is crucial as it ensures your database is properly mounted and prevents any loss of data.
-
-> [!TIP]  
-> If you wish to utilize Open WebUI with Ollama included or CUDA acceleration, we recommend utilizing our official images tagged with either `:cuda` or `:ollama`. To enable CUDA, you must install the [Nvidia CUDA container toolkit](https://docs.nvidia.com/dgx/nvidia-container-runtime-upgrade/) on your Linux/WSL system.
-
-### Installation with Default Configuration
-
-- **If Ollama is on your computer**, use this command:
-
-  ```bash
-  docker run -d -p 3000:8080 --add-host=host.docker.internal:host-gateway -v open-webui:/app/backend/data --name open-webui --restart always ghcr.io/open-webui/open-webui:main
-  ```
-
-- **If Ollama is on a Different Server**, use this command:
-
-  To connect to Ollama on another server, change the `OLLAMA_BASE_URL` to the server's URL:
-
-  ```bash
-  docker run -d -p 3000:8080 -e OLLAMA_BASE_URL=https://example.com -v open-webui:/app/backend/data --name open-webui --restart always ghcr.io/open-webui/open-webui:main
-  ```
-
-- **To run Open WebUI with Nvidia GPU support**, use this command:
-
-  ```bash
-  docker run -d -p 3000:8080 --gpus all --add-host=host.docker.internal:host-gateway -v open-webui:/app/backend/data --name open-webui --restart always ghcr.io/open-webui/open-webui:cuda
-  ```
-
-### Installation for OpenAI API Usage Only
-
-- **If you're only using OpenAI API**, use this command:
-
-  ```bash
-  docker run -d -p 3000:8080 -e OPENAI_API_KEY=your_secret_key -v open-webui:/app/backend/data --name open-webui --restart always ghcr.io/open-webui/open-webui:main
-  ```
-
-### Installing Open WebUI with Bundled Ollama Support
-
-This installation method uses a single container image that bundles Open WebUI with Ollama, allowing for a streamlined setup via a single command. Choose the appropriate command based on your hardware setup:
-
-- **With GPU Support**:
-  Utilize GPU resources by running the following command:
-
-  ```bash
-  docker run -d -p 3000:8080 --gpus=all -v ollama:/root/.ollama -v open-webui:/app/backend/data --name open-webui --restart always ghcr.io/open-webui/open-webui:ollama
-  ```
-
-- **For CPU Only**:
-  If you're not using a GPU, use this command instead:
-
-  ```bash
-  docker run -d -p 3000:8080 -v ollama:/root/.ollama -v open-webui:/app/backend/data --name open-webui --restart always ghcr.io/open-webui/open-webui:ollama
-  ```
-
-Both commands facilitate a built-in, hassle-free installation of both Open WebUI and Ollama, ensuring that you can get everything up and running swiftly.
-
-After installation, you can access Open WebUI at [http://localhost:3000](http://localhost:3000). Enjoy! 😄
-
-### Other Installation Methods
-
-We offer various installation alternatives, including non-Docker native installation methods, Docker Compose, Kustomize, and Helm. Visit our [Open WebUI Documentation](https://docs.openwebui.com/getting-started/) or join our [Discord community](https://discord.gg/5rJgQTnV4s) for comprehensive guidance.
-
-Look at the [Local Development Guide](https://docs.openwebui.com/getting-started/development) for instructions on setting up a local development environment.
-
-### Troubleshooting
-
-Encountering connection issues? Our [Open WebUI Documentation](https://docs.openwebui.com/troubleshooting/) has got you covered. For further assistance and to join our vibrant community, visit the [Open WebUI Discord](https://discord.gg/5rJgQTnV4s).
-
-#### Open WebUI: Server Connection Error
-
-If you're experiencing connection issues, it’s often due to the WebUI docker container not being able to reach the Ollama server at 127.0.0.1:11434 (host.docker.internal:11434) inside the container . Use the `--network=host` flag in your docker command to resolve this. Note that the port changes from 3000 to 8080, resulting in the link: `http://localhost:8080`.
-
-**Example Docker Command**:
-
-```bash
-docker run -d --network=host -v open-webui:/app/backend/data -e OLLAMA_BASE_URL=http://127.0.0.1:11434 --name open-webui --restart always ghcr.io/open-webui/open-webui:main
+```text
+Evidence from earlier conversation:
+[turn <id> | <role>]
+...
 ```
 
-### Keeping Your Docker Installation Up-to-Date
+That provenance matters. The model is being shown evidence, not a second-hand retelling.
 
-Check our Updating Guide available in our [Open WebUI Documentation](https://docs.openwebui.com/getting-started/updating).
+### Simulated User Flows
 
-### Using the Dev Branch 🌙
+Here is what that means in practice.
 
-> [!WARNING]
-> The `:dev` branch contains the latest unstable features and changes. Use it at your own risk as it may have bugs or incomplete features.
+**Flow 1: No recall needed**
 
-If you want to try out the latest bleeding-edge features and are okay with occasional instability, you can use the `:dev` tag like this:
+User:
+`Continue with ffuf for the next step.`
 
-```bash
-docker run -d -p 3000:8080 -v open-webui:/app/backend/data --name open-webui --add-host=host.docker.internal:host-gateway --restart always ghcr.io/open-webui/open-webui:dev
-```
+If `ffuf` is still present in the recent raw tail or structured snapshot, the server does nothing special. The request stays on the fast path.
 
-### Offline Mode
+**Flow 2: Explicit factual recall**
 
-If you are running Open WebUI in an offline environment, you can set the `HF_HUB_OFFLINE` environment variable to `1` to prevent attempts to download models from the internet.
+User:
+`What did we decide earlier about ffuf?`
 
-```bash
-export HF_HUB_OFFLINE=1
-```
+This triggers bounded FTS recall. The server searches older turns, recovers the relevant excerpt, injects it as evidence, and only then lets the model answer.
 
-## What's Next? 🌟
+**Flow 3: Missing entity, but no explicit "remember" wording**
 
-Discover upcoming features on our roadmap in the [Open WebUI Documentation](https://docs.openwebui.com/roadmap/).
+User:
+`Keep the same endpoint, but change the timeout to 5 seconds.`
 
-## License 📜
+If the endpoint has already fallen out of the live window, the server can recall the earlier raw mention instead of leaving the model to guess.
 
-This project contains code under multiple licenses. The current codebase includes components licensed under the Open WebUI License with an additional requirement to preserve the "Open WebUI" branding, as well as prior contributions under their respective original licenses. For a detailed record of license changes and the applicable terms for each section of the code, please refer to [LICENSE_HISTORY](./LICENSE_HISTORY). For complete and updated licensing details, please see the [LICENSE](./LICENSE) and [LICENSE_HISTORY](./LICENSE_HISTORY) files.
+**Flow 4: Vague referential phrase**
 
-## Support 💬
+User:
+`What happened with that other tool?`
 
-If you have any questions, suggestions, or need assistance, please open an issue or join our
-[Open WebUI Discord community](https://discord.gg/5rJgQTnV4s) to connect with us! 🤝
+This is where `branch_recent` recall matters. Instead of issuing a bad FTS query built from vague pronouns, the server inspects a bounded recent window of older branch messages and injects a few evidence snippets for disambiguation.
 
-## Star History
+The design bias is intentional:
 
-<a href="https://star-history.com/#open-webui/open-webui&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=open-webui/open-webui&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=open-webui/open-webui&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=open-webui/open-webui&type=Date" />
-  </picture>
-</a>
+- prefer false negatives over false positives
+- do not tax every turn with retrieval
+- recover old facts when evidence is weak, not whenever retrieval is merely possible
 
----
+## Web Search and Retrieval Planning
 
-Created by [Timothy Jaeryang Baek](https://github.com/tjbck) - Let's make Open WebUI even more amazing together! 💪
+This fork also treats web behavior as a retrieval problem, not just as "run a search and paste the results into context".
+
+The rationale is similar to the context work above: the problem is not merely getting access to more text. The problem is deciding what evidence is worth fetching, how much of it is worth keeping, when to stop, and how to avoid polluting the prompt with redundant or weak material.
+
+In practice, this means the web path here is more structured than a flat search integration:
+
+- multiple planner modes exist instead of one hardcoded query flow
+- a source registry provides machine-readable hints about where different kinds of queries should go
+- the active model can be used as a query rewriter when that helps, but the system still keeps explicit fallback paths
+- planner telemetry tracks retries, fallback usage, executed queries, and stopping conditions instead of treating the whole thing as opaque middleware
+
+The important behavioral shift is this:
+
+- upstream-style web search is often thought of as "query provider -> collect results -> inject results"
+- this fork pushes it toward "plan -> target sources -> bound evidence -> stop when enough evidence exists"
+
+That matters more on local setups than it first appears. Prompt budget is finite, retrieval latency is visible, and low-quality web evidence is actively harmful when it crowds out the rest of the conversation. The planner/rewriter/source-registry work is there to make web retrieval less brute-force and less noisy.
+
+At a high level, the current web path behaves more like this:
+
+1. choose a planning mode
+2. optionally rewrite or refine the search queries using the active model
+3. target sources with planner hints instead of treating all sources as equivalent
+4. stop once the evidence quality or coverage is good enough, instead of continuing mechanically
+5. surface planner status and fallback information so the path is inspectable
+
+This is the same overall philosophy as the context work: bounded, inspectable, evidence-oriented behavior beats magical but opaque behavior.
+
+## Simon Cognitive Engine
+
+This fork also embeds an opt-in Simon Cognitive Engine path as a separate pipe model.
+
+Simon is a separate public project by the same author:
+
+- https://github.com/deshev-tds/simon
+
+The relationship between the two is deliberate:
+
+- Open WebUI is the more mature product substrate
+- Simon is where more aggressive memory, retrieval, and cognitive-routing ideas are explored as a more comprehensive experimental system
+- this fork borrows architectural and behavioral ideas from Simon where they can improve Open WebUI without turning the whole product into an experimental research scaffold
+
+So the Simon integration here should be read as a bridge, not as a replacement. It lets the fork expose a more opinionated cognitive path without making the standard Open WebUI chat path depend on it.
+
+## Voice / TTS
+
+This fork adds Kokoro because local TTS quality matters, and a lot of local stacks are either too robotic or too heavy for the quality they provide.
+
+Kokoro was added as a practical compromise:
+
+- more natural sounding voices than many lightweight alternatives
+- lightweight enough to remain useful in local deployments
+- broad enough voice selection to make experimentation worthwhile
+
+This fork supports Kokoro in the places where it is actually useful:
+
+- backend/local Kokoro ONNX
+- browser-side Kokoro.js where that path makes sense
+
+The point is not to chase the largest TTS stack. The point is to improve voice quality per watt, latency, and setup complexity.
+
+## Token Exploration and Response Branching
+
+Most chat UIs hide generation internals completely. That is convenient until you need to inspect why a response happened, or you want to deliberately fork from a different token path.
+
+This fork adds token explorer support so you can inspect token/logit alternatives when the backend supports the necessary telemetry. It also supports manually creating a new response branch from a selected token alternative instead of treating the sampled continuation as sacred.
+
+That matters for local workflows because it gives you:
+
+- a way to inspect why a continuation happened
+- a way to compare plausible alternatives
+- a way to fork a response branch deliberately without rewriting the whole prompt
+
+This is not presented here as "full interpretability". It is a practical debugging and exploration tool for model behavior.
+
+## Other Notable Divergences
+
+The most important differences in this fork are the ones above, but the operating theme is consistent:
+
+- working memory is managed server-side instead of being left to overflow
+- recap is structured state, not a loose narrative
+- recall is bounded, evidence-first, and not always-on
+- web retrieval is planned and bounded rather than treated as a blind append-to-prompt step
+- local TTS is treated as a quality problem worth solving
+- token-level generation is inspectable when the backend exposes enough data
+- Simon exists as an opt-in cognitive path for ideas that are more aggressive than the default chat path should be
+
+There is also early scaffolding for runtime MoE experts probing/control on compatible OpenAI-style backends. That work is real, but it is not yet central enough to this fork's identity to present as a finished headline capability.
+
+Also, as a matter of principle, chat does not try to steal `Cmd+R` from the browser. Reload still means reload. Some boundaries deserve respect.
+
+The bias throughout is the same: better local behavior, better debuggability, fewer "just trust the model" assumptions.
+
+## Compatibility / Install
+
+This is still Open WebUI under the hood, and the basic deployment model remains broadly compatible with upstream expectations. If you already know how to run Open WebUI, that knowledge still transfers.
+
+This README intentionally does not duplicate the upstream install matrix. The fork is primarily aimed at local deployments and local model runners, and the most practical path is usually to keep using the deployment method you already use for Open WebUI while applying this fork's code and settings.
+
+For generic deployment guidance, refer to the upstream Open WebUI documentation:
+
+- https://docs.openwebui.com/
+- https://github.com/open-webui/open-webui
+
+## Upstream Attribution
+
+This fork is built on Open WebUI, and upstream remains the base platform.
+
+The goal here is not to replace upstream, but to diverge where local-first usage benefits from different tradeoffs: tighter context management, bounded recall, better lightweight voice options, and more transparent generation tooling.
+
+Licensing and attribution remain those of the underlying project and this fork's codebase. See [LICENSE](./LICENSE) and [LICENSE_HISTORY](./LICENSE_HISTORY).
