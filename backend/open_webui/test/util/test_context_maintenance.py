@@ -3,10 +3,13 @@ from types import SimpleNamespace
 import pytest
 
 from open_webui.utils.context_maintenance import (
+    build_summary_message,
+    build_summary_prompt,
     build_context_maintenance_payload,
     extract_model_ctx_cap,
     extract_n_ctx_from_props,
     is_summary_refresh_needed,
+    normalize_summary_snapshot,
     parse_prometheus_metrics,
     resolve_effective_ctx_cap,
     resolve_history_budgets,
@@ -68,6 +71,55 @@ def test_extract_n_ctx_from_props_supports_llamacpp_shape():
     }
 
     assert extract_n_ctx_from_props(props) == 65536
+
+
+def test_build_summary_prompt_requests_structured_state_snapshot():
+    prompt = build_summary_prompt(transcript="user: hi", max_tokens=512)
+
+    assert "structured state snapshot" in prompt
+    assert "Do not write a narrative summary." in prompt
+    assert "User Objectives:" in prompt
+    assert "Constraints and Preferences:" in prompt
+    assert "Decisions and Conclusions:" in prompt
+    assert "Open Questions and Unresolved Work:" in prompt
+    assert "Stable Facts and Assumptions:" in prompt
+
+
+def test_normalize_summary_snapshot_canonicalizes_sections():
+    normalized = normalize_summary_snapshot(
+        """
+        Goals:
+        - ship context maintenance
+        Constraints:
+        - keep it backend-owned
+        Decisions:
+        - use async maintenance
+        Open Questions:
+        - add exact recall later
+        System Assumptions:
+        - llama.cpp metrics may be missing
+        """
+    )
+
+    assert "User Objectives:\n- ship context maintenance" in normalized
+    assert "Constraints and Preferences:\n- keep it backend-owned" in normalized
+    assert "Decisions and Conclusions:\n- use async maintenance" in normalized
+    assert "Open Questions and Unresolved Work:\n- add exact recall later" in normalized
+    assert "Stable Facts and Assumptions:\n- llama.cpp metrics may be missing" in normalized
+
+
+def test_normalize_summary_snapshot_falls_back_to_stable_facts_block():
+    normalized = normalize_summary_snapshot("Keep ffuf as the primary tool.")
+
+    assert "User Objectives:\n- None recorded." in normalized
+    assert "Stable Facts and Assumptions:\n- Keep ffuf as the primary tool." in normalized
+
+
+def test_build_summary_message_uses_state_snapshot_wrapper():
+    message = build_summary_message("User Objectives:\n- keep the chat stable")
+
+    assert message["role"] == "system"
+    assert "Conversation state snapshot for earlier turns." in message["content"]
 
 
 def test_resolve_effective_ctx_cap_respects_admin_cap():

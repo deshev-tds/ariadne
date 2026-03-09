@@ -36,6 +36,60 @@ DEFAULT_SUMMARY_MIN_REFRESH_MESSAGES = 6
 SOFT_PRESSURE_RATIO = 0.72
 HARD_PRESSURE_RATIO = 0.85
 _PROBE_TIMEOUT_SECONDS = 1.5
+SUMMARY_SNAPSHOT_SECTIONS = [
+    (
+        "User Objectives",
+        {
+            "user objectives",
+            "user objective",
+            "goals",
+            "goal",
+            "objectives",
+            "objective",
+        },
+    ),
+    (
+        "Constraints and Preferences",
+        {
+            "constraints and preferences",
+            "constraints",
+            "constraint",
+            "preferences",
+            "preferences and constraints",
+        },
+    ),
+    (
+        "Decisions and Conclusions",
+        {
+            "decisions and conclusions",
+            "decisions",
+            "decision",
+            "conclusions",
+            "conclusion",
+        },
+    ),
+    (
+        "Open Questions and Unresolved Work",
+        {
+            "open questions and unresolved work",
+            "open questions",
+            "unresolved work",
+            "open work",
+            "pending work",
+        },
+    ),
+    (
+        "Stable Facts and Assumptions",
+        {
+            "stable facts and assumptions",
+            "stable facts",
+            "facts and assumptions",
+            "system assumptions",
+            "assumptions",
+            "facts",
+        },
+    ),
+]
 
 _ACTIVE_MAINTENANCE_JOBS: set[str] = set()
 _ACTIVE_MAINTENANCE_LOCK = asyncio.Lock()
@@ -281,8 +335,9 @@ def build_summary_message(summary_text: str) -> dict[str, Any]:
     return {
         "role": "system",
         "content": (
-            "Conversation summary for earlier turns. Preserve the goals, constraints, "
-            "decisions, unresolved questions, and stable facts below when continuing.\n\n"
+            "Conversation state snapshot for earlier turns. Preserve the objectives, "
+            "constraints, decisions, unresolved work, and stable facts below when "
+            "continuing.\n\n"
             f"{summary_text.strip()}"
         ),
     }
@@ -309,19 +364,78 @@ def build_summary_prompt(
         bounded_transcript = bounded_transcript[-chars:]
 
     return (
-        "Summarize the earlier conversation so it can replace the original turns in "
-        "future prompts.\n"
-        "Preserve:\n"
-        "- user goals and requests\n"
-        "- constraints and preferences\n"
-        "- important decisions and conclusions\n"
-        "- open questions and unresolved work\n"
-        "- stable facts established in the chat\n"
+        "Convert the earlier conversation into a structured state snapshot that can "
+        "replace the original turns in future prompts.\n"
+        "Return exactly these sections in order, each with concise bullet points:\n"
+        "User Objectives:\n"
+        "Constraints and Preferences:\n"
+        "Decisions and Conclusions:\n"
+        "Open Questions and Unresolved Work:\n"
+        "Stable Facts and Assumptions:\n"
+        "Preserve durable information only.\n"
         "Do not restate temporary retrieval excerpts unless they became lasting facts.\n"
+        "Do not write a narrative summary.\n"
         f"Keep the result concise and under roughly {max_tokens} tokens.\n\n"
         "Conversation:\n"
         f"{bounded_transcript}"
     )
+
+
+def _normalize_summary_heading(heading: str) -> Optional[str]:
+    normalized = re.sub(r"[^a-z0-9 ]+", " ", heading.lower()).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    for canonical, aliases in SUMMARY_SNAPSHOT_SECTIONS:
+        if normalized in aliases:
+            return canonical
+    return None
+
+
+def normalize_summary_snapshot(summary_text: str) -> str:
+    raw = str(summary_text or "").strip()
+    if not raw:
+        return ""
+
+    sections = {canonical: [] for canonical, _ in SUMMARY_SNAPSHOT_SECTIONS}
+    current_section: Optional[str] = None
+    matched_heading = False
+
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        heading_match = re.match(r"^([A-Za-z][A-Za-z /&_-]{1,80}):\s*(.*)$", stripped)
+        if heading_match:
+            canonical = _normalize_summary_heading(heading_match.group(1))
+            if canonical:
+                matched_heading = True
+                current_section = canonical
+                remainder = heading_match.group(2).strip()
+                if remainder:
+                    sections[canonical].append(remainder)
+                continue
+
+        if current_section:
+            sections[current_section].append(stripped)
+
+    if not matched_heading:
+        sections["Stable Facts and Assumptions"].append(raw)
+
+    blocks: list[str] = []
+    for canonical, _ in SUMMARY_SNAPSHOT_SECTIONS:
+        values = sections[canonical]
+        if values:
+            formatted = [
+                value if value.startswith("- ") else f"- {value.lstrip('- ').strip()}"
+                for value in values
+                if value.strip()
+            ]
+        else:
+            formatted = ["- None recorded."]
+
+        blocks.append(f"{canonical}:\n" + "\n".join(formatted))
+
+    return "\n\n".join(blocks)
 
 
 def summarize_history_growth(
@@ -727,7 +841,7 @@ async def generate_history_summary(
             message = choices[0].get("message", {})
             summary = message.get("content") or message.get("reasoning_content")
             if isinstance(summary, str) and summary.strip():
-                return summary.strip()
+                return normalize_summary_snapshot(summary)
     return None
 
 
