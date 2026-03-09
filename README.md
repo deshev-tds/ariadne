@@ -4,6 +4,8 @@ This repository is a fork of Open WebUI, built for a different priority set than
 
 Upstream Open WebUI is a strong base platform and UI for self-hosted LLM workflows. This fork keeps that base, but diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, and generation inspection that is useful during real debugging rather than only during demos.
 
+In practice, the local stack behind this fork is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. That matters because a lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
+
 If you care about local models, long technical chats, prompt-budget hygiene, and being able to inspect or deliberately fork a response path, this fork is trying to make those workflows less opaque and less fragile.
 
 ## Why This Fork Exists
@@ -211,7 +213,11 @@ The point is not to chase the largest TTS stack. The point is to improve voice q
 
 Most chat UIs hide generation internals completely. That is convenient until you need to inspect why a response happened, or you want to deliberately fork from a different token path.
 
-This fork adds token explorer support so you can inspect token/logit alternatives when the backend supports the necessary telemetry. It also supports manually creating a new response branch from a selected token alternative instead of treating the sampled continuation as sacred.
+This fork adds token explorer support so you can inspect token/logit alternatives when the backend exposes the necessary telemetry. In the author's local stack, that means `llama.cpp` speaking an OpenAI-compatible API and returning usable logprob/top-logprob style data.
+
+The explorer itself is fully implemented in this fork. The constraint is not the UI path; the constraint is backend capability.
+
+It also supports manually creating a new response branch from a selected token alternative instead of treating the sampled continuation as sacred.
 
 That matters for local workflows because it gives you:
 
@@ -220,6 +226,8 @@ That matters for local workflows because it gives you:
 - a way to fork a response branch deliberately without rewriting the whole prompt
 
 This is not presented here as "full interpretability". It is a practical debugging and exploration tool for model behavior.
+
+It is also intentionally not implemented as "keep the whole live generation tree resident forever". In this fork, manual branching is driven by bounded token telemetry and a fallback prefix-forcing strategy, which is far more practical on local hardware than pretending every backend will give you infinite branching state for free.
 
 ## Other Notable Divergences
 
@@ -233,7 +241,7 @@ The most important differences in this fork are the ones above, but the operatin
 - token-level generation is inspectable when the backend exposes enough data
 - Simon exists as an opt-in cognitive path for ideas that are more aggressive than the default chat path should be
 
-There is also early scaffolding for runtime MoE experts probing/control on compatible OpenAI-style backends. That work is real, but it is not yet central enough to this fork's identity to present as a finished headline capability.
+There is also early scaffolding for runtime MoE experts probing/control on compatible OpenAI-style backends. That work is real, but it is still backend-dependent and not yet central enough to this fork's identity to present as a finished headline capability.
 
 Also, as a matter of principle, chat does not try to steal `Cmd+R` from the browser. Reload still means reload. Some boundaries deserve respect.
 
@@ -244,6 +252,22 @@ The bias throughout is the same: better local behavior, better debuggability, fe
 This is still Open WebUI under the hood, and the basic deployment model remains broadly compatible with upstream expectations. If you already know how to run Open WebUI, that knowledge still transfers.
 
 This README intentionally does not duplicate the upstream install matrix. The fork is primarily aimed at local deployments and local model runners, and the most practical path is usually to keep using the deployment method you already use for Open WebUI while applying this fork's code and settings.
+
+The author's practical target stack is:
+
+- `llama.cpp` as the serving engine
+- AMD Strix Halo as the local hardware platform
+- the prebuilt Strix Halo toolboxes maintained here:
+  - https://github.com/kyuz0/amd-strix-halo-toolboxes/tree/main
+
+Those toolboxes are worth calling out because they make `llama.cpp` on Strix Halo much less painful to operate, and this fork has been developed with that runtime reality in mind rather than against an abstract "supports every backend equally" ideal.
+
+That also explains some of the fork's behavior:
+
+- context maintenance exists because `llama.cpp` will not semantically manage long chat history for you
+- recall is bounded because local prompt budget and latency are both visible costs
+- token exploration is built around telemetry that an OpenAI-compatible local server can actually expose
+- some advanced controls, such as MoE probing, remain conditional on backend support rather than being treated as guaranteed product invariants
 
 For generic deployment guidance, refer to the upstream Open WebUI documentation:
 
