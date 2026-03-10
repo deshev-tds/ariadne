@@ -1,6 +1,6 @@
 # Open WebUI Fork for Local Context, Recall, Voice, and Token Inspection
 
-This repository is a fork of Open WebUI, built for a different priority set than the upstream project README optimizes for.
+This repository is a fork of Open WebUI, built for a different priority set than the upstream project.
 
 Upstream Open WebUI is a strong base platform and UI for self-hosted LLM workflows. This fork keeps that base, but diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, and generation inspection that is useful during real debugging rather than only during demos.
 
