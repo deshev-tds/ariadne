@@ -2,6 +2,16 @@
 
 This repository is a fork of Open WebUI, built for a different priority set than the upstream project.
 
+That priority set is:
+
+- local-first behavior over backend-agnostic product smoothing
+- long-chat survivability over naive full-history replay
+- memory with evidence and recall, not summary-only compression
+- fast-path UX by default, with bounded slow paths only when needed
+- lightweight local voice that still sounds good enough to use
+- token-level inspection and deliberate response branching for real debugging
+- honest control surfaces for `llama.cpp`-style local stacks instead of universal-magic toggles
+
 Upstream Open WebUI is a strong base platform and UI for self-hosted LLM workflows. This fork keeps that base, but diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, and generation inspection that is useful during real debugging rather than only during demos.
 
 In practice, the local stack behind this fork is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. That matters because a lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
