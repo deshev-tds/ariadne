@@ -13,6 +13,7 @@ from open_webui.utils.context_maintenance import (
     parse_prometheus_metrics,
     resolve_effective_ctx_cap,
     resolve_history_budgets,
+    resolve_live_prompt_cap,
 )
 
 
@@ -131,6 +132,16 @@ def test_resolve_effective_ctx_cap_respects_admin_cap():
     assert resolve_effective_ctx_cap(request, model, {"n_ctx": 131072}) == 65536
 
 
+def test_resolve_live_prompt_cap_prefers_live_probe_over_model_args():
+    request = _make_request()
+    model = {"status": {"args": ["--ctx-size", "131072"]}}
+
+    live_cap, source = resolve_live_prompt_cap(request, model, {"n_ctx": 32768, "source": "slots"})
+
+    assert live_cap == 32768
+    assert source == "probe:slots"
+
+
 def test_resolve_history_budgets_uses_rag_reserve_when_files_present():
     request = _make_request()
     model = {"status": {"args": ["--ctx-size", "32768"]}}
@@ -143,6 +154,8 @@ def test_resolve_history_budgets_uses_rag_reserve_when_files_present():
         probe={"n_ctx": 32768},
     )
 
+    assert budgets["live_prompt_cap"] == 32768
+    assert budgets["live_prompt_cap_source"] == "probe:probe"
     assert budgets["effective_ctx_cap"] == 32768
     assert budgets["rag_reserve_tokens"] == 12288
     assert budgets["hard_history_budget"] < 32768

@@ -652,33 +652,50 @@ async def load_llamacpp_probe(
     return result
 
 
-def resolve_effective_ctx_cap(
+def resolve_live_prompt_cap(
     request,
     model: dict[str, Any],
     probe: dict[str, Any] | None = None,
-) -> int:
+) -> tuple[int, str]:
     app_config = request.app.state.config
     configured_cap = getattr(app_config, "CONTEXT_MAINTENANCE_MAX_CTX_CAP", None)
     provider_cap = extract_model_ctx_cap(model)
     probed_cap = (probe or {}).get("n_ctx")
 
-    candidates = []
-    for candidate in [provider_cap, probed_cap]:
-        if candidate:
-            try:
-                candidates.append(int(candidate))
-            except Exception:
-                continue
+    source = "default"
+    live_cap = DEFAULT_CONTEXT_CAP
 
-    effective = min(candidates) if candidates else DEFAULT_CONTEXT_CAP
-
-    if configured_cap:
+    if probed_cap:
         try:
-            effective = min(effective, int(configured_cap))
+            live_cap = int(probed_cap)
+            probe_source = str((probe or {}).get("source") or "probe")
+            source = f"probe:{probe_source}"
+        except Exception:
+            pass
+    elif provider_cap:
+        try:
+            live_cap = int(provider_cap)
+            source = "model_args"
         except Exception:
             pass
 
-    return max(4096, int(effective))
+    if configured_cap:
+        try:
+            live_cap = min(live_cap, int(configured_cap))
+            source = f"{source}+admin_cap"
+        except Exception:
+            pass
+
+    return max(4096, int(live_cap)), source
+
+
+def resolve_effective_ctx_cap(
+    request,
+    model: dict[str, Any],
+    probe: dict[str, Any] | None = None,
+) -> int:
+    live_cap, _ = resolve_live_prompt_cap(request, model, probe)
+    return live_cap
 
 
 def resolve_history_budgets(
@@ -690,7 +707,9 @@ def resolve_history_budgets(
     probe: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     config = request.app.state.config
-    effective_ctx_cap = resolve_effective_ctx_cap(request, model, probe)
+    live_prompt_cap, live_prompt_cap_source = resolve_live_prompt_cap(
+        request, model, probe
+    )
     output_reserve = max(
         int(form_data.get("max_tokens") or 0),
         int(getattr(config, "CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS", 8192)),
@@ -711,12 +730,14 @@ def resolve_history_budgets(
     has_rag = bool(form_data.get("files") or metadata.get("files"))
     rag_reserve = rag_default if has_rag else 2048
     hard_history_budget = max(
-        1024, effective_ctx_cap - output_reserve - safety_reserve - rag_reserve
+        1024, live_prompt_cap - output_reserve - safety_reserve - rag_reserve
     )
     soft_history_budget = max(512, hard_history_budget - soft_margin)
 
     return {
-        "effective_ctx_cap": effective_ctx_cap,
+        "live_prompt_cap": live_prompt_cap,
+        "live_prompt_cap_source": live_prompt_cap_source,
+        "effective_ctx_cap": live_prompt_cap,
         "output_reserve_tokens": output_reserve,
         "safety_reserve_tokens": safety_reserve,
         "rag_reserve_tokens": rag_reserve,
