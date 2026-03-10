@@ -551,9 +551,13 @@ async def maybe_apply_chat_recall(
     result = {
         "triggered": False,
         "reason": "disabled",
+        "mode": "none",
+        "depth": 0,
         "evidence_injected": False,
         "timed_out": False,
         "hit_count": 0,
+        "evidence_tokens": 0,
+        "query_text": "",
     }
 
     if (
@@ -566,6 +570,9 @@ async def maybe_apply_chat_recall(
 
     trigger = detect_recall_need(messages)
     result["reason"] = trigger["reason"]
+    result["mode"] = trigger.get("mode", "none")
+    result["depth"] = int(trigger.get("depth", 0) or 0)
+    result["query_text"] = str(trigger.get("query_text") or "")
     if not trigger.get("trigger"):
         return messages, result
 
@@ -647,6 +654,7 @@ async def maybe_apply_chat_recall(
         ]
 
     result["evidence_injected"] = True
+    result["evidence_tokens"] = estimate_tokens_from_text(evidence_message["content"])
     await emit_chat_recall_status(
         event_emitter,
         "Checking earlier conversation...",

@@ -209,6 +209,9 @@ def test_maybe_apply_chat_recall_injects_evidence(monkeypatch):
     )
 
     assert result["evidence_injected"] is True
+    assert result["mode"] == "fts"
+    assert result["depth"] == 2
+    assert result["evidence_tokens"] > 0
     assert updated[1]["role"] == "system"
     assert "Evidence from earlier conversation:" in updated[1]["content"]
     assert updated[2]["role"] == "user"
@@ -243,7 +246,9 @@ def test_maybe_apply_chat_recall_branch_recent_skips_fts(monkeypatch):
 
     assert result["triggered"] is True
     assert result["reason"] == "ambiguous_referential_gap"
+    assert result["mode"] == "branch_recent"
     assert result["evidence_injected"] is True
+    assert result["evidence_tokens"] > 0
     assert updated[2]["role"] == "system"
     assert "[turn m2 | assistant]" in updated[2]["content"]
     assert updated[3]["role"] == "user"

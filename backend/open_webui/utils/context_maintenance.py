@@ -737,6 +737,7 @@ def resolve_history_budgets(
     return {
         "live_prompt_cap": live_prompt_cap,
         "live_prompt_cap_source": live_prompt_cap_source,
+        "hot_context_target_tokens": hard_history_budget,
         "effective_ctx_cap": live_prompt_cap,
         "output_reserve_tokens": output_reserve,
         "safety_reserve_tokens": safety_reserve,
@@ -909,6 +910,14 @@ def build_context_maintenance_payload(
         hard_history_budget=budgets["hard_history_budget"],
     )
 
+    system_tokens = (
+        estimate_tokens_from_messages([system_message]) if system_message else 0
+    )
+    anchor_tokens = estimate_tokens_from_history_messages(anchors)
+    summary_tokens = estimate_tokens_from_text(summary_text or "")
+    tail_tokens = estimate_tokens_from_history_messages(trimmed_tail)
+    request_tokens = estimate_tokens_from_messages(request_messages)
+
     return {
         "messages": request_messages,
         "anchor_messages": anchors,
@@ -916,6 +925,23 @@ def build_context_maintenance_payload(
         "tail_messages": trimmed_tail,
         "summary_text": summary_text,
         "used_summary_state": used_summary_state,
+        "telemetry": {
+            "live_prompt_cap": budgets.get("live_prompt_cap"),
+            "live_prompt_cap_source": budgets.get("live_prompt_cap_source"),
+            "hot_context_target_tokens": budgets.get(
+                "hot_context_target_tokens", budgets.get("hard_history_budget")
+            ),
+            "hard_history_budget": budgets.get("hard_history_budget"),
+            "soft_history_budget": budgets.get("soft_history_budget"),
+            "system_tokens": system_tokens,
+            "anchor_tokens": anchor_tokens,
+            "summary_tokens": summary_tokens,
+            "tail_tokens": tail_tokens,
+            "request_tokens": request_tokens,
+            "anchor_message_count": len(anchors),
+            "tail_message_count": len(trimmed_tail),
+            "summary_included": bool(summary_text),
+        },
     }
 
 
@@ -947,6 +973,7 @@ async def build_inline_maintained_messages(
         "used_summary_state": payload["used_summary_state"],
         "summary_refreshed": False,
         "fallback_used": False,
+        "telemetry": dict(payload.get("telemetry") or {}),
     }
 
     if not should_force_inline_maintenance(
@@ -1011,6 +1038,19 @@ async def build_inline_maintained_messages(
             tail_messages=history_messages[len(payload["anchor_messages"]) :],
             hard_history_budget=budgets["hard_history_budget"],
         )
+
+    result["telemetry"].update(
+        {
+            "summary_refreshed": result["summary_refreshed"],
+            "fallback_used": result["fallback_used"],
+            "used_summary_state": result["used_summary_state"],
+            "request_tokens": estimate_tokens_from_messages(request_messages),
+            "tail_tokens": estimate_tokens_from_history_messages(trimmed_tail),
+            "tail_message_count": len(trimmed_tail),
+            "summary_tokens": estimate_tokens_from_text(summary_text or ""),
+            "summary_included": bool(summary_text),
+        }
+    )
 
     return request_messages, result
 

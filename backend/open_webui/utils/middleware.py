@@ -3767,6 +3767,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     event_emitter = get_event_emitter(metadata)
     event_caller = get_event_call(metadata)
     chat_recall_enabled = _resolve_chat_recall_enabled(request, user)
+    memory_telemetry: dict[str, Any] = {}
 
     if chat_recall_enabled and raw_history_messages:
         try:
@@ -3817,6 +3818,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         },
                     }
                 )
+            memory_telemetry["working_memory"] = maintenance_result.get("telemetry") or {}
 
     if chat_recall_enabled:
         branch_message_ids = (
@@ -3836,6 +3838,34 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 chat_id,
                 recall_result.get("reason"),
             )
+        memory_telemetry["recall"] = {
+            key: recall_result.get(key)
+            for key in [
+                "triggered",
+                "reason",
+                "mode",
+                "depth",
+                "evidence_injected",
+                "timed_out",
+                "hit_count",
+                "evidence_tokens",
+            ]
+        }
+
+    if memory_telemetry:
+        memory_telemetry["chat_id"] = chat_id
+        memory_telemetry["message_id"] = metadata.get("message_id")
+        if event_emitter:
+            try:
+                await event_emitter(
+                    {
+                        "type": "chat:memory:telemetry",
+                        "data": memory_telemetry,
+                    }
+                )
+            except Exception:
+                pass
+        log.debug("Chat memory telemetry: %s", memory_telemetry)
 
     if metadata.get("branch"):
         forced_prefix, token_branch = _prepare_branch_prefill(metadata)

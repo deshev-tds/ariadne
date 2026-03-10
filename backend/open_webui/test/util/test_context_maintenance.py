@@ -156,6 +156,7 @@ def test_resolve_history_budgets_uses_rag_reserve_when_files_present():
 
     assert budgets["live_prompt_cap"] == 32768
     assert budgets["live_prompt_cap_source"] == "probe:probe"
+    assert budgets["hot_context_target_tokens"] == budgets["hard_history_budget"]
     assert budgets["effective_ctx_cap"] == 32768
     assert budgets["rag_reserve_tokens"] == 12288
     assert budgets["hard_history_budget"] < 32768
@@ -188,6 +189,8 @@ def test_build_context_payload_reuses_summary_state_without_cascade():
     assert payload["used_summary_state"] is True
     assert payload["summary_text"] == "summary over m1..m4"
     assert payload["tail_messages"] == [history[-1]]
+    assert payload["telemetry"]["summary_included"] is True
+    assert payload["telemetry"]["anchor_message_count"] >= 1
 
 
 def test_summary_refresh_needs_meaningful_growth():
