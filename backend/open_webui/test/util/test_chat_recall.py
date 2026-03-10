@@ -6,6 +6,7 @@ from open_webui.utils.chat_recall import (
     build_evidence_message,
     detect_recall_need,
     enqueue_branch_backfill,
+    inject_evidence_into_messages,
     maybe_apply_chat_recall,
     resolve_chat_recall_enabled,
 )
@@ -212,9 +213,36 @@ def test_maybe_apply_chat_recall_injects_evidence(monkeypatch):
     assert result["mode"] == "fts"
     assert result["depth"] == 2
     assert result["evidence_tokens"] > 0
-    assert updated[1]["role"] == "system"
-    assert "Evidence from earlier conversation:" in updated[1]["content"]
+    assert updated[0]["role"] == "system"
+    assert "Evidence from earlier conversation:" in updated[0]["content"]
+    assert updated[1]["role"] == "assistant"
     assert updated[2]["role"] == "user"
+
+
+def test_inject_evidence_into_messages_merges_with_existing_system():
+    messages = [
+        _message("system", "Base system prompt", "s1"),
+        _message("user", "What happened earlier?", "u1"),
+    ]
+    evidence = build_evidence_message(
+        [
+            {
+                "message_id": "m2",
+                "role": "assistant",
+                "content": "Earlier evidence content.",
+            }
+        ],
+        query_text="earlier evidence",
+        max_hits=1,
+        snippet_token_budget=40,
+    )
+
+    updated = inject_evidence_into_messages(messages, evidence)
+
+    assert len(updated) == 2
+    assert updated[0]["role"] == "system"
+    assert "Base system prompt" in updated[0]["content"]
+    assert "Evidence from earlier conversation:" in updated[0]["content"]
 
 
 def test_maybe_apply_chat_recall_branch_recent_skips_fts(monkeypatch):
@@ -249,8 +277,9 @@ def test_maybe_apply_chat_recall_branch_recent_skips_fts(monkeypatch):
     assert result["mode"] == "branch_recent"
     assert result["evidence_injected"] is True
     assert result["evidence_tokens"] > 0
-    assert updated[2]["role"] == "system"
-    assert "[turn m2 | assistant]" in updated[2]["content"]
+    assert updated[0]["role"] == "system"
+    assert "[turn m2 | assistant]" in updated[0]["content"]
+    assert updated[1]["role"] == "assistant"
     assert updated[3]["role"] == "user"
 
 

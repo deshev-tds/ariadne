@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from open_webui.extensions.simon_engine.memory_intents import detect_archive_recall
 from open_webui.extensions.simon_engine.token_budget import estimate_tokens_from_text
+from open_webui.utils.context_maintenance import merge_system_message
 from open_webui.models.simon_lex_index import (
     _STOP_TOKENS,
     _WORD_RE,
@@ -522,6 +523,28 @@ def build_evidence_message(
     }
 
 
+def inject_evidence_into_messages(
+    messages: list[dict[str, Any]],
+    evidence_message: dict[str, str],
+) -> list[dict[str, Any]]:
+    if not evidence_message:
+        return list(messages)
+
+    evidence_content = str(evidence_message.get("content") or "").strip()
+    if not evidence_content:
+        return list(messages)
+
+    if messages and messages[0].get("role") == "system":
+        merged_system = merge_system_message(
+            dict(messages[0]),
+            [evidence_content],
+        )
+        return [merged_system, *messages[1:]]
+
+    merged_system = merge_system_message(None, [evidence_content])
+    return [merged_system, *messages]
+
+
 async def emit_chat_recall_status(event_emitter, description: str, *, done: bool) -> None:
     if not event_emitter:
         return
@@ -640,18 +663,7 @@ async def maybe_apply_chat_recall(
         )
         return messages, result
 
-    latest_user_index = next(
-        (idx for idx in range(len(messages) - 1, -1, -1) if messages[idx].get("role") == "user"),
-        None,
-    )
-    if latest_user_index is None:
-        updated = [*messages, evidence_message]
-    else:
-        updated = [
-            *messages[:latest_user_index],
-            evidence_message,
-            *messages[latest_user_index:],
-        ]
+    updated = inject_evidence_into_messages(messages, evidence_message)
 
     result["evidence_injected"] = True
     result["evidence_tokens"] = estimate_tokens_from_text(evidence_message["content"])

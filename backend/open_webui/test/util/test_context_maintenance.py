@@ -6,9 +6,11 @@ from open_webui.utils.context_maintenance import (
     build_summary_message,
     build_summary_prompt,
     build_context_maintenance_payload,
+    build_request_messages,
     extract_model_ctx_cap,
     extract_n_ctx_from_props,
     is_summary_refresh_needed,
+    merge_system_message,
     normalize_summary_snapshot,
     parse_prometheus_metrics,
     resolve_effective_ctx_cap,
@@ -122,6 +124,31 @@ def test_build_summary_message_uses_state_snapshot_wrapper():
 
     assert message["role"] == "system"
     assert "Conversation state snapshot for earlier turns." in message["content"]
+
+
+def test_merge_system_message_appends_blocks_into_single_system_prompt():
+    message = merge_system_message(
+        {"role": "system", "content": "Base system prompt"},
+        ["Conversation state snapshot for earlier turns.\n\nUser Objectives:\n- keep stable"],
+    )
+
+    assert message["role"] == "system"
+    assert "Base system prompt" in message["content"]
+    assert "Conversation state snapshot for earlier turns." in message["content"]
+
+
+def test_build_request_messages_keeps_summary_in_single_leading_system_message():
+    messages = build_request_messages(
+        system_message={"role": "system", "content": "Base system prompt"},
+        anchor_messages=[_message("m1", "user", "initial task")],
+        summary_text="User Objectives:\n- keep the chat stable",
+        tail_messages=[_message("m2", "user", "latest question")],
+    )
+
+    assert messages[0]["role"] == "system"
+    assert "Base system prompt" in messages[0]["content"]
+    assert "Conversation state snapshot for earlier turns." in messages[0]["content"]
+    assert sum(1 for message in messages if message.get("role") == "system") == 1
 
 
 def test_resolve_effective_ctx_cap_respects_admin_cap():

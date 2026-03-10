@@ -343,6 +343,30 @@ def build_summary_message(summary_text: str) -> dict[str, Any]:
     }
 
 
+def merge_system_message(
+    system_message: dict[str, Any] | None,
+    appended_blocks: list[str] | None = None,
+) -> dict[str, Any] | None:
+    blocks = [str(block).strip() for block in (appended_blocks or []) if str(block).strip()]
+    if not system_message and not blocks:
+        return None
+
+    if system_message:
+        merged = dict(system_message)
+        base_content = str(merged.get("content") or "").strip()
+        additions = "\n\n".join(blocks).strip()
+        merged["content"] = (
+            f"{base_content}\n\n{additions}".strip() if additions else base_content
+        )
+        merged["role"] = "system"
+        return merged
+
+    return {
+        "role": "system",
+        "content": "\n\n".join(blocks).strip(),
+    }
+
+
 def build_summary_source_text(messages: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for message in messages or []:
@@ -483,14 +507,15 @@ def build_request_messages(
     tail_messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
-    if system_message:
-        messages.append(system_message)
+    merged_system_message = merge_system_message(
+        system_message,
+        [build_summary_message(summary_text)["content"]] if summary_text else [],
+    )
+    if merged_system_message:
+        messages.append(merged_system_message)
 
     for message in anchor_messages:
         messages.extend(history_message_to_llm_messages(message))
-
-    if summary_text:
-        messages.append(build_summary_message(summary_text))
 
     for message in tail_messages:
         messages.extend(history_message_to_llm_messages(message))
