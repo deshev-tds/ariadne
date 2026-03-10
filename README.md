@@ -229,6 +229,35 @@ This is not presented here as "full interpretability". It is a practical debuggi
 
 It is also intentionally not implemented as "keep the whole live generation tree resident forever". In this fork, manual branching is driven by bounded token telemetry and a fallback prefix-forcing strategy, which is far more practical on local hardware than pretending every backend will give you infinite branching state for free.
 
+## Thinking / Reasoning Controls
+
+Open WebUI already has a fair amount of upstream reasoning/thinking plumbing. What matters in this fork is not inventing a separate "reasoning mode", but documenting how that plumbing actually behaves in a `llama.cpp`-centric local stack.
+
+For the `llama.cpp`-centric stack used here, the important path is template-aware thinking control. The chat UI can set `custom_params.chat_template_kwargs.enable_thinking`, which is useful when the loaded model's Jinja chat template actually checks that flag and switches behavior accordingly.
+
+That distinction matters:
+
+- if the template honors `enable_thinking`, the toggle is real
+- if the template ignores it, the toggle is just a no-op parameter
+
+So this is not advertised here as a fork-specific universal "reasoning mode". It is better understood as a practical control surface for backends and model templates that already expose a thinking/not-thinking branch.
+
+That also means `enable_thinking` is not a universal cross-model convention. In this stack, `llama.cpp` passes Jinja template kwargs through to the active chat template; the template itself decides what those kwargs mean. Some templates use `enable_thinking`, some use different flags, and some ignore the concept entirely.
+
+A representative `llama.cpp` preset for a model that honors an `enable_thinking` kwarg looks like this:
+
+```ini
+[Qwen3.5-27B-Q6_K]
+model = /path/to/models/Qwen3.5-27B-Q6_K.gguf
+jinja = true
+chat-template-file = /path/to/models/templates/qwen35-27b-think-toggle.jinja
+chat-template-kwargs = {"enable_thinking": false}
+```
+
+In that kind of setup, the fork's UI toggle is not inventing a new reasoning protocol. It is sending a real signal back to a template that was explicitly authored to switch between thinking and non-thinking prompt shapes.
+
+The important distinction for this README is attribution: most of the generic reasoning-tag handling, thought-block rendering, and provider-specific reasoning params come from Open WebUI itself. The fork-specific point is that this repo treats template-aware thinking control as operationally important for local `llama.cpp` deployments and describes it accordingly, without pretending that one toggle can force every model/backend pair into a coherent thinking mode.
+
 ## Other Notable Divergences
 
 The most important differences in this fork are the ones above, but the operating theme is consistent:
@@ -266,6 +295,7 @@ That also explains some of the fork's behavior:
 
 - context maintenance exists because `llama.cpp` will not semantically manage long chat history for you
 - recall is bounded because local prompt budget and latency are both visible costs
+- thinking mode is useful only when the active model template actually honors the flag being sent
 - token exploration is built around telemetry that an OpenAI-compatible local server can actually expose
 - some advanced controls, such as MoE probing, remain conditional on backend support rather than being treated as guaranteed product invariants
 
