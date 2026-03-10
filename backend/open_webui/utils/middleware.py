@@ -3828,6 +3828,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             request=request,
             chat_id=chat_id,
             branch_message_ids=branch_message_ids,
+            history_messages=raw_history_messages,
             messages=form_data.get("messages", []),
             event_emitter=event_emitter,
         )

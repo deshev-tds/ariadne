@@ -11,8 +11,10 @@ from open_webui.utils.context_maintenance import merge_system_message
 from open_webui.models.simon_lex_index import (
     _STOP_TOKENS,
     _WORD_RE,
+    _count_token_matches,
     enqueue_missing_messages,
     flatten_content,
+    get_indexed_message_ids,
     is_supported_database,
     recursive_search,
 )
@@ -146,6 +148,15 @@ def extract_branch_message_ids(history_messages: list[dict[str, Any]] | None) ->
         if message_id:
             out.append(message_id)
     return out
+
+
+def _history_lookup(history_messages: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for message in history_messages or []:
+        message_id = str(message.get("id") or "").strip()
+        if message_id:
+            lookup[message_id] = message
+    return lookup
 
 
 def enqueue_branch_backfill(chat_id: str, history_messages: list[dict[str, Any]] | None) -> int:
@@ -376,29 +387,26 @@ def detect_recall_need(messages: list[dict[str, Any]]) -> dict[str, Any]:
 def _build_branch_recent_hits(
     *,
     branch_message_ids: list[str] | None,
-    messages: list[dict[str, Any]],
+    history_messages: list[dict[str, Any]] | None,
     max_hits: int,
 ) -> list[dict[str, Any]]:
-    if not branch_message_ids or not messages:
+    if not branch_message_ids or not history_messages:
         return []
 
-    message_lookup: dict[str, dict[str, Any]] = {}
-    ordered_ids: list[str] = []
-    for message in messages:
-        message_id = str(message.get("id") or "").strip()
-        if not message_id:
-            continue
-        message_lookup[message_id] = message
-        ordered_ids.append(message_id)
+    message_lookup = _history_lookup(history_messages)
 
     latest_user_index = next(
-        (idx for idx in range(len(messages) - 1, -1, -1) if messages[idx].get("role") == "user"),
+        (
+            idx
+            for idx in range(len(history_messages) - 1, -1, -1)
+            if history_messages[idx].get("role") == "user"
+        ),
         None,
     )
     if latest_user_index is None:
         return []
 
-    latest_user_id = str(messages[latest_user_index].get("id") or "").strip()
+    latest_user_id = str(history_messages[latest_user_index].get("id") or "").strip()
     cutoff_index = (
         branch_message_ids.index(latest_user_id)
         if latest_user_id and latest_user_id in branch_message_ids
@@ -431,6 +439,108 @@ def _build_branch_recent_hits(
             break
 
     return hits
+
+
+def _build_raw_query_hits(
+    *,
+    branch_message_ids: list[str] | None,
+    history_messages: list[dict[str, Any]] | None,
+    query_text: str,
+    max_hits: int,
+) -> list[dict[str, Any]]:
+    if not branch_message_ids or not history_messages:
+        return []
+
+    query_tokens = _query_tokens(query_text)
+    if not query_tokens:
+        return []
+
+    message_lookup = _history_lookup(history_messages)
+    latest_user_index = next(
+        (
+            idx
+            for idx in range(len(history_messages) - 1, -1, -1)
+            if history_messages[idx].get("role") == "user"
+        ),
+        None,
+    )
+    if latest_user_index is None:
+        return []
+
+    latest_user_id = str(history_messages[latest_user_index].get("id") or "").strip()
+    cutoff_index = (
+        branch_message_ids.index(latest_user_id)
+        if latest_user_id and latest_user_id in branch_message_ids
+        else len(branch_message_ids)
+    )
+    candidate_ids = branch_message_ids[:cutoff_index]
+    if not candidate_ids:
+        return []
+
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    for offset, message_id in enumerate(reversed(candidate_ids), start=1):
+        message = message_lookup.get(message_id)
+        if not message:
+            continue
+        role = str(message.get("role") or "").strip()
+        if role == "system":
+            continue
+        content = _message_text(message).strip()
+        if not content:
+            continue
+        score = _count_token_matches(content, query_tokens)
+        if score <= 0:
+            continue
+        scored.append(
+            (
+                score,
+                -offset,
+                {
+                    "message_id": message_id,
+                    "role": role or "assistant",
+                    "content": content,
+                },
+            )
+        )
+
+    scored.sort(key=lambda item: (-item[0], -item[1]))
+    return [item[2] for item in scored[:max_hits]]
+
+
+def _index_coverage(
+    *,
+    chat_id: str,
+    branch_message_ids: list[str] | None,
+) -> dict[str, Any]:
+    if not is_supported_database() or not chat_id or not branch_message_ids:
+        return {
+            "index_supported": is_supported_database(),
+            "branch_message_count": len(branch_message_ids or []),
+            "indexed_message_count": 0,
+            "queued_message_count": 0,
+            "missing_message_count": len(branch_message_ids or []),
+        }
+
+    indexed_only = get_indexed_message_ids(
+        chat_id,
+        list(branch_message_ids),
+        include_queue=False,
+    )
+    indexed_or_queued = get_indexed_message_ids(
+        chat_id,
+        list(branch_message_ids),
+        include_queue=True,
+    )
+    queued_only = indexed_or_queued - indexed_only
+    total = len(branch_message_ids)
+
+    return {
+        "index_supported": True,
+        "branch_message_count": total,
+        "indexed_message_count": len(indexed_only),
+        "queued_message_count": len(queued_only),
+        "missing_message_count": max(0, total - len(indexed_or_queued)),
+    }
 
 
 def _trim_snippet_to_budget(snippet: str, budget_tokens: int) -> str:
@@ -568,6 +678,7 @@ async def maybe_apply_chat_recall(
     request,
     chat_id: str | None,
     branch_message_ids: list[str] | None,
+    history_messages: list[dict[str, Any]] | None,
     messages: list[dict[str, Any]],
     event_emitter,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -579,8 +690,11 @@ async def maybe_apply_chat_recall(
         "evidence_injected": False,
         "timed_out": False,
         "hit_count": 0,
+        "usable_hit_count": 0,
         "evidence_tokens": 0,
         "query_text": "",
+        "fallback_used": False,
+        "fallback_mode": "none",
     }
 
     if (
@@ -596,6 +710,12 @@ async def maybe_apply_chat_recall(
     result["mode"] = trigger.get("mode", "none")
     result["depth"] = int(trigger.get("depth", 0) or 0)
     result["query_text"] = str(trigger.get("query_text") or "")
+    result.update(
+        _index_coverage(
+            chat_id=str(chat_id or ""),
+            branch_message_ids=branch_message_ids,
+        )
+    )
     if not trigger.get("trigger"):
         return messages, result
 
@@ -612,7 +732,7 @@ async def maybe_apply_chat_recall(
         if trigger.get("mode") == "branch_recent":
             hits = _build_branch_recent_hits(
                 branch_message_ids=branch_message_ids,
-                messages=messages,
+                history_messages=history_messages,
                 max_hits=max(settings["max_hits"], 2),
             )
         elif trigger.get("mode") == "fts":
@@ -655,6 +775,30 @@ async def maybe_apply_chat_recall(
         snippet_token_budget=settings["snippet_token_budget"],
     )
     result["hit_count"] = len(hits or [])
+    result["usable_hit_count"] = min(len(hits or []), settings["max_hits"]) if evidence_message else 0
+    if not evidence_message and trigger.get("mode") == "fts" and trigger.get("reason") in {
+        "explicit_reference",
+        "entity_lookup_gap",
+    }:
+        fallback_hits = _build_raw_query_hits(
+            branch_message_ids=branch_message_ids,
+            history_messages=history_messages,
+            query_text=trigger["query_text"],
+            max_hits=max(settings["max_hits"], 2),
+        )
+        result["fallback_used"] = True
+        result["fallback_mode"] = "raw_branch_scan"
+        evidence_message = build_evidence_message(
+            fallback_hits,
+            query_text=trigger["query_text"],
+            max_hits=settings["max_hits"],
+            snippet_token_budget=settings["snippet_token_budget"],
+        )
+        result["hit_count"] = len(fallback_hits or [])
+        result["usable_hit_count"] = (
+            min(len(fallback_hits or []), settings["max_hits"]) if evidence_message else 0
+        )
+
     if not evidence_message:
         await emit_chat_recall_status(
             event_emitter,

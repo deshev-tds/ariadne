@@ -204,6 +204,12 @@ def test_maybe_apply_chat_recall_injects_evidence(monkeypatch):
             request=request,
             chat_id="chat-1",
             branch_message_ids=["m1", "m2", "m9", "m10"],
+            history_messages=[
+                _message("assistant", "Earlier summary state", "m1"),
+                _message("assistant", "We decided ffuf is the primary directory fuzzing tool.", "m2"),
+                _message("assistant", "Recent summary state", "m9"),
+                _message("user", "What did we decide earlier about ffuf?", "m10"),
+            ],
             messages=messages,
             event_emitter=_emitter,
         )
@@ -213,6 +219,7 @@ def test_maybe_apply_chat_recall_injects_evidence(monkeypatch):
     assert result["mode"] == "fts"
     assert result["depth"] == 2
     assert result["evidence_tokens"] > 0
+    assert result["usable_hit_count"] == 1
     assert updated[0]["role"] == "system"
     assert "Evidence from earlier conversation:" in updated[0]["content"]
     assert updated[1]["role"] == "assistant"
@@ -267,6 +274,7 @@ def test_maybe_apply_chat_recall_branch_recent_skips_fts(monkeypatch):
             request=request,
             chat_id="chat-1",
             branch_message_ids=["m1", "m2", "m3"],
+            history_messages=messages,
             messages=messages,
             event_emitter=_emitter,
         )
@@ -308,6 +316,7 @@ def test_maybe_apply_chat_recall_times_out_and_falls_back(monkeypatch):
             request=request,
             chat_id="chat-1",
             branch_message_ids=["m1", "m2", "m9", "m10"],
+            history_messages=messages,
             messages=messages,
             event_emitter=_emitter,
         )
@@ -316,3 +325,87 @@ def test_maybe_apply_chat_recall_times_out_and_falls_back(monkeypatch):
     assert updated == messages
     assert result["timed_out"] is True
     assert result["evidence_injected"] is False
+
+
+def test_maybe_apply_chat_recall_falls_back_to_raw_branch_scan_when_fts_misses(monkeypatch):
+    request = _make_request(ENABLE_CHAT_RECALL=True)
+    compact_messages = [
+        _message("assistant", "Recent summary state", "m9"),
+        _message("user", "What did we decide earlier about ffuf?", "m10"),
+    ]
+    history_messages = [
+        _message("user", "Initial setup", "m1"),
+        _message("assistant", "We decided ffuf is the primary directory fuzzing tool.", "m2"),
+        _message("assistant", "Recent summary state", "m9"),
+        _message("user", "What did we decide earlier about ffuf?", "m10"),
+    ]
+
+    async def _emitter(_event):
+        return None
+
+    monkeypatch.setattr("open_webui.utils.chat_recall.is_supported_database", lambda: True)
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.get_indexed_message_ids",
+        lambda *args, **kwargs: {"m1", "m2", "m9", "m10"},
+    )
+    monkeypatch.setattr("open_webui.utils.chat_recall.recursive_search", lambda *args, **kwargs: [])
+
+    updated, result = asyncio.run(
+        maybe_apply_chat_recall(
+            request=request,
+            chat_id="chat-1",
+            branch_message_ids=["m1", "m2", "m9", "m10"],
+            history_messages=history_messages,
+            messages=compact_messages,
+            event_emitter=_emitter,
+        )
+    )
+
+    assert result["triggered"] is True
+    assert result["reason"] == "explicit_reference"
+    assert result["fallback_used"] is True
+    assert result["fallback_mode"] == "raw_branch_scan"
+    assert result["evidence_injected"] is True
+    assert result["hit_count"] == 1
+    assert result["usable_hit_count"] == 1
+    assert updated[0]["role"] == "system"
+    assert "ffuf is the primary directory fuzzing tool" in updated[0]["content"]
+
+
+def test_maybe_apply_chat_recall_reports_index_coverage(monkeypatch):
+    request = _make_request(ENABLE_CHAT_RECALL=True)
+    messages = [
+        _message("assistant", "Recent summary state", "m9"),
+        _message("user", "What did we decide earlier about ffuf?", "m10"),
+    ]
+
+    async def _emitter(_event):
+        return None
+
+    monkeypatch.setattr("open_webui.utils.chat_recall.is_supported_database", lambda: True)
+
+    def _fake_indexed(_chat_id, _message_ids, include_queue=True):
+        return {"m1"} if not include_queue else {"m1", "m2"}
+
+    monkeypatch.setattr("open_webui.utils.chat_recall.get_indexed_message_ids", _fake_indexed)
+    monkeypatch.setattr("open_webui.utils.chat_recall.recursive_search", lambda *args, **kwargs: [])
+
+    updated, result = asyncio.run(
+        maybe_apply_chat_recall(
+            request=request,
+            chat_id="chat-1",
+            branch_message_ids=["m1", "m2", "m3"],
+            history_messages=[
+                _message("assistant", "We decided ffuf is the primary directory fuzzing tool.", "m1"),
+                _message("assistant", "Old detail", "m2"),
+                _message("user", "What did we decide earlier about ffuf?", "m3"),
+            ],
+            messages=messages,
+            event_emitter=_emitter,
+        )
+    )
+
+    assert updated[0]["role"] == "system"
+    assert result["indexed_message_count"] == 1
+    assert result["queued_message_count"] == 1
+    assert result["missing_message_count"] == 1
