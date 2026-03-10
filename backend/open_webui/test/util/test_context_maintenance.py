@@ -87,6 +87,7 @@ def test_build_summary_prompt_requests_structured_state_snapshot():
     assert "Decisions and Conclusions:" in prompt
     assert "Open Questions and Unresolved Work:" in prompt
     assert "Stable Facts and Assumptions:" in prompt
+    assert "never preserve its literal value" in prompt
 
 
 def test_normalize_summary_snapshot_canonicalizes_sections():
@@ -117,6 +118,21 @@ def test_normalize_summary_snapshot_falls_back_to_stable_facts_block():
 
     assert "User Objectives:\n- None recorded." in normalized
     assert "Stable Facts and Assumptions:\n- Keep ffuf as the primary tool." in normalized
+
+
+def test_normalize_summary_snapshot_redacts_transient_marker_values():
+    normalized = normalize_summary_snapshot(
+        """
+        Stable Facts and Assumptions:
+        - The transient marker is basalt-signal-8841 and should be recoverable only from raw history.
+
+        Decisions and Conclusions:
+        - Test marker logged: `basalt-signal-8841` was introduced for later recall.
+        """
+    )
+
+    assert "basalt-signal-8841" not in normalized
+    assert "<transient value>" in normalized
 
 
 def test_build_summary_message_uses_state_snapshot_wrapper():

@@ -91,6 +91,16 @@ SUMMARY_SNAPSHOT_SECTIONS = [
     ),
 ]
 
+TRANSIENT_SUMMARY_KEYWORDS = (
+    "transient",
+    "non-durable",
+    "not durable",
+    "durable state",
+    "raw conversation evidence",
+    "raw history",
+    "test marker",
+)
+
 _ACTIVE_MAINTENANCE_JOBS: set[str] = set()
 _ACTIVE_MAINTENANCE_LOCK = asyncio.Lock()
 
@@ -398,6 +408,10 @@ def build_summary_prompt(
         "Stable Facts and Assumptions:\n"
         "Preserve durable information only.\n"
         "Do not restate temporary retrieval excerpts unless they became lasting facts.\n"
+        "If the conversation mentions transient markers, one-off secrets, canaries, "
+        "or values that should be recoverable only from raw history, do not copy the "
+        "value itself into the snapshot.\n"
+        "You may note that a transient marker existed, but never preserve its literal value.\n"
         "Do not write a narrative summary.\n"
         f"Keep the result concise and under roughly {max_tokens} tokens.\n\n"
         "Conversation:\n"
@@ -450,7 +464,9 @@ def normalize_summary_snapshot(summary_text: str) -> str:
         values = sections[canonical]
         if values:
             formatted = [
-                value if value.startswith("- ") else f"- {value.lstrip('- ').strip()}"
+                _sanitize_summary_value(value)
+                if value.startswith("- ")
+                else f"- {_sanitize_summary_value(value.lstrip('- ').strip())}"
                 for value in values
                 if value.strip()
             ]
@@ -460,6 +476,31 @@ def normalize_summary_snapshot(summary_text: str) -> str:
         blocks.append(f"{canonical}:\n" + "\n".join(formatted))
 
     return "\n\n".join(blocks)
+
+
+def _sanitize_summary_value(value: str) -> str:
+    sanitized = str(value or "").strip()
+    lowered = sanitized.lower()
+    if not sanitized:
+        return sanitized
+
+    if "marker" in lowered:
+        sanitized = re.sub(
+            r"(\bmarker\b[^.\n]*?\bis\s+)([^.,;\n]+)",
+            r"\1<transient value>",
+            sanitized,
+            flags=re.IGNORECASE,
+        )
+
+    if any(keyword in lowered for keyword in TRANSIENT_SUMMARY_KEYWORDS):
+        sanitized = re.sub(r"`[^`]+`", "`<transient value>`", sanitized)
+        sanitized = re.sub(
+            r"\b[A-Za-z0-9][A-Za-z0-9._:/-]*[-_][A-Za-z0-9._:/-]+\b",
+            "<transient value>",
+            sanitized,
+        )
+
+    return sanitized
 
 
 def summarize_history_growth(
