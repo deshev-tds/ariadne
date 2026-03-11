@@ -194,6 +194,7 @@ async def search_strong_sources(
     include_community: bool = False,
     __request__: Request = None,
     __user__: dict = None,
+    __event_emitter__=None,
 ) -> str:
     """
     Run strong-source web search with local-first routing and Brave fallback.
@@ -220,6 +221,7 @@ async def search_strong_sources(
             topic_hint=topic_hint,
             recency_days=recency_days,
             include_community=include_community,
+            event_emitter=__event_emitter__,
         )
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:

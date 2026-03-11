@@ -2725,6 +2725,7 @@ async def execute_strong_source_search(
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
     include_community: bool = False,
+    event_emitter=None,
 ) -> dict[str, Any]:
     cfg = request.app.state.config
     cleaned_query = sanitize_query(query)
@@ -2777,6 +2778,43 @@ async def execute_strong_source_search(
             selected_domains.append(source.domain)
         if source.is_local and source.domain not in local_domains:
             local_domains.append(source.domain)
+
+    async def emit_focus_status(payload: dict[str, Any]) -> None:
+        if not event_emitter:
+            return
+        try:
+            await event_emitter({"type": "status", "data": payload})
+        except Exception:
+            log.debug("Failed to emit focused search status event", exc_info=True)
+
+    def domain_urls(domains: list[str], limit: int = 8) -> list[str]:
+        urls: list[str] = []
+        seen: set[str] = set()
+        for domain in domains:
+            normalized = (domain or "").strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            urls.append(f"https://{normalized}")
+            if len(urls) >= limit:
+                break
+        return urls
+
+    await emit_focus_status(
+        {
+            "action": "web_search",
+            "description": "Focused search: running targeted queries",
+            "query": cleaned_query,
+            "done": False,
+            "plan": {
+                "mode": "focused_local_first",
+                "topic": plan.topic,
+                "selected_domains": (local_domains or selected_domains)[:bounded_max_queries],
+            },
+            "planner": {"mode": "focused_local_first"},
+            "urls": domain_urls(local_domains or selected_domains),
+        }
+    )
 
     used_queries: set[str] = set()
     executed_queries: list[str] = []
@@ -2840,6 +2878,25 @@ async def execute_strong_source_search(
         fallback_reason = "insufficient_local_quality"
 
     if not local_coverage_complete and brave_fallback_enabled:
+        await emit_focus_status(
+            {
+                "action": "web_search",
+                "description": "Focused search did not return enough evidence, trying broader search now",
+                "done": False,
+                "plan": {
+                    "mode": "focused_local_first",
+                    "topic": plan.topic,
+                    "selected_domains": (local_domains or selected_domains)[:bounded_max_queries],
+                },
+                "planner": {
+                    "mode": "focused_local_first",
+                    "executed_queries": list(executed_queries),
+                    "fallback_reason": fallback_reason,
+                },
+                "urls": domain_urls(local_domains or selected_domains),
+            }
+        )
+
         brave_queries: list[str] = []
         local_domain_set = set(local_domains)
         non_local_domains = [
@@ -2919,7 +2976,7 @@ async def execute_strong_source_search(
         if item.get("link")
     ]
 
-    return {
+    payload = {
         "queries": executed_queries,
         "items": items,
         "selected_domains": selected_domains,
@@ -2932,6 +2989,34 @@ async def execute_strong_source_search(
         "local_primary_hits": len(local_primary_domains),
         "trusted_domains": trusted_domains,
     }
+
+    await emit_focus_status(
+        {
+            "action": "web_search",
+            "description": (
+                "Focused search completed with broader fallback"
+                if brave_fallback_used
+                else "Focused search completed"
+            ),
+            "done": True,
+            "plan": {
+                "mode": "focused_local_first",
+                "topic": plan.topic,
+                "selected_domains": selected_domains[: bounded_max_queries + brave_fallback_max_queries],
+            },
+            "planner": {
+                "mode": "focused_local_first",
+                "executed_queries": list(executed_queries),
+                "final_score": round(quality_score, 4),
+                "final_trusted_domains": trusted_domains,
+                "fallback_reason": fallback_reason,
+            },
+            "items": items,
+            "urls": domain_urls(selected_domains),
+        }
+    )
+
+    return payload
 
 
 async def _execute_web_search_with_planner(

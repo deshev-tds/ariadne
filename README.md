@@ -52,6 +52,7 @@ The important divergences are not cosmetic.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
 - A native `search_strong_sources` tool was added for local-first strong-source search, with Brave fallback only when evidence from locally-listed strong domains is weak.
 - Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
+- Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
 - On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
@@ -316,6 +317,27 @@ Operationally, that gives this fork a clearer retrieval contract:
 - discovery does not depend on sitemap/seed hygiene from legacy sites
 
 In short: prefer domains from the locally maintained strong-source registry when available, escalate to broader discovery only when needed, and keep the decision path observable.
+
+### Focused Search UX Contract
+
+When focused search runs, chat now surfaces explicit progress using the existing web-search status UI (same expandable result block style as regular web search):
+
+- `Focused search: running targeted queries`
+- visible targeted phrases (model-rewritten / planner-executed)
+- visible targeted websites/domains
+
+If local-first evidence is insufficient, chat explicitly shows escalation:
+
+- `Focused search did not return enough evidence, trying broader search now`
+- updated phrases/sites for the broader pass
+
+When search ends, the final focused-search status event is emitted with `done=true`, so the progress shimmer stops and the phase is visibly closed.
+
+### Operational Caveat: `is_local` Is a Routing Primitive
+
+`local-first` depends on `planner_hints.is_local=true` entries inside the source registry. If a topic has no such entries, there are no local candidates for Phase A, so focused search will naturally behave fallback-heavy (fast escalation to broader/non-local search).
+
+This is expected behavior, not a planner bug: the routing contract is "prefer local-marked domains when they exist".
 
 ### Strong Domains in Practice
 

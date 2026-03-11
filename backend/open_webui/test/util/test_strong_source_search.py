@@ -305,3 +305,165 @@ async def test_wait_for_brave_fallback_slot_respects_interval(monkeypatch):
 
     assert len(sleeps) == 1
     assert sleeps[0] == pytest.approx(0.8, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_execute_strong_source_search_emits_done_status(monkeypatch):
+    request = _make_request(WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS=1)
+    plan = _make_plan()
+
+    monkeypatch.setattr(retrieval, "build_web_search_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(
+        retrieval,
+        "select_sources_for_topic",
+        lambda *args, **kwargs: [
+            SelectedSource(domain="local.docs", tier="primary_docs", is_local=True),
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "search_web",
+        lambda *_args, **_kwargs: [
+            SearchResult(
+                link="https://local.docs/a",
+                title="Local result",
+                snippet="Strong local evidence",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_signal_quality",
+        lambda _items, _plan: {
+            "avg_top_score": 0.9,
+            "trusted_unique_domains": 1,
+            "scored_items": [
+                {
+                    "title": "Local result",
+                    "link": "https://local.docs/a",
+                    "snippet": "Strong local evidence",
+                    "domain": "local.docs",
+                    "quality": 0.9,
+                    "trust": 0.95,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+
+    events = []
+
+    async def event_emitter(event):
+        events.append(event)
+
+    await retrieval.execute_strong_source_search(
+        request,
+        query="planner quality threshold",
+        max_queries=1,
+        event_emitter=event_emitter,
+    )
+
+    status_events = [event for event in events if event.get("type") == "status"]
+    assert len(status_events) >= 2
+    assert status_events[0]["data"]["done"] is False
+    assert status_events[-1]["data"]["done"] is True
+    assert status_events[-1]["data"]["description"] == "Focused search completed"
+
+
+@pytest.mark.asyncio
+async def test_execute_strong_source_search_emits_fallback_status(monkeypatch):
+    request = _make_request(WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES=1)
+    plan = _make_plan()
+    quality_call = {"count": 0}
+
+    monkeypatch.setattr(retrieval, "build_web_search_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(
+        retrieval,
+        "select_sources_for_topic",
+        lambda *args, **kwargs: [
+            SelectedSource(domain="local.docs", tier="primary_docs", is_local=True),
+            SelectedSource(domain="remote.docs", tier="primary_docs", is_local=False),
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "search_web",
+        lambda _request, engine, query, _user=None: [
+            SearchResult(
+                link=f"https://{'local.docs' if engine != 'brave' else 'remote.docs'}/result",
+                title="Result",
+                snippet="Evidence",
+            )
+        ],
+    )
+
+    def fake_quality(_items, _plan):
+        quality_call["count"] += 1
+        if quality_call["count"] == 1:
+            return {
+                "avg_top_score": 0.2,
+                "trusted_unique_domains": 1,
+                "scored_items": [
+                    {
+                        "title": "Weak local",
+                        "link": "https://local.docs/result",
+                        "snippet": "weak",
+                        "domain": "local.docs",
+                        "quality": 0.2,
+                        "trust": 0.95,
+                    }
+                ],
+            }
+        return {
+            "avg_top_score": 0.9,
+            "trusted_unique_domains": 2,
+            "scored_items": [
+                {
+                    "title": "Recovered",
+                    "link": "https://remote.docs/result",
+                    "snippet": "strong",
+                    "domain": "remote.docs",
+                    "quality": 0.9,
+                    "trust": 0.95,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(retrieval, "evaluate_signal_quality", fake_quality)
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+
+    async def fake_wait(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(retrieval, "_wait_for_brave_fallback_slot", fake_wait)
+
+    events = []
+
+    async def event_emitter(event):
+        events.append(event)
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="planner quality threshold",
+        max_queries=1,
+        event_emitter=event_emitter,
+    )
+
+    assert payload["brave_fallback_used"] is True
+    status_messages = [
+        event.get("data", {}).get("description")
+        for event in events
+        if event.get("type") == "status"
+    ]
+    assert (
+        "Focused search did not return enough evidence, trying broader search now"
+        in status_messages
+    )
