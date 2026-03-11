@@ -109,6 +109,7 @@ from open_webui.routers.retrieval import (
 
 from sqlalchemy.orm import Session
 from open_webui.internal.db import ScopedSession, engine, get_session
+from open_webui.internal.fork_memory_db import initialize_fork_memory_db
 
 from open_webui.models.functions import Functions
 from open_webui.models.models import Models
@@ -688,6 +689,11 @@ async def lifespan(app: FastAPI):
         app.state.simon_lex_worker = asyncio.create_task(
             run_lex_index_worker(stop_event=app.state.simon_lex_stop_event)
         )
+
+    try:
+        initialize_fork_memory_db()
+    except Exception as e:
+        log.warning(f"Failed to initialize fork memory DB: {e}")
 
     if THREAD_POOL_SIZE and THREAD_POOL_SIZE > 0:
         limiter = anyio.to_thread.current_default_thread_limiter()

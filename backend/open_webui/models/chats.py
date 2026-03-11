@@ -14,6 +14,7 @@ from open_webui.models.simon_lex_index import (
     delete_entries_for_chat_ids,
     enqueue_message,
 )
+from open_webui.models.ledger import Ledgers
 from open_webui.utils.misc import sanitize_data_for_db, sanitize_text_for_db
 
 from pydantic import BaseModel, ConfigDict
@@ -1529,6 +1530,7 @@ class ChatTable:
                 db.query(Chat).filter_by(id=id).delete()
                 db.commit()
                 delete_entries_for_chat_id(id, db=db)
+                Ledgers.delete_entries_for_chat_id(id)
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1542,6 +1544,7 @@ class ChatTable:
                 db.query(Chat).filter_by(id=id, user_id=user_id).delete()
                 db.commit()
                 delete_entries_for_chat_id(id, db=db)
+                Ledgers.delete_entries_for_chat_id(id)
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1563,6 +1566,7 @@ class ChatTable:
                 db.query(Chat).filter_by(user_id=user_id).delete()
                 db.commit()
                 delete_entries_for_chat_ids(chat_ids, db=db)
+                Ledgers.delete_entries_for_chat_ids(chat_ids)
                 return True
         except Exception:
             return False
@@ -1589,6 +1593,7 @@ class ChatTable:
                 db.query(Chat).filter_by(user_id=user_id, folder_id=folder_id).delete()
                 db.commit()
                 delete_entries_for_chat_ids(chat_ids, db=db)
+                Ledgers.delete_entries_for_chat_ids(chat_ids)
                 return True
         except Exception:
             return False

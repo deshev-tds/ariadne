@@ -326,6 +326,10 @@ else:
     pass
 
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR}/webui.db")
+FORK_MEMORY_DATABASE_URL = os.environ.get(
+    "FORK_MEMORY_DATABASE_URL",
+    f"sqlite:///{DATA_DIR}/fork_memory.db",
+)
 
 DATABASE_TYPE = os.environ.get("DATABASE_TYPE")
 DATABASE_USER = os.environ.get("DATABASE_USER")

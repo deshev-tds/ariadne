@@ -100,6 +100,10 @@ from open_webui.utils.chat_recall import (
     maybe_apply_chat_recall,
     resolve_chat_recall_enabled,
 )
+from open_webui.utils.ledger import (
+    maybe_apply_ledger,
+    run_background_ledger_capture,
+)
 from open_webui.utils.task import (
     get_task_model_id,
     query_generation_template,
@@ -3887,6 +3891,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             ]
         }
 
+    form_data["messages"], ledger_result = await maybe_apply_ledger(
+        chat_id=chat_id,
+        raw_history_messages=raw_history_messages,
+        messages=form_data.get("messages", []),
+        original_system_message=system_message,
+        working_memory_telemetry=memory_telemetry.get("working_memory") or {},
+    )
+    if metadata.get("params", {}).get("debug_memory_telemetry"):
+        memory_telemetry["ledger"] = ledger_result
+
     if memory_telemetry:
         memory_telemetry["chat_id"] = chat_id
         memory_telemetry["message_id"] = metadata.get("message_id")
@@ -4739,6 +4753,20 @@ async def background_tasks_handler(ctx):
                             event_emitter=event_emitter,
                         )
                     )
+
+            if (
+                not metadata.get("chat_id", "").startswith("local:")
+                and metadata.get("chat_id")
+                and metadata.get("message_id")
+            ):
+                asyncio.create_task(
+                    run_background_ledger_capture(
+                        chat_id=metadata["chat_id"],
+                        message_id=metadata["message_id"],
+                        metadata=metadata,
+                        event_emitter=event_emitter,
+                    )
+                )
 
             if not metadata.get("chat_id", "").startswith(
                 "local:"

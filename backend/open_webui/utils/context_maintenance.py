@@ -953,6 +953,7 @@ def build_context_maintenance_payload(
     state = summary_state or {}
     state_summary = str(state.get("summary_text") or "").strip()
     boundary_id = state.get("summarized_through_message_id")
+    compaction_version = int(state.get("updated_at") or 0)
 
     if state_summary and boundary_id:
         boundary_index = next(
@@ -1007,6 +1008,7 @@ def build_context_maintenance_payload(
             "anchor_message_count": len(anchors),
             "tail_message_count": len(trimmed_tail),
             "summary_included": bool(summary_text),
+            "compaction_version": compaction_version,
         },
     }
 
@@ -1115,6 +1117,7 @@ async def build_inline_maintained_messages(
             "tail_message_count": len(trimmed_tail),
             "summary_tokens": estimate_tokens_from_text(summary_text or ""),
             "summary_included": bool(summary_text),
+            "compaction_version": int(time.time()) if result["summary_refreshed"] else result["telemetry"].get("compaction_version", 0),
         }
     )
 
