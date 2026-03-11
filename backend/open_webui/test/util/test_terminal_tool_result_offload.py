@@ -85,3 +85,47 @@ def test_chat_artifact_dir_reuses_existing_slug_after_cache_reset(tmp_path, monk
     second = middleware._resolve_chat_artifacts_dir("chat-stable")
     assert second is not None
     assert second.name == "chat-stable__parvo-ime"
+
+
+def test_offloaded_run_command_artifact_is_human_readable(tmp_path, monkeypatch):
+    monkeypatch.setattr(middleware, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(middleware, "TERMINAL_TOOL_RESULT_INLINE_MAX_BYTES", 64)
+    monkeypatch.setattr(middleware, "TERMINAL_TOOL_RESULT_PREVIEW_CHARS", 200)
+    monkeypatch.setattr(
+        middleware.Chats, "get_chat_title_by_id", lambda _chat_id: "Terminal smoke"
+    )
+    middleware._CHAT_ARTIFACT_DIR_CACHE.clear()
+
+    run_command_payload = {
+        "id": "proc-1",
+        "command": "seq 1 6",
+        "status": "done",
+        "exit_code": 0,
+        "output": [
+            {"type": "output", "data": "1\r\n2\r\n3\r\n"},
+            {"type": "output", "data": "4\r\n5\r\n6\r\n"},
+        ],
+    }
+
+    tool_result, tool_files, tool_embeds = middleware.process_tool_result(
+        request=None,
+        tool_function_name="run_command",
+        tool_result=run_command_payload,
+        tool_type="terminal",
+        metadata={"chat_id": "chat-hr", "message_id": "msg-hr"},
+        user=None,
+    )
+
+    assert tool_files == []
+    assert tool_embeds == []
+    assert "[tool output truncated and persisted to disk]" in tool_result
+    assert "\\r\\n" not in tool_result
+
+    chat_dir = tmp_path / "chat-hr__terminal-smoke"
+    stored_files = list((chat_dir / "tool_outputs").glob("*.txt"))
+    assert len(stored_files) == 1
+
+    stored_text = stored_files[0].read_text(encoding="utf-8")
+    assert "command: seq 1 6" in stored_text
+    assert "1\n2\n3\n4\n5\n6\n" in stored_text
+    assert "\\r\\n" not in stored_text

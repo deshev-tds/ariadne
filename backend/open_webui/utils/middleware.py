@@ -303,6 +303,51 @@ def _resolve_chat_artifacts_dir(chat_id: str) -> Optional[Path]:
     return resolved
 
 
+def _normalize_terminal_tool_result_for_persistence(
+    tool_function_name: str, tool_result: str
+) -> str:
+    """Convert structured terminal JSON payloads to human-readable text artifacts.
+
+    Open Terminal `run_command`/`get_process_status` payloads embed stdout chunks in
+    JSON string fields, so line breaks appear as escaped `\\r\\n` when the artifact is
+    viewed directly. For persisted artifacts we flatten those chunks back to plain
+    text while keeping key metadata headers.
+    """
+    if tool_function_name not in {"run_command", "get_process_status"}:
+        return tool_result
+
+    try:
+        payload = json.loads(tool_result)
+    except Exception:
+        return tool_result
+
+    if not isinstance(payload, dict):
+        return tool_result
+
+    output_chunks: list[str] = []
+    for chunk in payload.get("output", []):
+        if not isinstance(chunk, dict):
+            continue
+        data = chunk.get("data")
+        if isinstance(data, str):
+            output_chunks.append(data.replace("\r\n", "\n").replace("\r", "\n"))
+
+    if not output_chunks:
+        return tool_result
+
+    header_lines: list[str] = []
+    for key in ("id", "command", "status", "exit_code"):
+        if key in payload:
+            header_lines.append(f"{key}: {payload.get(key)}")
+    if isinstance(payload.get("log_path"), str):
+        header_lines.append(f"log_path: {payload.get('log_path')}")
+
+    body = "".join(output_chunks)
+    if header_lines:
+        return f"{'\n'.join(header_lines)}\n\n{body}"
+    return body
+
+
 def _maybe_persist_terminal_tool_result(
     *,
     metadata: Optional[dict[str, Any]],
@@ -311,6 +356,10 @@ def _maybe_persist_terminal_tool_result(
 ) -> str:
     if not isinstance(tool_result, str):
         return tool_result
+
+    tool_result = _normalize_terminal_tool_result_for_persistence(
+        tool_function_name, tool_result
+    )
 
     if TERMINAL_TOOL_RESULT_INLINE_MAX_BYTES <= 0:
         return tool_result
