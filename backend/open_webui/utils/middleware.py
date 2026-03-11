@@ -3849,13 +3849,20 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 "evidence_injected",
                 "timed_out",
                 "hit_count",
+                "usable_hit_count",
                 "evidence_tokens",
+                "indexed_message_count",
+                "queued_message_count",
+                "missing_message_count",
+                "fallback_used",
+                "fallback_mode",
             ]
         }
 
     if memory_telemetry:
         memory_telemetry["chat_id"] = chat_id
         memory_telemetry["message_id"] = metadata.get("message_id")
+        metadata["memory_telemetry"] = memory_telemetry
         if event_emitter:
             try:
                 await event_emitter(
@@ -3866,7 +3873,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 )
             except Exception:
                 pass
-        log.debug("Chat memory telemetry: %s", memory_telemetry)
+        if metadata.get("params", {}).get("debug_memory_telemetry"):
+            log.info("Chat memory telemetry: %s", memory_telemetry)
+        else:
+            log.debug("Chat memory telemetry: %s", memory_telemetry)
 
     if metadata.get("branch"):
         forced_prefix, token_branch = _prepare_branch_prefill(metadata)
@@ -4835,11 +4845,18 @@ async def non_streaming_chat_response_handler(response, ctx):
 
     token_telemetry = _extract_non_streaming_token_telemetry(response_data)
     token_branch = metadata.get("tokenBranch")
+    memory_telemetry = (
+        metadata.get("memory_telemetry")
+        if metadata.get("params", {}).get("debug_memory_telemetry")
+        else None
+    )
 
     if token_telemetry:
         response_data["tokenTelemetry"] = token_telemetry
     if token_branch:
         response_data["tokenBranch"] = token_branch
+    if memory_telemetry:
+        response_data["memoryTelemetry"] = memory_telemetry
 
     if event_emitter:
         try:
@@ -6494,6 +6511,11 @@ async def streaming_chat_response_handler(response, ctx):
                         item["status"] = "completed"
 
                 token_telemetry = _build_token_telemetry_payload(token_telemetry_state)
+                memory_telemetry = (
+                    metadata.get("memory_telemetry")
+                    if metadata.get("params", {}).get("debug_memory_telemetry")
+                    else None
+                )
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
                 data = {
                     "done": True,
@@ -6506,6 +6528,11 @@ async def streaming_chat_response_handler(response, ctx):
                         else {}
                     ),
                     **({"tokenBranch": token_branch} if token_branch else {}),
+                    **(
+                        {"memoryTelemetry": memory_telemetry}
+                        if memory_telemetry
+                        else {}
+                    ),
                 }
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
@@ -6523,9 +6550,14 @@ async def streaming_chat_response_handler(response, ctx):
                                 else {}
                             ),
                             **({"tokenBranch": token_branch} if token_branch else {}),
+                            **(
+                                {"memoryTelemetry": memory_telemetry}
+                                if memory_telemetry
+                                else {}
+                            ),
                         },
                     )
-                elif usage or token_telemetry or token_branch:
+                elif usage or token_telemetry or token_branch or memory_telemetry:
                     update_payload = {}
                     if usage:
                         update_payload["usage"] = usage
@@ -6533,6 +6565,8 @@ async def streaming_chat_response_handler(response, ctx):
                         update_payload["tokenTelemetry"] = token_telemetry
                     if token_branch:
                         update_payload["tokenBranch"] = token_branch
+                    if memory_telemetry:
+                        update_payload["memoryTelemetry"] = memory_telemetry
                     Chats.upsert_message_to_chat_by_id_and_message_id(
                         metadata["chat_id"],
                         metadata["message_id"],

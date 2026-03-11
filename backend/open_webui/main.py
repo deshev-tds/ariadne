@@ -1935,6 +1935,9 @@ async def chat_completion(
             "params": {
                 "stream_delta_chunk_size": stream_delta_chunk_size,
                 "reasoning_tags": reasoning_tags,
+                "debug_memory_telemetry": bool(
+                    form_data.get("params", {}).get("debug_memory_telemetry")
+                ),
                 "function_calling": (
                     "native"
                     if (
