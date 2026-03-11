@@ -4631,6 +4631,10 @@ async def background_tasks_handler(ctx):
         request, user, tasks
     )
 
+    async def emit_background_event(event: dict[str, Any]) -> None:
+        if event_emitter:
+            await event_emitter(event)
+
     message = None
     messages = []
 
@@ -4713,7 +4717,7 @@ async def background_tasks_handler(ctx):
 
                     try:
                         follow_ups = json.loads(follow_ups_string).get("follow_ups", [])
-                        await event_emitter(
+                        await emit_background_event(
                             {
                                 "type": "chat:message:follow_ups",
                                 "data": {
@@ -4820,7 +4824,7 @@ async def background_tasks_handler(ctx):
 
                             Chats.update_chat_title_by_id(metadata["chat_id"], title)
 
-                            await event_emitter(
+                            await emit_background_event(
                                 {
                                     "type": "chat:title",
                                     "data": title,
@@ -4832,7 +4836,7 @@ async def background_tasks_handler(ctx):
 
                         Chats.update_chat_title_by_id(metadata["chat_id"], title)
 
-                        await event_emitter(
+                        await emit_background_event(
                             {
                                 "type": "chat:title",
                                 "data": message.get("content", user_message),
@@ -4876,7 +4880,7 @@ async def background_tasks_handler(ctx):
                                 metadata["chat_id"], tags, user
                             )
 
-                            await event_emitter(
+                            await emit_background_event(
                                 {
                                     "type": "chat:tags",
                                     "data": tags,
@@ -4914,45 +4918,45 @@ async def non_streaming_chat_response_handler(response, ctx):
     if memory_telemetry:
         response_data["memoryTelemetry"] = memory_telemetry
 
-    if event_emitter:
-        try:
-            if "error" in response_data:
-                error = response_data.get("error")
+    try:
+        if "error" in response_data:
+            error = response_data.get("error")
 
-                if isinstance(error, dict):
-                    error = error.get("detail", error)
-                else:
-                    error = str(error)
+            if isinstance(error, dict):
+                error = error.get("detail", error)
+            else:
+                error = str(error)
 
-                Chats.upsert_message_to_chat_by_id_and_message_id(
-                    metadata["chat_id"],
-                    metadata["message_id"],
+            Chats.upsert_message_to_chat_by_id_and_message_id(
+                metadata["chat_id"],
+                metadata["message_id"],
+                {
+                    "error": {"content": error},
+                },
+            )
+            if event_emitter and (isinstance(error, str) or isinstance(error, dict)):
+                await event_emitter(
                     {
-                        "error": {"content": error},
-                    },
-                )
-                if isinstance(error, str) or isinstance(error, dict):
-                    await event_emitter(
-                        {
-                            "type": "chat:message:error",
-                            "data": {"error": {"content": error}},
-                        }
-                    )
-
-            if "selected_model_id" in response_data:
-                Chats.upsert_message_to_chat_by_id_and_message_id(
-                    metadata["chat_id"],
-                    metadata["message_id"],
-                    {
-                        "selectedModelId": response_data["selected_model_id"],
-                    },
+                        "type": "chat:message:error",
+                        "data": {"error": {"content": error}},
+                    }
                 )
 
-            choices = response_data.get("choices", [])
-            if choices and choices[0].get("message", {}).get("content"):
-                content = response_data["choices"][0]["message"]["content"]
+        if "selected_model_id" in response_data:
+            Chats.upsert_message_to_chat_by_id_and_message_id(
+                metadata["chat_id"],
+                metadata["message_id"],
+                {
+                    "selectedModelId": response_data["selected_model_id"],
+                },
+            )
 
-                if content:
+        choices = response_data.get("choices", [])
+        if choices and choices[0].get("message", {}).get("content"):
+            content = response_data["choices"][0]["message"]["content"]
+
+            if content:
+                if event_emitter:
                     await event_emitter(
                         {
                             "type": "chat:completion",
@@ -4960,22 +4964,23 @@ async def non_streaming_chat_response_handler(response, ctx):
                         }
                     )
 
-                    title = Chats.get_chat_title_by_id(metadata["chat_id"])
+                title = Chats.get_chat_title_by_id(metadata["chat_id"])
 
-                    # Use output from backend if provided (OR-compliant backends),
-                    # otherwise generate from response content
-                    response_output = response_data.get("output")
-                    if not response_output:
-                        response_output = [
-                            {
-                                "type": "message",
-                                "id": output_id("msg"),
-                                "status": "completed",
-                                "role": "assistant",
-                                "content": [{"type": "output_text", "text": content}],
-                            }
-                        ]
+                # Use output from backend if provided (OR-compliant backends),
+                # otherwise generate from response content
+                response_output = response_data.get("output")
+                if not response_output:
+                    response_output = [
+                        {
+                            "type": "message",
+                            "id": output_id("msg"),
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": content}],
+                        }
+                    ]
 
+                if event_emitter:
                     await event_emitter(
                         {
                             "type": "chat:completion",
@@ -4994,51 +4999,52 @@ async def non_streaming_chat_response_handler(response, ctx):
                         }
                     )
 
-                    # Save message in the database
-                    usage = normalize_usage(response_data.get("usage", {}) or {})
+                # Save message in the database
+                usage = normalize_usage(response_data.get("usage", {}) or {})
 
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        {
-                            "role": "assistant",
-                            "content": content,
-                            "output": response_output,
-                            **(
-                                {"tokenTelemetry": token_telemetry}
-                                if token_telemetry
-                                else {}
-                            ),
-                            **({"tokenBranch": token_branch} if token_branch else {}),
-                            **({"usage": usage} if usage else {}),
-                        },
-                    )
+                Chats.upsert_message_to_chat_by_id_and_message_id(
+                    metadata["chat_id"],
+                    metadata["message_id"],
+                    {
+                        "role": "assistant",
+                        "content": content,
+                        "output": response_output,
+                        **(
+                            {"tokenTelemetry": token_telemetry}
+                            if token_telemetry
+                            else {}
+                        ),
+                        **({"tokenBranch": token_branch} if token_branch else {}),
+                        **({"usage": usage} if usage else {}),
+                    },
+                )
 
-                    # Send a webhook notification if the user is not active
-                    if not Users.is_user_active(user.id):
-                        webhook_url = Users.get_user_webhook_url_by_id(user.id)
-                        if webhook_url:
-                            await post_webhook(
-                                request.app.state.WEBUI_NAME,
-                                webhook_url,
-                                f"{title} - {request.app.state.config.WEBUI_URL}/c/{metadata['chat_id']}\n\n{content}",
-                                {
-                                    "action": "chat",
-                                    "message": content,
-                                    "title": title,
-                                    "url": f"{request.app.state.config.WEBUI_URL}/c/{metadata['chat_id']}",
-                                },
-                            )
+                # Send a webhook notification if the user is not active
+                if not Users.is_user_active(user.id):
+                    webhook_url = Users.get_user_webhook_url_by_id(user.id)
+                    if webhook_url:
+                        await post_webhook(
+                            request.app.state.WEBUI_NAME,
+                            webhook_url,
+                            f"{title} - {request.app.state.config.WEBUI_URL}/c/{metadata['chat_id']}\n\n{content}",
+                            {
+                                "action": "chat",
+                                "message": content,
+                                "title": title,
+                                "url": f"{request.app.state.config.WEBUI_URL}/c/{metadata['chat_id']}",
+                            },
+                        )
 
-                    await background_tasks_handler(ctx)
+                await background_tasks_handler(ctx)
 
-            response = build_response_object(
-                response, merge_events_into_response(response_data, events)
-            )
-        except Exception as e:
-            log.debug(f"Error occurred while processing request: {e}")
-            pass
+        response = build_response_object(
+            response, merge_events_into_response(response_data, events)
+        )
+    except Exception as e:
+        log.debug(f"Error occurred while processing request: {e}")
+        pass
 
+    if event_emitter:
         return response
 
     if isinstance(response, dict):

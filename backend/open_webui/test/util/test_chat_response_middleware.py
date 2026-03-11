@@ -1,0 +1,140 @@
+from types import SimpleNamespace
+
+import pytest
+
+from open_webui.utils.middleware import (
+    background_tasks_handler,
+    non_streaming_chat_response_handler,
+)
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_chat_response_persists_without_event_emitter(monkeypatch):
+    saved_messages = []
+    background_called = False
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    async def _background_tasks(_ctx):
+        nonlocal background_called
+        background_called = True
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        _background_tasks,
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {"debug_memory_telemetry": True},
+            "memory_telemetry": {"ledger": {"injected": False}},
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    result = await non_streaming_chat_response_handler(
+        {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 1},
+        },
+        ctx,
+    )
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert result["memoryTelemetry"] == {"ledger": {"injected": False}}
+    assert background_called is True
+    assert saved_messages[0][0] == "chat-1"
+    assert saved_messages[0][1] == "message-1"
+    assert saved_messages[0][2]["role"] == "assistant"
+    assert saved_messages[0][2]["content"] == "ok"
+    assert saved_messages[0][2]["output"][0]["role"] == "assistant"
+    assert saved_messages[0][2]["usage"]["completion_tokens"] == 1
+
+
+@pytest.mark.asyncio
+async def test_background_tasks_handler_schedules_ledger_without_event_emitter(
+    monkeypatch,
+):
+    scheduled = []
+
+    def _create_task(coro):
+        scheduled.append(coro.cr_code.co_name)
+        coro.close()
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.asyncio.create_task",
+        _create_task,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware._resolve_context_maintenance_enabled",
+        lambda request, user, tasks=None: False,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_messages_map_by_chat_id",
+        lambda _chat_id: {
+            "u1": {
+                "id": "u1",
+                "role": "user",
+                "content": "Use ffuf.",
+            },
+            "a1": {
+                "id": "a1",
+                "parentId": "u1",
+                "role": "assistant",
+                "content": "Using ffuf.",
+                "model": "demo-model",
+            },
+        },
+    )
+
+    await background_tasks_handler(
+        {
+            "request": SimpleNamespace(
+                app=SimpleNamespace(
+                    state=SimpleNamespace(
+                        MODELS={"demo-model": {"id": "demo-model"}},
+                        config=SimpleNamespace(ENABLE_CONTEXT_MAINTENANCE=False),
+                    )
+                )
+            ),
+            "form_data": {},
+            "user": SimpleNamespace(id="user-1"),
+            "metadata": {
+                "chat_id": "chat-1",
+                "message_id": "a1",
+            },
+            "tasks": None,
+            "event_emitter": None,
+        }
+    )
+
+    assert scheduled == ["run_background_ledger_capture"]
