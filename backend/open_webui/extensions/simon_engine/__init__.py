@@ -1,1 +1,1 @@
-"""Embedded Simon cognitive engine modules for Open WebUI."""
+"""Shared Simon memory helpers used by the default Open WebUI fork pipeline."""

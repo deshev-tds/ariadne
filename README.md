@@ -52,7 +52,6 @@ The important divergences are not cosmetic.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
-- An opt-in Simon Cognitive Engine path was embedded as a separate experimental layer for more aggressive retrieval and cognitive routing ideas.
 
 The rest of this README explains the rationale behind those changes.
 
@@ -228,6 +227,24 @@ Mode switching is also explicit and forward-only:
 
 On the first turn after a mode switch, the selected mode can force a single ledger injection when active entries already exist for that mode. After that turn, normal selective gating resumes.
 
+### Legacy Simon Pipe Cleanup
+
+The old `simon-cognitive-engine` pipe stack is no longer part of the supported runtime path in this fork.
+
+If an environment previously installed that pipe as a DB-backed function/model override, purge those records after deploy:
+
+```bash
+python3 scripts/purge_simon_cognitive_engine.py
+python3 scripts/purge_simon_cognitive_engine.py --apply
+```
+
+The first command is a dry run. The second command deletes both legacy records:
+
+- function id: `simon-cognitive-engine`
+- model id: `simon-cognitive-engine`
+
+After `--apply`, restart backend workers to guarantee no stale DB-loaded function modules remain in memory.
+
 ## Web Search and Retrieval Planning
 
 This fork also treats web behavior as a retrieval problem, not just as "run a search and paste the results into context".
@@ -257,22 +274,6 @@ At a high level, the current web path behaves more like this:
 5. surface planner status and fallback information so the path is inspectable
 
 This is the same overall philosophy as the context work: bounded, inspectable, evidence-oriented behavior beats magical but opaque behavior.
-
-## Simon Cognitive Engine
-
-This fork also embeds an opt-in Simon Cognitive Engine path as a separate pipe model.
-
-Simon is a separate public project by the same author:
-
-- https://github.com/deshev-tds/simon
-
-The relationship between the two is deliberate:
-
-- Open WebUI is the more mature product substrate
-- Simon is where more aggressive memory, retrieval, and cognitive-routing ideas are explored as a more comprehensive experimental system
-- this fork borrows architectural and behavioral ideas from Simon where they can improve Open WebUI without turning the whole product into an experimental research scaffold
-
-So the Simon integration here should be read as a bridge, not as a replacement. It lets the fork expose a more opinionated cognitive path without making the standard Open WebUI chat path depend on it.
 
 ## Voice / TTS
 
@@ -353,7 +354,6 @@ The most important differences in this fork are the ones above, but the operatin
 - web retrieval is planned and bounded rather than treated as a blind append-to-prompt step
 - local TTS is treated as a quality problem worth solving
 - token-level generation is inspectable when the backend exposes enough data
-- Simon exists as an opt-in cognitive path for ideas that are more aggressive than the default chat path should be
 
 There is also early scaffolding for runtime MoE experts probing/control on compatible OpenAI-style backends. That work is real, but it is still backend-dependent and not yet central enough to this fork's identity to present as a finished headline capability.
 
