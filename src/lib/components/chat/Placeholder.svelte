@@ -46,6 +46,8 @@
 	export let messageInput = null;
 	export let thinkingEnabled = false;
 	export let setChatThinkingEnabled: (enabled: boolean) => void = () => {};
+	export let ledgerAgenticEnabled = false;
+	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
 
 	export let selectedToolIds = [];
 	export let selectedFilterIds = [];
@@ -208,6 +210,8 @@
 					{selectedModels}
 					{thinkingEnabled}
 					{setChatThinkingEnabled}
+					{ledgerAgenticEnabled}
+					{setChatLedgerAgenticEnabled}
 					bind:files
 					bind:prompt
 					bind:autoScroll

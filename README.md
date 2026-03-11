@@ -48,6 +48,7 @@ The important divergences are not cosmetic.
 - The live prompt budget is now derived from the active `llama.cpp` runtime instead of being treated as a static design assumption.
 - Recall is now explicitly layered as `FTS preferred, raw fallback guaranteed` for cases where lexical retrieval is not ready or not good enough.
 - Request-scoped memory telemetry can be turned on per turn for debugging without leaving noisy long-lived logging enabled in production.
+- Ledger continuity now uses explicit chat-scoped mode selection: `vibe` by default, `agentic` only when enabled in the UI toggle.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
@@ -205,6 +206,27 @@ That design matters for a local-first system. Without it, the architecture may b
 - did the system fall back to raw branch evidence?
 
 This debug path is intentionally request-scoped. It is meant to help diagnose a specific turn, not to leave verbose memory logging enabled all the time and quietly fill production disks with telemetry.
+
+### Ledger Continuity Modes
+
+This fork now treats ledger mode as an explicit user control instead of a backend heuristic.
+
+The behavior is:
+
+- `vibe` is the default mode for every chat
+- `agentic` is enabled only through a chat-scoped toggle in the composer UI
+- mode is persisted in chat params, so it survives reloads and continued sessions
+- backend mode selection is driven by that explicit state, not by inferring "agentic-looking" language from recent turns
+
+That tradeoff is intentional. It removes hidden mode flips and makes ledger behavior easier to reason about and debug.
+
+Mode switching is also explicit and forward-only:
+
+- existing chat history is left unchanged
+- existing ledger entries are not auto-retired
+- from the next turn onward, only the selected ledger kind is eligible for capture and injection
+
+On the first turn after a mode switch, the selected mode can force a single ledger injection when active entries already exist for that mode. After that turn, normal selective gating resumes.
 
 ## Web Search and Retrieval Planning
 

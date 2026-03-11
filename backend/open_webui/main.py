@@ -1911,6 +1911,12 @@ async def chat_completion(
             "stream_delta_chunk_size"
         )
         reasoning_tags = form_data.get("params", {}).get("reasoning_tags")
+        raw_ledger_mode = form_data.get("params", {}).get("ledger_mode")
+        ledger_mode = None
+        if raw_ledger_mode is not None:
+            ledger_mode = (
+                "agentic" if str(raw_ledger_mode).strip().lower() == "agentic" else "vibe"
+            )
 
         # Model Params
         if model_info_params.get("stream_response") is not None:
@@ -1941,6 +1947,7 @@ async def chat_completion(
             "params": {
                 "stream_delta_chunk_size": stream_delta_chunk_size,
                 "reasoning_tags": reasoning_tags,
+                "ledger_mode": ledger_mode,
                 "debug_memory_telemetry": bool(
                     form_data.get("params", {}).get("debug_memory_telemetry")
                 ),

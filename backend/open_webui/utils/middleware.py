@@ -3547,6 +3547,7 @@ def apply_params_to_form_data(form_data, model):
         "stream_delta_chunk_size": int,
         "function_calling": str,
         "reasoning_tags": list,
+        "ledger_mode": str,
         "system": str,
     }
 
@@ -3897,6 +3898,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         messages=form_data.get("messages", []),
         original_system_message=system_message,
         working_memory_telemetry=memory_telemetry.get("working_memory") or {},
+        metadata=metadata,
     )
     if metadata.get("params", {}).get("debug_memory_telemetry"):
         memory_telemetry["ledger"] = ledger_result

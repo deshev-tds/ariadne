@@ -4,7 +4,7 @@ import logging
 from contextlib import contextmanager
 from typing import Optional
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from open_webui.env import FORK_MEMORY_DATABASE_URL
@@ -85,6 +85,21 @@ def initialize_fork_memory_db() -> bool:
         import open_webui.models.ledger  # noqa: F401
 
         ForkMemoryBase.metadata.create_all(bind=_engine)
+        with _engine.begin() as conn:
+            inspector = inspect(conn)
+            try:
+                columns = {
+                    column.get("name", "")
+                    for column in inspector.get_columns("ledger_injection_state")
+                }
+            except Exception:
+                columns = set()
+            if "last_mode_seen" not in columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ledger_injection_state ADD COLUMN last_mode_seen VARCHAR"
+                    )
+                )
         _AVAILABLE = True
         return True
     except Exception as exc:

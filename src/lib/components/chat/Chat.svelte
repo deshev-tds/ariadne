@@ -176,9 +176,11 @@
 	let files = [];
 	let params = {};
 	let chatThinkingEnabled = false;
+	let chatLedgerAgenticEnabled = false;
 
 	$: chatThinkingEnabled =
 		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
+	$: chatLedgerAgenticEnabled = (params?.ledger_mode ?? null) === 'agentic';
 
 	const setChatThinkingEnabled = (enabled: boolean) => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
@@ -212,6 +214,16 @@
 			}
 		}
 
+		params = nextParams;
+	};
+
+	const setChatLedgerAgenticEnabled = (enabled: boolean) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		if (enabled) {
+			nextParams.ledger_mode = 'agentic';
+		} else {
+			delete nextParams.ledger_mode;
+		}
 		params = nextParams;
 	};
 
@@ -2897,6 +2909,8 @@
 									{selectedModels}
 									thinkingEnabled={chatThinkingEnabled}
 									{setChatThinkingEnabled}
+									ledgerAgenticEnabled={chatLedgerAgenticEnabled}
+									{setChatLedgerAgenticEnabled}
 									bind:files
 									bind:prompt
 									bind:autoScroll
@@ -2969,6 +2983,8 @@
 									{selectedModels}
 									thinkingEnabled={chatThinkingEnabled}
 									{setChatThinkingEnabled}
+									ledgerAgenticEnabled={chatLedgerAgenticEnabled}
+									{setChatLedgerAgenticEnabled}
 									bind:messageInput
 									bind:files
 									bind:prompt

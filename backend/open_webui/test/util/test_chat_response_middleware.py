@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from open_webui.utils.middleware import (
+    apply_params_to_form_data,
     background_tasks_handler,
     non_streaming_chat_response_handler,
 )
@@ -138,3 +139,33 @@ async def test_background_tasks_handler_schedules_ledger_without_event_emitter(
     )
 
     assert scheduled == ["run_background_ledger_capture"]
+
+
+def test_apply_params_strips_ledger_mode_from_openai_payload():
+    form_data = {
+        "params": {
+            "ledger_mode": "agentic",
+            "temperature": 0.2,
+        }
+    }
+    model = {"owned_by": "openai"}
+
+    result = apply_params_to_form_data(form_data, model)
+
+    assert "ledger_mode" not in result
+    assert result["temperature"] == 0.2
+
+
+def test_apply_params_strips_ledger_mode_from_ollama_options():
+    form_data = {
+        "params": {
+            "ledger_mode": "agentic",
+            "temperature": 0.2,
+        }
+    }
+    model = {"owned_by": "ollama"}
+
+    result = apply_params_to_form_data(form_data, model)
+
+    assert result["options"].get("temperature") == 0.2
+    assert "ledger_mode" not in result["options"]

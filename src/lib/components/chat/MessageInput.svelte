@@ -88,6 +88,7 @@
 	import Component from '../icons/Component.svelte';
 	import PlusAlt from '../icons/PlusAlt.svelte';
 	import LightBulb from '../icons/LightBulb.svelte';
+	import CommandLine from '../icons/CommandLine.svelte';
 	import Dropdown from '../common/Dropdown.svelte';
 
 	import { DropdownMenu } from 'bits-ui';
@@ -118,6 +119,8 @@
 	export let selectedModels: [''];
 	export let thinkingEnabled = false;
 	export let setChatThinkingEnabled: (enabled: boolean) => void = () => {};
+	export let ledgerAgenticEnabled = false;
+	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
 
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
@@ -1648,6 +1651,29 @@
 												}}
 											>
 												<LightBulb className="size-4.5" strokeWidth="1.75" />
+											</button>
+										</Tooltip>
+										<Tooltip
+											content={ledgerAgenticEnabled
+												? $i18n.t('Agentic memory mode is enabled for this chat')
+												: $i18n.t('Enable agentic memory mode for this chat')}
+											placement="top"
+										>
+											<button
+												type="button"
+												id="agentic-ledger-toggle-button"
+												aria-label={$i18n.t('Agentic memory mode')}
+												aria-pressed={ledgerAgenticEnabled}
+												class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {ledgerAgenticEnabled
+													? 'text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200/80 dark:text-emerald-200 dark:bg-emerald-700/20 dark:hover:bg-emerald-700/30'
+													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+												on:click={async () => {
+													setChatLedgerAgenticEnabled(!ledgerAgenticEnabled);
+													await tick();
+													document.getElementById('chat-input')?.focus();
+												}}
+											>
+												<CommandLine className="size-4.5" strokeWidth="1.75" />
 											</button>
 										</Tooltip>
 									</div>

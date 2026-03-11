@@ -19,6 +19,8 @@ from open_webui.utils.misc import get_content_from_message, get_message_list
 log = logging.getLogger(__name__)
 
 _LEDGER_STATUS_ACTION = "ledger_memory"
+_LEDGER_MODE_AGENTIC = "agentic"
+_LEDGER_MODE_VIBE = "vibe"
 _SAVE_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in (MEMORY_SAVE_PATTERNS_EN + MEMORY_SAVE_PATTERNS_BG)
@@ -113,6 +115,45 @@ def _recent_user_messages(messages: list[dict[str, Any]], limit: int = 6) -> lis
     return items[-limit:]
 
 
+def _parse_ledger_mode(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    return (
+        _LEDGER_MODE_AGENTIC
+        if str(value).strip().lower() == _LEDGER_MODE_AGENTIC
+        else _LEDGER_MODE_VIBE
+    )
+
+
+def _resolve_selected_ledger_mode(
+    *,
+    chat_id: str | None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> str:
+    metadata_params = (metadata or {}).get("params")
+    if isinstance(metadata_params, dict):
+        metadata_mode = _parse_ledger_mode(metadata_params.get("ledger_mode"))
+        if metadata_mode is not None:
+            return metadata_mode
+
+    if not chat_id:
+        return _LEDGER_MODE_VIBE
+
+    try:
+        chat = Chats.get_chat_by_id(chat_id)
+        chat_payload = getattr(chat, "chat", None)
+        if isinstance(chat_payload, dict):
+            chat_params = chat_payload.get("params")
+            if isinstance(chat_params, dict):
+                persisted_mode = _parse_ledger_mode(chat_params.get("ledger_mode"))
+                if persisted_mode is not None:
+                    return persisted_mode
+    except Exception as exc:
+        log.debug("Failed to resolve persisted ledger mode for %s: %s", chat_id, exc)
+
+    return _LEDGER_MODE_VIBE
+
+
 def _contains_transient_content(text: str) -> bool:
     value = str(text or "").strip()
     if not value:
@@ -125,64 +166,6 @@ def _strip_explicit_memory_save(text: str) -> str:
     for pattern in _SAVE_PATTERNS:
         value = pattern.sub("", value, count=1).strip(" :,-")
     return value.strip()
-
-
-def _has_agentic_output(message: dict[str, Any]) -> bool:
-    output = message.get("output")
-    if not isinstance(output, list) or not output:
-        return False
-
-    for item in output:
-        if not isinstance(item, dict):
-            continue
-
-        item_type = str(item.get("type") or "").strip().lower()
-        if item_type and item_type not in {"message", "reasoning"}:
-            return True
-
-        if str(item.get("role") or "").strip().lower() == "tool":
-            return True
-
-        if item.get("tool_calls") or item.get("tool_call_id") or item.get("call_id"):
-            return True
-
-    return False
-
-
-def _infer_agentic_mode(messages: list[dict[str, Any]]) -> bool:
-    recent = messages[-8:]
-    for message in recent:
-        if message.get("role") == "tool":
-            return True
-        if _has_agentic_output(message):
-            return True
-        if message.get("tool_calls"):
-            return True
-
-        text_value = _flatten_content(message).lower()
-        if any(
-            token in text_value
-            for token in (
-                "terminal",
-                "command",
-                "use ",
-                "switch",
-                "task",
-                "endpoint",
-                "api",
-                "file",
-                "report",
-                "recon",
-                "code",
-                "home assistant",
-                "light",
-                "lamp",
-                "/",
-                "`",
-            )
-        ):
-            return True
-    return False
 
 
 def _build_source_ids(messages: list[dict[str, Any]]) -> list[str]:
@@ -388,11 +371,15 @@ def _extract_vibe_candidates(messages: list[dict[str, Any]]) -> list[dict[str, A
     return candidates
 
 
-def _should_commit_candidate(candidate: dict[str, Any], *, agentic_mode: bool) -> bool:
+def _should_commit_candidate(
+    candidate: dict[str, Any], *, selected_mode: str
+) -> bool:
     confidence = float(candidate.get("confidence") or 0.0)
-    if candidate.get("ledger_kind") == "agentic":
-        return agentic_mode and confidence >= 0.8
-    return (not agentic_mode) and confidence >= 0.78
+    candidate_kind = str(candidate.get("ledger_kind") or "").strip().lower()
+    if candidate_kind != selected_mode:
+        return False
+    threshold = 0.8 if selected_mode == _LEDGER_MODE_AGENTIC else 0.78
+    return confidence >= threshold
 
 
 def _build_agentic_ledger_block(entries: list[Any]) -> str:
@@ -442,9 +429,12 @@ def _should_inject_agentic(
     latest_revision: int,
     injection_state: Any,
     working_memory: dict[str, Any],
+    mode_switched: bool,
 ) -> tuple[bool, str]:
     if not active_entries:
         return False, "no_active_entries"
+    if mode_switched:
+        return True, "mode_switched"
 
     compaction_active = bool(
         working_memory.get("summary_included") or working_memory.get("summary_refreshed")
@@ -503,9 +493,12 @@ def _should_inject_vibe(
     latest_revision: int,
     injection_state: Any,
     working_memory: dict[str, Any],
+    mode_switched: bool,
 ) -> tuple[bool, str]:
     if not active_entries:
         return False, "no_active_entries"
+    if mode_switched:
+        return True, "mode_switched"
 
     compaction_active = bool(
         working_memory.get("summary_included") or working_memory.get("summary_refreshed")
@@ -564,7 +557,7 @@ async def run_background_ledger_capture(
     *,
     chat_id: str,
     message_id: str,
-    metadata: dict[str, Any],
+    metadata: dict[str, Any] | None,
     event_emitter=None,
 ) -> dict[str, Any]:
     result = {
@@ -584,13 +577,13 @@ async def run_background_ledger_capture(
         if not history_messages:
             return result
 
-        agentic_candidates = _extract_agentic_candidates(history_messages)
-        agentic_mode = _infer_agentic_mode(history_messages) or bool(agentic_candidates)
-        result["kind_considered"] = "agentic" if agentic_mode else "vibe"
+        selected_mode = _resolve_selected_ledger_mode(chat_id=chat_id, metadata=metadata)
+        result["kind_considered"] = selected_mode
 
-        candidates = list(agentic_candidates)
-        if not agentic_mode:
-            candidates.extend(_extract_vibe_candidates(history_messages))
+        if selected_mode == _LEDGER_MODE_AGENTIC:
+            candidates = _extract_agentic_candidates(history_messages)
+        else:
+            candidates = _extract_vibe_candidates(history_messages)
         result["capture_candidates"] = len(candidates)
 
         if candidates:
@@ -602,7 +595,7 @@ async def run_background_ledger_capture(
             )
 
         for candidate in candidates:
-            if not _should_commit_candidate(candidate, agentic_mode=agentic_mode):
+            if not _should_commit_candidate(candidate, selected_mode=selected_mode):
                 Ledgers.record_event(
                     chat_id,
                     "skip",
@@ -626,7 +619,7 @@ async def run_background_ledger_capture(
             if upsert.get("committed"):
                 result["commits"] += 1
                 result["supersedes"] += int(upsert.get("superseded") or 0)
-        if metadata.get("params", {}).get("debug_memory_telemetry") and event_emitter:
+        if (metadata or {}).get("params", {}).get("debug_memory_telemetry") and event_emitter:
             await event_emitter(
                 {
                     "type": "chat:memory:telemetry",
@@ -650,6 +643,7 @@ async def maybe_apply_ledger(
     messages: list[dict[str, Any]],
     original_system_message: Optional[dict[str, Any]],
     working_memory_telemetry: Optional[dict[str, Any]] = None,
+    metadata: Optional[dict[str, Any]] = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     telemetry = {
         "kind_considered": "none",
@@ -669,14 +663,17 @@ async def maybe_apply_ledger(
     history_messages = raw_history_messages or messages
     latest_user = _latest_user_message(history_messages)
     latest_user_text = _flatten_content(latest_user) if latest_user else ""
-    active_agentic_entries = Ledgers.get_active_entries(chat_id, "agentic")
-    agentic_mode = _infer_agentic_mode(history_messages) or bool(active_agentic_entries)
+    selected_mode = _resolve_selected_ledger_mode(chat_id=chat_id, metadata=metadata)
     injection_state = Ledgers.get_injection_state(chat_id)
+    mode_switched = bool(
+        getattr(injection_state, "last_mode_seen", None)
+        and getattr(injection_state, "last_mode_seen", None) != selected_mode
+    )
     working_memory = working_memory_telemetry or {}
 
-    if agentic_mode:
-        kind = "agentic"
-        active_entries = active_agentic_entries
+    if selected_mode == _LEDGER_MODE_AGENTIC:
+        kind = _LEDGER_MODE_AGENTIC
+        active_entries = Ledgers.get_active_entries(chat_id, kind)
         latest_revision = Ledgers.get_latest_revision(chat_id, kind)
         should_inject, reason = _should_inject_agentic(
             messages=messages,
@@ -685,10 +682,11 @@ async def maybe_apply_ledger(
             latest_revision=latest_revision,
             injection_state=injection_state,
             working_memory=working_memory,
+            mode_switched=mode_switched,
         )
         block_text = _build_agentic_ledger_block(active_entries) if should_inject else ""
     else:
-        kind = "vibe"
+        kind = _LEDGER_MODE_VIBE
         active_entries = Ledgers.get_active_entries(chat_id, kind)
         latest_revision = Ledgers.get_latest_revision(chat_id, kind)
         should_inject, reason = _should_inject_vibe(
@@ -698,6 +696,7 @@ async def maybe_apply_ledger(
             latest_revision=latest_revision,
             injection_state=injection_state,
             working_memory=working_memory,
+            mode_switched=mode_switched,
         )
         block_text = _build_vibe_ledger_block(active_entries) if should_inject else ""
 
@@ -718,8 +717,13 @@ async def maybe_apply_ledger(
             chat_id,
             "skip",
             ledger_kind=kind,
-            payload={"reason": reason, "active_entry_count": len(active_entries)},
+            payload={
+                "reason": reason,
+                "active_entry_count": len(active_entries),
+                "mode_switched": mode_switched,
+            },
         )
+        Ledgers.mark_mode_seen(chat_id=chat_id, ledger_mode=kind)
         return messages, telemetry
 
     updated_messages = _inject_ledger_block(

@@ -41,6 +41,7 @@ class LedgerInjectionState(ForkMemoryBase):
     last_agentic_revision_seen = Column(BigInteger, nullable=True)
     last_vibe_revision_seen = Column(BigInteger, nullable=True)
     last_compaction_version_seen = Column(BigInteger, nullable=True)
+    last_mode_seen = Column(String, nullable=True)
 
 
 class LedgerEvent(ForkMemoryBase):
@@ -78,6 +79,7 @@ class LedgerInjectionStateModel(BaseModel):
     last_agentic_revision_seen: Optional[int] = None
     last_vibe_revision_seen: Optional[int] = None
     last_compaction_version_seen: Optional[int] = None
+    last_mode_seen: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -196,6 +198,25 @@ class LedgersTable:
                 row.last_vibe_revision_seen = revision_seen
 
             row.last_compaction_version_seen = compaction_version or 0
+            row.last_mode_seen = ledger_kind
+            db.commit()
+            db.refresh(row)
+            return LedgerInjectionStateModel.model_validate(row)
+
+    def mark_mode_seen(
+        self,
+        *,
+        chat_id: str,
+        ledger_mode: str,
+        db: Optional[Session] = None,
+    ) -> LedgerInjectionStateModel:
+        with get_fork_db_context(db) as db:
+            row = db.get(LedgerInjectionState, chat_id)
+            if row is None:
+                row = LedgerInjectionState(chat_id=chat_id)
+                db.add(row)
+
+            row.last_mode_seen = ledger_mode
             db.commit()
             db.refresh(row)
             return LedgerInjectionStateModel.model_validate(row)

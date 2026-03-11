@@ -4,7 +4,6 @@ import open_webui.internal.fork_memory_db as fork_memory_db
 from open_webui.internal.fork_memory_db import initialize_fork_memory_db
 from open_webui.models.ledger import Ledgers
 from open_webui.utils.ledger import (
-    _infer_agentic_mode,
     maybe_apply_ledger,
     run_background_ledger_capture,
 )
@@ -22,23 +21,7 @@ def _message(role: str, content: str, message_id: str) -> dict:
     return {"id": message_id, "role": role, "content": content}
 
 
-def _assistant_message_with_output(content: str, message_id: str, parent_id: str) -> dict:
-    return {
-        "id": message_id,
-        "role": "assistant",
-        "content": content,
-        "parentId": parent_id,
-        "output": [
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": content}],
-            }
-        ],
-    }
-
-
-def test_agentic_ledger_commits_tooling_choice(tmp_path, monkeypatch):
+def test_agentic_capture_does_not_commit_without_explicit_mode(tmp_path, monkeypatch):
     _reset_fork_db(tmp_path)
 
     messages = [
@@ -59,11 +42,43 @@ def test_agentic_ledger_commits_tooling_choice(tmp_path, monkeypatch):
         run_background_ledger_capture(
             chat_id="chat-agentic",
             message_id="a1",
-            metadata={},
+            metadata={"params": {}},
         )
     )
 
     entries = Ledgers.get_active_entries("chat-agentic", "agentic")
+    assert result["kind_considered"] == "vibe"
+    assert result["commits"] == 0
+    assert entries == []
+
+
+def test_agentic_capture_commits_with_explicit_mode(tmp_path, monkeypatch):
+    _reset_fork_db(tmp_path)
+
+    messages = [
+        _message("user", "Use ffuf instead of dirsearch for this task.", "u1"),
+        _message("assistant", "Understood, switching to ffuf.", "a1"),
+    ]
+
+    monkeypatch.setattr(
+        "open_webui.utils.ledger.Chats.get_messages_map_by_chat_id",
+        lambda _chat_id: {"u1": messages[0], "a1": messages[1]},
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.ledger.get_message_list",
+        lambda _messages_map, _message_id: list(messages),
+    )
+
+    result = asyncio.run(
+        run_background_ledger_capture(
+            chat_id="chat-agentic-explicit",
+            message_id="a1",
+            metadata={"params": {"ledger_mode": "agentic"}},
+        )
+    )
+
+    entries = Ledgers.get_active_entries("chat-agentic-explicit", "agentic")
+    assert result["kind_considered"] == "agentic"
     assert result["commits"] >= 1
     assert any(entry.entry_type == "tooling" and entry.content == "ffuf" for entry in entries)
 
@@ -91,32 +106,22 @@ def test_vibe_ledger_commits_repeated_refrain_only_after_repetition(tmp_path, mo
         run_background_ledger_capture(
             chat_id="chat-vibe",
             message_id="a2",
-            metadata={},
+            metadata={"params": {}},
         )
     )
 
     entries = Ledgers.get_active_entries("chat-vibe", "vibe")
+    assert result["kind_considered"] == "vibe"
     assert result["commits"] >= 1
     assert any(entry.entry_type == "refrain" and "dry and sharp" in entry.content for entry in entries)
 
 
-def test_plain_assistant_output_does_not_force_agentic_mode():
-    messages = [
-        _message("user", 'Keep it "dry and sharp".', "u1"),
-        _assistant_message_with_output("The truth cuts deep.", "a1", "u1"),
-    ]
-
-    assert _infer_agentic_mode(messages) is False
-
-
-def test_vibe_capture_still_commits_with_persisted_assistant_output(tmp_path, monkeypatch):
+def test_persisted_agentic_mode_is_used_when_request_mode_missing(tmp_path, monkeypatch):
     _reset_fork_db(tmp_path)
 
     messages = [
-        _message("user", 'Keep it "dry and sharp".', "u1"),
-        _assistant_message_with_output("The truth cuts deep.", "a1", "u1"),
-        _message("user", 'Still, keep it "dry and sharp".', "u2"),
-        _assistant_message_with_output("The blade is cold.", "a2", "u2"),
+        _message("user", "Use ffuf instead of dirsearch for this task.", "u1"),
+        _message("assistant", "Understood, switching to ffuf.", "a1"),
     ]
 
     monkeypatch.setattr(
@@ -127,19 +132,23 @@ def test_vibe_capture_still_commits_with_persisted_assistant_output(tmp_path, mo
         "open_webui.utils.ledger.get_message_list",
         lambda _messages_map, _message_id: list(messages),
     )
+    monkeypatch.setattr(
+        "open_webui.utils.ledger.Chats.get_chat_by_id",
+        lambda _chat_id: type("ChatStub", (), {"chat": {"params": {"ledger_mode": "agentic"}}})(),
+    )
 
     result = asyncio.run(
         run_background_ledger_capture(
-            chat_id="chat-vibe-output",
-            message_id="a2",
-            metadata={},
+            chat_id="chat-persisted-agentic",
+            message_id="a1",
+            metadata={"params": {}},
         )
     )
 
-    entries = Ledgers.get_active_entries("chat-vibe-output", "vibe")
-    assert result["kind_considered"] == "vibe"
+    entries = Ledgers.get_active_entries("chat-persisted-agentic", "agentic")
+    assert result["kind_considered"] == "agentic"
     assert result["commits"] >= 1
-    assert any(entry.entry_type == "refrain" and "dry and sharp" in entry.content for entry in entries)
+    assert any(entry.entry_type == "tooling" and entry.content == "ffuf" for entry in entries)
 
 
 def test_one_off_emotional_phrase_does_not_become_ledger(tmp_path, monkeypatch):
@@ -163,7 +172,7 @@ def test_one_off_emotional_phrase_does_not_become_ledger(tmp_path, monkeypatch):
         run_background_ledger_capture(
             chat_id="chat-emotion",
             message_id="a1",
-            metadata={},
+            metadata={"params": {}},
         )
     )
 
@@ -192,7 +201,7 @@ def test_transient_marker_never_commits_to_ledger(tmp_path, monkeypatch):
         run_background_ledger_capture(
             chat_id="chat-marker",
             message_id="a1",
-            metadata={},
+            metadata={"params": {}},
         )
     )
 
@@ -233,6 +242,7 @@ def test_agentic_ledger_injects_after_compaction_when_relevant(tmp_path):
                 "summary_included": True,
                 "compaction_version": 10,
             },
+            metadata={"params": {"ledger_mode": "agentic"}},
         )
     )
 
@@ -271,6 +281,7 @@ def test_ledger_is_not_injected_on_every_turn(tmp_path):
                 "summary_included": True,
                 "compaction_version": 12,
             },
+            metadata={"params": {"ledger_mode": "agentic"}},
         )
     )
 
@@ -288,6 +299,7 @@ def test_ledger_is_not_injected_on_every_turn(tmp_path):
                 "summary_included": False,
                 "compaction_version": 12,
             },
+            metadata={"params": {"ledger_mode": "agentic"}},
         )
     )
 
@@ -296,11 +308,74 @@ def test_ledger_is_not_injected_on_every_turn(tmp_path):
     assert updated == second_messages
 
 
-def test_only_one_ledger_kind_is_injected_per_turn(tmp_path):
+def test_mode_switch_forces_single_agentic_injection(tmp_path):
     _reset_fork_db(tmp_path)
 
     Ledgers.upsert_entry(
-        chat_id="chat-priority",
+        chat_id="chat-mode-switch",
+        ledger_kind="agentic",
+        entry_type="tooling",
+        content="ffuf",
+        rationale="Stable tool choice.",
+        source_message_ids=["u1"],
+        confidence=0.9,
+    )
+    Ledgers.mark_mode_seen(chat_id="chat-mode-switch", ledger_mode="vibe")
+    Ledgers.mark_injected(
+        chat_id="chat-mode-switch",
+        ledger_kind="agentic",
+        revision_seen=Ledgers.get_latest_revision("chat-mode-switch", "agentic"),
+        compaction_version=0,
+    )
+    Ledgers.mark_mode_seen(chat_id="chat-mode-switch", ledger_mode="vibe")
+
+    messages = [
+        {"role": "system", "content": "Base system prompt"},
+        _message("user", "ok", "u2"),
+    ]
+    updated, telemetry = asyncio.run(
+        maybe_apply_ledger(
+            chat_id="chat-mode-switch",
+            raw_history_messages=messages,
+            messages=messages,
+            original_system_message={"role": "system", "content": "Base system prompt"},
+            working_memory_telemetry={
+                "summary_included": False,
+                "compaction_version": 0,
+            },
+            metadata={"params": {"ledger_mode": "agentic"}},
+        )
+    )
+
+    assert telemetry["injected"] is True
+    assert telemetry["injection_reason"] == "mode_switched"
+    assert telemetry["injected_kind"] == "agentic"
+    assert "Durable task state:" in updated[0]["content"]
+
+    updated_second, telemetry_second = asyncio.run(
+        maybe_apply_ledger(
+            chat_id="chat-mode-switch",
+            raw_history_messages=messages,
+            messages=messages,
+            original_system_message={"role": "system", "content": "Base system prompt"},
+            working_memory_telemetry={
+                "summary_included": False,
+                "compaction_version": 0,
+            },
+            metadata={"params": {"ledger_mode": "agentic"}},
+        )
+    )
+
+    assert telemetry_second["injected"] is False
+    assert telemetry_second["injection_reason"] == "not_policy_relevant"
+    assert updated_second == messages
+
+
+def test_only_selected_ledger_kind_is_injected_per_turn(tmp_path):
+    _reset_fork_db(tmp_path)
+
+    Ledgers.upsert_entry(
+        chat_id="chat-selected-kind",
         ledger_kind="agentic",
         entry_type="tooling",
         content="ffuf",
@@ -309,7 +384,7 @@ def test_only_one_ledger_kind_is_injected_per_turn(tmp_path):
         confidence=0.9,
     )
     Ledgers.upsert_entry(
-        chat_id="chat-priority",
+        chat_id="chat-selected-kind",
         ledger_kind="vibe",
         entry_type="tone_profile",
         content="concise, dry",
@@ -320,25 +395,26 @@ def test_only_one_ledger_kind_is_injected_per_turn(tmp_path):
 
     messages = [
         {"role": "system", "content": "Base system prompt"},
-        _message("user", "Use ffuf and give me a report.", "u2"),
+        _message("user", "Okay.", "u2"),
     ]
     updated, telemetry = asyncio.run(
         maybe_apply_ledger(
-            chat_id="chat-priority",
+            chat_id="chat-selected-kind",
             raw_history_messages=messages,
             messages=messages,
             original_system_message={"role": "system", "content": "Base system prompt"},
             working_memory_telemetry={
-                "summary_included": True,
-                "compaction_version": 3,
+                "summary_included": False,
+                "compaction_version": 0,
             },
+            metadata={"params": {"ledger_mode": "vibe"}},
         )
     )
 
     assert telemetry["injected"] is True
-    assert telemetry["injected_kind"] == "agentic"
-    assert "Durable task state:" in updated[0]["content"]
-    assert "Relevant conversation style notes:" not in updated[0]["content"]
+    assert telemetry["injected_kind"] == "vibe"
+    assert "Relevant conversation style notes:" in updated[0]["content"]
+    assert "Durable task state:" not in updated[0]["content"]
 
 
 def test_ledger_gracefully_disables_when_fork_db_is_unavailable(tmp_path, monkeypatch):
@@ -357,6 +433,7 @@ def test_ledger_gracefully_disables_when_fork_db_is_unavailable(tmp_path, monkey
             messages=messages,
             original_system_message={"role": "system", "content": "Base system prompt"},
             working_memory_telemetry={"summary_included": True, "compaction_version": 1},
+            metadata={"params": {"ledger_mode": "agentic"}},
         )
     )
 
