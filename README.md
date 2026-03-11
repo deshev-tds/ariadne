@@ -50,8 +50,11 @@ The important divergences are not cosmetic.
 - Request-scoped memory telemetry can be turned on per turn for debugging without leaving noisy long-lived logging enabled in production.
 - Ledger continuity now uses explicit chat-scoped mode selection: `vibe` by default, `agentic` only when enabled in the UI toggle.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
+- A native `search_strong_sources` tool was added for local-first strong-source search, with Brave fallback only when evidence from locally-listed strong domains is weak.
+- Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
+- On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
 
 The rest of this README explains the rationale behind those changes.
 
@@ -206,6 +209,25 @@ That design matters for a local-first system. Without it, the architecture may b
 
 This debug path is intentionally request-scoped. It is meant to help diagnose a specific turn, not to leave verbose memory logging enabled all the time and quietly fill production disks with telemetry.
 
+### Tool Journey Telemetry (On-Demand)
+
+The same request-scoped discipline now exists for tool execution itself.
+
+When a request is sent with `params.debug_tool_journey=true`, middleware records a bounded per-request tool trace and exposes it as `toolJourneyTelemetry` in the final response/message payload.
+
+That trace captures concrete lifecycle facts such as:
+
+- tool start and completion
+- malformed argument parse failures
+- per-call duration
+- compact result summaries
+
+For strong-source retrieval specifically, the summary includes useful decision signals such as local-phase execution status, Brave fallback usage, fallback reason, and quality/coverage indicators.
+
+This is also emitted in real time as `chat:tool:journey` events, so an in-progress run can be inspected live.
+
+It is off by default, capped, and explicitly opt-in per request.
+
 ### Ledger Continuity Modes
 
 This fork now treats ledger mode as an explicit user control instead of a backend heuristic.
@@ -274,6 +296,42 @@ At a high level, the current web path behaves more like this:
 5. surface planner status and fallback information so the path is inspectable
 
 This is the same overall philosophy as the context work: bounded, inspectable, evidence-oriented behavior beats magical but opaque behavior.
+
+### Strong-Source Search Trigger (Local-First + Brave Fallback)
+
+The web stack now includes a first-class native tool for evidence-critical retrieval: `search_strong_sources`.
+
+This is intentionally not a hard terminal guard. It is a native model-callable path with soft trigger semantics: when confidence is weak, the question is time-sensitive, or provenance quality matters, the model can call the strong-source flow directly.
+
+Its execution model is two-phase:
+
+1. local strong domains first (`planner_hints.is_local=true`, site-constrained queries)
+2. Brave fallback only if evidence quality/coverage from locally-listed strong domains remains below threshold
+
+Operationally, that gives this fork a clearer retrieval contract:
+
+- local domains are a planner primitive, not just an informal recommendation
+- fallback is bounded and paced for free-tier Brave constraints
+- the existing `search_web` flow remains backward-compatible
+- discovery does not depend on sitemap/seed hygiene from legacy sites
+
+In short: prefer domains from the locally maintained strong-source registry when available, escalate to broader discovery only when needed, and keep the decision path observable.
+
+### Strong Domains in Practice
+
+This fork does not ship a local evidence corpus. It ships a locally maintained strong-source domain registry used for routing and query constraints.
+
+Current examples (from the registry) include:
+
+- `science_academic`: `pubmed.ncbi.nlm.nih.gov`, `ncbi.nlm.nih.gov`
+- `medicine_health`: `who.int`, `cdc.gov`
+- `software_apis_devops`: `github.com`, `docs.python.org`
+- `legal_compliance`: `eur-lex.europa.eu`, `edpb.europa.eu`
+
+Where this lives:
+
+- static registry file: `backend/open_webui/retrieval/web/source_registry.json`
+- admin API (read/update): `/api/v1/retrieval/web/search/planner/source-registry`
 
 ## Voice / TTS
 
