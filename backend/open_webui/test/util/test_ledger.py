@@ -3,7 +3,11 @@ import asyncio
 import open_webui.internal.fork_memory_db as fork_memory_db
 from open_webui.internal.fork_memory_db import initialize_fork_memory_db
 from open_webui.models.ledger import Ledgers
-from open_webui.utils.ledger import maybe_apply_ledger, run_background_ledger_capture
+from open_webui.utils.ledger import (
+    _infer_agentic_mode,
+    maybe_apply_ledger,
+    run_background_ledger_capture,
+)
 
 
 def _reset_fork_db(tmp_path):
@@ -16,6 +20,22 @@ def _reset_fork_db(tmp_path):
 
 def _message(role: str, content: str, message_id: str) -> dict:
     return {"id": message_id, "role": role, "content": content}
+
+
+def _assistant_message_with_output(content: str, message_id: str, parent_id: str) -> dict:
+    return {
+        "id": message_id,
+        "role": "assistant",
+        "content": content,
+        "parentId": parent_id,
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content}],
+            }
+        ],
+    }
 
 
 def test_agentic_ledger_commits_tooling_choice(tmp_path, monkeypatch):
@@ -76,6 +96,48 @@ def test_vibe_ledger_commits_repeated_refrain_only_after_repetition(tmp_path, mo
     )
 
     entries = Ledgers.get_active_entries("chat-vibe", "vibe")
+    assert result["commits"] >= 1
+    assert any(entry.entry_type == "refrain" and "dry and sharp" in entry.content for entry in entries)
+
+
+def test_plain_assistant_output_does_not_force_agentic_mode():
+    messages = [
+        _message("user", 'Keep it "dry and sharp".', "u1"),
+        _assistant_message_with_output("The truth cuts deep.", "a1", "u1"),
+    ]
+
+    assert _infer_agentic_mode(messages) is False
+
+
+def test_vibe_capture_still_commits_with_persisted_assistant_output(tmp_path, monkeypatch):
+    _reset_fork_db(tmp_path)
+
+    messages = [
+        _message("user", 'Keep it "dry and sharp".', "u1"),
+        _assistant_message_with_output("The truth cuts deep.", "a1", "u1"),
+        _message("user", 'Still, keep it "dry and sharp".', "u2"),
+        _assistant_message_with_output("The blade is cold.", "a2", "u2"),
+    ]
+
+    monkeypatch.setattr(
+        "open_webui.utils.ledger.Chats.get_messages_map_by_chat_id",
+        lambda _chat_id: {message["id"]: message for message in messages},
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.ledger.get_message_list",
+        lambda _messages_map, _message_id: list(messages),
+    )
+
+    result = asyncio.run(
+        run_background_ledger_capture(
+            chat_id="chat-vibe-output",
+            message_id="a2",
+            metadata={},
+        )
+    )
+
+    entries = Ledgers.get_active_entries("chat-vibe-output", "vibe")
+    assert result["kind_considered"] == "vibe"
     assert result["commits"] >= 1
     assert any(entry.entry_type == "refrain" and "dry and sharp" in entry.content for entry in entries)
 

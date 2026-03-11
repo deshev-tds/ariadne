@@ -127,12 +127,34 @@ def _strip_explicit_memory_save(text: str) -> str:
     return value.strip()
 
 
+def _has_agentic_output(message: dict[str, Any]) -> bool:
+    output = message.get("output")
+    if not isinstance(output, list) or not output:
+        return False
+
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+
+        item_type = str(item.get("type") or "").strip().lower()
+        if item_type and item_type not in {"message", "reasoning"}:
+            return True
+
+        if str(item.get("role") or "").strip().lower() == "tool":
+            return True
+
+        if item.get("tool_calls") or item.get("tool_call_id") or item.get("call_id"):
+            return True
+
+    return False
+
+
 def _infer_agentic_mode(messages: list[dict[str, Any]]) -> bool:
     recent = messages[-8:]
     for message in recent:
         if message.get("role") == "tool":
             return True
-        if isinstance(message.get("output"), list) and message.get("output"):
+        if _has_agentic_output(message):
             return True
         if message.get("tool_calls"):
             return True
