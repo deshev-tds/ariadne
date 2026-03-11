@@ -3,6 +3,8 @@ import logging
 from typing import Optional
 from sqlalchemy.orm import Session
 import asyncio
+from pathlib import Path
+import re
 from fastapi.responses import StreamingResponse
 
 
@@ -28,6 +30,7 @@ from open_webui.models.folders import Folders
 from open_webui.internal.db import get_session
 
 from open_webui.config import ENABLE_ADMIN_CHAT_ACCESS, ENABLE_ADMIN_EXPORT
+from open_webui.env import AGENTIC_ARTIFACTS_DIR
 from open_webui.constants import ERROR_MESSAGES
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -39,6 +42,86 @@ from open_webui.utils.access_control import has_permission
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_TOOL_OUTPUT_POINTER_PREFIX = "[tool output truncated and persisted to disk]"
+_TOOL_OUTPUT_PATH_RE = re.compile(r"^path:\s*(.+)\s*$", re.MULTILINE)
+
+
+def _resolve_tool_output_artifact_path(pointer_text: str) -> Optional[Path]:
+    if not isinstance(pointer_text, str):
+        return None
+
+    if not pointer_text.startswith(_TOOL_OUTPUT_POINTER_PREFIX):
+        return None
+
+    match = _TOOL_OUTPUT_PATH_RE.search(pointer_text)
+    if not match:
+        return None
+
+    try:
+        path = Path(match.group(1).strip()).resolve()
+        root = Path(AGENTIC_ARTIFACTS_DIR).resolve()
+        path.relative_to(root)
+        return path
+    except Exception:
+        return None
+
+
+def _rehydrate_pointer_text(pointer_text: str) -> str:
+    path = _resolve_tool_output_artifact_path(pointer_text)
+    if path is None:
+        return pointer_text
+
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return pointer_text
+
+
+def _rehydrate_chat_payload(chat_payload: dict) -> dict:
+    if not isinstance(chat_payload, dict):
+        return chat_payload
+
+    history = chat_payload.get("history")
+    if not isinstance(history, dict):
+        return chat_payload
+
+    messages = history.get("messages")
+    if not isinstance(messages, dict):
+        return chat_payload
+
+    for message in messages.values():
+        if not isinstance(message, dict):
+            continue
+
+        output = message.get("output")
+        if not isinstance(output, list):
+            continue
+
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "function_call_output":
+                continue
+
+            blocks = item.get("output")
+            if not isinstance(blocks, list):
+                continue
+
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "input_text":
+                    continue
+                text = block.get("text")
+                if isinstance(text, str):
+                    block["text"] = _rehydrate_pointer_text(text)
+
+    return chat_payload
+
+
+def _to_chat_response_with_rehydration(chat_model) -> ChatResponse:
+    payload = chat_model.model_dump()
+    payload["chat"] = _rehydrate_chat_payload(payload.get("chat", {}))
+    return ChatResponse(**payload)
 
 ############################
 # GetChatList
@@ -908,7 +991,7 @@ async def get_shared_chat_by_id(
         chat = Chats.get_chat_by_id(share_id, db=db)
 
     if chat:
-        return ChatResponse(**chat.model_dump())
+        return _to_chat_response_with_rehydration(chat)
 
     else:
         raise HTTPException(
@@ -957,7 +1040,7 @@ async def get_chat_by_id(
     chat = Chats.get_chat_by_id_and_user_id(id, user.id, db=db)
 
     if chat:
-        return ChatResponse(**chat.model_dump())
+        return _to_chat_response_with_rehydration(chat)
 
     else:
         raise HTTPException(

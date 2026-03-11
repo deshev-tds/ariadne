@@ -17,6 +17,7 @@ import re
 import ast
 import math
 import hashlib
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from uuid import uuid4
@@ -154,12 +155,15 @@ from open_webui.config import (
     CODE_INTERPRETER_BLOCKED_MODULES,
 )
 from open_webui.env import (
+    AGENTIC_ARTIFACTS_DIR,
     GLOBAL_LOG_LEVEL,
     ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION,
     CHAT_RESPONSE_STREAM_DELTA_CHUNK_SIZE,
     CHAT_RESPONSE_MAX_TOOL_CALL_RETRIES,
     BYPASS_MODEL_ACCESS_CONTROL,
     ENABLE_REALTIME_CHAT_SAVE,
+    TERMINAL_TOOL_RESULT_INLINE_MAX_BYTES,
+    TERMINAL_TOOL_RESULT_PREVIEW_CHARS,
     ENABLE_QUERIES_CACHE,
     RAG_SYSTEM_CONTEXT,
     RAG_WEB_FULL_CONTEXT_ONCE,
@@ -194,6 +198,190 @@ TOKEN_TELEMETRY_TOKEN_CAP = 1024
 
 TOKEN_BRANCH_VERSION = 1
 TOKEN_BRANCH_FORCING_STRATEGY = "assistant_prefix_fallback"
+
+_BG_CYRILLIC_TO_LATIN = {
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "y",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "h",
+    "ц": "ts",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "sht",
+    "ъ": "a",
+    "ь": "y",
+    "ю": "yu",
+    "я": "ya",
+}
+_BG_CYRILLIC_TO_LATIN.update({k.upper(): v.title() for k, v in _BG_CYRILLIC_TO_LATIN.items()})
+
+_CHAT_ARTIFACT_DIR_CACHE: dict[str, Path] = {}
+
+
+def _transliterate_cyrillic_to_latin(text: str) -> str:
+    return "".join(_BG_CYRILLIC_TO_LATIN.get(char, char) for char in str(text or ""))
+
+
+def _slugify_chat_title(title: str, max_len: int = 80) -> str:
+    transliterated = _transliterate_cyrillic_to_latin(title)
+    ascii_only = transliterated.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_only.lower()).strip("-")
+    if not slug:
+        slug = "chat"
+    return slug[:max_len].strip("-") or "chat"
+
+
+def _safe_path_component(value: Any, fallback: str, max_len: int = 64) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip(".-_")
+    if not normalized:
+        normalized = fallback
+    return normalized[:max_len]
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _resolve_chat_artifacts_dir(chat_id: str) -> Optional[Path]:
+    normalized_chat_id = str(chat_id or "").strip()
+    if not normalized_chat_id or normalized_chat_id.startswith("local:"):
+        return None
+
+    cached = _CHAT_ARTIFACT_DIR_CACHE.get(normalized_chat_id)
+    if cached is not None:
+        return cached
+
+    root = Path(AGENTIC_ARTIFACTS_DIR)
+    root.mkdir(parents=True, exist_ok=True)
+
+    existing_dirs = sorted(root.glob(f"{normalized_chat_id}__*"))
+    if existing_dirs:
+        resolved = existing_dirs[0]
+        _CHAT_ARTIFACT_DIR_CACHE[normalized_chat_id] = resolved
+        return resolved
+
+    chat_title = Chats.get_chat_title_by_id(normalized_chat_id) or "chat"
+    slug = _slugify_chat_title(chat_title)
+    resolved = root / f"{normalized_chat_id}__{slug}"
+    resolved.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _append_jsonl(
+            resolved / "chat_index.jsonl",
+            {
+                "ts": int(time.time()),
+                "event": "chat_dir_initialized",
+                "chat_id": normalized_chat_id,
+                "chat_title": chat_title,
+                "chat_slug": slug,
+                "path": str(resolved),
+            },
+        )
+    except Exception as exc:
+        log.warning("Failed to write chat artifact index for %s: %s", normalized_chat_id, exc)
+    _CHAT_ARTIFACT_DIR_CACHE[normalized_chat_id] = resolved
+    return resolved
+
+
+def _maybe_persist_terminal_tool_result(
+    *,
+    metadata: Optional[dict[str, Any]],
+    tool_function_name: str,
+    tool_result: str,
+) -> str:
+    if not isinstance(tool_result, str):
+        return tool_result
+
+    if TERMINAL_TOOL_RESULT_INLINE_MAX_BYTES <= 0:
+        return tool_result
+
+    encoded = tool_result.encode("utf-8", "replace")
+    total_bytes = len(encoded)
+    if total_bytes <= TERMINAL_TOOL_RESULT_INLINE_MAX_BYTES:
+        return tool_result
+
+    chat_id = str((metadata or {}).get("chat_id") or "").strip()
+    message_id = str((metadata or {}).get("message_id") or "").strip()
+    if not chat_id:
+        return tool_result
+
+    chat_dir = _resolve_chat_artifacts_dir(chat_id)
+    if chat_dir is None:
+        return tool_result
+
+    tool_outputs_dir = chat_dir / "tool_outputs"
+    tool_outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    file_name = (
+        f"{int(time.time() * 1000)}"
+        f"_{_safe_path_component(message_id, 'message')}"
+        f"_{_safe_path_component(tool_function_name, 'tool')}"
+        f"_{uuid4().hex[:8]}.txt"
+    )
+    artifact_path = tool_outputs_dir / file_name
+
+    try:
+        artifact_path.write_text(tool_result, encoding="utf-8", errors="replace")
+    except Exception as exc:
+        log.warning("Failed to persist terminal tool result to disk: %s", exc)
+        return tool_result
+
+    preview_limit = max(0, TERMINAL_TOOL_RESULT_PREVIEW_CHARS)
+    preview = tool_result[:preview_limit]
+    omitted_chars = max(0, len(tool_result) - len(preview))
+    sha256 = hashlib.sha256(encoded).hexdigest()
+
+    pointer_payload = {
+        "ts": int(time.time()),
+        "kind": "terminal_tool_output_pointer",
+        "chat_id": chat_id,
+        "message_id": message_id or None,
+        "tool": tool_function_name,
+        "path": str(artifact_path),
+        "bytes": total_bytes,
+        "sha256": sha256,
+        "preview_chars": len(preview),
+        "omitted_chars": omitted_chars,
+    }
+    try:
+        _append_jsonl(chat_dir / "tool_outputs.index.jsonl", pointer_payload)
+    except Exception as exc:
+        log.warning("Failed to update tool output index for %s: %s", chat_id, exc)
+
+    pointer_text = (
+        "[tool output truncated and persisted to disk]\n"
+        f"path: {artifact_path}\n"
+        f"bytes: {total_bytes}\n"
+        f"sha256: {sha256}\n"
+        f"preview_chars: {len(preview)}\n"
+        f"omitted_chars: {omitted_chars}\n\n"
+        "preview:\n"
+        f"{preview}"
+    )
+    if omitted_chars > 0:
+        pointer_text += f"\n...[preview truncated, {omitted_chars} chars omitted]"
+
+    return pointer_text
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -1683,6 +1871,13 @@ def process_tool_result(
             )
         else:
             tool_result = str(tool_result)
+
+    if tool_type == "terminal" and isinstance(tool_result, str):
+        tool_result = _maybe_persist_terminal_tool_result(
+            metadata=metadata,
+            tool_function_name=tool_function_name,
+            tool_result=tool_result,
+        )
 
     return tool_result, tool_result_files, tool_result_embeds
 
