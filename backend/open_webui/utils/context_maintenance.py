@@ -1157,6 +1157,17 @@ async def run_background_context_maintenance(
             return
         _ACTIVE_MAINTENANCE_JOBS.add(job_key)
 
+    status_started = False
+    status_finished = False
+
+    async def emit_status(description: str, *, done: bool) -> None:
+        nonlocal status_started, status_finished
+        await emit_context_status(event_emitter, description, done=done)
+        if done:
+            status_finished = True
+        else:
+            status_started = True
+
     try:
         messages_map = Chats.get_messages_map_by_chat_id(chat_id) or {}
         history_messages = inject_image_files_into_history(
@@ -1188,12 +1199,8 @@ async def run_background_context_maintenance(
         ) or not is_summary_refresh_needed(history_messages, state):
             return
 
-        await emit_context_status(
-            event_emitter, "Context maintenance scheduled", done=False
-        )
-        await emit_context_status(
-            event_emitter, "Condensing earlier turns...", done=False
-        )
+        await emit_status("Context maintenance scheduled", done=False)
+        await emit_status("Condensing earlier turns...", done=False)
 
         anchors = select_anchor_messages(history_messages, budgets["anchor_budget_tokens"])
         tail_budget = max(
@@ -1225,10 +1232,8 @@ async def run_background_context_maintenance(
             max_tokens=DEFAULT_SUMMARY_MAX_TOKENS,
         )
         if not summary_text:
-            await emit_context_status(
-                event_emitter,
-                "Context maintenance failed; using recent context only",
-                done=True,
+            await emit_status(
+                "Context maintenance failed; using recent context only", done=True
             )
             return
 
@@ -1249,16 +1254,18 @@ async def run_background_context_maintenance(
             ),
         )
 
-        await emit_context_status(
-            event_emitter, "Condensing earlier turns...", done=True
-        )
+        await emit_status("Condensing earlier turns...", done=True)
     except Exception as exc:
         log.warning("Background context maintenance failed: %s", exc)
-        await emit_context_status(
-            event_emitter,
-            "Context maintenance failed; using recent context only",
-            done=True,
+        await emit_status(
+            "Context maintenance failed; using recent context only", done=True
         )
     finally:
+        if status_started and not status_finished:
+            await emit_context_status(
+                event_emitter,
+                "Context maintenance finished",
+                done=True,
+            )
         async with _ACTIVE_MAINTENANCE_LOCK:
             _ACTIVE_MAINTENANCE_JOBS.discard(job_key)

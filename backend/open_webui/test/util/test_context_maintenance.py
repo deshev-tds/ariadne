@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import open_webui.utils.context_maintenance as context_maintenance
 from open_webui.utils.context_maintenance import (
     build_summary_message,
     build_summary_prompt,
@@ -260,3 +261,88 @@ def test_summary_refresh_needs_meaningful_growth():
         )
         is False
     )
+
+
+@pytest.mark.asyncio
+async def test_background_context_maintenance_closes_status_on_early_return(monkeypatch):
+    history = [
+        _message("u1", "user", "question"),
+        _message("a1", "assistant", "answer"),
+    ]
+
+    monkeypatch.setattr(
+        context_maintenance.Chats,
+        "get_messages_map_by_chat_id",
+        lambda _chat_id: {"u1": history[0], "a1": history[1]},
+    )
+    monkeypatch.setattr(context_maintenance, "get_message_list", lambda *_args, **_kwargs: history)
+    monkeypatch.setattr(
+        context_maintenance, "inject_image_files_into_history", lambda messages: messages
+    )
+
+    async def fake_probe(*_args, **_kwargs):
+        return {"n_ctx": 8192}
+
+    monkeypatch.setattr(context_maintenance, "load_llamacpp_probe", fake_probe)
+    monkeypatch.setattr(
+        context_maintenance,
+        "resolve_history_budgets",
+        lambda *_args, **_kwargs: {"anchor_budget_tokens": 256, "hard_history_budget": 2048},
+    )
+    monkeypatch.setattr(context_maintenance, "get_chat_maintenance_state", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(context_maintenance, "should_schedule_maintenance", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        context_maintenance, "is_summary_refresh_needed", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(context_maintenance, "select_anchor_messages", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        context_maintenance, "estimate_tokens_from_history_messages", lambda *_args, **_kwargs: 0
+    )
+    monkeypatch.setattr(context_maintenance, "select_tail_messages", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        context_maintenance, "resolve_summary_boundary", lambda *_args, **_kwargs: 0
+    )
+
+    async def fake_summary(*_args, **_kwargs):
+        return "User Objectives:\n- keep stable"
+
+    monkeypatch.setattr(context_maintenance, "generate_history_summary", fake_summary)
+    monkeypatch.setattr(
+        context_maintenance.Chats,
+        "get_chat_by_id",
+        lambda _chat_id: SimpleNamespace(chat={"history": {"currentId": "different-message"}}),
+    )
+
+    saved_states = []
+    monkeypatch.setattr(
+        context_maintenance,
+        "save_chat_maintenance_state",
+        lambda *args, **kwargs: saved_states.append((args, kwargs)),
+    )
+
+    events = []
+
+    async def event_emitter(event):
+        events.append(event)
+
+    request = _make_request()
+    await context_maintenance.run_background_context_maintenance(
+        request=request,
+        user=SimpleNamespace(id="u1"),
+        model={"id": "demo"},
+        chat_id="chat-1",
+        message_id="message-1",
+        event_emitter=event_emitter,
+    )
+
+    status_events = [
+        event.get("data", {})
+        for event in events
+        if event.get("type") == "status"
+        and event.get("data", {}).get("action") == "context_maintenance"
+    ]
+
+    assert status_events
+    assert status_events[0]["description"] == "Context maintenance scheduled"
+    assert status_events[0]["done"] is False
+    assert status_events[-1]["done"] is True

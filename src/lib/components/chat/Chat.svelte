@@ -1874,9 +1874,9 @@
 			const lastMessage = history.messages[history.currentId];
 
 			if (lastMessage.error && !lastMessage.content) {
-				// Error in response
-				toast.error($i18n.t(`Oops! There was an error in the previous response.`));
-				return;
+				// Keep failed assistant turn visible, but allow the user to continue with a new turn.
+				lastMessage.done = true;
+				history.messages[history.currentId] = lastMessage;
 			}
 		}
 
