@@ -48,6 +48,8 @@
 	export let setChatThinkingEnabled: (enabled: boolean) => void = () => {};
 	export let ledgerAgenticEnabled = false;
 	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
+	export let focusedSearchEnabled = false;
+	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
 
 	export let selectedToolIds = [];
 	export let selectedFilterIds = [];
@@ -212,6 +214,8 @@
 					{setChatThinkingEnabled}
 					{ledgerAgenticEnabled}
 					{setChatLedgerAgenticEnabled}
+					{focusedSearchEnabled}
+					{setChatFocusedSearchEnabled}
 					bind:files
 					bind:prompt
 					bind:autoScroll

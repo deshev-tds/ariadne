@@ -476,14 +476,18 @@ def get_builtin_tools(
             ]
         )
 
-    # Add web search tools if builtin category enabled AND enabled globally AND model has web_search capability
+    # Add web tools if builtin category enabled AND enabled globally AND model has web_search capability
     if (
         is_builtin_tool_enabled("web_search")
         and getattr(request.app.state.config, "ENABLE_WEB_SEARCH", False)
         and get_model_capability("web_search")
-        and features.get("web_search")
     ):
-        builtin_functions.extend([search_web, search_strong_sources, fetch_url])
+        if features.get("web_search"):
+            builtin_functions.append(search_web)
+        if features.get("focused_search"):
+            builtin_functions.append(search_strong_sources)
+        if features.get("web_search") or features.get("focused_search"):
+            builtin_functions.append(fetch_url)
 
     # Add image generation/edit tools if builtin category enabled AND enabled globally AND model has image_generation capability
     if (

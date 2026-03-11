@@ -3963,6 +3963,7 @@ def apply_params_to_form_data(form_data, model):
         "function_calling": str,
         "reasoning_tags": list,
         "ledger_mode": str,
+        "focused_search_mode": bool,
         "system": str,
     }
 

@@ -177,10 +177,12 @@
 	let params = {};
 	let chatThinkingEnabled = false;
 	let chatLedgerAgenticEnabled = false;
+	let chatFocusedSearchEnabled = false;
 
 	$: chatThinkingEnabled =
 		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
 	$: chatLedgerAgenticEnabled = (params?.ledger_mode ?? null) === 'agentic';
+	$: chatFocusedSearchEnabled = (params?.focused_search_mode ?? false) === true;
 
 	const setChatThinkingEnabled = (enabled: boolean) => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
@@ -223,6 +225,16 @@
 			nextParams.ledger_mode = 'agentic';
 		} else {
 			delete nextParams.ledger_mode;
+		}
+		params = nextParams;
+	};
+
+	const setChatFocusedSearchEnabled = (enabled: boolean) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		if (enabled) {
+			nextParams.focused_search_mode = true;
+		} else {
+			delete nextParams.focused_search_mode;
 		}
 		params = nextParams;
 	};
@@ -2055,6 +2067,14 @@
 
 	const getFeatures = () => {
 		let features = {};
+		const currentModels = atSelectedModel?.id ? [atSelectedModel.id] : selectedModels;
+		const webSearchAllowedByRole =
+			$config?.features?.enable_web_search &&
+			($user?.role === 'admin' || $user?.permissions?.features?.web_search);
+		const allModelsWebSearchCapable =
+			currentModels.filter(
+				(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.web_search ?? true
+			).length === currentModels.length;
 
 		if ($config?.features)
 			features = {
@@ -2069,19 +2089,12 @@
 					($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
 						? codeInterpreterEnabled
 						: false,
-				web_search:
-					$config?.features?.enable_web_search &&
-					($user?.role === 'admin' || $user?.permissions?.features?.web_search)
-						? webSearchEnabled
-						: false
+				web_search: webSearchAllowedByRole ? webSearchEnabled : false,
+				focused_search:
+					webSearchAllowedByRole && allModelsWebSearchCapable ? chatFocusedSearchEnabled : false
 			};
 
-		const currentModels = atSelectedModel?.id ? [atSelectedModel.id] : selectedModels;
-		if (
-			currentModels.filter(
-				(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.web_search ?? true
-			).length === currentModels.length
-		) {
+		if (allModelsWebSearchCapable) {
 			if ($config?.features?.enable_web_search && ($settings?.webSearch ?? false) === 'always') {
 				features = { ...features, web_search: true };
 			}
@@ -2309,9 +2322,9 @@
 				background_tasks: {
 					...(!$temporaryChatEnabled &&
 					(messages.length == 1 ||
-					(messages.length == 2 &&
-						messages.at(0)?.role === 'system' &&
-						messages.at(1)?.role === 'user')) &&
+						(messages.length == 2 &&
+							messages.at(0)?.role === 'system' &&
+							messages.at(1)?.role === 'user')) &&
 					(selectedModels[0] === model.id || atSelectedModel !== undefined)
 						? {
 								title_generation: $settings?.title?.auto ?? true,
@@ -2911,6 +2924,8 @@
 									{setChatThinkingEnabled}
 									ledgerAgenticEnabled={chatLedgerAgenticEnabled}
 									{setChatLedgerAgenticEnabled}
+									focusedSearchEnabled={chatFocusedSearchEnabled}
+									{setChatFocusedSearchEnabled}
 									bind:files
 									bind:prompt
 									bind:autoScroll
@@ -2985,6 +3000,8 @@
 									{setChatThinkingEnabled}
 									ledgerAgenticEnabled={chatLedgerAgenticEnabled}
 									{setChatLedgerAgenticEnabled}
+									focusedSearchEnabled={chatFocusedSearchEnabled}
+									{setChatFocusedSearchEnabled}
 									bind:messageInput
 									bind:files
 									bind:prompt

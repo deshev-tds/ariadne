@@ -121,6 +121,8 @@
 	export let setChatThinkingEnabled: (enabled: boolean) => void = () => {};
 	export let ledgerAgenticEnabled = false;
 	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
+	export let focusedSearchEnabled = false;
+	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
 
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
@@ -1676,6 +1678,31 @@
 												<CommandLine className="size-4.5" strokeWidth="1.75" />
 											</button>
 										</Tooltip>
+										{#if showWebSearchButton}
+											<Tooltip
+												content={focusedSearchEnabled
+													? $i18n.t('Focused search mode is enabled for this chat')
+													: $i18n.t('Enable focused search mode for this chat')}
+												placement="top"
+											>
+												<button
+													type="button"
+													id="focused-search-toggle-button"
+													aria-label={$i18n.t('Focused search mode')}
+													aria-pressed={focusedSearchEnabled}
+													class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {focusedSearchEnabled
+														? 'text-cyan-700 bg-cyan-100/80 hover:bg-cyan-200/80 dark:text-cyan-200 dark:bg-cyan-700/20 dark:hover:bg-cyan-700/30'
+														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+													on:click={async () => {
+														setChatFocusedSearchEnabled(!focusedSearchEnabled);
+														await tick();
+														document.getElementById('chat-input')?.focus();
+													}}
+												>
+													<GlobeAlt className="size-4.5" strokeWidth="1.75" />
+												</button>
+											</Tooltip>
+										{/if}
 									</div>
 
 									{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves}
