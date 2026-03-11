@@ -45,6 +45,9 @@ The important divergences are not cosmetic.
 - Server-side context maintenance was added so long chats do not simply degrade or fail once the prompt gets too large.
 - Summary generation was changed from a loose recap into a structured state snapshot.
 - Exact recall was added so older raw facts can be recovered when they fall out of the live prompt window.
+- The live prompt budget is now derived from the active `llama.cpp` runtime instead of being treated as a static design assumption.
+- Recall is now explicitly layered as `FTS preferred, raw fallback guaranteed` for cases where lexical retrieval is not ready or not good enough.
+- Request-scoped memory telemetry can be turned on per turn for debugging without leaving noisy long-lived logging enabled in production.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
@@ -70,6 +73,8 @@ Instead of replaying the entire branch forever, the server keeps:
 This maintenance can happen inline when the request would overflow, and in the background after a turn when the history is approaching the configured budget.
 
 The goal was straightforward: do not wait for the backend runner to guess what to trim semantically, and do not bluntly drop the oldest turns if the opening contract of the chat still matters.
+
+That compaction layer has since been tightened into a more explicit `hot context` model. Instead of treating the prompt budget as a vague maximum, the fork now derives a live prompt cap from the active `llama.cpp` runtime and budgets working memory against that real ceiling. In other words, the system no longer behaves like "fit as much as possible into whatever the model allows"; it behaves like "maintain a bounded hot working set that is small enough to stay usable on a real local runtime".
 
 ### Stage 2: Structured State Snapshot
 
@@ -108,6 +113,13 @@ It currently has two modes:
 - `branch_recent recall`
   Used for vague referential phrases like "the other tool" or "the old config", where sending pronoun-heavy text into FTS would likely fail.
 
+There is also an important operational distinction now:
+
+- `FTS` is the preferred evidence path
+- but it is no longer a single point of failure
+
+If explicit/entity recall fires and lexical retrieval does not produce usable evidence, the system now falls back to a bounded raw branch scan instead of silently collapsing into a weak generic answer. That is a deliberate maturity step: retrieval is no longer "try FTS and hope". It is now "prefer indexed recall, but still recover raw evidence when the lexical path misses".
+
 Recovered snippets are injected as evidence, not as narrative:
 
 ```text
@@ -117,6 +129,8 @@ Evidence from earlier conversation:
 ```
 
 That provenance matters. The model is being shown evidence, not a second-hand retelling.
+
+One subtle but important detail here is that the recall path now follows the real OWUI request lifecycle more closely. In the normal frontend flow, the newest user turn may exist in the in-flight request before it has been persisted back into chat history. This fork now reconstructs request history accordingly: if the current user turn is not yet in the database, it loads persisted history up to its parent and appends the current in-flight user turn before running maintenance and recall. That keeps the cold-history path aligned with how the product actually behaves, not just how a simplified synthetic pipeline would behave.
 
 ### Simulated User Flows
 
@@ -155,6 +169,42 @@ The design bias is intentional:
 - prefer false negatives over false positives
 - do not tax every turn with retrieval
 - recover old facts when evidence is weak, not whenever retrieval is merely possible
+
+That same bias also explains the current fallback semantics:
+
+- `FTS` should win when it is ready and precise
+- `branch_recent` should help when the user is vague
+- raw branch fallback should save explicit recall cases when indexing or lexical matching is not enough
+
+The result is not "perfect memory". The result is a layered memory system that is much less likely to fail silently.
+
+### Runtime Semantics and Memory Telemetry
+
+This fork also now exposes the context system in its own runtime terms instead of hiding it behind a pile of internal budget math.
+
+On each turn, the server can reason explicitly about:
+
+- `live_prompt_cap`
+- `hot_context_target_tokens`
+- anchor size
+- snapshot size
+- recent tail size
+- recall trigger reason
+- recall mode
+- evidence token cost
+- whether fallback retrieval was used
+
+When needed, that telemetry can be requested per turn with a debug flag and returned in the response as `memoryTelemetry`.
+
+That design matters for a local-first system. Without it, the architecture may be doing the right thing but still remain opaque when something goes wrong. With it, the fork becomes inspectable in its own terms:
+
+- was working memory too large?
+- did snapshotting happen?
+- did recall trigger?
+- was lexical retrieval ready?
+- did the system fall back to raw branch evidence?
+
+This debug path is intentionally request-scoped. It is meant to help diagnose a specific turn, not to leave verbose memory logging enabled all the time and quietly fill production disks with telemetry.
 
 ## Web Search and Retrieval Planning
 
@@ -275,6 +325,9 @@ The most important differences in this fork are the ones above, but the operatin
 - working memory is managed server-side instead of being left to overflow
 - recap is structured state, not a loose narrative
 - recall is bounded, evidence-first, and not always-on
+- hot context is treated as a first-class runtime layer instead of an accidental byproduct of reserve math
+- lexical recall is preferred, but raw evidence fallback is now part of the contract
+- memory telemetry can be enabled on demand for a single turn when debugging continuity vs exactness failures
 - web retrieval is planned and bounded rather than treated as a blind append-to-prompt step
 - local TTS is treated as a quality problem worth solving
 - token-level generation is inspectable when the backend exposes enough data

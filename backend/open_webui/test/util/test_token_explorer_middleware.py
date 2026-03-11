@@ -67,6 +67,49 @@ def test_non_stream_logprobs_normalization():
     assert telemetry["tokens"][0]["alternatives"][1]["text"] == "drive"
 
 
+def test_load_request_history_from_db_prefers_direct_parent_hit(monkeypatch):
+    expected = [{"id": "user-1", "role": "user", "content": "hello"}]
+
+    monkeypatch.setattr(
+        middleware,
+        "load_raw_messages_from_db",
+        lambda chat_id, message_id: expected if message_id == "user-1" else None,
+    )
+
+    result = middleware.load_request_history_from_db(
+        "chat-1",
+        {"id": "user-1", "parentId": "assistant-0", "role": "user", "content": "hello"},
+    )
+
+    assert result == expected
+
+
+def test_load_request_history_from_db_falls_back_to_parent_and_appends_current_user(monkeypatch):
+    monkeypatch.setattr(
+        middleware,
+        "load_raw_messages_from_db",
+        lambda chat_id, message_id: (
+            [{"id": "assistant-0", "role": "assistant", "content": "older context"}]
+            if message_id == "assistant-0"
+            else None
+        ),
+    )
+
+    result = middleware.load_request_history_from_db(
+        "chat-1",
+        {
+            "id": "user-1",
+            "parentId": "assistant-0",
+            "role": "user",
+            "content": "new question",
+        },
+    )
+
+    assert result is not None
+    assert [message["id"] for message in result] == ["assistant-0", "user-1"]
+    assert result[-1]["content"] == "new question"
+
+
 def test_top_ten_alternatives_truncation():
     state = {"tokens": [], "capped": False}
     top_logprobs = [{"token": f"alt_{idx}", "logprob": -1.0 - idx} for idx in range(12)]

@@ -3677,6 +3677,33 @@ def load_raw_messages_from_db(chat_id: str, message_id: str) -> Optional[list[di
     return [dict(message) for message in db_messages]
 
 
+def load_request_history_from_db(
+    chat_id: str, parent_message: Optional[dict[str, Any]]
+) -> Optional[list[dict]]:
+    if not chat_id or not parent_message:
+        return None
+
+    parent_message_id = parent_message.get("id")
+    if parent_message_id:
+        direct_history = load_raw_messages_from_db(chat_id, parent_message_id)
+        if direct_history:
+            return direct_history
+
+    fallback_parent_id = parent_message.get("parentId") or parent_message.get("parent_id")
+    if not fallback_parent_id:
+        return None
+
+    ancestor_history = load_raw_messages_from_db(chat_id, fallback_parent_id)
+    if not ancestor_history:
+        return None
+
+    current_message = dict(parent_message)
+    if current_message.get("role"):
+        ancestor_history = [*ancestor_history, current_message]
+
+    return ancestor_history
+
+
 def _resolve_user_ui_settings(user: Any) -> dict[str, Any]:
     settings = getattr(user, "settings", None)
     if settings is None and isinstance(user, dict):
@@ -3743,11 +3770,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # which the frontend strips, causing tool calls to be merged into content.
     chat_id = metadata.get("chat_id")
     parent_message_id = metadata.get("parent_message_id")
+    parent_message = metadata.get("parent_message") or {}
     system_message = get_system_message(form_data.get("messages", []))
     raw_history_messages = None
 
     if chat_id and parent_message_id and not chat_id.startswith("local:"):
-        raw_history_messages = load_raw_messages_from_db(chat_id, parent_message_id)
+        raw_history_messages = load_request_history_from_db(chat_id, parent_message)
         if raw_history_messages:
             raw_history_messages = inject_image_files_into_history(raw_history_messages)
             replay_messages = [
