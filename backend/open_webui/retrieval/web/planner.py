@@ -291,6 +291,7 @@ class SelectedSource(BaseModel):
     tier: str
     trust_tier: str = "B"
     source_type: str = "secondary_analysis"
+    is_local: bool = False
     access: str = "open"
     freshness_profile: str = FRESHNESS_MEDIUM
     default_priority: int = 50
@@ -328,6 +329,7 @@ class NormalizedSource(BaseModel):
     source_type: str
     trust_tier: str
     trust_score: float
+    is_local: bool = False
     access: str
     freshness_profile: str
     use_for: list[str] = Field(default_factory=list)
@@ -459,10 +461,14 @@ def _normalize_legacy_registry(raw: dict[str, Any]) -> list[NormalizedSource]:
                 continue
 
             for idx, entry in enumerate(entries):
+                planner_hints = {}
                 if isinstance(entry, str):
                     domain = normalize_domain(entry)
                 elif isinstance(entry, dict):
                     domain = normalize_domain(str(entry.get("domain", "")))
+                    planner_hints = entry.get("planner_hints", {})
+                    if not isinstance(planner_hints, dict):
+                        planner_hints = {}
                 else:
                     continue
 
@@ -487,6 +493,10 @@ def _normalize_legacy_registry(raw: dict[str, Any]) -> list[NormalizedSource]:
                         source_type=source_type,
                         trust_tier=trust_tier,
                         trust_score=LEGACY_TIER_SCORES.get(family, TRUST_FLOOR_UNKNOWN),
+                        is_local=_extract_hint_bool(
+                            planner_hints.get("is_local", False),
+                            default=False,
+                        ),
                         access="open",
                         freshness_profile=FRESHNESS_MEDIUM,
                         use_for=topic_data.get("use_for", [])
@@ -551,6 +561,10 @@ def _normalize_rich_registry(raw: dict[str, Any]) -> list[NormalizedSource]:
                         source_type=source_type,
                         trust_tier=trust_tier,
                         trust_score=TRUST_TIER_SCORES[trust_tier],
+                        is_local=_extract_hint_bool(
+                            planner_hints.get("is_local", False),
+                            default=False,
+                        ),
                         access=access,
                         freshness_profile=freshness_profile,
                         use_for=entry.get("use_for", [])
@@ -900,6 +914,8 @@ def select_sources_for_topic(
     *,
     time_sensitive: bool = False,
     community_requested: bool = False,
+    local_first: bool = False,
+    include_community: bool = False,
     intent_requirements: Optional[list[str]] = None,
     topic_candidates: Optional[list[str]] = None,
 ) -> list[SelectedSource]:
@@ -922,11 +938,13 @@ def select_sources_for_topic(
         ),
         reverse=True,
     )
+    if local_first:
+        ranked = sorted(ranked, key=lambda source: (not source.is_local,))
 
     selected: list[SelectedSource] = []
     seen: set[str] = set()
     for source in ranked:
-        if source.family == "community":
+        if not include_community and source.family == "community":
             continue
         if not source.allow_site_constraint:
             continue
@@ -939,6 +957,7 @@ def select_sources_for_topic(
                 tier=source.family,
                 trust_tier=source.trust_tier,
                 source_type=source.source_type,
+                is_local=source.is_local,
                 access=source.access,
                 freshness_profile=source.freshness_profile,
                 default_priority=source.default_priority,
@@ -958,6 +977,7 @@ def _build_allowed_domains_ranked(
     *,
     time_sensitive: bool,
     community_requested: bool,
+    local_first: bool,
     intent_requirements: list[str],
     topic_candidates: Optional[list[str]] = None,
 ) -> list[str]:
@@ -975,6 +995,8 @@ def _build_allowed_domains_ranked(
         ),
         reverse=True,
     )
+    if local_first:
+        ranked = sorted(ranked, key=lambda source: (not source.is_local,))
 
     domains: list[str] = []
     seen: set[str] = set()
@@ -990,6 +1012,8 @@ def build_web_search_plan(
     user_message: str,
     conversation_context: Optional[str] = None,
     max_targeted_domains: int = 4,
+    *,
+    local_first: bool = False,
 ) -> WebSearchPlan:
     exact_query = sanitize_query(user_message)
     if not exact_query:
@@ -1043,6 +1067,7 @@ def build_web_search_plan(
         max_targeted_domains=max(0, max_targeted_domains),
         time_sensitive=time_sensitive,
         community_requested=community_requested,
+        local_first=local_first,
         intent_requirements=intent_requirements,
         topic_candidates=topic_candidates,
     )
@@ -1052,6 +1077,7 @@ def build_web_search_plan(
         topic,
         time_sensitive=time_sensitive,
         community_requested=community_requested,
+        local_first=local_first,
         intent_requirements=intent_requirements,
         topic_candidates=topic_candidates,
     )

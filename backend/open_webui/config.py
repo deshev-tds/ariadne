@@ -2224,6 +2224,8 @@ DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE = """Available Tools: {{TOOLS}}
 Your task is to choose and return the correct tool(s) from the list of available tools based on the query. Follow these guidelines:
 
 - Return only the JSON object, without any additional text or explanation.
+- For uncertain, time-sensitive, high-risk, or verification-heavy queries, prefer `search_strong_sources` when available before generic web tools.
+- Use `search_web` for broad discovery and `fetch_url` only after selecting concrete URLs.
 
 - If no tools match the query, return an empty array: 
    {
@@ -3421,6 +3423,36 @@ WEB_SEARCH_CONCURRENT_REQUESTS = PersistentConfig(
     "WEB_SEARCH_CONCURRENT_REQUESTS",
     "rag.web.search.concurrent_requests",
     int(os.getenv("WEB_SEARCH_CONCURRENT_REQUESTS", "0")),
+)
+
+WEB_SEARCH_LOCAL_FIRST = PersistentConfig(
+    "WEB_SEARCH_LOCAL_FIRST",
+    "rag.web.search.local_first",
+    os.getenv("WEB_SEARCH_LOCAL_FIRST", "True").lower() == "true",
+)
+
+WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS = PersistentConfig(
+    "WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS",
+    "rag.web.search.local_min_primary_hits",
+    int(os.getenv("WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS", "2")),
+)
+
+WEB_SEARCH_BRAVE_FALLBACK = PersistentConfig(
+    "WEB_SEARCH_BRAVE_FALLBACK",
+    "rag.web.search.brave_fallback.enable",
+    os.getenv("WEB_SEARCH_BRAVE_FALLBACK", "True").lower() == "true",
+)
+
+WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES = PersistentConfig(
+    "WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES",
+    "rag.web.search.brave_fallback.max_queries",
+    int(os.getenv("WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES", "2")),
+)
+
+WEB_SEARCH_BRAVE_MIN_INTERVAL_MS = PersistentConfig(
+    "WEB_SEARCH_BRAVE_MIN_INTERVAL_MS",
+    "rag.web.search.brave_fallback.min_interval_ms",
+    int(os.getenv("WEB_SEARCH_BRAVE_MIN_INTERVAL_MS", "1000")),
 )
 
 ENABLE_WEB_SEARCH_PLANNER = PersistentConfig(

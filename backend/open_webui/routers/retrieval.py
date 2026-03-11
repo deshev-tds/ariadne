@@ -4,6 +4,7 @@ import mimetypes
 import os
 import shutil
 import asyncio
+import time
 
 import re
 import uuid
@@ -86,6 +87,7 @@ from open_webui.retrieval.web.planner import (
     build_base_planned_queries,
     build_community_query,
     build_freshness_query,
+    build_web_search_plan,
     build_targeted_query,
     canonicalize_url,
     clear_source_registry_caches,
@@ -94,6 +96,7 @@ from open_webui.retrieval.web.planner import (
     is_fluff_query,
     load_source_registry,
     save_source_registry_payload,
+    select_sources_for_topic,
     sanitize_query,
     validate_source_registry_payload,
 )
@@ -557,6 +560,11 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "WEB_SEARCH_TRUST_ENV": request.app.state.config.WEB_SEARCH_TRUST_ENV,
             "WEB_SEARCH_RESULT_COUNT": request.app.state.config.WEB_SEARCH_RESULT_COUNT,
             "WEB_SEARCH_CONCURRENT_REQUESTS": request.app.state.config.WEB_SEARCH_CONCURRENT_REQUESTS,
+            "WEB_SEARCH_LOCAL_FIRST": request.app.state.config.WEB_SEARCH_LOCAL_FIRST,
+            "WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS": request.app.state.config.WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS,
+            "WEB_SEARCH_BRAVE_FALLBACK": request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK,
+            "WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES": request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES,
+            "WEB_SEARCH_BRAVE_MIN_INTERVAL_MS": request.app.state.config.WEB_SEARCH_BRAVE_MIN_INTERVAL_MS,
             "ENABLE_WEB_SEARCH_PLANNER": request.app.state.config.ENABLE_WEB_SEARCH_PLANNER,
             "WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES,
             "WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES,
@@ -651,6 +659,11 @@ class WebConfig(BaseModel):
     WEB_SEARCH_TRUST_ENV: Optional[bool] = None
     WEB_SEARCH_RESULT_COUNT: Optional[int] = None
     WEB_SEARCH_CONCURRENT_REQUESTS: Optional[int] = None
+    WEB_SEARCH_LOCAL_FIRST: Optional[bool] = None
+    WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS: Optional[int] = None
+    WEB_SEARCH_BRAVE_FALLBACK: Optional[bool] = None
+    WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES: Optional[int] = None
+    WEB_SEARCH_BRAVE_MIN_INTERVAL_MS: Optional[int] = None
     ENABLE_WEB_SEARCH_PLANNER: Optional[bool] = None
     WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES: Optional[int] = None
     WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES: Optional[int] = None
@@ -1233,6 +1246,31 @@ async def update_rag_config(
         request.app.state.config.WEB_SEARCH_CONCURRENT_REQUESTS = (
             form_data.web.WEB_SEARCH_CONCURRENT_REQUESTS
         )
+        request.app.state.config.WEB_SEARCH_LOCAL_FIRST = (
+            form_data.web.WEB_SEARCH_LOCAL_FIRST
+            if form_data.web.WEB_SEARCH_LOCAL_FIRST is not None
+            else request.app.state.config.WEB_SEARCH_LOCAL_FIRST
+        )
+        request.app.state.config.WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS = (
+            form_data.web.WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS
+            if form_data.web.WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS is not None
+            else request.app.state.config.WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS
+        )
+        request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK = (
+            form_data.web.WEB_SEARCH_BRAVE_FALLBACK
+            if form_data.web.WEB_SEARCH_BRAVE_FALLBACK is not None
+            else request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK
+        )
+        request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES = (
+            form_data.web.WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES
+            if form_data.web.WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES is not None
+            else request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES
+        )
+        request.app.state.config.WEB_SEARCH_BRAVE_MIN_INTERVAL_MS = (
+            form_data.web.WEB_SEARCH_BRAVE_MIN_INTERVAL_MS
+            if form_data.web.WEB_SEARCH_BRAVE_MIN_INTERVAL_MS is not None
+            else request.app.state.config.WEB_SEARCH_BRAVE_MIN_INTERVAL_MS
+        )
         request.app.state.config.ENABLE_WEB_SEARCH_PLANNER = (
             form_data.web.ENABLE_WEB_SEARCH_PLANNER
             if form_data.web.ENABLE_WEB_SEARCH_PLANNER is not None
@@ -1551,6 +1589,11 @@ async def update_rag_config(
             "WEB_SEARCH_TRUST_ENV": request.app.state.config.WEB_SEARCH_TRUST_ENV,
             "WEB_SEARCH_RESULT_COUNT": request.app.state.config.WEB_SEARCH_RESULT_COUNT,
             "WEB_SEARCH_CONCURRENT_REQUESTS": request.app.state.config.WEB_SEARCH_CONCURRENT_REQUESTS,
+            "WEB_SEARCH_LOCAL_FIRST": request.app.state.config.WEB_SEARCH_LOCAL_FIRST,
+            "WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS": request.app.state.config.WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS,
+            "WEB_SEARCH_BRAVE_FALLBACK": request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK,
+            "WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES": request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES,
+            "WEB_SEARCH_BRAVE_MIN_INTERVAL_MS": request.app.state.config.WEB_SEARCH_BRAVE_MIN_INTERVAL_MS,
             "ENABLE_WEB_SEARCH_PLANNER": request.app.state.config.ENABLE_WEB_SEARCH_PLANNER,
             "WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES,
             "WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES,
@@ -2638,6 +2681,257 @@ def _dedupe_items_by_canonical_url(items: list[dict[str, Any]]) -> list[dict[str
         seen.add(canonical)
         deduped.append(item)
     return deduped
+
+
+def _apply_recency_hint(query: str, recency_days: Optional[int]) -> str:
+    if recency_days is None:
+        return query
+
+    try:
+        normalized_days = int(recency_days)
+    except Exception:
+        return query
+
+    if normalized_days <= 0:
+        return query
+
+    return sanitize_query(f"{query} last {normalized_days} days")
+
+
+async def _wait_for_brave_fallback_slot(
+    request: Request, min_interval_ms: int
+) -> None:
+    if min_interval_ms <= 0:
+        return
+
+    now = time.monotonic()
+    last = getattr(
+        request.app.state, "_WEB_SEARCH_BRAVE_FALLBACK_LAST_TS", None
+    )
+    if isinstance(last, (float, int)):
+        remaining = (float(min_interval_ms) / 1000.0) - (now - float(last))
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+    request.app.state._WEB_SEARCH_BRAVE_FALLBACK_LAST_TS = time.monotonic()
+
+
+async def execute_strong_source_search(
+    request: Request,
+    *,
+    query: str,
+    user=None,
+    max_queries: int = 3,
+    topic_hint: Optional[str] = None,
+    recency_days: Optional[int] = None,
+    include_community: bool = False,
+) -> dict[str, Any]:
+    cfg = request.app.state.config
+    cleaned_query = sanitize_query(query)
+    if not cleaned_query:
+        raise ValueError("Query is empty")
+
+    bounded_max_queries = max(1, min(6, int(max_queries or 3)))
+    local_first = bool(getattr(cfg, "WEB_SEARCH_LOCAL_FIRST", True))
+    local_min_primary_hits = max(
+        1, int(getattr(cfg, "WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS", 2) or 2)
+    )
+    brave_fallback_enabled = bool(getattr(cfg, "WEB_SEARCH_BRAVE_FALLBACK", True))
+    brave_fallback_max_queries = max(
+        1, int(getattr(cfg, "WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES", 2) or 2)
+    )
+    brave_min_interval_ms = max(
+        0, int(getattr(cfg, "WEB_SEARCH_BRAVE_MIN_INTERVAL_MS", 1000) or 1000)
+    )
+    planner_stop_score = float(getattr(cfg, "WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE", 0.66))
+
+    planner_context = sanitize_query(topic_hint or "", max_length=512) if topic_hint else None
+    plan = build_web_search_plan(
+        cleaned_query,
+        conversation_context=planner_context,
+        max_targeted_domains=max(
+            bounded_max_queries,
+            int(getattr(cfg, "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE", 4) or 4),
+        ),
+        local_first=local_first,
+    )
+
+    selected_sources = select_sources_for_topic(
+        topic=plan.topic,
+        max_targeted_domains=max(
+            bounded_max_queries + brave_fallback_max_queries,
+            int(getattr(cfg, "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE", 4) or 4),
+        ),
+        time_sensitive=plan.time_sensitive,
+        community_requested=plan.community_requested or include_community,
+        local_first=local_first,
+        include_community=include_community,
+        intent_requirements=plan.intent_requirements,
+        topic_candidates=plan.topic_candidates,
+    )
+
+    local_domains: list[str] = []
+    selected_domains: list[str] = []
+    for source in selected_sources:
+        if source.domain not in selected_domains:
+            selected_domains.append(source.domain)
+        if source.is_local and source.domain not in local_domains:
+            local_domains.append(source.domain)
+
+    used_queries: set[str] = set()
+    executed_queries: list[str] = []
+    local_search_results: list[list[SearchResult]] = []
+    brave_search_results: list[list[SearchResult]] = []
+
+    local_queries: list[str] = []
+    for domain in local_domains[:bounded_max_queries]:
+        candidate = _apply_recency_hint(build_targeted_query(plan, domain), recency_days)
+        candidate = sanitize_query(candidate)
+        if not candidate or candidate in used_queries:
+            continue
+        used_queries.add(candidate)
+        local_queries.append(candidate)
+
+    for planned_query in local_queries:
+        try:
+            query_results = await run_in_threadpool(
+                search_web,
+                request,
+                cfg.WEB_SEARCH_ENGINE,
+                planned_query,
+                user,
+            )
+            local_search_results.append(query_results)
+            executed_queries.append(planned_query)
+        except Exception as exc:
+            log.warning(
+                "Local strong-source query failed for '%s': %s", planned_query, exc
+            )
+
+    local_items = _dedupe_items_by_canonical_url(
+        _flatten_search_results(local_search_results)
+    )
+    local_quality = evaluate_signal_quality(local_items, plan)
+    local_intent_coverage = evaluate_intent_coverage(local_quality["scored_items"], plan)
+
+    local_primary_domains = {
+        item.get("domain", "")
+        for item in local_quality.get("scored_items", [])[:10]
+        if item.get("domain", "") in set(local_domains)
+        and float(item.get("trust", 0.0) or 0.0) >= 0.75
+    }
+    local_quality_score = float(local_quality.get("avg_top_score", 0.0) or 0.0)
+    local_coverage_complete = bool(
+        local_intent_coverage.get("complete", True)
+        and local_quality_score >= planner_stop_score
+        and len(local_primary_domains) >= local_min_primary_hits
+    )
+
+    brave_fallback_used = False
+    fallback_reason: Optional[str] = None
+
+    if not local_queries:
+        fallback_reason = "no_local_domains_for_topic"
+    elif not local_intent_coverage.get("complete", True):
+        fallback_reason = "insufficient_intent_coverage"
+    elif len(local_primary_domains) < local_min_primary_hits:
+        fallback_reason = "insufficient_local_primary_hits"
+    elif local_quality_score < planner_stop_score:
+        fallback_reason = "insufficient_local_quality"
+
+    if not local_coverage_complete and brave_fallback_enabled:
+        brave_queries: list[str] = []
+        local_domain_set = set(local_domains)
+        non_local_domains = [
+            source.domain
+            for source in selected_sources
+            if source.domain and source.domain not in local_domain_set
+        ]
+
+        for domain in non_local_domains:
+            candidate = _apply_recency_hint(build_targeted_query(plan, domain), recency_days)
+            candidate = sanitize_query(candidate)
+            if not candidate or candidate in used_queries:
+                continue
+            used_queries.add(candidate)
+            brave_queries.append(candidate)
+            if len(brave_queries) >= brave_fallback_max_queries:
+                break
+
+        if not brave_queries:
+            fallback_query = _apply_recency_hint(plan.base_exact_query, recency_days)
+            fallback_query = sanitize_query(fallback_query)
+            if fallback_query and fallback_query not in used_queries:
+                used_queries.add(fallback_query)
+                brave_queries.append(fallback_query)
+
+        for planned_query in brave_queries[:brave_fallback_max_queries]:
+            try:
+                await _wait_for_brave_fallback_slot(request, brave_min_interval_ms)
+                query_results = await run_in_threadpool(
+                    search_web,
+                    request,
+                    "brave",
+                    planned_query,
+                    user,
+                )
+                brave_search_results.append(query_results)
+                executed_queries.append(planned_query)
+            except Exception as exc:
+                if fallback_reason is None:
+                    fallback_reason = "brave_fallback_error"
+                log.warning(
+                    "Brave fallback query failed for '%s': %s", planned_query, exc
+                )
+
+        brave_fallback_used = bool(brave_search_results)
+        if brave_fallback_used and fallback_reason is None:
+            fallback_reason = "local_evidence_incomplete"
+
+    combined_items = _dedupe_items_by_canonical_url(
+        _flatten_search_results(local_search_results + brave_search_results)
+    )
+    combined_quality = evaluate_signal_quality(combined_items, plan)
+    combined_intent_coverage = evaluate_intent_coverage(
+        combined_quality["scored_items"], plan
+    )
+
+    quality_score = float(combined_quality.get("avg_top_score", 0.0) or 0.0)
+    trusted_domains = int(combined_quality.get("trusted_unique_domains", 0) or 0)
+    coverage_complete = bool(
+        combined_intent_coverage.get("complete", True)
+        and quality_score >= planner_stop_score
+        and trusted_domains >= local_min_primary_hits
+    )
+
+    result_count = max(1, int(cfg.WEB_SEARCH_RESULT_COUNT or 5))
+    scored_items = combined_quality.get("scored_items", [])[: result_count * 2]
+    items = [
+        {
+            "title": item.get("title"),
+            "link": item.get("link"),
+            "snippet": item.get("snippet"),
+            "domain": item.get("domain"),
+            "quality": round(float(item.get("quality", 0.0) or 0.0), 4),
+            "trust": round(float(item.get("trust", 0.0) or 0.0), 4),
+        }
+        for item in scored_items
+        if item.get("link")
+    ]
+
+    return {
+        "queries": executed_queries,
+        "items": items,
+        "selected_domains": selected_domains,
+        "coverage_complete": coverage_complete,
+        "quality_score": round(quality_score, 4),
+        "local_phase_executed": bool(local_queries),
+        "brave_fallback_used": brave_fallback_used,
+        "fallback_reason": fallback_reason,
+        "topic": plan.topic,
+        "local_primary_hits": len(local_primary_domains),
+        "trusted_domains": trusted_domains,
+    }
 
 
 async def _execute_web_search_with_planner(

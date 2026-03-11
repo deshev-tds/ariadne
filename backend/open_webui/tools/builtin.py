@@ -16,6 +16,7 @@ from fastapi import Request
 
 from open_webui.models.users import UserModel
 from open_webui.routers.retrieval import search_web as _search_web
+from open_webui.routers.retrieval import execute_strong_source_search
 from open_webui.retrieval.utils import get_content_from_url
 from open_webui.routers.images import (
     image_generations,
@@ -182,6 +183,47 @@ async def search_web(
         )
     except Exception as e:
         log.exception(f"search_web error: {e}")
+        return json.dumps({"error": str(e)})
+
+
+async def search_strong_sources(
+    query: str,
+    max_queries: int = 3,
+    topic_hint: Optional[str] = None,
+    recency_days: Optional[int] = None,
+    include_community: bool = False,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Run strong-source web search with local-first routing and Brave fallback.
+    Use this when evidence is uncertain, time-sensitive, or high-risk, and you need
+    stronger provenance before answering.
+
+    :param query: User question or search objective
+    :param max_queries: Maximum local-first site-constrained queries (default: 3)
+    :param topic_hint: Optional topic hint to improve source routing
+    :param recency_days: Optional recency hint in days for freshness-sensitive tasks
+    :param include_community: Include community sources in candidate set (default: false)
+    :return: JSON object with queries, ranked items, selected domains, and quality telemetry
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        user = UserModel(**__user__) if __user__ else None
+        result = await execute_strong_source_search(
+            __request__,
+            query=query,
+            user=user,
+            max_queries=max_queries,
+            topic_hint=topic_hint,
+            recency_days=recency_days,
+            include_community=include_community,
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"search_strong_sources error: {e}")
         return json.dumps({"error": str(e)})
 
 

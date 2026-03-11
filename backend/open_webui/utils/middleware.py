@@ -784,7 +784,7 @@ def get_citation_source_from_tool_result(
     Returns a list of sources (usually one, but query_knowledge_files may return multiple).
     """
     _EXPECTS_LIST = {"search_web", "query_knowledge_files"}
-    _EXPECTS_DICT = {"view_knowledge_file"}
+    _EXPECTS_DICT = {"view_knowledge_file", "search_strong_sources"}
 
     try:
         try:
@@ -823,6 +823,36 @@ def get_citation_source_from_tool_result(
             return [
                 {
                     "source": {"name": "search_web", "id": "search_web"},
+                    "document": documents,
+                    "metadata": metadata,
+                }
+            ]
+        elif tool_name == "search_strong_sources":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            results = payload.get("items", []) if isinstance(payload, dict) else []
+            documents = []
+            metadata = []
+
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+                title = result.get("title", "")
+                link = result.get("link", "")
+                snippet = result.get("snippet", "")
+                if not link:
+                    continue
+                documents.append(f"{title}\n{snippet}")
+                metadata.append(
+                    {
+                        "source": link,
+                        "name": title or link,
+                        "url": link,
+                    }
+                )
+
+            return [
+                {
+                    "source": {"name": "search_strong_sources", "id": "search_strong_sources"},
                     "document": documents,
                     "metadata": metadata,
                 }
@@ -943,6 +973,99 @@ def get_citation_source_from_tool_result(
                 "metadata": [{"source": tool_name}],
             }
         ]
+
+
+TOOL_JOURNEY_EVENT_CAP = 120
+TOOL_JOURNEY_PREVIEW_CHARS = 280
+
+
+def _is_debug_flag_enabled(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def _truncate_telemetry_value(value: Any, max_chars: int = TOOL_JOURNEY_PREVIEW_CHARS) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}...[truncated]"
+
+
+def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
+    parsed: Any = tool_result
+    if isinstance(tool_result, str):
+        try:
+            parsed = json.loads(tool_result)
+        except Exception:
+            parsed = tool_result
+
+    if tool_name == "search_strong_sources" and isinstance(parsed, dict):
+        return {
+            "queries": len(parsed.get("queries") or []),
+            "items": len(parsed.get("items") or []),
+            "coverage_complete": bool(parsed.get("coverage_complete", False)),
+            "quality_score": parsed.get("quality_score"),
+            "local_phase_executed": bool(parsed.get("local_phase_executed", False)),
+            "brave_fallback_used": bool(parsed.get("brave_fallback_used", False)),
+            "fallback_reason": parsed.get("fallback_reason"),
+        }
+
+    if tool_name == "search_web" and isinstance(parsed, list):
+        return {"items": len(parsed)}
+
+    if tool_name == "fetch_url":
+        content = parsed if isinstance(parsed, str) else str(parsed or "")
+        return {"content_chars": len(content)}
+
+    if isinstance(parsed, dict):
+        return {"keys": sorted(list(parsed.keys()))[:8]}
+    if isinstance(parsed, list):
+        return {"items": len(parsed)}
+
+    return {"preview": _truncate_telemetry_value(parsed)}
+
+
+def _append_tool_journey_event(
+    metadata: dict, payload: dict[str, Any]
+) -> Optional[dict[str, Any]]:
+    params = metadata.get("params", {}) if isinstance(metadata, dict) else {}
+    if not isinstance(params, dict) or not _is_debug_flag_enabled(
+        params.get("debug_tool_journey")
+    ):
+        return None
+
+    telemetry = metadata.setdefault(
+        "tool_journey_telemetry",
+        {
+            "enabled": True,
+            "chat_id": metadata.get("chat_id"),
+            "message_id": metadata.get("message_id"),
+            "events": [],
+            "capped": False,
+            "started_at": int(time.time()),
+        },
+    )
+    events = telemetry.get("events")
+    if not isinstance(events, list):
+        events = []
+        telemetry["events"] = events
+
+    if len(events) >= TOOL_JOURNEY_EVENT_CAP:
+        telemetry["capped"] = True
+        return None
+
+    event = {
+        "ts": int(time.time()),
+        "index": len(events),
+        **payload,
+    }
+    events.append(event)
+    return event
 
 
 def split_content_and_whitespace(content):
@@ -2034,6 +2157,18 @@ async def chat_completion_tools_handler(
     event_caller = extra_params["__event_call__"]
     event_emitter = extra_params["__event_emitter__"]
     metadata = extra_params["__metadata__"]
+    debug_tool_journey = _is_debug_flag_enabled(
+        metadata.get("params", {}).get("debug_tool_journey")
+    )
+    if debug_tool_journey:
+        metadata["tool_journey_telemetry"] = {
+            "enabled": True,
+            "chat_id": metadata.get("chat_id"),
+            "message_id": metadata.get("message_id"),
+            "events": [],
+            "capped": False,
+            "started_at": int(time.time()),
+        }
 
     task_model_id = get_task_model_id(
         body["model"],
@@ -2090,6 +2225,18 @@ async def chat_completion_tools_handler(
                 tool = None
                 tool_type = ""
                 direct_tool = False
+                started_at = time.time()
+
+                start_event = _append_tool_journey_event(
+                    metadata,
+                    {
+                        "phase": "tool_execute_start",
+                        "tool": tool_function_name,
+                        "params_preview": _truncate_telemetry_value(tool_function_params),
+                    },
+                )
+                if start_event and event_emitter:
+                    await event_emitter({"type": "chat:tool:journey", "data": start_event})
 
                 try:
                     tool = tools[tool_function_name]
@@ -2137,6 +2284,22 @@ async def chat_completion_tools_handler(
                         user,
                     )
                 )
+
+                completion_event = _append_tool_journey_event(
+                    metadata,
+                    {
+                        "phase": "tool_execute_done",
+                        "tool": tool_function_name,
+                        "duration_ms": int((time.time() - started_at) * 1000),
+                        "result_summary": _tool_result_summary(
+                            tool_function_name, tool_result
+                        ),
+                    },
+                )
+                if completion_event and event_emitter:
+                    await event_emitter(
+                        {"type": "chat:tool:journey", "data": completion_event}
+                    )
 
                 if event_emitter:
                     await terminal_event_handler(
@@ -2219,7 +2382,12 @@ async def chat_completion_tools_handler(
     if skip_files and "files" in body.get("metadata", {}):
         del body["metadata"]["files"]
 
-    return body, {"sources": sources}
+    payload = {"sources": sources}
+    if debug_tool_journey and isinstance(metadata.get("tool_journey_telemetry"), dict):
+        metadata["tool_journey_telemetry"]["completed_at"] = int(time.time())
+        payload["toolJourneyTelemetry"] = metadata["tool_journey_telemetry"]
+
+    return body, payload
 
 
 async def chat_memory_handler(
@@ -3003,6 +3171,9 @@ async def chat_web_search_handler(
                         request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE
                         or 4
                     ),
+                ),
+                local_first=bool(
+                    getattr(request.app.state.config, "WEB_SEARCH_LOCAL_FIRST", True)
                 ),
             )
             planner_mode = _normalize_web_search_planner_mode(
@@ -4711,6 +4882,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         request, form_data, extra_params, user, models, tools_dict
                     )
                     sources.extend(flags.get("sources", []))
+                    if isinstance(flags.get("toolJourneyTelemetry"), dict):
+                        metadata["tool_journey_telemetry"] = flags.get(
+                            "toolJourneyTelemetry"
+                        )
                 except Exception as e:
                     log.exception(e)
 
@@ -5156,6 +5331,13 @@ async def non_streaming_chat_response_handler(response, ctx):
         if metadata.get("params", {}).get("debug_memory_telemetry")
         else None
     )
+    tool_journey_telemetry = (
+        metadata.get("tool_journey_telemetry")
+        if _is_debug_flag_enabled(metadata.get("params", {}).get("debug_tool_journey"))
+        else None
+    )
+    if isinstance(tool_journey_telemetry, dict):
+        tool_journey_telemetry["completed_at"] = int(time.time())
 
     if token_telemetry:
         response_data["tokenTelemetry"] = token_telemetry
@@ -5163,6 +5345,8 @@ async def non_streaming_chat_response_handler(response, ctx):
         response_data["tokenBranch"] = token_branch
     if memory_telemetry:
         response_data["memoryTelemetry"] = memory_telemetry
+    if tool_journey_telemetry:
+        response_data["toolJourneyTelemetry"] = tool_journey_telemetry
 
     try:
         if "error" in response_data:
@@ -5241,6 +5425,11 @@ async def non_streaming_chat_response_handler(response, ctx):
                                     else {}
                                 ),
                                 **({"tokenBranch": token_branch} if token_branch else {}),
+                                **(
+                                    {"toolJourneyTelemetry": tool_journey_telemetry}
+                                    if tool_journey_telemetry
+                                    else {}
+                                ),
                             },
                         }
                     )
@@ -5261,6 +5450,11 @@ async def non_streaming_chat_response_handler(response, ctx):
                             else {}
                         ),
                         **({"tokenBranch": token_branch} if token_branch else {}),
+                        **(
+                            {"toolJourneyTelemetry": tool_journey_telemetry}
+                            if tool_journey_telemetry
+                            else {}
+                        ),
                         **({"usage": usage} if usage else {}),
                     },
                 )
@@ -5632,6 +5826,32 @@ async def streaming_chat_response_handler(response, ctx):
             usage = None
             token_telemetry_state = {"tokens": [], "capped": False}
             token_branch = metadata.get("tokenBranch")
+            debug_tool_journey = _is_debug_flag_enabled(
+                metadata.get("params", {}).get("debug_tool_journey")
+            )
+
+            if debug_tool_journey:
+                metadata["tool_journey_telemetry"] = {
+                    "enabled": True,
+                    "chat_id": metadata.get("chat_id"),
+                    "message_id": metadata.get("message_id"),
+                    "task_id": task_id,
+                    "model_id": model_id,
+                    "events": [],
+                    "capped": False,
+                    "started_at": int(time.time()),
+                }
+                init_event = _append_tool_journey_event(
+                    metadata,
+                    {
+                        "phase": "init",
+                        "tool_calls_pending": len(tool_calls),
+                    },
+                )
+                if init_event:
+                    await event_emitter(
+                        {"type": "chat:tool:journey", "data": init_event}
+                    )
 
             reasoning_tags_param = metadata.get("params", {}).get("reasoning_tags")
             DETECT_REASONING_TAGS = reasoning_tags_param is not False
@@ -6333,6 +6553,7 @@ async def streaming_chat_response_handler(response, ctx):
                             "name", ""
                         )
                         tool_args = tool_call.get("function", {}).get("arguments", "{}")
+                        tool_started_at = time.time()
 
                         tool_function_params = {}
                         if tool_args and tool_args.strip():
@@ -6348,6 +6569,24 @@ async def streaming_chat_response_handler(response, ctx):
                                     log.error(
                                         f"Error parsing tool call arguments: {tool_args}"
                                     )
+                                    parse_event = _append_tool_journey_event(
+                                        metadata,
+                                        {
+                                            "phase": "tool_args_parse_error",
+                                            "call_id": tool_call_id,
+                                            "tool": tool_function_name,
+                                            "arguments_preview": _truncate_telemetry_value(
+                                                tool_args
+                                            ),
+                                        },
+                                    )
+                                    if parse_event:
+                                        await event_emitter(
+                                            {
+                                                "type": "chat:tool:journey",
+                                                "data": parse_event,
+                                            }
+                                        )
                                     results.append(
                                         {
                                             "tool_call_id": tool_call_id,
@@ -6363,11 +6602,30 @@ async def streaming_chat_response_handler(response, ctx):
                         tool_call.setdefault("function", {})["arguments"] = json.dumps(
                             tool_function_params
                         )
+                        start_event = _append_tool_journey_event(
+                            metadata,
+                            {
+                                "phase": "tool_execute_start",
+                                "call_id": tool_call_id,
+                                "tool": tool_function_name,
+                                "params_preview": _truncate_telemetry_value(
+                                    tool_function_params
+                                ),
+                            },
+                        )
+                        if start_event:
+                            await event_emitter(
+                                {
+                                    "type": "chat:tool:journey",
+                                    "data": start_event,
+                                }
+                            )
 
                         tool_result = None
                         tool = None
                         tool_type = None
                         direct_tool = False
+                        tool_execution_error = None
 
                         if tool_function_name in tools:
                             tool = tools[tool_function_name]
@@ -6422,6 +6680,23 @@ async def streaming_chat_response_handler(response, ctx):
 
                             except Exception as e:
                                 tool_result = str(e)
+                                tool_execution_error = str(e)
+                        else:
+                            missing_event = _append_tool_journey_event(
+                                metadata,
+                                {
+                                    "phase": "tool_not_found",
+                                    "call_id": tool_call_id,
+                                    "tool": tool_function_name,
+                                },
+                            )
+                            if missing_event:
+                                await event_emitter(
+                                    {
+                                        "type": "chat:tool:journey",
+                                        "data": missing_event,
+                                    }
+                                )
 
                         tool_result, tool_result_files, tool_result_embeds = (
                             process_tool_result(
@@ -6442,12 +6717,39 @@ async def streaming_chat_response_handler(response, ctx):
                             event_emitter,
                         )
 
+                        completion_event = _append_tool_journey_event(
+                            metadata,
+                            {
+                                "phase": "tool_execute_done",
+                                "call_id": tool_call_id,
+                                "tool": tool_function_name,
+                                "duration_ms": int((time.time() - tool_started_at) * 1000),
+                                "status": "error" if tool_execution_error else "ok",
+                                **(
+                                    {"error": _truncate_telemetry_value(tool_execution_error)}
+                                    if tool_execution_error
+                                    else {}
+                                ),
+                                "result_summary": _tool_result_summary(
+                                    tool_function_name, tool_result
+                                ),
+                            },
+                        )
+                        if completion_event:
+                            await event_emitter(
+                                {
+                                    "type": "chat:tool:journey",
+                                    "data": completion_event,
+                                }
+                            )
+
                         # Extract citation sources from tool results
                         if (
                             citations_enabled
                             and tool_function_name
                             in [
                                 "search_web",
+                                "search_strong_sources",
                                 "fetch_url",
                                 "view_knowledge_file",
                                 "query_knowledge_files",
@@ -6824,6 +7126,15 @@ async def streaming_chat_response_handler(response, ctx):
                     if metadata.get("params", {}).get("debug_memory_telemetry")
                     else None
                 )
+                tool_journey_telemetry = (
+                    metadata.get("tool_journey_telemetry")
+                    if _is_debug_flag_enabled(
+                        metadata.get("params", {}).get("debug_tool_journey")
+                    )
+                    else None
+                )
+                if isinstance(tool_journey_telemetry, dict):
+                    tool_journey_telemetry["completed_at"] = int(time.time())
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
                 data = {
                     "done": True,
@@ -6839,6 +7150,11 @@ async def streaming_chat_response_handler(response, ctx):
                     **(
                         {"memoryTelemetry": memory_telemetry}
                         if memory_telemetry
+                        else {}
+                    ),
+                    **(
+                        {"toolJourneyTelemetry": tool_journey_telemetry}
+                        if tool_journey_telemetry
                         else {}
                     ),
                 }
@@ -6863,9 +7179,20 @@ async def streaming_chat_response_handler(response, ctx):
                                 if memory_telemetry
                                 else {}
                             ),
+                            **(
+                                {"toolJourneyTelemetry": tool_journey_telemetry}
+                                if tool_journey_telemetry
+                                else {}
+                            ),
                         },
                     )
-                elif usage or token_telemetry or token_branch or memory_telemetry:
+                elif (
+                    usage
+                    or token_telemetry
+                    or token_branch
+                    or memory_telemetry
+                    or tool_journey_telemetry
+                ):
                     update_payload = {}
                     if usage:
                         update_payload["usage"] = usage
@@ -6875,6 +7202,8 @@ async def streaming_chat_response_handler(response, ctx):
                         update_payload["tokenBranch"] = token_branch
                     if memory_telemetry:
                         update_payload["memoryTelemetry"] = memory_telemetry
+                    if tool_journey_telemetry:
+                        update_payload["toolJourneyTelemetry"] = tool_journey_telemetry
                     Chats.upsert_message_to_chat_by_id_and_message_id(
                         metadata["chat_id"],
                         metadata["message_id"],

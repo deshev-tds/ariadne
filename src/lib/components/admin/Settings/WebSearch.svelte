@@ -134,15 +134,18 @@
 				'WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES',
 				'WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE',
 				'WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE',
-			'WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS',
-			'WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE',
-			'WEB_SEARCH_PLANNER_PLATEAU_DELTA',
-			'WEB_SEARCH_PLANNER_PLATEAU_STREAK',
-			'WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES',
+				'WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS',
+				'WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE',
+				'WEB_SEARCH_PLANNER_PLATEAU_DELTA',
+				'WEB_SEARCH_PLANNER_PLATEAU_STREAK',
+				'WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES',
 				'WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS',
 				'WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS',
 				'WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS',
 				'WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE',
+				'WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS',
+				'WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES',
+				'WEB_SEARCH_BRAVE_MIN_INTERVAL_MS',
 				'WEB_SEARCH_EVIDENCE_MAX_TOKENS',
 				'WEB_SEARCH_EVIDENCE_CHUNK_TOKENS',
 				'WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE',
@@ -965,6 +968,74 @@
 										type="number"
 										min="0"
 									/>
+								</div>
+							</div>
+						</div>
+
+						<div class="mb-2.5 flex w-full justify-between">
+							<div class="self-center text-xs font-medium">
+								<Tooltip
+									content={$i18n.t(
+										'Prefer local strong-source domains first (planner_hints.is_local) before non-local sources.'
+									)}
+									placement="top-start"
+								>
+									{$i18n.t('Local-First Strong Sources')}
+								</Tooltip>
+							</div>
+							<div class="flex items-center relative">
+								<Switch bind:state={webConfig.WEB_SEARCH_LOCAL_FIRST} />
+							</div>
+						</div>
+
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="flex gap-2">
+								<div class="w-full">
+									<div class="self-center text-xs font-medium mb-1">
+										{$i18n.t('Local Min Primary Hits')}
+									</div>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										type="number"
+										min="1"
+										bind:value={webConfig.WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS}
+									/>
+								</div>
+								<div class="w-full">
+									<div class="self-center text-xs font-medium mb-1">
+										{$i18n.t('Brave Fallback Max Queries')}
+									</div>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										type="number"
+										min="1"
+										bind:value={webConfig.WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES}
+									/>
+								</div>
+							</div>
+						</div>
+
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="flex gap-2">
+								<div class="w-full">
+									<div class="self-center text-xs font-medium mb-1">
+										{$i18n.t('Brave Min Interval (ms)')}
+									</div>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										type="number"
+										min="0"
+										step="100"
+										bind:value={webConfig.WEB_SEARCH_BRAVE_MIN_INTERVAL_MS}
+									/>
+								</div>
+								<div class="w-full flex items-end justify-between">
+									<div class="self-center text-xs font-medium">
+										{$i18n.t('Enable Brave Fallback')}
+									</div>
+									<div class="flex items-center relative pb-2">
+										<Switch bind:state={webConfig.WEB_SEARCH_BRAVE_FALLBACK} />
+									</div>
 								</div>
 							</div>
 						</div>

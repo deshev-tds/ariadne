@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import open_webui.utils.middleware as middleware
 from open_webui.utils.middleware import (
     apply_params_to_form_data,
     background_tasks_handler,
@@ -169,3 +170,86 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
 
     assert result["options"].get("temperature") == 0.2
     assert "ledger_mode" not in result["options"]
+
+
+def test_append_tool_journey_event_is_on_demand():
+    metadata = {"chat_id": "chat-1", "message_id": "msg-1", "params": {}}
+    assert (
+        middleware._append_tool_journey_event(
+            metadata, {"phase": "tool_execute_start", "tool": "search_strong_sources"}
+        )
+        is None
+    )
+
+    metadata["params"]["debug_tool_journey"] = True
+    event = middleware._append_tool_journey_event(
+        metadata, {"phase": "tool_execute_done", "tool": "search_strong_sources"}
+    )
+
+    assert event is not None
+    assert event["phase"] == "tool_execute_done"
+    assert metadata["tool_journey_telemetry"]["events"][0]["tool"] == "search_strong_sources"
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_chat_response_includes_tool_journey_telemetry(monkeypatch):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+
+    async def _background_tasks(_ctx):
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        _background_tasks,
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {"debug_tool_journey": True},
+            "tool_journey_telemetry": {
+                "enabled": True,
+                "events": [{"phase": "tool_execute_done", "tool": "search_strong_sources"}],
+            },
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    result = await non_streaming_chat_response_handler(
+        {"choices": [{"message": {"content": "ok"}}]},
+        ctx,
+    )
+
+    assert "toolJourneyTelemetry" in result
+    assert result["toolJourneyTelemetry"]["events"][0]["tool"] == "search_strong_sources"
+    assert saved_messages[0][2]["toolJourneyTelemetry"]["events"][0]["phase"] == "tool_execute_done"
