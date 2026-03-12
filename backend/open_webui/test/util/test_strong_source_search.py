@@ -350,6 +350,48 @@ async def test_list_domains_returns_reselect_when_category_has_no_curated_domain
 
 
 @pytest.mark.asyncio
+async def test_list_categories_hides_zero_domain_categories_by_default(monkeypatch):
+    request = _make_request()
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: _make_general_plan()
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_category_options",
+        lambda include_community=False: [
+            {
+                "category": "news",
+                "summary": "Current events",
+                "topics": ["news_current_events"],
+                "domain_count": 4,
+                "local_domain_count": 0,
+                "has_local_domains": False,
+            },
+            {
+                "category": "general",
+                "summary": "Fallback",
+                "topics": ["general"],
+                "domain_count": 0,
+                "local_domain_count": 0,
+                "has_local_domains": False,
+            },
+        ],
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="find local recommendations",
+        mode="list_categories",
+    )
+
+    assert payload["phase"] == "awaiting_category_selection"
+    assert [item["category"] for item in payload["category_options"]] == ["news"]
+    assert [item["category"] for item in payload["unavailable_categories"]] == [
+        "general"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_search_auto_broadens_when_category_has_no_curated_domains(
     monkeypatch,
 ):
@@ -426,6 +468,89 @@ async def test_search_auto_broadens_when_category_has_no_curated_domains(
     assert payload["selected_domains"] == []
     assert len(payload["queries"]) >= 1
     assert all(engine == "brave" for engine, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_search_auto_broadens_when_inferred_category_has_no_curated_domains(
+    monkeypatch,
+):
+    request = _make_request(WEB_SEARCH_ENGINE="duckduckgo")
+    plan = _make_general_plan(time_sensitive=True)
+    calls = []
+
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "general",
+            "confidence": 0.92,
+            "ambiguous": False,
+            "scores": {"general": 3},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_category_options",
+        lambda include_community=False: [
+            {
+                "category": "general",
+                "summary": "Fallback",
+                "topics": ["general"],
+                "domain_count": 0,
+                "local_domain_count": 0,
+                "has_local_domains": False,
+            }
+        ],
+    )
+
+    def fake_search_web(_request, engine, query, _user=None):
+        calls.append((engine, query))
+        return [
+            SearchResult(
+                link="https://example.com/result",
+                title="Result",
+                snippet="Broader result",
+            )
+        ]
+
+    monkeypatch.setattr(retrieval, "search_web", fake_search_web)
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_signal_quality",
+        lambda _items, _plan: {
+            "avg_top_score": 0.81,
+            "trusted_unique_domains": 1,
+            "scored_items": [
+                {
+                    "title": "Result",
+                    "link": "https://example.com/result",
+                    "snippet": "Broader result",
+                    "domain": "example.com",
+                    "quality": 0.81,
+                    "trust": 0.81,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="recommend good places",
+    )
+
+    assert payload["phase"] == "completed"
+    assert payload["fallback_reason"] == "no_curated_domains_for_inferred_category"
+    assert payload["selected_categories"] == ["general"]
+    assert len(payload["queries"]) >= 1
+    assert all(engine == "duckduckgo" for engine, _ in calls)
 
 
 @pytest.mark.asyncio

@@ -3111,6 +3111,7 @@ def _build_step_payload(
     fallback_reason: Optional[str] = None,
     message: Optional[str] = None,
     errors: Optional[list[str]] = None,
+    unavailable_categories: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     return {
         "phase": phase,
@@ -3127,6 +3128,7 @@ def _build_step_payload(
         "recency_policy_reason": recency_policy_reason,
         "fallback_reason": fallback_reason,
         "errors": errors or [],
+        "unavailable_categories": unavailable_categories or [],
         "message": message or "",
         "queries": [],
         "items": [],
@@ -3228,7 +3230,21 @@ async def execute_strong_source_search(
         return urls
 
     coarse_route = _coarse_route_category(cleaned_query, planner_context)
-    category_options = _build_category_options(include_community=include_community)
+    all_category_options = _build_category_options(include_community=include_community)
+    category_domain_counts = {
+        str(item.get("category") or ""): int(item.get("domain_count", 0) or 0)
+        for item in all_category_options
+    }
+    category_options = [
+        item
+        for item in all_category_options
+        if int(item.get("domain_count", 0) or 0) > 0
+    ]
+    unavailable_categories = [
+        item
+        for item in all_category_options
+        if int(item.get("domain_count", 0) or 0) <= 0
+    ]
 
     normalized_categories = _unique_ordered(
         [
@@ -3259,146 +3275,12 @@ async def execute_strong_source_search(
         plan_time_sensitive=plan.time_sensitive,
     )
 
-    if mode == "list_categories":
-        payload = _build_step_payload(
-            query=cleaned_query,
-            phase="awaiting_category_selection",
-            next_action="select_categories",
-            coarse_route=coarse_route,
-            category_options=category_options,
-            domain_options=[],
-            selected_categories=normalized_categories,
-            selected_domains=normalized_domains,
-            time_scope_options=time_scope_options,
-            selected_time_scope=normalized_time_scope,
-            effective_recency_days=effective_recency_days,
-            recency_policy_reason=recency_policy_reason,
-            message="Choose 1-2 categories, then call mode=list_domains.",
-        )
-        await emit_focus_status(
-            {
-                "action": "web_search",
-                "description": "Focused search: category shortlist prepared",
-                "done": True,
-                "plan": {"mode": "focused_local_first"},
-                "planner": {"mode": "focused_local_first"},
-            }
-        )
-        return payload
-
-    if mode == "list_domains":
-        if not normalized_categories:
-            if coarse_route["confidence"] >= COARSE_CONFIDENCE_HIGH:
-                normalized_categories = [coarse_route["category"]]
-            else:
-                return _build_step_payload(
-                    query=cleaned_query,
-                    phase="awaiting_category_selection",
-                    next_action="select_categories",
-                    coarse_route=coarse_route,
-                    category_options=category_options,
-                    domain_options=[],
-                    selected_categories=[],
-                    selected_domains=[],
-                    time_scope_options=time_scope_options,
-                    selected_time_scope=normalized_time_scope,
-                    effective_recency_days=effective_recency_days,
-                    recency_policy_reason=recency_policy_reason,
-                    message="Category selection required before domain selection.",
-                )
-
-        if len(normalized_categories) > 2:
-            normalized_categories = normalized_categories[:2]
-
-        domain_options = _build_domain_options_for_categories(
-            normalized_categories,
-            include_community=include_community,
-            local_first=local_first,
-            time_sensitive=plan.time_sensitive,
-        )
-
-        if not domain_options:
-            payload = _build_step_payload(
-                query=cleaned_query,
-                phase="awaiting_category_selection",
-                next_action="reselect_category",
-                coarse_route=coarse_route,
-                category_options=category_options,
-                domain_options=[],
-                selected_categories=normalized_categories,
-                selected_domains=[],
-                time_scope_options=time_scope_options,
-                selected_time_scope=normalized_time_scope,
-                effective_recency_days=effective_recency_days,
-                recency_policy_reason=recency_policy_reason,
-                fallback_reason="no_curated_domains_in_category",
-                message=(
-                    "No curated domains exist for the selected category yet. "
-                    "Choose another category or allow broader web discovery."
-                ),
-            )
-            payload["missing_curated_domains_for"] = normalized_categories
-            return payload
-
-        return _build_step_payload(
-            query=cleaned_query,
-            phase="awaiting_domain_selection",
-            next_action="select_domains",
-            coarse_route=coarse_route,
-            category_options=category_options,
-            domain_options=domain_options,
-            selected_categories=normalized_categories,
-            selected_domains=[],
-            time_scope_options=time_scope_options,
-            selected_time_scope=normalized_time_scope,
-            effective_recency_days=effective_recency_days,
-            recency_policy_reason=recency_policy_reason,
-            message="Choose 1-4 domains and a time scope, then call mode=search.",
-        )
-
-    # mode == "search"
-    if not normalized_categories:
-        if coarse_route["confidence"] >= COARSE_CONFIDENCE_HIGH:
-            normalized_categories = [coarse_route["category"]]
-        else:
-            payload = _build_step_payload(
-                query=cleaned_query,
-                phase="awaiting_category_selection",
-                next_action="select_categories",
-                coarse_route=coarse_route,
-                category_options=category_options,
-                domain_options=[],
-                selected_categories=[],
-                selected_domains=[],
-                time_scope_options=time_scope_options,
-                selected_time_scope=normalized_time_scope,
-                effective_recency_days=effective_recency_days,
-                recency_policy_reason=recency_policy_reason,
-                message="Category selection required before focused search.",
-            )
-            await emit_focus_status(
-                {
-                    "action": "web_search",
-                    "description": "Focused search: awaiting category selection",
-                    "done": True,
-                    "plan": {"mode": "focused_local_first"},
-                    "planner": {"mode": "focused_local_first"},
-                }
-            )
-            return payload
-
-    if len(normalized_categories) > 2:
-        normalized_categories = normalized_categories[:2]
-
-    domain_options = _build_domain_options_for_categories(
-        normalized_categories,
-        include_community=include_community,
-        local_first=local_first,
-        time_sensitive=plan.time_sensitive,
-    )
-    domain_allowlist = {item["domain"] for item in domain_options}
-
-    if not domain_options and not normalized_domains:
+    async def run_broader_discovery(
+        *,
+        fallback_reason: str,
+        selected_categories_for_payload: list[str],
+        message: str,
+    ) -> dict[str, Any]:
         await emit_focus_status(
             {
                 "action": "web_search",
@@ -3414,7 +3296,7 @@ async def execute_strong_source_search(
                 },
                 "planner": {
                     "mode": "focused_local_first",
-                    "fallback_reason": "no_curated_domains_in_category",
+                    "fallback_reason": fallback_reason,
                     "effective_recency_days": effective_recency_days,
                 },
             }
@@ -3508,7 +3390,7 @@ async def execute_strong_source_search(
             "next_action": "answer",
             "category_options": category_options,
             "domain_options": [],
-            "selected_categories": normalized_categories,
+            "selected_categories": selected_categories_for_payload,
             "time_scope_options": time_scope_options,
             "selected_time_scope": normalized_time_scope,
             "effective_recency_days": effective_recency_days,
@@ -3525,14 +3407,12 @@ async def execute_strong_source_search(
             "quality_score": round(quality_score, 4),
             "local_phase_executed": False,
             "brave_fallback_used": True,
-            "fallback_reason": "no_curated_domains_in_category",
+            "fallback_reason": fallback_reason,
             "topic": plan.topic,
             "local_primary_hits": 0,
             "trusted_domains": trusted_domains,
-            "message": (
-                "No curated domains exist for this category; broader discovery "
-                "was executed automatically."
-            ),
+            "message": message,
+            "unavailable_categories": unavailable_categories,
         }
 
         await emit_focus_status(
@@ -3550,7 +3430,7 @@ async def execute_strong_source_search(
                     "mode": "focused_local_first",
                     "executed_queries": list(executed_queries),
                     "final_trusted_domains": trusted_domains,
-                    "fallback_reason": "no_curated_domains_in_category",
+                    "fallback_reason": fallback_reason,
                     "candidate_count": len(items),
                     "evidence_count": len(evidence_items),
                     "citation_count": len(citation_items),
@@ -3569,6 +3449,178 @@ async def execute_strong_source_search(
             }
         )
         return payload
+
+    if mode == "list_categories":
+        message = "Choose 1-2 categories, then call mode=list_domains."
+        next_action = "select_categories"
+        if not category_options:
+            message = (
+                "No curated categories with selectable domains are available right now. "
+                "Proceed with broader web discovery."
+            )
+            next_action = "broader_search"
+        payload = _build_step_payload(
+            query=cleaned_query,
+            phase="awaiting_category_selection",
+            next_action=next_action,
+            coarse_route=coarse_route,
+            category_options=category_options,
+            domain_options=[],
+            selected_categories=normalized_categories,
+            selected_domains=normalized_domains,
+            time_scope_options=time_scope_options,
+            selected_time_scope=normalized_time_scope,
+            effective_recency_days=effective_recency_days,
+            recency_policy_reason=recency_policy_reason,
+            unavailable_categories=unavailable_categories,
+            message=message,
+        )
+        await emit_focus_status(
+            {
+                "action": "web_search",
+                "description": "Focused search: category shortlist prepared",
+                "done": True,
+                "plan": {"mode": "focused_local_first"},
+                "planner": {"mode": "focused_local_first"},
+            }
+        )
+        return payload
+
+    if mode == "list_domains":
+        if not normalized_categories:
+            if coarse_route["confidence"] >= COARSE_CONFIDENCE_HIGH:
+                normalized_categories = [coarse_route["category"]]
+            else:
+                return _build_step_payload(
+                    query=cleaned_query,
+                    phase="awaiting_category_selection",
+                    next_action="select_categories",
+                    coarse_route=coarse_route,
+                    category_options=category_options,
+                    domain_options=[],
+                    selected_categories=[],
+                    selected_domains=[],
+                    time_scope_options=time_scope_options,
+                    selected_time_scope=normalized_time_scope,
+                    effective_recency_days=effective_recency_days,
+                    recency_policy_reason=recency_policy_reason,
+                    unavailable_categories=unavailable_categories,
+                    message="Category selection required before domain selection.",
+                )
+
+        if len(normalized_categories) > 2:
+            normalized_categories = normalized_categories[:2]
+
+        domain_options = _build_domain_options_for_categories(
+            normalized_categories,
+            include_community=include_community,
+            local_first=local_first,
+            time_sensitive=plan.time_sensitive,
+        )
+
+        if not domain_options:
+            payload = _build_step_payload(
+                query=cleaned_query,
+                phase="awaiting_category_selection",
+                next_action="reselect_category",
+                coarse_route=coarse_route,
+                category_options=category_options,
+                domain_options=[],
+                selected_categories=normalized_categories,
+                selected_domains=[],
+                time_scope_options=time_scope_options,
+                selected_time_scope=normalized_time_scope,
+                effective_recency_days=effective_recency_days,
+                recency_policy_reason=recency_policy_reason,
+                fallback_reason="no_curated_domains_in_category",
+                unavailable_categories=unavailable_categories,
+                message=(
+                    "No curated domains exist for the selected category yet. "
+                    "Choose another category or allow broader web discovery."
+                ),
+            )
+            payload["missing_curated_domains_for"] = normalized_categories
+            return payload
+
+        return _build_step_payload(
+            query=cleaned_query,
+            phase="awaiting_domain_selection",
+            next_action="select_domains",
+            coarse_route=coarse_route,
+            category_options=category_options,
+            domain_options=domain_options,
+            selected_categories=normalized_categories,
+            selected_domains=[],
+            time_scope_options=time_scope_options,
+            selected_time_scope=normalized_time_scope,
+            effective_recency_days=effective_recency_days,
+            recency_policy_reason=recency_policy_reason,
+            unavailable_categories=unavailable_categories,
+            message="Choose 1-4 domains and a time scope, then call mode=search.",
+        )
+
+    # mode == "search"
+    if not normalized_categories:
+        if coarse_route["confidence"] >= COARSE_CONFIDENCE_HIGH:
+            inferred_category = coarse_route["category"]
+            if int(category_domain_counts.get(inferred_category, 0) or 0) <= 0:
+                return await run_broader_discovery(
+                    fallback_reason="no_curated_domains_for_inferred_category",
+                    selected_categories_for_payload=[inferred_category],
+                    message=(
+                        "No curated domains exist for the inferred category; broader "
+                        "discovery was executed automatically."
+                    ),
+                )
+            normalized_categories = [inferred_category]
+        else:
+            payload = _build_step_payload(
+                query=cleaned_query,
+                phase="awaiting_category_selection",
+                next_action="select_categories",
+                coarse_route=coarse_route,
+                category_options=category_options,
+                domain_options=[],
+                selected_categories=[],
+                selected_domains=[],
+                time_scope_options=time_scope_options,
+                selected_time_scope=normalized_time_scope,
+                effective_recency_days=effective_recency_days,
+                recency_policy_reason=recency_policy_reason,
+                unavailable_categories=unavailable_categories,
+                message="Category selection required before focused search.",
+            )
+            await emit_focus_status(
+                {
+                    "action": "web_search",
+                    "description": "Focused search: awaiting category selection",
+                    "done": True,
+                    "plan": {"mode": "focused_local_first"},
+                    "planner": {"mode": "focused_local_first"},
+                }
+            )
+            return payload
+
+    if len(normalized_categories) > 2:
+        normalized_categories = normalized_categories[:2]
+
+    domain_options = _build_domain_options_for_categories(
+        normalized_categories,
+        include_community=include_community,
+        local_first=local_first,
+        time_sensitive=plan.time_sensitive,
+    )
+    domain_allowlist = {item["domain"] for item in domain_options}
+
+    if not domain_options and not normalized_domains:
+        return await run_broader_discovery(
+            fallback_reason="no_curated_domains_in_category",
+            selected_categories_for_payload=normalized_categories,
+            message=(
+                "No curated domains exist for this category; broader discovery "
+                "was executed automatically."
+            ),
+        )
 
     if not normalized_domains:
         payload = _build_step_payload(
