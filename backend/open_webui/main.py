@@ -301,6 +301,14 @@ from open_webui.config import (
     PDF_LOADER_MODE,
     YOUTUBE_LOADER_LANGUAGE,
     YOUTUBE_LOADER_PROXY_URL,
+    # Deep Research
+    ENABLE_DEEP_RESEARCH,
+    DEEP_RESEARCH_SIDECAR_URL,
+    DEEP_RESEARCH_SIDECAR_USERNAME,
+    DEEP_RESEARCH_SIDECAR_PASSWORD,
+    DEEP_RESEARCH_POLL_INTERVAL_MS,
+    DEEP_RESEARCH_TIMEOUT_SECONDS,
+    DEEP_RESEARCH_EXPORT_FORMAT,
     # Retrieval (Web Search)
     ENABLE_WEB_SEARCH,
     WEB_SEARCH_ENGINE,
@@ -1124,6 +1132,13 @@ app.state.config.PDF_LOADER_MODE = PDF_LOADER_MODE
 app.state.config.YOUTUBE_LOADER_LANGUAGE = YOUTUBE_LOADER_LANGUAGE
 app.state.config.YOUTUBE_LOADER_PROXY_URL = YOUTUBE_LOADER_PROXY_URL
 
+app.state.config.ENABLE_DEEP_RESEARCH = ENABLE_DEEP_RESEARCH
+app.state.config.DEEP_RESEARCH_SIDECAR_URL = DEEP_RESEARCH_SIDECAR_URL
+app.state.config.DEEP_RESEARCH_SIDECAR_USERNAME = DEEP_RESEARCH_SIDECAR_USERNAME
+app.state.config.DEEP_RESEARCH_SIDECAR_PASSWORD = DEEP_RESEARCH_SIDECAR_PASSWORD
+app.state.config.DEEP_RESEARCH_POLL_INTERVAL_MS = DEEP_RESEARCH_POLL_INTERVAL_MS
+app.state.config.DEEP_RESEARCH_TIMEOUT_SECONDS = DEEP_RESEARCH_TIMEOUT_SECONDS
+app.state.config.DEEP_RESEARCH_EXPORT_FORMAT = DEEP_RESEARCH_EXPORT_FORMAT
 
 app.state.config.ENABLE_WEB_SEARCH = ENABLE_WEB_SEARCH
 app.state.config.WEB_SEARCH_ENGINE = WEB_SEARCH_ENGINE
@@ -2721,7 +2736,9 @@ async def get_app_config(request: Request):
                     "folder_max_file_count": app.state.config.FOLDER_MAX_FILE_COUNT,
                     "enable_channels": app.state.config.ENABLE_CHANNELS,
                     "enable_notes": app.state.config.ENABLE_NOTES,
-                    "enable_deep_research": app.state.config.ENABLE_DEEP_RESEARCH,
+                    "enable_deep_research": getattr(
+                        app.state.config, "ENABLE_DEEP_RESEARCH", False
+                    ),
                     "enable_web_search": app.state.config.ENABLE_WEB_SEARCH,
                     "enable_code_execution": app.state.config.ENABLE_CODE_EXECUTION,
                     "enable_code_interpreter": app.state.config.ENABLE_CODE_INTERPRETER,
