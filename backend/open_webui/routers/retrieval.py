@@ -2960,6 +2960,31 @@ def _coarse_route_category(
     }
 
 
+def _build_broader_discovery_queries(
+    *,
+    cleaned_query: str,
+    plan: WebSearchPlan,
+    effective_recency_days: Optional[int],
+    max_queries: int,
+) -> list[str]:
+    candidates = [
+        plan.base_exact_query,
+        plan.base_general_query,
+        cleaned_query,
+    ]
+    queries: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        query = sanitize_query(_apply_recency_hint(candidate, effective_recency_days))
+        if not query or query in seen:
+            continue
+        seen.add(query)
+        queries.append(query)
+        if len(queries) >= max_queries:
+            break
+    return queries
+
+
 def _category_summaries() -> dict[str, str]:
     return {
         "software": "APIs, SDKs, docs, debugging, dev tooling.",
@@ -3292,6 +3317,29 @@ async def execute_strong_source_search(
             time_sensitive=plan.time_sensitive,
         )
 
+        if not domain_options:
+            payload = _build_step_payload(
+                query=cleaned_query,
+                phase="awaiting_category_selection",
+                next_action="reselect_category",
+                coarse_route=coarse_route,
+                category_options=category_options,
+                domain_options=[],
+                selected_categories=normalized_categories,
+                selected_domains=[],
+                time_scope_options=time_scope_options,
+                selected_time_scope=normalized_time_scope,
+                effective_recency_days=effective_recency_days,
+                recency_policy_reason=recency_policy_reason,
+                fallback_reason="no_curated_domains_in_category",
+                message=(
+                    "No curated domains exist for the selected category yet. "
+                    "Choose another category or allow broader web discovery."
+                ),
+            )
+            payload["missing_curated_domains_for"] = normalized_categories
+            return payload
+
         return _build_step_payload(
             query=cleaned_query,
             phase="awaiting_domain_selection",
@@ -3349,6 +3397,178 @@ async def execute_strong_source_search(
         time_sensitive=plan.time_sensitive,
     )
     domain_allowlist = {item["domain"] for item in domain_options}
+
+    if not domain_options and not normalized_domains:
+        await emit_focus_status(
+            {
+                "action": "web_search",
+                "description": (
+                    "No curated domains for this category; running broader discovery now"
+                ),
+                "done": False,
+                "plan": {
+                    "mode": "focused_local_first",
+                    "topic": plan.topic,
+                    "selected_domains": [],
+                    "selected_time_scope": normalized_time_scope,
+                },
+                "planner": {
+                    "mode": "focused_local_first",
+                    "fallback_reason": "no_curated_domains_in_category",
+                    "effective_recency_days": effective_recency_days,
+                },
+            }
+        )
+
+        broader_queries = _build_broader_discovery_queries(
+            cleaned_query=cleaned_query,
+            plan=plan,
+            effective_recency_days=effective_recency_days,
+            max_queries=min(brave_fallback_max_queries, bounded_max_queries),
+        )
+
+        fallback_engine = (
+            str(getattr(cfg, "WEB_SEARCH_ENGINE", "") or "").strip().lower()
+        )
+        if not fallback_engine:
+            fallback_engine = "duckduckgo"
+
+        broader_search_results: list[list[SearchResult]] = []
+        executed_queries: list[str] = []
+        for planned_query in broader_queries:
+            try:
+                if fallback_engine == "brave":
+                    await _wait_for_brave_fallback_slot(request, brave_min_interval_ms)
+                query_results = await run_in_threadpool(
+                    search_web,
+                    request,
+                    fallback_engine,
+                    planned_query,
+                    user,
+                )
+                broader_search_results.append(query_results)
+                executed_queries.append(planned_query)
+            except Exception as exc:
+                log.warning(
+                    "Broader discovery query failed for '%s': %s", planned_query, exc
+                )
+
+        combined_items = _dedupe_items_by_canonical_url(
+            _flatten_search_results(broader_search_results)
+        )
+        combined_quality = evaluate_signal_quality(combined_items, plan)
+        combined_intent_coverage = evaluate_intent_coverage(
+            combined_quality["scored_items"], plan
+        )
+
+        quality_score = float(combined_quality.get("avg_top_score", 0.0) or 0.0)
+        trusted_domains = int(combined_quality.get("trusted_unique_domains", 0) or 0)
+        coverage_complete = bool(
+            combined_intent_coverage.get("complete", True)
+            and quality_score >= planner_stop_score
+            and trusted_domains >= 1
+        )
+
+        result_count = max(1, int(cfg.WEB_SEARCH_RESULT_COUNT or 5))
+        candidate_scored_items = combined_quality.get("scored_items", [])[
+            : result_count * 4
+        ]
+        evidence_scored_items = candidate_scored_items[: result_count * 2]
+
+        def _materialize_item(item: dict[str, Any]) -> dict[str, Any]:
+            link = item.get("link")
+            domain = item.get("domain")
+            source_type = infer_domain_source_type(domain or "", plan)
+            return {
+                "title": item.get("title"),
+                "link": link,
+                "snippet": item.get("snippet"),
+                "domain": domain,
+                "quality": round(float(item.get("quality", 0.0) or 0.0), 4),
+                "trust": round(float(item.get("trust", 0.0) or 0.0), 4),
+                "source_type": source_type,
+            }
+
+        items = [
+            _materialize_item(item) for item in candidate_scored_items if item.get("link")
+        ]
+        evidence_items = [
+            _materialize_item(item) for item in evidence_scored_items if item.get("link")
+        ]
+        citation_items = [
+            item
+            for item in evidence_items
+            if float(item.get("trust", 0.0) or 0.0) >= CITATION_TRUST_MIN
+            and str(item.get("source_type", "") or "") != "community"
+        ]
+        citation_items = _dedupe_items_by_canonical_url(citation_items)
+
+        payload = {
+            "phase": "completed",
+            "next_action": "answer",
+            "category_options": category_options,
+            "domain_options": [],
+            "selected_categories": normalized_categories,
+            "time_scope_options": time_scope_options,
+            "selected_time_scope": normalized_time_scope,
+            "effective_recency_days": effective_recency_days,
+            "recency_policy_reason": recency_policy_reason,
+            "queries": executed_queries,
+            "items": items,
+            "evidence_items": evidence_items,
+            "citation_items": citation_items,
+            "candidate_count": len(items),
+            "evidence_count": len(evidence_items),
+            "citation_count": len(citation_items),
+            "selected_domains": [],
+            "coverage_complete": coverage_complete,
+            "quality_score": round(quality_score, 4),
+            "local_phase_executed": False,
+            "brave_fallback_used": True,
+            "fallback_reason": "no_curated_domains_in_category",
+            "topic": plan.topic,
+            "local_primary_hits": 0,
+            "trusted_domains": trusted_domains,
+            "message": (
+                "No curated domains exist for this category; broader discovery "
+                "was executed automatically."
+            ),
+        }
+
+        await emit_focus_status(
+            {
+                "action": "web_search",
+                "description": "Focused search completed with broader fallback",
+                "done": True,
+                "plan": {
+                    "mode": "focused_local_first",
+                    "topic": plan.topic,
+                    "selected_domains": [],
+                    "selected_time_scope": normalized_time_scope,
+                },
+                "planner": {
+                    "mode": "focused_local_first",
+                    "executed_queries": list(executed_queries),
+                    "final_trusted_domains": trusted_domains,
+                    "fallback_reason": "no_curated_domains_in_category",
+                    "candidate_count": len(items),
+                    "evidence_count": len(evidence_items),
+                    "citation_count": len(citation_items),
+                    "selected_time_scope": normalized_time_scope,
+                    "effective_recency_days": effective_recency_days,
+                    "recency_policy_reason": recency_policy_reason,
+                    "show_debug_metrics": debug_tool_journey,
+                    **(
+                        {"final_score": round(quality_score, 4)}
+                        if debug_tool_journey
+                        else {}
+                    ),
+                },
+                "items": citation_items,
+                "urls": [],
+            }
+        )
+        return payload
 
     if not normalized_domains:
         payload = _build_step_payload(

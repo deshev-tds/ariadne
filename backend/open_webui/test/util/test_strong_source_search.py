@@ -46,6 +46,25 @@ def _make_plan(*, time_sensitive: bool = True) -> WebSearchPlan:
     )
 
 
+def _make_general_plan(*, time_sensitive: bool = True) -> WebSearchPlan:
+    return WebSearchPlan(
+        intent="general_info",
+        topic="general",
+        time_sensitive=time_sensitive,
+        community_requested=False,
+        selected_domains=[],
+        selected_sources=[],
+        base_exact_query="best local tavernas in thessaloniki",
+        base_general_query="thessaloniki local tavern recommendations",
+        preserve_tokens=[],
+        anchors={},
+        intent_requirements=[],
+        topic_candidates=["general"],
+        allowed_domains_ranked=[],
+        planned_queries=[],
+    )
+
+
 def _domain_options(domains: list[tuple[str, bool, str]]):
     # (domain, is_local, source_type)
     options = []
@@ -296,6 +315,117 @@ async def test_execute_strong_source_search_rejects_invalid_domain_selection(
     assert payload["next_action"] == "fix_domain_selection"
     assert "invalid_domains" in payload["errors"]
     assert payload["invalid_domains"] == ["bad.invalid"]
+
+
+@pytest.mark.asyncio
+async def test_list_domains_returns_reselect_when_category_has_no_curated_domains(
+    monkeypatch,
+):
+    request = _make_request()
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "general",
+            "confidence": 0.9,
+            "ambiguous": False,
+            "scores": {"general": 1},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval, "_build_domain_options_for_categories", lambda *_args, **_kwargs: []
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="best neighborhood tavernas",
+        mode="list_domains",
+        selected_categories=["general"],
+    )
+
+    assert payload["phase"] == "awaiting_category_selection"
+    assert payload["next_action"] == "reselect_category"
+    assert payload["fallback_reason"] == "no_curated_domains_in_category"
+    assert payload["missing_curated_domains_for"] == ["general"]
+
+
+@pytest.mark.asyncio
+async def test_search_auto_broadens_when_category_has_no_curated_domains(
+    monkeypatch,
+):
+    request = _make_request(WEB_SEARCH_ENGINE="brave")
+    plan = _make_general_plan(time_sensitive=True)
+    calls = []
+
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "general",
+            "confidence": 0.9,
+            "ambiguous": False,
+            "scores": {"general": 2},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval, "_build_domain_options_for_categories", lambda *_args, **_kwargs: []
+    )
+
+    def fake_search_web(_request, engine, query, _user=None):
+        calls.append((engine, query))
+        return [
+            SearchResult(
+                link="https://example.com/taverna",
+                title="Local taverna guide",
+                snippet="Locals recommend this place",
+            )
+        ]
+
+    monkeypatch.setattr(retrieval, "search_web", fake_search_web)
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_signal_quality",
+        lambda _items, _plan: {
+            "avg_top_score": 0.84,
+            "trusted_unique_domains": 1,
+            "scored_items": [
+                {
+                    "title": "Local taverna guide",
+                    "link": "https://example.com/taverna",
+                    "snippet": "Locals recommend this place",
+                    "domain": "example.com",
+                    "quality": 0.84,
+                    "trust": 0.84,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+
+    async def fake_wait(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(retrieval, "_wait_for_brave_fallback_slot", fake_wait)
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="summarize open source governance models",
+        selected_categories=["general"],
+    )
+
+    assert payload["phase"] == "completed"
+    assert payload["brave_fallback_used"] is True
+    assert payload["fallback_reason"] == "no_curated_domains_in_category"
+    assert payload["selected_domains"] == []
+    assert len(payload["queries"]) >= 1
+    assert all(engine == "brave" for engine, _ in calls)
 
 
 @pytest.mark.asyncio

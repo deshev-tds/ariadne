@@ -50,7 +50,7 @@ The important divergences are not cosmetic.
 - Request-scoped memory telemetry can be turned on per turn for debugging without leaving noisy long-lived logging enabled in production.
 - Ledger continuity now uses explicit chat-scoped mode selection: `vibe` by default, `agentic` only when enabled in the UI toggle.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
-- A native `search_strong_sources` tool was added for local-first strong-source search, with Brave fallback only when evidence from locally-listed strong domains is weak.
+- A native focused-web tool (`web_research_strong`, with `search_strong_sources` kept as an alias) was added for local-first strong-source search, with broader fallback only when evidence from locally-listed strong domains is weak.
 - Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
 - Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
@@ -300,7 +300,7 @@ This is the same overall philosophy as the context work: bounded, inspectable, e
 
 ### Strong-Source Search Trigger (Hybrid Local-First + Broader Fallback)
 
-The web stack includes a first-class native tool for evidence-critical retrieval: `search_strong_sources`.
+The web stack includes a first-class native tool for evidence-critical retrieval: `web_research_strong` (`search_strong_sources` remains as a backward-compatible alias).
 
 This is intentionally not a hard terminal guard. It is a native model-callable path with soft trigger semantics: when confidence is weak, the question is time-sensitive, or provenance quality matters, the model can call the strong-source flow directly.
 
@@ -320,6 +320,24 @@ Domain selection is explicit and constrained:
 
 In short: focused search is now an inspectable interaction protocol, not a one-shot black box.
 
+### Tool Naming Matters
+
+Model-callable tool names are part of the behavioral interface, not just cosmetics.
+
+In practice, shared generic prefixes encouraged tool-name blending during selection. A notes-only tool and a focused web-research tool were close enough in model space that the model could invent plausible but nonexistent hybrids and keep reaching for the wrong call path.
+
+To reduce that drift, this fork moved toward clearer affordances:
+
+- `search_notes` -> `notes_lookup` (`search_notes` kept as a backward-compatible alias)
+- `search_strong_sources` -> `web_research_strong` (`search_strong_sources` kept as a backward-compatible alias)
+
+Tool descriptions were hardened as well:
+
+- `notes_lookup`: **PERSONAL NOTES ONLY**
+- `web_research_strong`: **WEB SOURCES ONLY**
+
+This significantly improves real-world tool selection behavior, especially in long agentic loops where a model can otherwise get stuck in a misleading callable pattern.
+
 ### Hybrid Routing: Coarse Gate + Model Disambiguation
 
 Classifier bloat was avoided on purpose.
@@ -337,7 +355,7 @@ This preserves speed on easy queries and flexibility on hard queries, without dr
 
 ### Evidence Surface Honesty
 
-`search_strong_sources` output is now intentionally layered:
+`web_research_strong` output is now intentionally layered:
 
 - `items` = candidate pool (exploratory)
 - `evidence_items` = evidence used for quality/coverage decisions
