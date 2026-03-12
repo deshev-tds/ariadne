@@ -483,10 +483,14 @@ def get_builtin_tools(
         and getattr(request.app.state.config, "ENABLE_WEB_SEARCH", False)
         and get_model_capability("web_search")
     ):
-        # Internet access is a hard gate controlled by `features.web_search`.
-        # Focused search is a strategy gate layered on top of internet access.
-        internet_access_enabled = bool(features.get("web_search"))
-        focused_search_enabled = bool(features.get("focused_search")) and internet_access_enabled
+        # Internet access is a hard gate. Focused search implies internet access,
+        # so backend stays robust even if client toggles arrive out of sync.
+        internet_access_enabled = bool(
+            features.get("web_search") or features.get("focused_search")
+        )
+        focused_search_enabled = bool(features.get("focused_search")) and bool(
+            internet_access_enabled
+        )
 
         if internet_access_enabled:
             builtin_functions.append(search_web)

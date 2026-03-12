@@ -233,6 +233,8 @@
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
 		if (enabled) {
 			nextParams.focused_search_mode = true;
+			// Focused search requires internet access.
+			webSearchEnabled = true;
 		} else {
 			nextParams.focused_search_mode = false;
 		}
@@ -2083,7 +2085,9 @@
 			currentModels.filter(
 				(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.web_search ?? true
 			).length === currentModels.length;
-		let internetAccessEnabled = webSearchAllowedByRole ? webSearchEnabled : false;
+		let internetAccessEnabled = webSearchAllowedByRole
+			? webSearchEnabled || chatFocusedSearchEnabled
+			: false;
 
 		if ($config?.features)
 			features = {
