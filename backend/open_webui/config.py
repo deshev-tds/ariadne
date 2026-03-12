@@ -2224,7 +2224,7 @@ DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE = """Available Tools: {{TOOLS}}
 Your task is to choose and return the correct tool(s) from the list of available tools based on the query. Follow these guidelines:
 
 - Return only the JSON object, without any additional text or explanation.
-- For uncertain, time-sensitive, high-risk, or verification-heavy queries, prefer `search_strong_sources` when available before generic web tools.
+- For uncertain, time-sensitive, high-risk, or verification-heavy queries, prefer `web_research_strong` when available before generic web tools.
 - Use `search_web` for broad discovery and `fetch_url` only after selecting concrete URLs.
 
 - If no tools match the query, return an empty array: 

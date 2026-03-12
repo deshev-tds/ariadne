@@ -296,6 +296,36 @@ def test_search_strong_sources_citation_source_prefers_citation_items():
     assert metadata[0]["source"] == "https://citation.example/b"
 
 
+def test_web_research_strong_citation_source_prefers_citation_items():
+    tool_result = {
+        "items": [
+            {
+                "title": "Candidate only",
+                "link": "https://candidate.example/a",
+                "snippet": "candidate",
+            }
+        ],
+        "citation_items": [
+            {
+                "title": "Citation kept",
+                "link": "https://citation.example/b",
+                "snippet": "citation",
+            }
+        ],
+    }
+
+    sources = middleware.get_citation_source_from_tool_result(
+        "web_research_strong",
+        {},
+        tool_result,
+    )
+
+    assert len(sources) == 1
+    metadata = sources[0]["metadata"]
+    assert len(metadata) == 1
+    assert metadata[0]["source"] == "https://citation.example/b"
+
+
 def test_is_empty_search_notes_result_detects_empty_payloads():
     assert middleware._is_empty_search_notes_result("[]") is True
     assert middleware._is_empty_search_notes_result([]) is True
@@ -315,7 +345,17 @@ def test_is_empty_search_notes_result_rejects_non_empty_payloads():
 
 def test_build_search_notes_loop_breaker_result_has_strong_source_hint():
     payload = json.loads(middleware._build_search_notes_loop_breaker_result(2))
-    assert payload["tool"] == "search_notes"
+    assert payload["tool"] == "notes_lookup"
     assert payload["empty_streak"] == 2
-    assert payload["next_tool"] == "search_strong_sources"
+    assert payload["next_tool"] == "web_research_strong"
     assert "searches user notes only" in payload["message"]
+
+
+def test_build_search_notes_loop_breaker_result_keeps_tool_alias_when_passed():
+    payload = json.loads(
+        middleware._build_search_notes_loop_breaker_result(
+            2, tool_name="search_notes"
+        )
+    )
+    assert payload["tool"] == "search_notes"
+    assert payload["next_tool"] == "web_research_strong"

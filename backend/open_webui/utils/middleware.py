@@ -784,7 +784,11 @@ def get_citation_source_from_tool_result(
     Returns a list of sources (usually one, but query_knowledge_files may return multiple).
     """
     _EXPECTS_LIST = {"search_web", "query_knowledge_files"}
-    _EXPECTS_DICT = {"view_knowledge_file", "search_strong_sources"}
+    _EXPECTS_DICT = {
+        "view_knowledge_file",
+        "search_strong_sources",
+        "web_research_strong",
+    }
 
     try:
         try:
@@ -827,7 +831,7 @@ def get_citation_source_from_tool_result(
                     "metadata": metadata,
                 }
             ]
-        elif tool_name == "search_strong_sources":
+        elif tool_name in {"search_strong_sources", "web_research_strong"}:
             payload = tool_result if isinstance(tool_result, dict) else {}
             results = []
             if isinstance(payload, dict):
@@ -857,7 +861,10 @@ def get_citation_source_from_tool_result(
 
             return [
                 {
-                    "source": {"name": "search_strong_sources", "id": "search_strong_sources"},
+                    "source": {
+                        "name": "web_research_strong",
+                        "id": "web_research_strong",
+                    },
                     "document": documents,
                     "metadata": metadata,
                 }
@@ -983,6 +990,12 @@ def get_citation_source_from_tool_result(
 TOOL_JOURNEY_EVENT_CAP = 120
 TOOL_JOURNEY_PREVIEW_CHARS = 280
 SEARCH_NOTES_EMPTY_STREAK_LIMIT = 2
+STRONG_WEB_TOOL_NAMES = {"web_research_strong", "search_strong_sources"}
+NOTES_LOOKUP_TOOL_NAMES = {"notes_lookup", "search_notes"}
+TOOL_NAME_ALIASES = {
+    "search_strong_sources": "web_research_strong",
+    "search_notes": "notes_lookup",
+}
 
 
 def _is_debug_flag_enabled(value: Any) -> bool:
@@ -1010,7 +1023,7 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
         except Exception:
             parsed = tool_result
 
-    if tool_name == "search_strong_sources" and isinstance(parsed, dict):
+    if tool_name in STRONG_WEB_TOOL_NAMES and isinstance(parsed, dict):
         return {
             "phase": parsed.get("phase"),
             "next_action": parsed.get("next_action"),
@@ -1110,20 +1123,22 @@ def _is_empty_search_notes_result(tool_result: Any) -> bool:
     return False
 
 
-def _build_search_notes_loop_breaker_result(streak: int, blocked: bool = False) -> str:
+def _build_search_notes_loop_breaker_result(
+    streak: int, blocked: bool = False, tool_name: str = "notes_lookup"
+) -> str:
     payload = {
         "status": "loop_breaker_active" if blocked else "loop_breaker_triggered",
-        "tool": "search_notes",
+        "tool": tool_name,
         "empty_streak": streak,
         "message": (
-            "search_notes returned no matches multiple times. "
+            f"{tool_name} returned no matches multiple times. "
             "This tool searches user notes only, not the web."
         ),
         "hint": (
-            "Stop using search_notes for web discovery. "
-            "Use search_strong_sources for focused web evidence."
+            "Stop using notes tools for web discovery. "
+            "Use web_research_strong for focused web evidence."
         ),
-        "next_tool": "search_strong_sources",
+        "next_tool": "web_research_strong",
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -6615,6 +6630,9 @@ async def streaming_chat_response_handler(response, ctx):
                         tool_function_name = tool_call.get("function", {}).get(
                             "name", ""
                         )
+                        resolved_tool_function_name = TOOL_NAME_ALIASES.get(
+                            tool_function_name, tool_function_name
+                        )
                         tool_args = tool_call.get("function", {}).get("arguments", "{}")
                         tool_started_at = time.time()
 
@@ -6692,21 +6710,23 @@ async def streaming_chat_response_handler(response, ctx):
                         search_notes_blocked = False
 
                         if (
-                            tool_function_name == "search_notes"
+                            resolved_tool_function_name in NOTES_LOOKUP_TOOL_NAMES
                             and search_notes_guard_active
                         ):
                             search_notes_blocked = True
                             tool_result = _build_search_notes_loop_breaker_result(
-                                search_notes_empty_streak, blocked=True
+                                search_notes_empty_streak,
+                                blocked=True,
+                                tool_name=tool_function_name,
                             )
                             blocked_event = _append_tool_journey_event(
                                 metadata,
                                 {
                                     "phase": "tool_loop_breaker_blocked",
                                     "call_id": tool_call_id,
-                                    "tool": tool_function_name,
+                                    "tool": resolved_tool_function_name,
                                     "empty_streak": search_notes_empty_streak,
-                                    "next_tool": "search_strong_sources",
+                                    "next_tool": "web_research_strong",
                                 },
                             )
                             if blocked_event:
@@ -6719,8 +6739,8 @@ async def streaming_chat_response_handler(response, ctx):
 
                         if search_notes_blocked:
                             pass
-                        elif tool_function_name in tools:
-                            tool = tools[tool_function_name]
+                        elif resolved_tool_function_name in tools:
+                            tool = tools[resolved_tool_function_name]
                             spec = tool.get("spec", {})
 
                             tool_type = tool.get("type", "")
@@ -6745,7 +6765,7 @@ async def streaming_chat_response_handler(response, ctx):
                                             "type": "execute:tool",
                                             "data": {
                                                 "id": str(uuid4()),
-                                                "name": tool_function_name,
+                                                "name": resolved_tool_function_name,
                                                 "params": tool_function_params,
                                                 "server": tool.get("server", {}),
                                                 "session_id": metadata.get(
@@ -6802,7 +6822,7 @@ async def streaming_chat_response_handler(response, ctx):
                             )
                         )
 
-                        if tool_function_name == "search_notes":
+                        if resolved_tool_function_name in NOTES_LOOKUP_TOOL_NAMES:
                             if not search_notes_blocked:
                                 if _is_empty_search_notes_result(tool_result):
                                     search_notes_empty_streak += 1
@@ -6816,16 +6836,17 @@ async def streaming_chat_response_handler(response, ctx):
                             ):
                                 search_notes_guard_active = True
                                 tool_result = _build_search_notes_loop_breaker_result(
-                                    search_notes_empty_streak
+                                    search_notes_empty_streak,
+                                    tool_name=tool_function_name,
                                 )
                                 breaker_event = _append_tool_journey_event(
                                     metadata,
                                     {
                                         "phase": "tool_loop_breaker_triggered",
                                         "call_id": tool_call_id,
-                                        "tool": tool_function_name,
+                                        "tool": resolved_tool_function_name,
                                         "empty_streak": search_notes_empty_streak,
-                                        "next_tool": "search_strong_sources",
+                                        "next_tool": "web_research_strong",
                                     },
                                 )
                                 if breaker_event:
@@ -6835,7 +6856,7 @@ async def streaming_chat_response_handler(response, ctx):
                                             "data": breaker_event,
                                         }
                                     )
-                        elif tool_function_name != "search_notes":
+                        elif resolved_tool_function_name not in NOTES_LOOKUP_TOOL_NAMES:
                             search_notes_empty_streak = 0
 
                         await terminal_event_handler(
@@ -6877,6 +6898,7 @@ async def streaming_chat_response_handler(response, ctx):
                             and tool_function_name
                             in [
                                 "search_web",
+                                "web_research_strong",
                                 "search_strong_sources",
                                 "fetch_url",
                                 "view_knowledge_file",

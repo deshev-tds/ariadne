@@ -186,7 +186,7 @@ async def search_web(
         return json.dumps({"error": str(e)})
 
 
-async def search_strong_sources(
+async def _run_web_research_strong(
     query: str,
     mode: str = "search",
     selected_categories: Optional[list[str]] = None,
@@ -202,23 +202,6 @@ async def search_strong_sources(
     __metadata__: dict = None,
     __event_emitter__=None,
 ) -> str:
-    """
-    Run strong-source web search with local-first routing and Brave fallback.
-    Use this when evidence is uncertain, time-sensitive, or high-risk, and you need
-    stronger provenance before answering.
-
-    :param query: User question or search objective
-    :param mode: list_categories | list_domains | search (default: search)
-    :param selected_categories: Optional chosen categories (1-2)
-    :param selected_domains: Optional chosen domains (1-4)
-    :param selected_time_scope: Optional time scope (evergreen | recent | breaking)
-    :param max_domains: Maximum domains allowed for focused search (default: 4)
-    :param max_queries: Maximum site-constrained search queries per phase (default: 3)
-    :param topic_hint: Optional topic hint to improve source routing
-    :param recency_days: Optional recency hint in days for freshness-sensitive tasks
-    :param include_community: Include community sources in candidate set (default: false)
-    :return: JSON object with queries, ranked items, selected domains, and quality telemetry
-    """
     if __request__ is None:
         return json.dumps({"error": "Request context not available"})
 
@@ -242,8 +225,97 @@ async def search_strong_sources(
         )
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
-        log.exception(f"search_strong_sources error: {e}")
+        log.exception(f"web_research_strong error: {e}")
         return json.dumps({"error": str(e)})
+
+
+async def web_research_strong(
+    query: str,
+    mode: str = "search",
+    selected_categories: Optional[list[str]] = None,
+    selected_domains: Optional[list[str]] = None,
+    selected_time_scope: Optional[str] = None,
+    max_domains: int = 4,
+    max_queries: int = 3,
+    topic_hint: Optional[str] = None,
+    recency_days: Optional[int] = None,
+    include_community: bool = False,
+    __request__: Request = None,
+    __user__: dict = None,
+    __metadata__: dict = None,
+    __event_emitter__=None,
+) -> str:
+    """
+    WEB SOURCES ONLY.
+    Run focused strong-source web research with local-first routing and broad fallback.
+    Use this when evidence is uncertain, time-sensitive, or high-risk, and you need
+    stronger provenance before answering.
+
+    :param query: User question or search objective
+    :param mode: list_categories | list_domains | search (default: search)
+    :param selected_categories: Optional chosen categories (1-2)
+    :param selected_domains: Optional chosen domains (1-4)
+    :param selected_time_scope: Optional time scope (evergreen | recent | breaking)
+    :param max_domains: Maximum domains allowed for focused search (default: 4)
+    :param max_queries: Maximum site-constrained search queries per phase (default: 3)
+    :param topic_hint: Optional topic hint to improve source routing
+    :param recency_days: Optional recency hint in days for freshness-sensitive tasks
+    :param include_community: Include community sources in candidate set (default: false)
+    :return: JSON object with queries, ranked items, selected domains, and quality telemetry
+    """
+    return await _run_web_research_strong(
+        query=query,
+        mode=mode,
+        selected_categories=selected_categories,
+        selected_domains=selected_domains,
+        selected_time_scope=selected_time_scope,
+        max_domains=max_domains,
+        max_queries=max_queries,
+        topic_hint=topic_hint,
+        recency_days=recency_days,
+        include_community=include_community,
+        __request__=__request__,
+        __user__=__user__,
+        __metadata__=__metadata__,
+        __event_emitter__=__event_emitter__,
+    )
+
+
+async def search_strong_sources(
+    query: str,
+    mode: str = "search",
+    selected_categories: Optional[list[str]] = None,
+    selected_domains: Optional[list[str]] = None,
+    selected_time_scope: Optional[str] = None,
+    max_domains: int = 4,
+    max_queries: int = 3,
+    topic_hint: Optional[str] = None,
+    recency_days: Optional[int] = None,
+    include_community: bool = False,
+    __request__: Request = None,
+    __user__: dict = None,
+    __metadata__: dict = None,
+    __event_emitter__=None,
+) -> str:
+    """
+    Backward-compatible alias for `web_research_strong`.
+    """
+    return await _run_web_research_strong(
+        query=query,
+        mode=mode,
+        selected_categories=selected_categories,
+        selected_domains=selected_domains,
+        selected_time_scope=selected_time_scope,
+        max_domains=max_domains,
+        max_queries=max_queries,
+        topic_hint=topic_hint,
+        recency_days=recency_days,
+        include_community=include_community,
+        __request__=__request__,
+        __user__=__user__,
+        __metadata__=__metadata__,
+        __event_emitter__=__event_emitter__,
+    )
 
 
 async def fetch_url(
@@ -781,7 +853,7 @@ async def list_memories(
 # =============================================================================
 
 
-async def search_notes(
+async def _run_notes_lookup(
     query: str,
     count: int = 5,
     start_timestamp: Optional[int] = None,
@@ -789,15 +861,6 @@ async def search_notes(
     __request__: Request = None,
     __user__: dict = None,
 ) -> str:
-    """
-    Search the user's notes by title and content.
-
-    :param query: The search query to find matching notes
-    :param count: Maximum number of results to return (default: 5)
-    :param start_timestamp: Only include notes updated after this Unix timestamp (seconds)
-    :param end_timestamp: Only include notes updated before this Unix timestamp (seconds)
-    :return: JSON with matching notes containing id, title, and content snippet
-    """
     if __request__ is None:
         return json.dumps({"error": "Request context not available"})
 
@@ -866,8 +929,57 @@ async def search_notes(
 
         return json.dumps(notes, ensure_ascii=False)
     except Exception as e:
-        log.exception(f"search_notes error: {e}")
+        log.exception(f"notes_lookup error: {e}")
         return json.dumps({"error": str(e)})
+
+
+async def notes_lookup(
+    query: str,
+    count: int = 5,
+    start_timestamp: Optional[int] = None,
+    end_timestamp: Optional[int] = None,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    PERSONAL NOTES ONLY.
+    Search the user's notes by title and content.
+
+    :param query: The search query to find matching notes
+    :param count: Maximum number of results to return (default: 5)
+    :param start_timestamp: Only include notes updated after this Unix timestamp (seconds)
+    :param end_timestamp: Only include notes updated before this Unix timestamp (seconds)
+    :return: JSON with matching notes containing id, title, and content snippet
+    """
+    return await _run_notes_lookup(
+        query=query,
+        count=count,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        __request__=__request__,
+        __user__=__user__,
+    )
+
+
+async def search_notes(
+    query: str,
+    count: int = 5,
+    start_timestamp: Optional[int] = None,
+    end_timestamp: Optional[int] = None,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Backward-compatible alias for `notes_lookup`.
+    """
+    return await _run_notes_lookup(
+        query=query,
+        count=count,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        __request__=__request__,
+        __user__=__user__,
+    )
 
 
 async def view_note(

@@ -53,7 +53,7 @@ from open_webui.env import (
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.tools.builtin import (
     search_web,
-    search_strong_sources,
+    web_research_strong,
     fetch_url,
     generate_image,
     edit_image,
@@ -65,7 +65,7 @@ from open_webui.tools.builtin import (
     list_memories,
     get_current_timestamp,
     calculate_timestamp,
-    search_notes,
+    notes_lookup,
     search_chats,
     search_channels,
     search_channel_messages,
@@ -485,7 +485,7 @@ def get_builtin_tools(
         if features.get("web_search"):
             builtin_functions.append(search_web)
         if features.get("focused_search"):
-            builtin_functions.append(search_strong_sources)
+            builtin_functions.append(web_research_strong)
         if features.get("web_search") or features.get("focused_search"):
             builtin_functions.append(fetch_url)
 
@@ -519,7 +519,7 @@ def get_builtin_tools(
         request.app.state.config, "ENABLE_NOTES", False
     ):
         builtin_functions.extend(
-            [search_notes, view_note, write_note, replace_note_content]
+            [notes_lookup, view_note, write_note, replace_note_content]
         )
 
     # Channels tools - search channels and messages (if builtin category enabled AND channels enabled globally)

@@ -159,6 +159,44 @@ async def test_search_strong_sources_tool_returns_telemetry_schema(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_web_research_strong_tool_returns_telemetry_schema(monkeypatch):
+    async def fake_execute(_request, **kwargs):
+        assert kwargs["query"] == "planner quality threshold"
+        assert kwargs["mode"] == "search"
+        return {
+            "phase": "completed",
+            "next_action": "answer",
+            "queries": ["planner quality threshold site:local.docs"],
+            "items": [],
+            "evidence_items": [],
+            "citation_items": [],
+            "candidate_count": 0,
+            "evidence_count": 0,
+            "citation_count": 0,
+            "selected_domains": ["local.docs"],
+            "coverage_complete": True,
+            "quality_score": 0.91,
+            "local_phase_executed": True,
+            "brave_fallback_used": False,
+            "fallback_reason": None,
+        }
+
+    monkeypatch.setattr(builtin_tools, "execute_strong_source_search", fake_execute)
+    request = _make_request()
+
+    output = await builtin_tools.web_research_strong(
+        query="planner quality threshold",
+        __request__=request,
+    )
+    payload = json.loads(output)
+
+    assert payload["phase"] == "completed"
+    assert payload["next_action"] == "answer"
+    assert payload["local_phase_executed"] is True
+    assert payload["brave_fallback_used"] is False
+
+
+@pytest.mark.asyncio
 async def test_execute_strong_source_search_requires_category_when_low_confidence(
     monkeypatch,
 ):
