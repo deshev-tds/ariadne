@@ -191,6 +191,7 @@ async def search_strong_sources(
     mode: str = "search",
     selected_categories: Optional[list[str]] = None,
     selected_domains: Optional[list[str]] = None,
+    selected_time_scope: Optional[str] = None,
     max_domains: int = 4,
     max_queries: int = 3,
     topic_hint: Optional[str] = None,
@@ -210,6 +211,7 @@ async def search_strong_sources(
     :param mode: list_categories | list_domains | search (default: search)
     :param selected_categories: Optional chosen categories (1-2)
     :param selected_domains: Optional chosen domains (1-4)
+    :param selected_time_scope: Optional time scope (evergreen | recent | breaking)
     :param max_domains: Maximum domains allowed for focused search (default: 4)
     :param max_queries: Maximum site-constrained search queries per phase (default: 3)
     :param topic_hint: Optional topic hint to improve source routing
@@ -228,6 +230,7 @@ async def search_strong_sources(
             mode=mode,
             selected_categories=selected_categories,
             selected_domains=selected_domains,
+            selected_time_scope=selected_time_scope,
             max_domains=max_domains,
             user=user,
             max_queries=max_queries,

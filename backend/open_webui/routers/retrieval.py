@@ -2807,6 +2807,16 @@ COARSE_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 COARSE_CONFIDENCE_HIGH = 0.75
 CITATION_TRUST_MIN = 0.72
+TIME_SCOPE_EVERGREEN = "evergreen"
+TIME_SCOPE_RECENT = "recent"
+TIME_SCOPE_BREAKING = "breaking"
+TIME_SCOPE_ALLOWED = {
+    TIME_SCOPE_EVERGREEN,
+    TIME_SCOPE_RECENT,
+    TIME_SCOPE_BREAKING,
+}
+DEFAULT_RECENT_RECENCY_DAYS = 365
+DEFAULT_BREAKING_RECENCY_DAYS = 30
 
 
 def _topics_for_category(category: str) -> list[str]:
@@ -2829,6 +2839,81 @@ def _unique_ordered(values: list[str]) -> list[str]:
         seen.add(value)
         ordered.append(value)
     return ordered
+
+
+def _normalize_positive_int(value: Any) -> Optional[int]:
+    try:
+        normalized = int(value)
+    except Exception:
+        return None
+    if normalized <= 0:
+        return None
+    return normalized
+
+
+def _normalize_time_scope(value: Optional[str]) -> str:
+    candidate = sanitize_query(value or "").lower()
+    if candidate in TIME_SCOPE_ALLOWED:
+        return candidate
+    return ""
+
+
+def _build_time_scope_options(
+    *,
+    plan_time_sensitive: bool,
+    recency_days_hint: Optional[int],
+) -> list[dict[str, Any]]:
+    hinted_days = _normalize_positive_int(recency_days_hint)
+    recent_days = hinted_days or DEFAULT_RECENT_RECENCY_DAYS
+    breaking_days = min(recent_days, DEFAULT_BREAKING_RECENCY_DAYS)
+    recommended_scope = (
+        TIME_SCOPE_RECENT if plan_time_sensitive else TIME_SCOPE_EVERGREEN
+    )
+
+    return [
+        {
+            "scope": TIME_SCOPE_EVERGREEN,
+            "summary": "Evergreen facts. Do not constrain by recent days.",
+            "recency_days": None,
+            "recommended": recommended_scope == TIME_SCOPE_EVERGREEN,
+        },
+        {
+            "scope": TIME_SCOPE_RECENT,
+            "summary": "Recent developments when freshness matters.",
+            "recency_days": recent_days,
+            "recommended": recommended_scope == TIME_SCOPE_RECENT,
+        },
+        {
+            "scope": TIME_SCOPE_BREAKING,
+            "summary": "Breaking updates only.",
+            "recency_days": breaking_days,
+            "recommended": False,
+        },
+    ]
+
+
+def _compute_effective_recency_days(
+    *,
+    selected_time_scope: str,
+    recency_days_hint: Optional[int],
+    plan_time_sensitive: bool,
+) -> tuple[Optional[int], str]:
+    scope = selected_time_scope
+    if scope not in TIME_SCOPE_ALLOWED:
+        scope = TIME_SCOPE_RECENT if plan_time_sensitive else TIME_SCOPE_EVERGREEN
+
+    hinted_days = _normalize_positive_int(recency_days_hint)
+    if scope == TIME_SCOPE_EVERGREEN:
+        return None, "scope_evergreen"
+
+    if scope == TIME_SCOPE_BREAKING:
+        if hinted_days is not None:
+            return min(hinted_days, DEFAULT_BREAKING_RECENCY_DAYS), "scope_breaking"
+        return DEFAULT_BREAKING_RECENCY_DAYS, "scope_breaking_default"
+
+    if hinted_days is not None:
+        return hinted_days, "scope_recent_hint"
+    return DEFAULT_RECENT_RECENCY_DAYS, "scope_recent_default"
 
 
 def _coarse_route_category(
@@ -2994,6 +3079,10 @@ def _build_step_payload(
     domain_options: list[dict[str, Any]],
     selected_categories: list[str],
     selected_domains: list[str],
+    time_scope_options: list[dict[str, Any]],
+    selected_time_scope: str,
+    effective_recency_days: Optional[int] = None,
+    recency_policy_reason: Optional[str] = None,
     fallback_reason: Optional[str] = None,
     message: Optional[str] = None,
     errors: Optional[list[str]] = None,
@@ -3005,8 +3094,12 @@ def _build_step_payload(
         "coarse_route": coarse_route,
         "category_options": category_options,
         "domain_options": domain_options,
+        "time_scope_options": time_scope_options,
         "selected_categories": selected_categories,
         "selected_domains": selected_domains,
+        "selected_time_scope": selected_time_scope,
+        "effective_recency_days": effective_recency_days,
+        "recency_policy_reason": recency_policy_reason,
         "fallback_reason": fallback_reason,
         "errors": errors or [],
         "message": message or "",
@@ -3036,6 +3129,7 @@ async def execute_strong_source_search(
     mode: str = "search",
     selected_categories: Optional[list[str]] = None,
     selected_domains: Optional[list[str]] = None,
+    selected_time_scope: Optional[str] = None,
     max_domains: int = 4,
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
@@ -3125,6 +3219,20 @@ async def execute_strong_source_search(
             if normalize_domain(str(domain))
         ]
     )
+    normalized_time_scope = _normalize_time_scope(selected_time_scope)
+    if not normalized_time_scope:
+        normalized_time_scope = (
+            TIME_SCOPE_RECENT if plan.time_sensitive else TIME_SCOPE_EVERGREEN
+        )
+    time_scope_options = _build_time_scope_options(
+        plan_time_sensitive=plan.time_sensitive,
+        recency_days_hint=recency_days,
+    )
+    effective_recency_days, recency_policy_reason = _compute_effective_recency_days(
+        selected_time_scope=normalized_time_scope,
+        recency_days_hint=recency_days,
+        plan_time_sensitive=plan.time_sensitive,
+    )
 
     if mode == "list_categories":
         payload = _build_step_payload(
@@ -3136,6 +3244,10 @@ async def execute_strong_source_search(
             domain_options=[],
             selected_categories=normalized_categories,
             selected_domains=normalized_domains,
+            time_scope_options=time_scope_options,
+            selected_time_scope=normalized_time_scope,
+            effective_recency_days=effective_recency_days,
+            recency_policy_reason=recency_policy_reason,
             message="Choose 1-2 categories, then call mode=list_domains.",
         )
         await emit_focus_status(
@@ -3163,6 +3275,10 @@ async def execute_strong_source_search(
                     domain_options=[],
                     selected_categories=[],
                     selected_domains=[],
+                    time_scope_options=time_scope_options,
+                    selected_time_scope=normalized_time_scope,
+                    effective_recency_days=effective_recency_days,
+                    recency_policy_reason=recency_policy_reason,
                     message="Category selection required before domain selection.",
                 )
 
@@ -3185,7 +3301,11 @@ async def execute_strong_source_search(
             domain_options=domain_options,
             selected_categories=normalized_categories,
             selected_domains=[],
-            message="Choose 1-4 domains from domain_options, then call mode=search.",
+            time_scope_options=time_scope_options,
+            selected_time_scope=normalized_time_scope,
+            effective_recency_days=effective_recency_days,
+            recency_policy_reason=recency_policy_reason,
+            message="Choose 1-4 domains and a time scope, then call mode=search.",
         )
 
     # mode == "search"
@@ -3202,6 +3322,10 @@ async def execute_strong_source_search(
                 domain_options=[],
                 selected_categories=[],
                 selected_domains=[],
+                time_scope_options=time_scope_options,
+                selected_time_scope=normalized_time_scope,
+                effective_recency_days=effective_recency_days,
+                recency_policy_reason=recency_policy_reason,
                 message="Category selection required before focused search.",
             )
             await emit_focus_status(
@@ -3236,6 +3360,10 @@ async def execute_strong_source_search(
             domain_options=domain_options,
             selected_categories=normalized_categories,
             selected_domains=[],
+            time_scope_options=time_scope_options,
+            selected_time_scope=normalized_time_scope,
+            effective_recency_days=effective_recency_days,
+            recency_policy_reason=recency_policy_reason,
             message="Domain selection required before focused search.",
         )
         await emit_focus_status(
@@ -3271,6 +3399,10 @@ async def execute_strong_source_search(
             domain_options=domain_options,
             selected_categories=normalized_categories,
             selected_domains=normalized_domains,
+            time_scope_options=time_scope_options,
+            selected_time_scope=normalized_time_scope,
+            effective_recency_days=effective_recency_days,
+            recency_policy_reason=recency_policy_reason,
             errors=validation_errors,
             message="Domain selection is invalid. Pick 1-4 domains from domain_options.",
         )
@@ -3310,15 +3442,19 @@ async def execute_strong_source_search(
             "description": "Focused search: running targeted queries",
             "query": cleaned_query,
             "done": False,
-            "plan": {
-                "mode": "focused_local_first",
-                "topic": plan.topic,
-                "selected_domains": normalized_domains,
-            },
-            "planner": {"mode": "focused_local_first"},
-            "urls": domain_urls(normalized_domains),
-        }
-    )
+                "plan": {
+                    "mode": "focused_local_first",
+                    "topic": plan.topic,
+                    "selected_domains": normalized_domains,
+                    "selected_time_scope": normalized_time_scope,
+                },
+                "planner": {
+                    "mode": "focused_local_first",
+                    "effective_recency_days": effective_recency_days,
+                },
+                "urls": domain_urls(normalized_domains),
+            }
+        )
 
     used_queries: set[str] = set()
     executed_queries: list[str] = []
@@ -3329,7 +3465,7 @@ async def execute_strong_source_search(
     phase_a_domains = local_domains if local_first else list(normalized_domains)
     for domain in phase_a_domains[:bounded_max_queries]:
         candidate = _apply_recency_hint(
-            build_targeted_query(plan, domain), recency_days
+            build_targeted_query(plan, domain), effective_recency_days
         )
         candidate = sanitize_query(candidate)
         if not candidate or candidate in used_queries:
@@ -3399,11 +3535,13 @@ async def execute_strong_source_search(
                     "mode": "focused_local_first",
                     "topic": plan.topic,
                     "selected_domains": normalized_domains,
+                    "selected_time_scope": normalized_time_scope,
                 },
                 "planner": {
                     "mode": "focused_local_first",
                     "executed_queries": list(executed_queries),
                     "fallback_reason": fallback_reason,
+                    "effective_recency_days": effective_recency_days,
                 },
                 "urls": domain_urls(normalized_domains),
             }
@@ -3417,7 +3555,7 @@ async def execute_strong_source_search(
 
         for domain in non_local_domains:
             candidate = _apply_recency_hint(
-                build_targeted_query(plan, domain), recency_days
+                build_targeted_query(plan, domain), effective_recency_days
             )
             candidate = sanitize_query(candidate)
             if not candidate or candidate in used_queries:
@@ -3428,7 +3566,9 @@ async def execute_strong_source_search(
                 break
 
         if not fallback_queries:
-            fallback_query = _apply_recency_hint(plan.base_exact_query, recency_days)
+            fallback_query = _apply_recency_hint(
+                plan.base_exact_query, effective_recency_days
+            )
             fallback_query = sanitize_query(fallback_query)
             if fallback_query and fallback_query not in used_queries:
                 used_queries.add(fallback_query)
@@ -3524,6 +3664,10 @@ async def execute_strong_source_search(
         "category_options": category_options,
         "domain_options": domain_options,
         "selected_categories": normalized_categories,
+        "time_scope_options": time_scope_options,
+        "selected_time_scope": normalized_time_scope,
+        "effective_recency_days": effective_recency_days,
+        "recency_policy_reason": recency_policy_reason,
         "queries": executed_queries,
         "items": items,
         "evidence_items": evidence_items,
@@ -3550,6 +3694,9 @@ async def execute_strong_source_search(
         "candidate_count": len(items),
         "evidence_count": len(evidence_items),
         "citation_count": len(citation_items),
+        "selected_time_scope": normalized_time_scope,
+        "effective_recency_days": effective_recency_days,
+        "recency_policy_reason": recency_policy_reason,
         "show_debug_metrics": debug_tool_journey,
     }
     if debug_tool_journey:
@@ -3568,6 +3715,7 @@ async def execute_strong_source_search(
                 "mode": "focused_local_first",
                 "topic": plan.topic,
                 "selected_domains": normalized_domains,
+                "selected_time_scope": normalized_time_scope,
             },
             "planner": planner_payload,
             "items": citation_items,

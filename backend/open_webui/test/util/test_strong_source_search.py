@@ -27,11 +27,11 @@ def _make_request(**config_overrides):
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=config)))
 
 
-def _make_plan() -> WebSearchPlan:
+def _make_plan(*, time_sensitive: bool = True) -> WebSearchPlan:
     return WebSearchPlan(
         intent="docs_api",
         topic="software_apis_devops",
-        time_sensitive=True,
+        time_sensitive=time_sensitive,
         community_requested=False,
         selected_domains=["local.docs", "remote.docs"],
         selected_sources=[],
@@ -216,6 +216,12 @@ async def test_execute_strong_source_search_high_confidence_skips_category_to_do
     assert payload["selected_categories"] == ["software"]
     assert payload["next_action"] == "select_domains"
     assert len(payload["domain_options"]) >= 1
+    assert len(payload["time_scope_options"]) == 3
+    assert {item["scope"] for item in payload["time_scope_options"]} == {
+        "evergreen",
+        "recent",
+        "breaking",
+    }
 
 
 @pytest.mark.asyncio
@@ -322,6 +328,204 @@ async def test_execute_strong_source_search_local_phase_only(monkeypatch):
     assert payload["brave_fallback_used"] is False
     assert all("site:" in query for query in payload["queries"])
     assert all(engine == "duckduckgo" for engine, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_execute_strong_source_search_evergreen_scope_suppresses_recency(
+    monkeypatch,
+):
+    request = _make_request(WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS=1)
+    plan = _make_plan(time_sensitive=False)
+    calls = []
+
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options([("local.docs", True, "primary_docs")]),
+    )
+
+    def fake_search_web(_request, engine, query, _user=None):
+        calls.append((engine, query))
+        return [
+            SearchResult(
+                link="https://local.docs/evergreen",
+                title="Evergreen result",
+                snippet="Stable domain knowledge",
+            )
+        ]
+
+    monkeypatch.setattr(retrieval, "search_web", fake_search_web)
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_signal_quality",
+        lambda _items, _plan: {
+            "avg_top_score": 0.92,
+            "trusted_unique_domains": 1,
+            "scored_items": [
+                {
+                    "title": "Evergreen result",
+                    "link": "https://local.docs/evergreen",
+                    "snippet": "Stable domain knowledge",
+                    "domain": "local.docs",
+                    "quality": 0.92,
+                    "trust": 0.95,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="penicillin beta lactam mechanism",
+        recency_days=365,
+        selected_categories=["science"],
+        selected_domains=["local.docs"],
+        selected_time_scope="evergreen",
+    )
+
+    assert payload["effective_recency_days"] is None
+    assert payload["selected_time_scope"] == "evergreen"
+    assert all("last " not in query for query in payload["queries"])
+    assert all("last " not in query for _, query in calls)
+
+
+@pytest.mark.asyncio
+async def test_execute_strong_source_search_recent_scope_applies_recency(monkeypatch):
+    request = _make_request(WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS=1)
+    plan = _make_plan(time_sensitive=False)
+    calls = []
+
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options([("local.docs", True, "primary_docs")]),
+    )
+
+    def fake_search_web(_request, engine, query, _user=None):
+        calls.append((engine, query))
+        return [
+            SearchResult(
+                link="https://local.docs/recent",
+                title="Recent result",
+                snippet="Recent signals",
+            )
+        ]
+
+    monkeypatch.setattr(retrieval, "search_web", fake_search_web)
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_signal_quality",
+        lambda _items, _plan: {
+            "avg_top_score": 0.92,
+            "trusted_unique_domains": 1,
+            "scored_items": [
+                {
+                    "title": "Recent result",
+                    "link": "https://local.docs/recent",
+                    "snippet": "Recent signals",
+                    "domain": "local.docs",
+                    "quality": 0.92,
+                    "trust": 0.95,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="penicillin beta lactam mechanism",
+        recency_days=120,
+        selected_categories=["science"],
+        selected_domains=["local.docs"],
+        selected_time_scope="recent",
+    )
+
+    assert payload["effective_recency_days"] == 120
+    assert payload["selected_time_scope"] == "recent"
+    assert all("last 120 days" in query for query in payload["queries"])
+    assert all("last 120 days" in query for _, query in calls)
+
+
+@pytest.mark.asyncio
+async def test_execute_strong_source_search_default_scope_uses_evergreen_when_not_time_sensitive(
+    monkeypatch,
+):
+    request = _make_request(WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS=1)
+    plan = _make_plan(time_sensitive=False)
+    calls = []
+
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options([("local.docs", True, "primary_docs")]),
+    )
+
+    def fake_search_web(_request, engine, query, _user=None):
+        calls.append((engine, query))
+        return [
+            SearchResult(
+                link="https://local.docs/default",
+                title="Default scope",
+                snippet="Evergreen default",
+            )
+        ]
+
+    monkeypatch.setattr(retrieval, "search_web", fake_search_web)
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_signal_quality",
+        lambda _items, _plan: {
+            "avg_top_score": 0.92,
+            "trusted_unique_domains": 1,
+            "scored_items": [
+                {
+                    "title": "Default scope",
+                    "link": "https://local.docs/default",
+                    "snippet": "Evergreen default",
+                    "domain": "local.docs",
+                    "quality": 0.92,
+                    "trust": 0.95,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="penicillin beta lactam mechanism",
+        recency_days=365,
+        selected_categories=["science"],
+        selected_domains=["local.docs"],
+    )
+
+    assert payload["selected_time_scope"] == "evergreen"
+    assert payload["effective_recency_days"] is None
+    assert all("last " not in query for query in payload["queries"])
+    assert all("last " not in query for _, query in calls)
 
 
 @pytest.mark.asyncio
