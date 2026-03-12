@@ -188,7 +188,10 @@ def test_append_tool_journey_event_is_on_demand():
 
     assert event is not None
     assert event["phase"] == "tool_execute_done"
-    assert metadata["tool_journey_telemetry"]["events"][0]["tool"] == "search_strong_sources"
+    assert (
+        metadata["tool_journey_telemetry"]["events"][0]["tool"]
+        == "search_strong_sources"
+    )
 
 
 @pytest.mark.asyncio
@@ -236,7 +239,9 @@ async def test_non_streaming_chat_response_includes_tool_journey_telemetry(monke
             "params": {"debug_tool_journey": True},
             "tool_journey_telemetry": {
                 "enabled": True,
-                "events": [{"phase": "tool_execute_done", "tool": "search_strong_sources"}],
+                "events": [
+                    {"phase": "tool_execute_done", "tool": "search_strong_sources"}
+                ],
             },
         },
         "events": [],
@@ -251,5 +256,40 @@ async def test_non_streaming_chat_response_includes_tool_journey_telemetry(monke
     )
 
     assert "toolJourneyTelemetry" in result
-    assert result["toolJourneyTelemetry"]["events"][0]["tool"] == "search_strong_sources"
-    assert saved_messages[0][2]["toolJourneyTelemetry"]["events"][0]["phase"] == "tool_execute_done"
+    assert (
+        result["toolJourneyTelemetry"]["events"][0]["tool"] == "search_strong_sources"
+    )
+    assert (
+        saved_messages[0][2]["toolJourneyTelemetry"]["events"][0]["phase"]
+        == "tool_execute_done"
+    )
+
+
+def test_search_strong_sources_citation_source_prefers_citation_items():
+    tool_result = {
+        "items": [
+            {
+                "title": "Candidate only",
+                "link": "https://candidate.example/a",
+                "snippet": "candidate",
+            }
+        ],
+        "citation_items": [
+            {
+                "title": "Citation kept",
+                "link": "https://citation.example/b",
+                "snippet": "citation",
+            }
+        ],
+    }
+
+    sources = middleware.get_citation_source_from_tool_result(
+        "search_strong_sources",
+        {},
+        tool_result,
+    )
+
+    assert len(sources) == 1
+    metadata = sources[0]["metadata"]
+    assert len(metadata) == 1
+    assert metadata[0]["source"] == "https://citation.example/b"

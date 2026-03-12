@@ -111,6 +111,7 @@
           "planner_hints": {
             "default_priority": 1,
             "allow_site_constraint": true,
+            "is_local": true,
             "prefer_for_time_sensitive": false,
             "prefer_for_exact_facts": true,
             "prefer_for_community_signals": false
@@ -137,6 +138,7 @@
           "planner_hints": {
             "default_priority": 2,
             "allow_site_constraint": true,
+            "is_local": true,
             "prefer_for_time_sensitive": false,
             "prefer_for_exact_facts": true,
             "prefer_for_community_signals": false
@@ -508,6 +510,7 @@
           "planner_hints": {
             "default_priority": 1,
             "allow_site_constraint": true,
+            "is_local": true,
             "prefer_for_time_sensitive": true,
             "prefer_for_exact_facts": true,
             "prefer_for_community_signals": false
@@ -533,6 +536,7 @@
           "planner_hints": {
             "default_priority": 2,
             "allow_site_constraint": true,
+            "is_local": true,
             "prefer_for_time_sensitive": true,
             "prefer_for_exact_facts": true,
             "prefer_for_community_signals": false
@@ -891,6 +895,7 @@
           "planner_hints": {
             "default_priority": 2,
             "allow_site_constraint": true,
+            "is_local": true,
             "prefer_for_time_sensitive": true,
             "prefer_for_exact_facts": true,
             "prefer_for_community_signals": false
@@ -941,6 +946,7 @@
           "planner_hints": {
             "default_priority": 4,
             "allow_site_constraint": true,
+            "is_local": true,
             "prefer_for_time_sensitive": true,
             "prefer_for_exact_facts": true,
             "prefer_for_community_signals": false
@@ -1840,6 +1846,7 @@
           "planner_hints": {
             "default_priority": 1,
             "allow_site_constraint": true,
+            "is_local": true,
             "prefer_for_time_sensitive": false,
             "prefer_for_exact_facts": true,
             "prefer_for_community_signals": false
@@ -1965,6 +1972,7 @@
           "planner_hints": {
             "default_priority": 6,
             "allow_site_constraint": true,
+            "is_local": true,
             "prefer_for_time_sensitive": false,
             "prefer_for_exact_facts": true,
             "prefer_for_community_signals": false

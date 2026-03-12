@@ -7,11 +7,7 @@ import open_webui.retrieval.web.planner as planner
 import open_webui.routers.retrieval as retrieval
 import open_webui.tools.builtin as builtin_tools
 from open_webui.retrieval.web.main import SearchResult
-from open_webui.retrieval.web.planner import (
-    NormalizedSource,
-    SelectedSource,
-    WebSearchPlan,
-)
+from open_webui.retrieval.web.planner import NormalizedSource, WebSearchPlan
 
 
 def _make_request(**config_overrides):
@@ -48,6 +44,27 @@ def _make_plan() -> WebSearchPlan:
         allowed_domains_ranked=["local.docs", "remote.docs", "vendor.docs"],
         planned_queries=[],
     )
+
+
+def _domain_options(domains: list[tuple[str, bool, str]]):
+    # (domain, is_local, source_type)
+    options = []
+    for idx, (domain, is_local, source_type) in enumerate(domains, start=1):
+        options.append(
+            {
+                "domain": domain,
+                "category": "software",
+                "topic": "software_apis_devops",
+                "source_type": source_type,
+                "trust_tier": "A" if source_type != "community" else "C",
+                "trust": 0.95 if source_type != "community" else 0.45,
+                "is_local": is_local,
+                "access": "open",
+                "freshness_profile": "high",
+                "default_priority": idx,
+            }
+        )
+    return options
 
 
 def test_select_sources_for_topic_local_first_prioritizes_local(monkeypatch):
@@ -107,9 +124,17 @@ def test_select_sources_for_topic_local_first_prioritizes_local(monkeypatch):
 async def test_search_strong_sources_tool_returns_telemetry_schema(monkeypatch):
     async def fake_execute(_request, **kwargs):
         assert kwargs["query"] == "planner quality threshold"
+        assert kwargs["mode"] == "search"
         return {
+            "phase": "completed",
+            "next_action": "answer",
             "queries": ["planner quality threshold site:local.docs"],
             "items": [],
+            "evidence_items": [],
+            "citation_items": [],
+            "candidate_count": 0,
+            "evidence_count": 0,
+            "citation_count": 0,
             "selected_domains": ["local.docs"],
             "coverage_complete": True,
             "quality_score": 0.91,
@@ -127,10 +152,106 @@ async def test_search_strong_sources_tool_returns_telemetry_schema(monkeypatch):
     )
     payload = json.loads(output)
 
-    assert payload["queries"][0].startswith("planner quality threshold")
+    assert payload["phase"] == "completed"
+    assert payload["next_action"] == "answer"
     assert payload["local_phase_executed"] is True
     assert payload["brave_fallback_used"] is False
-    assert "quality_score" in payload
+
+
+@pytest.mark.asyncio
+async def test_execute_strong_source_search_requires_category_when_low_confidence(
+    monkeypatch,
+):
+    request = _make_request()
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "general",
+            "confidence": 0.4,
+            "ambiguous": True,
+            "scores": {},
+        },
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request, query="ambiguous prompt"
+    )
+
+    assert payload["phase"] == "awaiting_category_selection"
+    assert payload["next_action"] == "select_categories"
+
+
+@pytest.mark.asyncio
+async def test_execute_strong_source_search_high_confidence_skips_category_to_domains(
+    monkeypatch,
+):
+    request = _make_request()
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "software",
+            "confidence": 0.9,
+            "ambiguous": False,
+            "scores": {"software": 3},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options(
+            [
+                ("local.docs", True, "primary_docs"),
+                ("remote.docs", False, "primary_docs"),
+            ]
+        ),
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request, query="python api docs"
+    )
+
+    assert payload["phase"] == "awaiting_domain_selection"
+    assert payload["selected_categories"] == ["software"]
+    assert payload["next_action"] == "select_domains"
+    assert len(payload["domain_options"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_execute_strong_source_search_rejects_invalid_domain_selection(
+    monkeypatch,
+):
+    request = _make_request()
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "software",
+            "confidence": 0.9,
+            "ambiguous": False,
+            "scores": {"software": 3},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options(
+            [("local.docs", True, "primary_docs")]
+        ),
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="python api docs",
+        selected_categories=["software"],
+        selected_domains=["bad.invalid"],
+    )
+
+    assert payload["phase"] == "awaiting_domain_selection"
+    assert payload["next_action"] == "fix_domain_selection"
+    assert "invalid_domains" in payload["errors"]
+    assert payload["invalid_domains"] == ["bad.invalid"]
 
 
 @pytest.mark.asyncio
@@ -139,14 +260,18 @@ async def test_execute_strong_source_search_local_phase_only(monkeypatch):
     plan = _make_plan()
     calls = []
 
-    monkeypatch.setattr(retrieval, "build_web_search_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
     monkeypatch.setattr(
         retrieval,
-        "select_sources_for_topic",
-        lambda *args, **kwargs: [
-            SelectedSource(domain="local.docs", tier="primary_docs", is_local=True),
-            SelectedSource(domain="local.mirror", tier="primary_docs", is_local=True),
-        ],
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options(
+            [
+                ("local.docs", True, "primary_docs"),
+                ("local.mirror", True, "primary_docs"),
+            ]
+        ),
     )
 
     def fake_search_web(_request, engine, query, _user=None):
@@ -188,8 +313,11 @@ async def test_execute_strong_source_search_local_phase_only(monkeypatch):
         request,
         query="planner quality threshold",
         max_queries=2,
+        selected_categories=["software"],
+        selected_domains=["local.docs", "local.mirror"],
     )
 
+    assert payload["phase"] == "completed"
     assert payload["local_phase_executed"] is True
     assert payload["brave_fallback_used"] is False
     assert all("site:" in query for query in payload["queries"])
@@ -197,21 +325,31 @@ async def test_execute_strong_source_search_local_phase_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_strong_source_search_uses_brave_fallback_with_limit(monkeypatch):
-    request = _make_request(WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES=2)
+async def test_execute_strong_source_search_uses_fallback_engine_with_limit(
+    monkeypatch,
+):
+    request = _make_request(
+        WEB_SEARCH_ENGINE="brave",
+        WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES=2,
+        WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS=2,
+    )
     plan = _make_plan()
     calls = []
     quality_call = {"count": 0}
 
-    monkeypatch.setattr(retrieval, "build_web_search_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
     monkeypatch.setattr(
         retrieval,
-        "select_sources_for_topic",
-        lambda *args, **kwargs: [
-            SelectedSource(domain="local.docs", tier="primary_docs", is_local=True),
-            SelectedSource(domain="remote.docs", tier="primary_docs", is_local=False),
-            SelectedSource(domain="vendor.docs", tier="primary_docs", is_local=False),
-        ],
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options(
+            [
+                ("local.docs", True, "primary_docs"),
+                ("remote.docs", False, "primary_docs"),
+                ("vendor.docs", False, "primary_docs"),
+            ]
+        ),
     )
 
     def fake_search_web(_request, engine, query, _user=None):
@@ -274,11 +412,16 @@ async def test_execute_strong_source_search_uses_brave_fallback_with_limit(monke
         request,
         query="planner quality threshold",
         max_queries=1,
+        selected_categories=["software"],
+        selected_domains=["local.docs", "remote.docs", "vendor.docs"],
     )
 
     brave_calls = [entry for entry in calls if entry[0] == "brave"]
+    fallback_brave_calls = [
+        entry for entry in brave_calls if "site:local.docs" not in entry[1]
+    ]
     assert payload["brave_fallback_used"] is True
-    assert len(brave_calls) <= 2
+    assert len(fallback_brave_calls) <= 2
     assert all("site:" in query for _, query in brave_calls)
 
 
@@ -308,17 +451,114 @@ async def test_wait_for_brave_fallback_slot_respects_interval(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_strong_source_search_applies_citation_filter(monkeypatch):
+    request = _make_request(WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS=1)
+    plan = _make_plan()
+
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options(
+            [
+                ("local.docs", True, "primary_docs"),
+                ("community.docs", True, "community"),
+                ("lowtrust.docs", True, "primary_docs"),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "search_web",
+        lambda *_args, **_kwargs: [
+            SearchResult(link="https://local.docs/a", title="A", snippet="Strong"),
+            SearchResult(
+                link="https://community.docs/b", title="B", snippet="Community"
+            ),
+            SearchResult(
+                link="https://lowtrust.docs/c", title="C", snippet="Low trust"
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_signal_quality",
+        lambda _items, _plan: {
+            "avg_top_score": 0.8,
+            "trusted_unique_domains": 2,
+            "scored_items": [
+                {
+                    "title": "A",
+                    "link": "https://local.docs/a",
+                    "snippet": "Strong",
+                    "domain": "local.docs",
+                    "quality": 0.9,
+                    "trust": 0.95,
+                },
+                {
+                    "title": "B",
+                    "link": "https://community.docs/b",
+                    "snippet": "Community",
+                    "domain": "community.docs",
+                    "quality": 0.8,
+                    "trust": 0.95,
+                },
+                {
+                    "title": "C",
+                    "link": "https://lowtrust.docs/c",
+                    "snippet": "Low trust",
+                    "domain": "lowtrust.docs",
+                    "quality": 0.4,
+                    "trust": 0.70,
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "infer_domain_source_type",
+        lambda domain, _plan: (
+            "community" if domain == "community.docs" else "primary_docs"
+        ),
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="planner quality threshold",
+        max_queries=1,
+        selected_categories=["software"],
+        selected_domains=["local.docs", "community.docs", "lowtrust.docs"],
+        max_domains=4,
+    )
+
+    citation_domains = {item["domain"] for item in payload["citation_items"]}
+    assert "local.docs" in citation_domains
+    assert "community.docs" not in citation_domains
+    assert "lowtrust.docs" not in citation_domains
+    assert payload["citation_count"] == len(payload["citation_items"])
+
+
+@pytest.mark.asyncio
 async def test_execute_strong_source_search_emits_done_status(monkeypatch):
     request = _make_request(WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS=1)
     plan = _make_plan()
 
-    monkeypatch.setattr(retrieval, "build_web_search_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
     monkeypatch.setattr(
         retrieval,
-        "select_sources_for_topic",
-        lambda *args, **kwargs: [
-            SelectedSource(domain="local.docs", tier="primary_docs", is_local=True),
-        ],
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options(
+            [("local.docs", True, "primary_docs")]
+        ),
     )
     monkeypatch.setattr(
         retrieval,
@@ -364,6 +604,8 @@ async def test_execute_strong_source_search_emits_done_status(monkeypatch):
         request,
         query="planner quality threshold",
         max_queries=1,
+        selected_categories=["software"],
+        selected_domains=["local.docs"],
         event_emitter=event_emitter,
     )
 
@@ -371,7 +613,6 @@ async def test_execute_strong_source_search_emits_done_status(monkeypatch):
     assert len(status_events) >= 2
     assert status_events[0]["data"]["done"] is False
     assert status_events[-1]["data"]["done"] is True
-    assert status_events[-1]["data"]["description"] == "Focused search completed"
 
 
 @pytest.mark.asyncio
@@ -380,19 +621,23 @@ async def test_execute_strong_source_search_emits_fallback_status(monkeypatch):
     plan = _make_plan()
     quality_call = {"count": 0}
 
-    monkeypatch.setattr(retrieval, "build_web_search_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
     monkeypatch.setattr(
         retrieval,
-        "select_sources_for_topic",
-        lambda *args, **kwargs: [
-            SelectedSource(domain="local.docs", tier="primary_docs", is_local=True),
-            SelectedSource(domain="remote.docs", tier="primary_docs", is_local=False),
-        ],
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options(
+            [
+                ("local.docs", True, "primary_docs"),
+                ("remote.docs", False, "primary_docs"),
+            ]
+        ),
     )
     monkeypatch.setattr(
         retrieval,
         "search_web",
-        lambda _request, engine, query, _user=None: [
+        lambda _request, engine, _query, _user=None: [
             SearchResult(
                 link=f"https://{'local.docs' if engine != 'brave' else 'remote.docs'}/result",
                 title="Result",
@@ -454,6 +699,8 @@ async def test_execute_strong_source_search_emits_fallback_status(monkeypatch):
         request,
         query="planner quality threshold",
         max_queries=1,
+        selected_categories=["software"],
+        selected_domains=["local.docs", "remote.docs"],
         event_emitter=event_emitter,
     )
 

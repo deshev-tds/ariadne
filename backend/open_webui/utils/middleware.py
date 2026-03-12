@@ -829,7 +829,12 @@ def get_citation_source_from_tool_result(
             ]
         elif tool_name == "search_strong_sources":
             payload = tool_result if isinstance(tool_result, dict) else {}
-            results = payload.get("items", []) if isinstance(payload, dict) else []
+            results = []
+            if isinstance(payload, dict):
+                if isinstance(payload.get("citation_items"), list):
+                    results = payload.get("citation_items", [])
+                elif isinstance(payload.get("items"), list):
+                    results = payload.get("items", [])
             documents = []
             metadata = []
 
@@ -1006,8 +1011,15 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
 
     if tool_name == "search_strong_sources" and isinstance(parsed, dict):
         return {
+            "phase": parsed.get("phase"),
+            "next_action": parsed.get("next_action"),
             "queries": len(parsed.get("queries") or []),
             "items": len(parsed.get("items") or []),
+            "evidence_items": len(parsed.get("evidence_items") or []),
+            "citation_items": len(parsed.get("citation_items") or []),
+            "candidate_count": parsed.get("candidate_count"),
+            "evidence_count": parsed.get("evidence_count"),
+            "citation_count": parsed.get("citation_count"),
             "coverage_complete": bool(parsed.get("coverage_complete", False)),
             "quality_score": parsed.get("quality_score"),
             "local_phase_executed": bool(parsed.get("local_phase_executed", False)),

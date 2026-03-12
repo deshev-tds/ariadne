@@ -93,8 +93,11 @@ from open_webui.retrieval.web.planner import (
     clear_source_registry_caches,
     evaluate_intent_coverage,
     evaluate_signal_quality,
+    infer_domain_source_type,
     is_fluff_query,
     load_source_registry,
+    load_normalized_source_registry,
+    normalize_domain,
     save_source_registry_payload,
     select_sources_for_topic,
     sanitize_query,
@@ -1288,7 +1291,8 @@ async def update_rag_config(
         )
         request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE = (
             form_data.web.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE
-            if form_data.web.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE is not None
+            if form_data.web.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE
+            is not None
             else request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE
         )
         request.app.state.config.WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE = (
@@ -1338,7 +1342,8 @@ async def update_rag_config(
         )
         request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS = (
             form_data.web.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS
-            if form_data.web.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS is not None
+            if form_data.web.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS
+            is not None
             else request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS
         )
         request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE = (
@@ -2658,7 +2663,9 @@ def _search_result_to_item(result: SearchResult) -> dict[str, Any]:
     }
 
 
-def _flatten_search_results(search_results: list[list[SearchResult]]) -> list[dict[str, Any]]:
+def _flatten_search_results(
+    search_results: list[list[SearchResult]],
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for result in search_results:
         if not result:
@@ -2698,16 +2705,12 @@ def _apply_recency_hint(query: str, recency_days: Optional[int]) -> str:
     return sanitize_query(f"{query} last {normalized_days} days")
 
 
-async def _wait_for_brave_fallback_slot(
-    request: Request, min_interval_ms: int
-) -> None:
+async def _wait_for_brave_fallback_slot(request: Request, min_interval_ms: int) -> None:
     if min_interval_ms <= 0:
         return
 
     now = time.monotonic()
-    last = getattr(
-        request.app.state, "_WEB_SEARCH_BRAVE_FALLBACK_LAST_TS", None
-    )
+    last = getattr(request.app.state, "_WEB_SEARCH_BRAVE_FALLBACK_LAST_TS", None)
     if isinstance(last, (float, int)):
         remaining = (float(min_interval_ms) / 1000.0) - (now - float(last))
         if remaining > 0:
@@ -2716,23 +2719,341 @@ async def _wait_for_brave_fallback_slot(
     request.app.state._WEB_SEARCH_BRAVE_FALLBACK_LAST_TS = time.monotonic()
 
 
+COARSE_CATEGORY_ORDER = [
+    "software",
+    "medicine",
+    "legal",
+    "science",
+    "news",
+    "shopping",
+    "general",
+]
+
+COARSE_CATEGORY_TOPICS: dict[str, list[str]] = {
+    "software": ["software_apis_devops", "ai_ml_local_llm"],
+    "medicine": ["medicine_health"],
+    "legal": ["legal_compliance"],
+    "science": ["science_academic"],
+    "news": ["news_current_events"],
+    "shopping": ["general"],
+    "general": ["general"],
+}
+
+COARSE_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "software": (
+        "api",
+        "sdk",
+        "library",
+        "programming",
+        "docker",
+        "kubernetes",
+        "python",
+        "javascript",
+        "error",
+        "traceback",
+        "bug",
+    ),
+    "medicine": (
+        "medicine",
+        "medical",
+        "drug",
+        "antibiotic",
+        "pharmacology",
+        "disease",
+        "clinical",
+        "patient",
+    ),
+    "legal": (
+        "law",
+        "legal",
+        "regulation",
+        "regulatory",
+        "compliance",
+        "statute",
+        "directive",
+        "gdpr",
+    ),
+    "science": (
+        "study",
+        "paper",
+        "journal",
+        "research",
+        "experiment",
+        "chemistry",
+        "physics",
+        "biology",
+    ),
+    "news": (
+        "news",
+        "today",
+        "latest",
+        "current",
+        "recent",
+        "breaking",
+    ),
+    "shopping": (
+        "buy",
+        "price",
+        "pricing",
+        "best",
+        "compare",
+        "deal",
+        "shop",
+        "shopping",
+        "recommend",
+        "review",
+    ),
+}
+
+COARSE_CONFIDENCE_HIGH = 0.75
+CITATION_TRUST_MIN = 0.72
+
+
+def _topics_for_category(category: str) -> list[str]:
+    return COARSE_CATEGORY_TOPICS.get(category, ["general"])
+
+
+def _normalize_category(value: str) -> str:
+    candidate = sanitize_query(value or "").lower().replace(" ", "_")
+    if candidate not in COARSE_CATEGORY_TOPICS:
+        return ""
+    return candidate
+
+
+def _unique_ordered(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _coarse_route_category(
+    query: str, topic_hint: Optional[str] = None
+) -> dict[str, Any]:
+    text = f"{query} {topic_hint or ''}".lower()
+    scores: dict[str, int] = {}
+    for category in COARSE_CATEGORY_ORDER:
+        if category == "general":
+            continue
+        score = 0
+        for keyword in COARSE_CATEGORY_KEYWORDS.get(category, ()):
+            if re.search(rf"\b{re.escape(keyword)}\b", text):
+                score += 1
+        scores[category] = score
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_category = "general"
+    best_score = 0
+    second_score = 0
+    if ranked:
+        best_category, best_score = ranked[0]
+        second_score = ranked[1][1] if len(ranked) > 1 else 0
+
+    if best_score <= 0:
+        confidence = 0.35
+        best_category = "general"
+    elif best_score >= 3 and (best_score - second_score) >= 2:
+        confidence = 0.90
+    elif best_score >= 2 and (best_score - second_score) >= 1:
+        confidence = 0.82
+    elif best_score >= 2:
+        confidence = 0.72
+    elif second_score == 0:
+        confidence = 0.70
+    else:
+        confidence = 0.58
+
+    return {
+        "category": best_category,
+        "confidence": round(confidence, 2),
+        "ambiguous": confidence < COARSE_CONFIDENCE_HIGH,
+        "scores": scores,
+    }
+
+
+def _category_summaries() -> dict[str, str]:
+    return {
+        "software": "APIs, SDKs, docs, debugging, dev tooling.",
+        "medicine": "Clinical and pharmacology information with medical sources.",
+        "legal": "Regulations, statutes, and compliance guidance.",
+        "science": "Research papers, journals, and scientific references.",
+        "news": "Current events and time-sensitive developments.",
+        "shopping": "Product/price discovery (currently mapped to general).",
+        "general": "Fallback for broad or mixed topics.",
+    }
+
+
+def _build_category_options(include_community: bool = False) -> list[dict[str, Any]]:
+    summaries = _category_summaries()
+    normalized_sources = load_normalized_source_registry()
+    options: list[dict[str, Any]] = []
+
+    for category in COARSE_CATEGORY_ORDER:
+        topic_set = set(_topics_for_category(category))
+        domains: set[str] = set()
+        local_domains: set[str] = set()
+        for source in normalized_sources:
+            if source.topic not in topic_set:
+                continue
+            if not include_community and source.family == "community":
+                continue
+            if not source.allow_site_constraint:
+                continue
+            domains.add(source.domain)
+            if source.is_local:
+                local_domains.add(source.domain)
+
+        options.append(
+            {
+                "category": category,
+                "summary": summaries.get(category, ""),
+                "topics": sorted(topic_set),
+                "domain_count": len(domains),
+                "local_domain_count": len(local_domains),
+                "has_local_domains": bool(local_domains),
+            }
+        )
+
+    return options
+
+
+def _build_domain_options_for_categories(
+    categories: list[str],
+    *,
+    include_community: bool,
+    local_first: bool,
+    time_sensitive: bool,
+) -> list[dict[str, Any]]:
+    if not categories:
+        return []
+
+    category_for_topic: dict[str, str] = {}
+    for category in categories:
+        for topic in _topics_for_category(category):
+            category_for_topic[topic] = category
+
+    normalized_sources = load_normalized_source_registry()
+    ranked: list[tuple[float, int, str, Any]] = []
+    for source in normalized_sources:
+        category = category_for_topic.get(source.topic)
+        if not category:
+            continue
+        if not include_community and source.family == "community":
+            continue
+        if not source.allow_site_constraint:
+            continue
+
+        score = float(source.trust_score)
+        if local_first and source.is_local:
+            score += 0.35
+        if source.prefer_for_exact_facts:
+            score += 0.12
+        if time_sensitive and source.prefer_for_time_sensitive:
+            score += 0.12
+
+        ranked.append((score, source.default_priority, category, source))
+
+    ranked.sort(key=lambda item: (-item[0], item[1], item[3].domain))
+
+    seen_domains: set[str] = set()
+    options: list[dict[str, Any]] = []
+    for _, _, category, source in ranked:
+        domain = normalize_domain(source.domain)
+        if not domain or domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        options.append(
+            {
+                "domain": domain,
+                "category": category,
+                "topic": source.topic,
+                "source_type": source.source_type,
+                "trust_tier": source.trust_tier,
+                "trust": round(float(source.trust_score), 4),
+                "is_local": bool(source.is_local),
+                "access": source.access,
+                "freshness_profile": source.freshness_profile,
+                "default_priority": source.default_priority,
+            }
+        )
+
+    return options
+
+
+def _build_step_payload(
+    *,
+    query: str,
+    phase: str,
+    next_action: str,
+    coarse_route: dict[str, Any],
+    category_options: list[dict[str, Any]],
+    domain_options: list[dict[str, Any]],
+    selected_categories: list[str],
+    selected_domains: list[str],
+    fallback_reason: Optional[str] = None,
+    message: Optional[str] = None,
+    errors: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    return {
+        "phase": phase,
+        "next_action": next_action,
+        "query": query,
+        "coarse_route": coarse_route,
+        "category_options": category_options,
+        "domain_options": domain_options,
+        "selected_categories": selected_categories,
+        "selected_domains": selected_domains,
+        "fallback_reason": fallback_reason,
+        "errors": errors or [],
+        "message": message or "",
+        "queries": [],
+        "items": [],
+        "evidence_items": [],
+        "citation_items": [],
+        "candidate_count": 0,
+        "evidence_count": 0,
+        "citation_count": 0,
+        "coverage_complete": False,
+        "quality_score": 0.0,
+        "local_phase_executed": False,
+        "brave_fallback_used": False,
+        "topic": "general",
+        "local_primary_hits": 0,
+        "trusted_domains": 0,
+    }
+
+
 async def execute_strong_source_search(
     request: Request,
     *,
     query: str,
     user=None,
     max_queries: int = 3,
+    mode: str = "search",
+    selected_categories: Optional[list[str]] = None,
+    selected_domains: Optional[list[str]] = None,
+    max_domains: int = 4,
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
     include_community: bool = False,
     event_emitter=None,
+    metadata: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     cfg = request.app.state.config
     cleaned_query = sanitize_query(query)
     if not cleaned_query:
         raise ValueError("Query is empty")
 
+    mode = sanitize_query(mode or "search").lower() or "search"
+    if mode not in {"search", "list_categories", "list_domains"}:
+        mode = "search"
+
     bounded_max_queries = max(1, min(6, int(max_queries or 3)))
+    bounded_max_domains = max(1, min(4, int(max_domains or 4)))
     local_first = bool(getattr(cfg, "WEB_SEARCH_LOCAL_FIRST", True))
     local_min_primary_hits = max(
         1, int(getattr(cfg, "WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS", 2) or 2)
@@ -2744,40 +3065,27 @@ async def execute_strong_source_search(
     brave_min_interval_ms = max(
         0, int(getattr(cfg, "WEB_SEARCH_BRAVE_MIN_INTERVAL_MS", 1000) or 1000)
     )
-    planner_stop_score = float(getattr(cfg, "WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE", 0.66))
+    planner_stop_score = float(
+        getattr(cfg, "WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE", 0.66)
+    )
+    debug_tool_journey = bool(
+        ((metadata or {}).get("params", {}) or {}).get("debug_tool_journey", False)
+    )
 
-    planner_context = sanitize_query(topic_hint or "", max_length=512) if topic_hint else None
+    planner_context = (
+        sanitize_query(topic_hint or "", max_length=512) if topic_hint else None
+    )
     plan = build_web_search_plan(
         cleaned_query,
         conversation_context=planner_context,
         max_targeted_domains=max(
             bounded_max_queries,
-            int(getattr(cfg, "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE", 4) or 4),
+            int(
+                getattr(cfg, "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE", 4) or 4
+            ),
         ),
         local_first=local_first,
     )
-
-    selected_sources = select_sources_for_topic(
-        topic=plan.topic,
-        max_targeted_domains=max(
-            bounded_max_queries + brave_fallback_max_queries,
-            int(getattr(cfg, "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE", 4) or 4),
-        ),
-        time_sensitive=plan.time_sensitive,
-        community_requested=plan.community_requested or include_community,
-        local_first=local_first,
-        include_community=include_community,
-        intent_requirements=plan.intent_requirements,
-        topic_candidates=plan.topic_candidates,
-    )
-
-    local_domains: list[str] = []
-    selected_domains: list[str] = []
-    for source in selected_sources:
-        if source.domain not in selected_domains:
-            selected_domains.append(source.domain)
-        if source.is_local and source.domain not in local_domains:
-            local_domains.append(source.domain)
 
     async def emit_focus_status(payload: dict[str, Any]) -> None:
         if not event_emitter:
@@ -2800,6 +3108,202 @@ async def execute_strong_source_search(
                 break
         return urls
 
+    coarse_route = _coarse_route_category(cleaned_query, planner_context)
+    category_options = _build_category_options(include_community=include_community)
+
+    normalized_categories = _unique_ordered(
+        [
+            _normalize_category(category)
+            for category in (selected_categories or [])
+            if _normalize_category(category)
+        ]
+    )
+    normalized_domains = _unique_ordered(
+        [
+            normalize_domain(str(domain))
+            for domain in (selected_domains or [])
+            if normalize_domain(str(domain))
+        ]
+    )
+
+    if mode == "list_categories":
+        payload = _build_step_payload(
+            query=cleaned_query,
+            phase="awaiting_category_selection",
+            next_action="select_categories",
+            coarse_route=coarse_route,
+            category_options=category_options,
+            domain_options=[],
+            selected_categories=normalized_categories,
+            selected_domains=normalized_domains,
+            message="Choose 1-2 categories, then call mode=list_domains.",
+        )
+        await emit_focus_status(
+            {
+                "action": "web_search",
+                "description": "Focused search: category shortlist prepared",
+                "done": True,
+                "plan": {"mode": "focused_local_first"},
+                "planner": {"mode": "focused_local_first"},
+            }
+        )
+        return payload
+
+    if mode == "list_domains":
+        if not normalized_categories:
+            if coarse_route["confidence"] >= COARSE_CONFIDENCE_HIGH:
+                normalized_categories = [coarse_route["category"]]
+            else:
+                return _build_step_payload(
+                    query=cleaned_query,
+                    phase="awaiting_category_selection",
+                    next_action="select_categories",
+                    coarse_route=coarse_route,
+                    category_options=category_options,
+                    domain_options=[],
+                    selected_categories=[],
+                    selected_domains=[],
+                    message="Category selection required before domain selection.",
+                )
+
+        if len(normalized_categories) > 2:
+            normalized_categories = normalized_categories[:2]
+
+        domain_options = _build_domain_options_for_categories(
+            normalized_categories,
+            include_community=include_community,
+            local_first=local_first,
+            time_sensitive=plan.time_sensitive,
+        )
+
+        return _build_step_payload(
+            query=cleaned_query,
+            phase="awaiting_domain_selection",
+            next_action="select_domains",
+            coarse_route=coarse_route,
+            category_options=category_options,
+            domain_options=domain_options,
+            selected_categories=normalized_categories,
+            selected_domains=[],
+            message="Choose 1-4 domains from domain_options, then call mode=search.",
+        )
+
+    # mode == "search"
+    if not normalized_categories:
+        if coarse_route["confidence"] >= COARSE_CONFIDENCE_HIGH:
+            normalized_categories = [coarse_route["category"]]
+        else:
+            payload = _build_step_payload(
+                query=cleaned_query,
+                phase="awaiting_category_selection",
+                next_action="select_categories",
+                coarse_route=coarse_route,
+                category_options=category_options,
+                domain_options=[],
+                selected_categories=[],
+                selected_domains=[],
+                message="Category selection required before focused search.",
+            )
+            await emit_focus_status(
+                {
+                    "action": "web_search",
+                    "description": "Focused search: awaiting category selection",
+                    "done": True,
+                    "plan": {"mode": "focused_local_first"},
+                    "planner": {"mode": "focused_local_first"},
+                }
+            )
+            return payload
+
+    if len(normalized_categories) > 2:
+        normalized_categories = normalized_categories[:2]
+
+    domain_options = _build_domain_options_for_categories(
+        normalized_categories,
+        include_community=include_community,
+        local_first=local_first,
+        time_sensitive=plan.time_sensitive,
+    )
+    domain_allowlist = {item["domain"] for item in domain_options}
+
+    if not normalized_domains:
+        payload = _build_step_payload(
+            query=cleaned_query,
+            phase="awaiting_domain_selection",
+            next_action="select_domains",
+            coarse_route=coarse_route,
+            category_options=category_options,
+            domain_options=domain_options,
+            selected_categories=normalized_categories,
+            selected_domains=[],
+            message="Domain selection required before focused search.",
+        )
+        await emit_focus_status(
+            {
+                "action": "web_search",
+                "description": "Focused search: awaiting domain selection",
+                "done": True,
+                "plan": {
+                    "mode": "focused_local_first",
+                    "selected_domains": [],
+                },
+                "planner": {"mode": "focused_local_first"},
+            }
+        )
+        return payload
+
+    validation_errors: list[str] = []
+    if len(normalized_domains) > bounded_max_domains:
+        validation_errors.append(f"too_many_domains:max={bounded_max_domains}")
+    invalid_domains = [
+        domain for domain in normalized_domains if domain not in domain_allowlist
+    ]
+    if invalid_domains:
+        validation_errors.append("invalid_domains")
+
+    if validation_errors:
+        payload = _build_step_payload(
+            query=cleaned_query,
+            phase="awaiting_domain_selection",
+            next_action="fix_domain_selection",
+            coarse_route=coarse_route,
+            category_options=category_options,
+            domain_options=domain_options,
+            selected_categories=normalized_categories,
+            selected_domains=normalized_domains,
+            errors=validation_errors,
+            message="Domain selection is invalid. Pick 1-4 domains from domain_options.",
+        )
+        payload["invalid_domains"] = invalid_domains
+        await emit_focus_status(
+            {
+                "action": "web_search",
+                "description": "Focused search: invalid domain selection",
+                "done": True,
+                "plan": {
+                    "mode": "focused_local_first",
+                    "selected_domains": normalized_domains,
+                },
+                "planner": {
+                    "mode": "focused_local_first",
+                    "fallback_reason": "invalid_domain_selection",
+                },
+            }
+        )
+        return payload
+
+    normalized_domains = normalized_domains[:bounded_max_domains]
+    selected_domain_meta = {
+        item["domain"]: item
+        for item in domain_options
+        if item["domain"] in set(normalized_domains)
+    }
+    local_domains = [
+        domain
+        for domain in normalized_domains
+        if selected_domain_meta.get(domain, {}).get("is_local")
+    ]
+
     await emit_focus_status(
         {
             "action": "web_search",
@@ -2809,21 +3313,24 @@ async def execute_strong_source_search(
             "plan": {
                 "mode": "focused_local_first",
                 "topic": plan.topic,
-                "selected_domains": (local_domains or selected_domains)[:bounded_max_queries],
+                "selected_domains": normalized_domains,
             },
             "planner": {"mode": "focused_local_first"},
-            "urls": domain_urls(local_domains or selected_domains),
+            "urls": domain_urls(normalized_domains),
         }
     )
 
     used_queries: set[str] = set()
     executed_queries: list[str] = []
     local_search_results: list[list[SearchResult]] = []
-    brave_search_results: list[list[SearchResult]] = []
+    fallback_search_results: list[list[SearchResult]] = []
 
     local_queries: list[str] = []
-    for domain in local_domains[:bounded_max_queries]:
-        candidate = _apply_recency_hint(build_targeted_query(plan, domain), recency_days)
+    phase_a_domains = local_domains if local_first else list(normalized_domains)
+    for domain in phase_a_domains[:bounded_max_queries]:
+        candidate = _apply_recency_hint(
+            build_targeted_query(plan, domain), recency_days
+        )
         candidate = sanitize_query(candidate)
         if not candidate or candidate in used_queries:
             continue
@@ -2850,7 +3357,9 @@ async def execute_strong_source_search(
         _flatten_search_results(local_search_results)
     )
     local_quality = evaluate_signal_quality(local_items, plan)
-    local_intent_coverage = evaluate_intent_coverage(local_quality["scored_items"], plan)
+    local_intent_coverage = evaluate_intent_coverage(
+        local_quality["scored_items"], plan
+    )
 
     local_primary_domains = {
         item.get("domain", "")
@@ -2859,20 +3368,23 @@ async def execute_strong_source_search(
         and float(item.get("trust", 0.0) or 0.0) >= 0.75
     }
     local_quality_score = float(local_quality.get("avg_top_score", 0.0) or 0.0)
+    required_primary_hits = max(1, min(local_min_primary_hits, len(normalized_domains)))
     local_coverage_complete = bool(
         local_intent_coverage.get("complete", True)
         and local_quality_score >= planner_stop_score
-        and len(local_primary_domains) >= local_min_primary_hits
+        and len(local_primary_domains) >= required_primary_hits
     )
 
     brave_fallback_used = False
     fallback_reason: Optional[str] = None
 
-    if not local_queries:
-        fallback_reason = "no_local_domains_for_topic"
+    if local_first and not local_domains:
+        fallback_reason = "no_local_domains_in_category"
+    elif not local_queries:
+        fallback_reason = "no_primary_domains_for_phase_a"
     elif not local_intent_coverage.get("complete", True):
         fallback_reason = "insufficient_intent_coverage"
-    elif len(local_primary_domains) < local_min_primary_hits:
+    elif len(local_primary_domains) < required_primary_hits:
         fallback_reason = "insufficient_local_primary_hits"
     elif local_quality_score < planner_stop_score:
         fallback_reason = "insufficient_local_quality"
@@ -2886,67 +3398,74 @@ async def execute_strong_source_search(
                 "plan": {
                     "mode": "focused_local_first",
                     "topic": plan.topic,
-                    "selected_domains": (local_domains or selected_domains)[:bounded_max_queries],
+                    "selected_domains": normalized_domains,
                 },
                 "planner": {
                     "mode": "focused_local_first",
                     "executed_queries": list(executed_queries),
                     "fallback_reason": fallback_reason,
                 },
-                "urls": domain_urls(local_domains or selected_domains),
+                "urls": domain_urls(normalized_domains),
             }
         )
 
-        brave_queries: list[str] = []
+        fallback_queries: list[str] = []
         local_domain_set = set(local_domains)
         non_local_domains = [
-            source.domain
-            for source in selected_sources
-            if source.domain and source.domain not in local_domain_set
+            domain for domain in normalized_domains if domain not in local_domain_set
         ]
 
         for domain in non_local_domains:
-            candidate = _apply_recency_hint(build_targeted_query(plan, domain), recency_days)
+            candidate = _apply_recency_hint(
+                build_targeted_query(plan, domain), recency_days
+            )
             candidate = sanitize_query(candidate)
             if not candidate or candidate in used_queries:
                 continue
             used_queries.add(candidate)
-            brave_queries.append(candidate)
-            if len(brave_queries) >= brave_fallback_max_queries:
+            fallback_queries.append(candidate)
+            if len(fallback_queries) >= brave_fallback_max_queries:
                 break
 
-        if not brave_queries:
+        if not fallback_queries:
             fallback_query = _apply_recency_hint(plan.base_exact_query, recency_days)
             fallback_query = sanitize_query(fallback_query)
             if fallback_query and fallback_query not in used_queries:
                 used_queries.add(fallback_query)
-                brave_queries.append(fallback_query)
+                fallback_queries.append(fallback_query)
 
-        for planned_query in brave_queries[:brave_fallback_max_queries]:
+        fallback_engine = (
+            str(getattr(cfg, "WEB_SEARCH_ENGINE", "") or "").strip().lower()
+        )
+        if not fallback_engine:
+            fallback_engine = "duckduckgo"
+
+        for planned_query in fallback_queries[:brave_fallback_max_queries]:
             try:
-                await _wait_for_brave_fallback_slot(request, brave_min_interval_ms)
+                if fallback_engine == "brave":
+                    await _wait_for_brave_fallback_slot(request, brave_min_interval_ms)
                 query_results = await run_in_threadpool(
                     search_web,
                     request,
-                    "brave",
+                    fallback_engine,
                     planned_query,
                     user,
                 )
-                brave_search_results.append(query_results)
+                fallback_search_results.append(query_results)
                 executed_queries.append(planned_query)
             except Exception as exc:
                 if fallback_reason is None:
-                    fallback_reason = "brave_fallback_error"
+                    fallback_reason = "broader_fallback_error"
                 log.warning(
-                    "Brave fallback query failed for '%s': %s", planned_query, exc
+                    "Broader fallback query failed for '%s': %s", planned_query, exc
                 )
 
-        brave_fallback_used = bool(brave_search_results)
+        brave_fallback_used = bool(fallback_search_results)
         if brave_fallback_used and fallback_reason is None:
             fallback_reason = "local_evidence_incomplete"
 
     combined_items = _dedupe_items_by_canonical_url(
-        _flatten_search_results(local_search_results + brave_search_results)
+        _flatten_search_results(local_search_results + fallback_search_results)
     )
     combined_quality = evaluate_signal_quality(combined_items, plan)
     combined_intent_coverage = evaluate_intent_coverage(
@@ -2958,28 +3477,61 @@ async def execute_strong_source_search(
     coverage_complete = bool(
         combined_intent_coverage.get("complete", True)
         and quality_score >= planner_stop_score
-        and trusted_domains >= local_min_primary_hits
+        and trusted_domains >= required_primary_hits
     )
 
     result_count = max(1, int(cfg.WEB_SEARCH_RESULT_COUNT or 5))
-    scored_items = combined_quality.get("scored_items", [])[: result_count * 2]
-    items = [
-        {
+    candidate_scored_items = combined_quality.get("scored_items", [])[
+        : result_count * 4
+    ]
+    evidence_scored_items = candidate_scored_items[: result_count * 2]
+
+    def _materialize_item(item: dict[str, Any]) -> dict[str, Any]:
+        link = item.get("link")
+        domain = item.get("domain")
+        source_type = infer_domain_source_type(domain or "", plan)
+        return {
             "title": item.get("title"),
-            "link": item.get("link"),
+            "link": link,
             "snippet": item.get("snippet"),
-            "domain": item.get("domain"),
+            "domain": domain,
             "quality": round(float(item.get("quality", 0.0) or 0.0), 4),
             "trust": round(float(item.get("trust", 0.0) or 0.0), 4),
+            "source_type": source_type,
         }
-        for item in scored_items
+
+    items = [
+        _materialize_item(item) for item in candidate_scored_items if item.get("link")
+    ]
+    evidence_items = [
+        {
+            **_materialize_item(item),
+        }
+        for item in evidence_scored_items
         if item.get("link")
     ]
+    citation_items = [
+        item
+        for item in evidence_items
+        if float(item.get("trust", 0.0) or 0.0) >= CITATION_TRUST_MIN
+        and str(item.get("source_type", "") or "") != "community"
+    ]
+    citation_items = _dedupe_items_by_canonical_url(citation_items)
 
     payload = {
+        "phase": "completed",
+        "next_action": "answer",
+        "category_options": category_options,
+        "domain_options": domain_options,
+        "selected_categories": normalized_categories,
         "queries": executed_queries,
         "items": items,
-        "selected_domains": selected_domains,
+        "evidence_items": evidence_items,
+        "citation_items": citation_items,
+        "candidate_count": len(items),
+        "evidence_count": len(evidence_items),
+        "citation_count": len(citation_items),
+        "selected_domains": normalized_domains,
         "coverage_complete": coverage_complete,
         "quality_score": round(quality_score, 4),
         "local_phase_executed": bool(local_queries),
@@ -2989,6 +3541,19 @@ async def execute_strong_source_search(
         "local_primary_hits": len(local_primary_domains),
         "trusted_domains": trusted_domains,
     }
+
+    planner_payload: dict[str, Any] = {
+        "mode": "focused_local_first",
+        "executed_queries": list(executed_queries),
+        "final_trusted_domains": trusted_domains,
+        "fallback_reason": fallback_reason,
+        "candidate_count": len(items),
+        "evidence_count": len(evidence_items),
+        "citation_count": len(citation_items),
+        "show_debug_metrics": debug_tool_journey,
+    }
+    if debug_tool_journey:
+        planner_payload["final_score"] = round(quality_score, 4)
 
     await emit_focus_status(
         {
@@ -3002,17 +3567,11 @@ async def execute_strong_source_search(
             "plan": {
                 "mode": "focused_local_first",
                 "topic": plan.topic,
-                "selected_domains": selected_domains[: bounded_max_queries + brave_fallback_max_queries],
+                "selected_domains": normalized_domains,
             },
-            "planner": {
-                "mode": "focused_local_first",
-                "executed_queries": list(executed_queries),
-                "final_score": round(quality_score, 4),
-                "final_trusted_domains": trusted_domains,
-                "fallback_reason": fallback_reason,
-            },
-            "items": items,
-            "urls": domain_urls(selected_domains),
+            "planner": planner_payload,
+            "items": citation_items,
+            "urls": domain_urls(normalized_domains),
         }
     )
 
@@ -3057,9 +3616,12 @@ async def _execute_web_search_with_planner(
     plateau_floor = float(cfg.WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE or 0.56)
     plateau_delta = float(cfg.WEB_SEARCH_PLANNER_PLATEAU_DELTA or 0.02)
     plateau_streak_limit = int(cfg.WEB_SEARCH_PLANNER_PLATEAU_STREAK or 2)
-    planner_mode = str(
-        getattr(cfg, "WEB_SEARCH_PLANNER_MODE", plan.mode or "hybrid_rewriter")
-    ).strip() or "hybrid_rewriter"
+    planner_mode = (
+        str(
+            getattr(cfg, "WEB_SEARCH_PLANNER_MODE", plan.mode or "hybrid_rewriter")
+        ).strip()
+        or "hybrid_rewriter"
+    )
     enable_intent_coverage_guard = bool(
         getattr(cfg, "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD", True)
     )

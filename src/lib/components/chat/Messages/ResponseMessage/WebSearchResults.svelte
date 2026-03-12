@@ -56,9 +56,24 @@
 								}/{status.planner.max_total_queries}{/if}
 							</div>
 						{/if}
-						{#if toFixed2(status?.planner?.final_score)}
+						{#if status?.planner?.show_debug_metrics && toFixed2(status?.planner?.final_score)}
 							<div class="px-2 py-0.5 rounded-md bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800">
 								Score: {toFixed2(status.planner.final_score)}
+							</div>
+						{/if}
+						{#if status?.planner?.candidate_count !== undefined}
+							<div class="px-2 py-0.5 rounded-md bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800">
+								Candidate pool: {status.planner.candidate_count}
+							</div>
+						{/if}
+						{#if status?.planner?.evidence_count !== undefined}
+							<div class="px-2 py-0.5 rounded-md bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800">
+								Evidence used: {status.planner.evidence_count}
+							</div>
+						{/if}
+						{#if status?.planner?.citation_count !== undefined}
+							<div class="px-2 py-0.5 rounded-md bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800">
+								Citations shown: {status.planner.citation_count}
 							</div>
 						{/if}
 						{#if status?.planner?.final_trusted_domains !== undefined}
