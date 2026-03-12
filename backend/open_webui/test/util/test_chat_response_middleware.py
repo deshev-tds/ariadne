@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -293,3 +294,28 @@ def test_search_strong_sources_citation_source_prefers_citation_items():
     metadata = sources[0]["metadata"]
     assert len(metadata) == 1
     assert metadata[0]["source"] == "https://citation.example/b"
+
+
+def test_is_empty_search_notes_result_detects_empty_payloads():
+    assert middleware._is_empty_search_notes_result("[]") is True
+    assert middleware._is_empty_search_notes_result([]) is True
+    assert middleware._is_empty_search_notes_result("") is True
+    assert middleware._is_empty_search_notes_result({}) is True
+    assert middleware._is_empty_search_notes_result({"items": []}) is True
+
+
+def test_is_empty_search_notes_result_rejects_non_empty_payloads():
+    assert middleware._is_empty_search_notes_result('[{"id":"n1"}]') is False
+    assert middleware._is_empty_search_notes_result(
+        {"items": [{"id": "n1"}]}
+    ) is False
+    assert middleware._is_empty_search_notes_result({"error": "db failure"}) is False
+    assert middleware._is_empty_search_notes_result("not-json") is False
+
+
+def test_build_search_notes_loop_breaker_result_has_strong_source_hint():
+    payload = json.loads(middleware._build_search_notes_loop_breaker_result(2))
+    assert payload["tool"] == "search_notes"
+    assert payload["empty_streak"] == 2
+    assert payload["next_tool"] == "search_strong_sources"
+    assert "searches user notes only" in payload["message"]

@@ -982,6 +982,7 @@ def get_citation_source_from_tool_result(
 
 TOOL_JOURNEY_EVENT_CAP = 120
 TOOL_JOURNEY_PREVIEW_CHARS = 280
+SEARCH_NOTES_EMPTY_STREAK_LIMIT = 2
 
 
 def _is_debug_flag_enabled(value: Any) -> bool:
@@ -1078,6 +1079,53 @@ def _append_tool_journey_event(
     }
     events.append(event)
     return event
+
+
+def _is_empty_search_notes_result(tool_result: Any) -> bool:
+    parsed: Any = tool_result
+    if isinstance(tool_result, str):
+        stripped = tool_result.strip()
+        if not stripped:
+            return True
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return False
+
+    if parsed is None:
+        return True
+
+    if isinstance(parsed, list):
+        return len(parsed) == 0
+
+    if isinstance(parsed, dict):
+        if parsed.get("error"):
+            return False
+        for key in ("items", "notes", "results", "data"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return len(value) == 0
+        return len(parsed) == 0
+
+    return False
+
+
+def _build_search_notes_loop_breaker_result(streak: int, blocked: bool = False) -> str:
+    payload = {
+        "status": "loop_breaker_active" if blocked else "loop_breaker_triggered",
+        "tool": "search_notes",
+        "empty_streak": streak,
+        "message": (
+            "search_notes returned no matches multiple times. "
+            "This tool searches user notes only, not the web."
+        ),
+        "hint": (
+            "Stop using search_notes for web discovery. "
+            "Use search_strong_sources for focused web evidence."
+        ),
+        "next_tool": "search_strong_sources",
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def split_content_and_whitespace(content):
@@ -6504,6 +6552,8 @@ async def streaming_chat_response_handler(response, ctx):
                 tool_call_sources = []  # Track citation sources from tool results
                 all_tool_call_sources = []  # Accumulated sources across all iterations
                 user_message = get_last_user_message(form_data["messages"])
+                search_notes_empty_streak = 0
+                search_notes_guard_active = False
 
                 # Check if citations are enabled for this model
                 citations_enabled = (
@@ -6639,8 +6689,37 @@ async def streaming_chat_response_handler(response, ctx):
                         tool_type = None
                         direct_tool = False
                         tool_execution_error = None
+                        search_notes_blocked = False
 
-                        if tool_function_name in tools:
+                        if (
+                            tool_function_name == "search_notes"
+                            and search_notes_guard_active
+                        ):
+                            search_notes_blocked = True
+                            tool_result = _build_search_notes_loop_breaker_result(
+                                search_notes_empty_streak, blocked=True
+                            )
+                            blocked_event = _append_tool_journey_event(
+                                metadata,
+                                {
+                                    "phase": "tool_loop_breaker_blocked",
+                                    "call_id": tool_call_id,
+                                    "tool": tool_function_name,
+                                    "empty_streak": search_notes_empty_streak,
+                                    "next_tool": "search_strong_sources",
+                                },
+                            )
+                            if blocked_event:
+                                await event_emitter(
+                                    {
+                                        "type": "chat:tool:journey",
+                                        "data": blocked_event,
+                                    }
+                                )
+
+                        if search_notes_blocked:
+                            pass
+                        elif tool_function_name in tools:
                             tool = tools[tool_function_name]
                             spec = tool.get("spec", {})
 
@@ -6722,6 +6801,42 @@ async def streaming_chat_response_handler(response, ctx):
                                 user,
                             )
                         )
+
+                        if tool_function_name == "search_notes":
+                            if not search_notes_blocked:
+                                if _is_empty_search_notes_result(tool_result):
+                                    search_notes_empty_streak += 1
+                                else:
+                                    search_notes_empty_streak = 0
+
+                            if (
+                                not search_notes_blocked
+                                and search_notes_empty_streak
+                                >= SEARCH_NOTES_EMPTY_STREAK_LIMIT
+                            ):
+                                search_notes_guard_active = True
+                                tool_result = _build_search_notes_loop_breaker_result(
+                                    search_notes_empty_streak
+                                )
+                                breaker_event = _append_tool_journey_event(
+                                    metadata,
+                                    {
+                                        "phase": "tool_loop_breaker_triggered",
+                                        "call_id": tool_call_id,
+                                        "tool": tool_function_name,
+                                        "empty_streak": search_notes_empty_streak,
+                                        "next_tool": "search_strong_sources",
+                                    },
+                                )
+                                if breaker_event:
+                                    await event_emitter(
+                                        {
+                                            "type": "chat:tool:journey",
+                                            "data": breaker_event,
+                                        }
+                                    )
+                        elif tool_function_name != "search_notes":
+                            search_notes_empty_streak = 0
 
                         await terminal_event_handler(
                             tool_function_name,
