@@ -1,8 +1,23 @@
 # Open WebUI Fork for Local Context, Recall, Voice, and Token Inspection
 
-This repository is a fork of Open WebUI, built for a different priority set than the upstream project.
+This is an opinionated Open WebUI fork for local-first long-chat work: bounded memory, evidence-oriented recall, planned retrieval, practical local voice, and token-level inspection on real local runtimes.
 
-That priority set is:
+It is for people already running local models, especially `llama.cpp`-style stacks, who care about prompt-budget hygiene, controllable behavior, and being able to inspect what the system actually did.
+
+## Quick Navigation
+
+- [Why This Fork Exists](#why-this-fork-exists)
+- [What Changed from Upstream](#what-changed-from-upstream)
+- [Context and Memory in This Fork](#context-and-memory-in-this-fork)
+- [Operating Paths](#operating-paths)
+- [Web Search and Retrieval Planning](#web-search-and-retrieval-planning)
+- [Deep Research as a Separate Lane](#deep-research-as-a-separate-lane)
+- [Voice / TTS](#voice--tts)
+- [Token Exploration and Response Branching](#token-exploration-and-response-branching)
+- [Thinking / Reasoning Controls](#thinking--reasoning-controls)
+- [Compatibility / Install](#compatibility--install)
+
+The priority set here is:
 
 - local-first behavior over backend-agnostic product smoothing
 - long-chat survivability over naive full-history replay
@@ -16,7 +31,7 @@ Upstream Open WebUI is a strong base platform and UI for self-hosted LLM workflo
 
 In practice, the local stack behind this fork is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. That matters because a lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
 
-If you care about local models, long technical chats, prompt-budget hygiene, and being able to inspect or deliberately fork a response path, this fork is trying to make those workflows less opaque and less fragile.
+That is the frame for the rest of this document.
 
 ## Why This Fork Exists
 
@@ -62,7 +77,7 @@ The rest of this README explains the rationale behind those changes.
 
 ## Context and Memory in This Fork
 
-This fork now treats context as a layered system, not as "replay everything until the model breaks".
+This section is about keeping long chats usable on local runtimes. It is not a license to replay everything until the model breaks, and it is not an excuse to run retrieval on every turn. The job is to maintain a bounded working set, recover older facts when needed, and keep that behavior inspectable.
 
 ### Stage 1: Context Compaction
 
@@ -269,11 +284,17 @@ The first command is a dry run. The second command deletes both legacy records:
 
 After `--apply`, restart backend workers to guarantee no stale DB-loaded function modules remain in memory.
 
+## Operating Paths
+
+There are now three distinct lanes in this fork. That separation is deliberate; trying to force all of them through one generic "chat with tools" path is how local stacks become slow, opaque, and prompt-heavy.
+
+- **Chat Path**: the normal fast path. It uses server-side context maintenance, bounded recall, and stays in the chat lane.
+- **Search Path**: regular or focused web retrieval for the current answer. It gathers bounded evidence for a chat turn and then gets out of the way.
+- **Deep Research Path**: a separate blocking backend lane for report generation. It returns artifacts and sources, not a giant report dump in model context.
+
 ## Web Search and Retrieval Planning
 
-This fork also treats web behavior as a retrieval problem, not just as "run a search and paste the results into context".
-
-The rationale is similar to the context work above: the problem is not merely getting access to more text. The problem is deciding what evidence is worth fetching, how much of it is worth keeping, when to stop, and how to avoid polluting the prompt with redundant or weak material.
+This section is about the search path for normal chat turns. It is not a report generator, and it is not a license to pour web text into context. The job is to fetch enough evidence, from the right places, and stop.
 
 In practice, this means the web path here is more structured than a flat search integration:
 
@@ -296,8 +317,6 @@ At a high level, the current web path behaves more like this:
 3. target sources with planner hints instead of treating all sources as equivalent
 4. stop once the evidence quality or coverage is good enough, instead of continuing mechanically
 5. surface planner status and fallback information so the path is inspectable
-
-This is the same overall philosophy as the context work: bounded, inspectable, evidence-oriented behavior beats magical but opaque behavior.
 
 ### Strong-Source Search Trigger (Hybrid Local-First + Broader Fallback)
 
@@ -421,23 +440,7 @@ Where this lives:
 
 ## Deep Research as a Separate Lane
 
-This fork now also has an optional deep-research path through a sidecar called Local Deep Research (`LDR`).
-
-This is intentionally not presented as "one more search loop".
-
-Focused search and regular web search still exist to support the normal chat path:
-
-- gather bounded evidence
-- inject enough context for a useful answer
-- stay relatively fast
-
-But there is a different class of request where that is not enough:
-
-- the user wants a real report, not just a short answer with snippets
-- the retrieval path needs more time than a normal turn should pretend not to notice
-- provenance matters, but prompt hygiene still matters too
-
-For those cases, this fork now treats deep research as its own backend lane.
+This section is about the blocking report-generation lane built around [Local Deep Research](https://github.com/deshev-tds/local-deep-research) (`LDR`). It exists for work that should produce a research artifact, not for ordinary chat retrieval. That distinction matters because bounded evidence gathering for an answer and backend report generation are different jobs.
 
 ### Why It Is Separate
 
@@ -591,6 +594,15 @@ Also, as a matter of principle, chat does not try to steal `Cmd+R` from the brow
 
 The bias throughout is the same: better local behavior, better debuggability, fewer "just trust the model" assumptions.
 
+## Related Practical Systems
+
+This fork is not the only place where these operating lessons show up.
+
+- [Simon](https://github.com/deshev-tds/simon) is a more direct voice/agent system built around local memory, bounded recall, and explicit control over when the system should pay for deeper reasoning.
+- [VERA](https://github.com/deshev-tds/vera) is a local verification-oriented research agent built around evidence hooks, tool discipline, and auditable verification loops.
+
+They are separate projects, not hidden subsystems of this fork. They are included here simply because they come from the same practical ecosystem and many of the same learned constraints.
+
 ## Compatibility / Install
 
 This is still Open WebUI under the hood, and the basic deployment model remains broadly compatible with upstream expectations. If you already know how to run Open WebUI, that knowledge still transfers.
@@ -615,7 +627,7 @@ That also explains some of the fork's behavior:
 - token exploration is built around telemetry that an OpenAI-compatible local server can actually expose
 - some advanced controls, such as MoE probing, remain conditional on backend support rather than being treated as guaranteed product invariants
 
-If you want the deep-research path, run LDR separately and configure it in `Admin Settings -> Integrations -> Local Deep Research Sidecar`.
+If you want the deep-research path, run [Local Deep Research](https://github.com/deshev-tds/local-deep-research) separately and configure it in `Admin Settings -> Integrations -> Local Deep Research Sidecar`.
 
 The important architectural point is not the exact config form. It is that the browser still talks only to OWUI, and OWUI owns the sidecar interaction, artifact persistence, and permission boundary.
 
