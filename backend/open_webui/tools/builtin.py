@@ -162,6 +162,11 @@ async def search_web(
     """
     Search the public web for information. Best for current events, external references,
     or topics not covered in internal documents.
+    Use this for broad discovery, but keep calls concise:
+    - Prefer one high-quality query first.
+    - Avoid repeated near-identical queries.
+    - Stop once you have enough evidence to answer.
+    For verification-heavy or high-stakes topics, prefer `web_research_strong`.
 
     :param query: The search query to look up
     :param count: Number of results to return (default: 5)
@@ -270,6 +275,10 @@ async def web_research_strong(
     Run focused strong-source web research with local-first routing and broad fallback.
     Use this when evidence is uncertain, time-sensitive, or high-risk, and you need
     stronger provenance before answering.
+    Execute the minimum viable flow:
+    - Keep tool turns low and avoid redundant retries.
+    - Follow returned `next_action` instead of improvising extra loops.
+    - Stop searching when evidence is adequate.
     If payload returns `next_action=fetch_and_query_evidence`, store target pages via
     `fetch_url(mode="store")` and then call `query_web_evidence` for compact snippets.
 

@@ -2226,6 +2226,11 @@ Your task is to choose and return the correct tool(s) from the list of available
 - Return only the JSON object, without any additional text or explanation.
 - For uncertain, time-sensitive, high-risk, or verification-heavy queries, prefer `web_research_strong` when available before generic web tools.
 - Use `search_web` for broad discovery and `fetch_url` only after selecting concrete URLs.
+- Optimize for minimum tool turns and minimum repeated loops.
+- Start with the smallest sufficient tool plan (usually one call), then stop as soon as evidence is adequate.
+- Do not repeat the same tool with near-identical parameters unless the previous result explicitly indicates insufficiency.
+- If a focused workflow returns a clear next step, follow that step exactly once before deciding whether another call is needed.
+- Prefer quality over quantity: fewer high-signal calls are better than many exploratory calls.
 
 - If no tools match the query, return an empty array: 
    {
