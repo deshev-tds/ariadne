@@ -298,25 +298,69 @@ At a high level, the current web path behaves more like this:
 
 This is the same overall philosophy as the context work: bounded, inspectable, evidence-oriented behavior beats magical but opaque behavior.
 
-### Strong-Source Search Trigger (Local-First + Brave Fallback)
+### Strong-Source Search Trigger (Hybrid Local-First + Broader Fallback)
 
-The web stack now includes a first-class native tool for evidence-critical retrieval: `search_strong_sources`.
+The web stack includes a first-class native tool for evidence-critical retrieval: `search_strong_sources`.
 
 This is intentionally not a hard terminal guard. It is a native model-callable path with soft trigger semantics: when confidence is weak, the question is time-sensitive, or provenance quality matters, the model can call the strong-source flow directly.
 
-Its execution model is two-phase:
+The tool now supports a stateful contract:
 
-1. local strong domains first (`planner_hints.is_local=true`, site-constrained queries)
-2. Brave fallback only if evidence quality/coverage from locally-listed strong domains remains below threshold
+1. `mode=list_categories`
+2. `mode=list_domains` (for selected categories)
+3. `mode=search` (for selected domains)
 
-Operationally, that gives this fork a clearer retrieval contract:
+`mode=search` remains backward-compatible for single-call usage. But when the model needs explicit routing support, the stateful path is available and bounded.
 
-- local domains are a planner primitive, not just an informal recommendation
-- fallback is bounded and paced for free-tier Brave constraints
-- the existing `search_web` flow remains backward-compatible
+Domain selection is explicit and constrained:
+
+- model picks `1..4` domains
+- domains are validated against the registry-derived allowlist
+- invalid/empty selections return a correction payload, and search is not executed
+
+In short: focused search is now an inspectable interaction protocol, not a one-shot black box.
+
+### Hybrid Routing: Coarse Gate + Model Disambiguation
+
+Classifier bloat was avoided on purpose.
+
+This fork keeps a lightweight coarse gate with obvious buckets:
+
+- `software`, `medicine`, `legal`, `science`, `news`, `shopping`, `general`
+
+Routing behavior is hybrid:
+
+- high-confidence coarse route: skip category pass and jump directly to domain shortlist
+- low-confidence / ambiguous route: model first selects category, then domains, then runs focused search
+
+This preserves speed on easy queries and flexibility on hard queries, without drifting into endless keyword creep.
+
+### Evidence Surface Honesty
+
+`search_strong_sources` output is now intentionally layered:
+
+- `items` = candidate pool (exploratory)
+- `evidence_items` = evidence used for quality/coverage decisions
+- `citation_items` = public citation surface
+
+Default citation policy is stricter:
+
+- `trust >= 0.72`
+- non-community only by default
+- canonical URL dedupe
+
+Middleware citation extraction for this tool now prefers `citation_items` and falls back to `items` only if needed.
+
+Numeric score remains available for diagnostics, but is no longer a default public confidence ornament.
+
+### Engine and Fallback Policy
+
+Focused broader fallback is engine-agnostic and admin-driven:
+
+- fallback uses configured `WEB_SEARCH_ENGINE` (not hardcoded Brave)
+- if engine is Brave, fallback remains paced and query-capped for free-tier constraints
+- existing `search_web` path remains backward-compatible
 - discovery does not depend on sitemap/seed hygiene from legacy sites
-
-In short: prefer domains from the locally maintained strong-source registry when available, escalate to broader discovery only when needed, and keep the decision path observable.
 
 ### Focused Search UX Contract
 
@@ -325,17 +369,18 @@ When focused search runs, chat now surfaces explicit progress using the existing
 - `Focused search: running targeted queries`
 - visible targeted phrases (model-rewritten / planner-executed)
 - visible targeted websites/domains
+- visible layer counts: candidate pool, evidence used, citations shown
 
 If local-first evidence is insufficient, chat explicitly shows escalation:
 
 - `Focused search did not return enough evidence, trying broader search now`
 - updated phrases/sites for the broader pass
 
-When search ends, the final focused-search status event is emitted with `done=true`, so the progress shimmer stops and the phase is visibly closed.
+When search ends, the final focused-search status event is emitted with `done=true`, so the progress shimmer stops and the phase is visibly closed. Planner score is shown only in explicit debug mode.
 
 ### Operational Caveat: `is_local` Is a Routing Primitive
 
-`local-first` depends on `planner_hints.is_local=true` entries inside the source registry. If a topic has no such entries, there are no local candidates for Phase A, so focused search will naturally behave fallback-heavy (fast escalation to broader/non-local search).
+`local-first` depends on `planner_hints.is_local=true` entries inside the source registry. If a selected category has no such entries, there are no local candidates for Phase A, so focused search naturally behaves fallback-heavy (fast escalation to broader/non-local search).
 
 This is expected behavior, not a planner bug: the routing contract is "prefer local-marked domains when they exist".
 
@@ -347,8 +392,8 @@ Current examples (from the registry) include:
 
 - `science_academic`: `pubmed.ncbi.nlm.nih.gov`, `ncbi.nlm.nih.gov`
 - `medicine_health`: `who.int`, `cdc.gov`
-- `software_apis_devops`: `github.com`, `docs.python.org`
-- `legal_compliance`: `eur-lex.europa.eu`, `edpb.europa.eu`
+- `software_apis_devops`: `docs.python.org`, `kubernetes.io`
+- `legal_compliance`: `eur-lex.europa.eu`, `dv.parliament.bg`
 
 Where this lives:
 

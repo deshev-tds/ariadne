@@ -36,6 +36,8 @@ DEFAULT_SUMMARY_MIN_REFRESH_MESSAGES = 6
 SOFT_PRESSURE_RATIO = 0.72
 HARD_PRESSURE_RATIO = 0.85
 _PROBE_TIMEOUT_SECONDS = 1.5
+PROACTIVE_INLINE_PRETRIM_RATIO = 0.78
+PROACTIVE_INLINE_PRETRIM_MIN_TOKENS = 4096
 SUMMARY_SNAPSHOT_SECTIONS = [
     (
         "User Objectives",
@@ -174,9 +176,7 @@ def extract_n_ctx_from_props(props: dict[str, Any] | None) -> Optional[int]:
 
     candidates = [
         props.get("n_ctx"),
-        props.get("default_generation_settings", {})
-        .get("params", {})
-        .get("n_ctx"),
+        props.get("default_generation_settings", {}).get("params", {}).get("n_ctx"),
     ]
 
     for value in candidates:
@@ -203,7 +203,9 @@ def estimate_tokens_from_history_message(message: dict[str, Any]) -> int:
 
 
 def estimate_tokens_from_history_messages(messages: list[dict[str, Any]]) -> int:
-    return sum(estimate_tokens_from_history_message(message) for message in messages or [])
+    return sum(
+        estimate_tokens_from_history_message(message) for message in messages or []
+    )
 
 
 def history_message_to_llm_messages(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -252,7 +254,9 @@ def normalize_history_message(
     return data
 
 
-def inject_image_files_into_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def inject_image_files_into_history(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for message in messages or []:
         item = normalize_history_message(message)
@@ -357,7 +361,9 @@ def merge_system_message(
     system_message: dict[str, Any] | None,
     appended_blocks: list[str] | None = None,
 ) -> dict[str, Any] | None:
-    blocks = [str(block).strip() for block in (appended_blocks or []) if str(block).strip()]
+    blocks = [
+        str(block).strip() for block in (appended_blocks or []) if str(block).strip()
+    ]
     if not system_message and not blocks:
         return None
 
@@ -464,9 +470,11 @@ def normalize_summary_snapshot(summary_text: str) -> str:
         values = sections[canonical]
         if values:
             formatted = [
-                _sanitize_summary_value(value)
-                if value.startswith("- ")
-                else f"- {_sanitize_summary_value(value.lstrip('- ').strip())}"
+                (
+                    _sanitize_summary_value(value)
+                    if value.startswith("- ")
+                    else f"- {_sanitize_summary_value(value.lstrip('- ').strip())}"
+                )
                 for value in values
                 if value.strip()
             ]
@@ -508,7 +516,9 @@ def summarize_history_growth(
     summarized_through_message_id: Optional[str],
 ) -> tuple[int, int]:
     if not summarized_through_message_id:
-        return estimate_tokens_from_history_messages(history_messages), len(history_messages)
+        return estimate_tokens_from_history_messages(history_messages), len(
+            history_messages
+        )
 
     seen_boundary = False
     growth_messages: list[dict[str, Any]] = []
@@ -700,7 +710,9 @@ async def load_llamacpp_probe(
                         slots = await response.json()
                         if isinstance(slots, list) and slots:
                             result["source"] = (
-                                result["source"] if result["source"] == "metrics" else "slots"
+                                result["source"]
+                                if result["source"] == "metrics"
+                                else "slots"
                             )
                             if result["n_ctx"] is None:
                                 slot_ctxs = [
@@ -783,12 +795,8 @@ def resolve_history_budgets(
     safety_reserve = int(
         getattr(config, "CONTEXT_MAINTENANCE_SAFETY_RESERVE_TOKENS", 4096)
     )
-    rag_default = int(
-        getattr(config, "CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS", 12288)
-    )
-    soft_margin = int(
-        getattr(config, "CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS", 8192)
-    )
+    rag_default = int(getattr(config, "CONTEXT_MAINTENANCE_RAG_RESERVE_TOKENS", 12288))
+    soft_margin = int(getattr(config, "CONTEXT_MAINTENANCE_SOFT_MARGIN_TOKENS", 8192))
     anchor_budget = int(
         getattr(config, "CONTEXT_MAINTENANCE_ANCHOR_BUDGET_TOKENS", 2048)
     )
@@ -1023,6 +1031,7 @@ async def build_inline_maintained_messages(
     system_message: dict[str, Any] | None,
     history_messages: list[dict[str, Any]],
     summary_state: dict[str, Any] | None,
+    force_inline_compaction: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     probe = await load_llamacpp_probe(request, model)
     budgets = resolve_history_budgets(
@@ -1044,9 +1053,41 @@ async def build_inline_maintained_messages(
         "telemetry": dict(payload.get("telemetry") or {}),
     }
 
-    if not should_force_inline_maintenance(
+    preflight_request_tokens = estimate_tokens_from_messages(payload["messages"])
+    preflight_threshold_tokens = max(
+        PROACTIVE_INLINE_PRETRIM_MIN_TOKENS,
+        int(
+            max(
+                int(
+                    budgets.get("live_prompt_cap", DEFAULT_CONTEXT_CAP)
+                    or DEFAULT_CONTEXT_CAP
+                ),
+                1,
+            )
+            * PROACTIVE_INLINE_PRETRIM_RATIO
+        ),
+    )
+    proactive_pretrim_triggered = preflight_request_tokens >= preflight_threshold_tokens
+
+    result["telemetry"].update(
+        {
+            "preflight_request_tokens": preflight_request_tokens,
+            "preflight_threshold_tokens": preflight_threshold_tokens,
+            "proactive_pretrim_triggered": proactive_pretrim_triggered,
+            "force_inline_compaction": bool(force_inline_compaction),
+        }
+    )
+
+    should_compact_inline = force_inline_compaction or should_force_inline_maintenance(
         history_messages=history_messages, budgets=budgets, probe=probe
-    ):
+    )
+    if proactive_pretrim_triggered and not should_compact_inline:
+        should_compact_inline = True
+        result["telemetry"][
+            "proactive_pretrim_reason"
+        ] = "estimated_prompt_near_ctx_cap"
+
+    if not should_compact_inline:
         return payload["messages"], result
 
     tail_budget = max(
@@ -1117,7 +1158,11 @@ async def build_inline_maintained_messages(
             "tail_message_count": len(trimmed_tail),
             "summary_tokens": estimate_tokens_from_text(summary_text or ""),
             "summary_included": bool(summary_text),
-            "compaction_version": int(time.time()) if result["summary_refreshed"] else result["telemetry"].get("compaction_version", 0),
+            "compaction_version": (
+                int(time.time())
+                if result["summary_refreshed"]
+                else result["telemetry"].get("compaction_version", 0)
+            ),
         }
     )
 
@@ -1202,7 +1247,9 @@ async def run_background_context_maintenance(
         await emit_status("Context maintenance scheduled", done=False)
         await emit_status("Condensing earlier turns...", done=False)
 
-        anchors = select_anchor_messages(history_messages, budgets["anchor_budget_tokens"])
+        anchors = select_anchor_messages(
+            history_messages, budgets["anchor_budget_tokens"]
+        )
         tail_budget = max(
             512,
             budgets["hard_history_budget"]
@@ -1239,7 +1286,9 @@ async def run_background_context_maintenance(
 
         latest_chat = Chats.get_chat_by_id(chat_id)
         current_id = (
-            latest_chat.chat.get("history", {}).get("currentId") if latest_chat else None
+            latest_chat.chat.get("history", {}).get("currentId")
+            if latest_chat
+            else None
         )
         if str(current_id) != str(message_id):
             return

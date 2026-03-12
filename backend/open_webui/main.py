@@ -17,7 +17,7 @@ from urllib.parse import urlencode, parse_qs, urlparse
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from typing import Optional
+from typing import Any, Optional
 from aiocache import cached
 import aiohttp
 import anyio.to_thread
@@ -554,7 +554,9 @@ from open_webui.env import (
     ENABLE_EASTER_EGGS,
     LOG_FORMAT,
 )
-from open_webui.models.simon_lex_index import is_supported_database as simon_lex_supported
+from open_webui.models.simon_lex_index import (
+    is_supported_database as simon_lex_supported,
+)
 from open_webui.models.simon_lex_index import run_lex_index_worker
 
 
@@ -574,6 +576,10 @@ from open_webui.utils.middleware import (
     build_chat_response_context,
     process_chat_payload,
     process_chat_response,
+)
+from open_webui.utils.context_maintenance import (
+    build_inline_maintained_messages,
+    get_chat_maintenance_state,
 )
 from open_webui.utils.tools import set_tool_servers, set_terminal_servers
 
@@ -922,9 +928,7 @@ app.state.config.ENABLE_CACHE_PROMPT = ENABLE_CACHE_PROMPT
 app.state.config.ENABLE_CHAT_RECALL = ENABLE_CHAT_RECALL
 app.state.config.CHAT_RECALL_TIMEOUT_MS = CHAT_RECALL_TIMEOUT_MS
 app.state.config.CHAT_RECALL_MAX_HITS = CHAT_RECALL_MAX_HITS
-app.state.config.CHAT_RECALL_SNIPPET_TOKEN_BUDGET = (
-    CHAT_RECALL_SNIPPET_TOKEN_BUDGET
-)
+app.state.config.CHAT_RECALL_SNIPPET_TOKEN_BUDGET = CHAT_RECALL_SNIPPET_TOKEN_BUDGET
 app.state.config.ENABLE_CONTEXT_MAINTENANCE = ENABLE_CONTEXT_MAINTENANCE
 app.state.config.CONTEXT_MAINTENANCE_MAX_CTX_CAP = CONTEXT_MAINTENANCE_MAX_CTX_CAP
 app.state.config.CONTEXT_MAINTENANCE_OUTPUT_RESERVE_TOKENS = (
@@ -1927,7 +1931,9 @@ async def chat_completion(
         ledger_mode = None
         if raw_ledger_mode is not None:
             ledger_mode = (
-                "agentic" if str(raw_ledger_mode).strip().lower() == "agentic" else "vibe"
+                "agentic"
+                if str(raw_ledger_mode).strip().lower() == "agentic"
+                else "vibe"
             )
 
         # Model Params
@@ -2118,6 +2124,205 @@ async def chat_completion(
             )
         )
 
+    def _extract_context_overflow_counts(
+        error_detail: Optional[str],
+    ) -> tuple[Optional[int], Optional[int]]:
+        if not error_detail:
+            return None, None
+
+        match = re.search(
+            r"request\s*\((\d+)\s*tokens?\)\s*exceeds the available context size\s*\((\d+)\s*tokens?\)",
+            str(error_detail),
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None, None
+
+        try:
+            return int(match.group(1)), int(match.group(2))
+        except Exception:
+            return None, None
+
+    def _is_context_overflow_error(error_detail: Optional[str]) -> bool:
+        if not error_detail:
+            return False
+
+        detail = str(error_detail).lower()
+        if "exceeds the available context size" in detail:
+            return True
+        if "context window" in detail and any(
+            marker in detail for marker in ("exceed", "overflow", "too long")
+        ):
+            return True
+        return False
+
+    def _format_context_overflow_error(
+        error_detail: Optional[str],
+        *,
+        requested_tokens: Optional[int],
+        available_tokens: Optional[int],
+    ) -> str:
+        if requested_tokens and available_tokens:
+            return (
+                f"Context window exceeded: request used {requested_tokens} tokens, "
+                f"available context is {available_tokens} tokens."
+            )
+        if error_detail:
+            return f"Context window exceeded: {error_detail}"
+        return "Context window exceeded while generating response."
+
+    def _extract_system_and_history_messages(
+        messages: list[dict],
+    ) -> tuple[Optional[dict], list[dict]]:
+        system_message: Optional[dict] = None
+        history_messages: list[dict] = []
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if role == "system" and system_message is None:
+                system_message = dict(message)
+                continue
+            if role in {"user", "assistant", "tool"}:
+                history_messages.append(dict(message))
+        return system_message, history_messages
+
+    async def _attempt_context_overflow_retry(
+        request,
+        form_data: dict,
+        response_obj,
+        user,
+        metadata: dict,
+        model: dict,
+    ) -> tuple[dict, Any, dict[str, Any]]:
+        error_detail = _extract_error_detail_from_response(response_obj)
+        telemetry: dict[str, Any] = {
+            "attempted": False,
+            "succeeded": False,
+            "requested_tokens": None,
+            "available_tokens": None,
+            "compaction_applied": False,
+            "reason": None,
+        }
+
+        if not _is_context_overflow_error(error_detail):
+            return form_data, response_obj, telemetry
+
+        requested_tokens, available_tokens = _extract_context_overflow_counts(
+            error_detail
+        )
+        telemetry.update(
+            {
+                "attempted": True,
+                "requested_tokens": requested_tokens,
+                "available_tokens": available_tokens,
+            }
+        )
+
+        event_emitter = get_event_emitter(metadata)
+        if event_emitter:
+            try:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "context_maintenance",
+                            "description": "Context limit reached, compacting and retrying...",
+                            "done": False,
+                        },
+                    }
+                )
+            except Exception:
+                pass
+
+        compacted_form_data = dict(form_data)
+        try:
+            system_message, history_messages = _extract_system_and_history_messages(
+                form_data.get("messages", [])
+            )
+            if not history_messages:
+                telemetry["reason"] = "no_history_messages_for_compaction"
+            else:
+                summary_state = None
+                if metadata.get("chat_id") and not str(
+                    metadata.get("chat_id")
+                ).startswith("local:"):
+                    summary_state = get_chat_maintenance_state(metadata["chat_id"])
+
+                compacted_messages, maintenance_result = (
+                    await build_inline_maintained_messages(
+                        request,
+                        user=user,
+                        model=model,
+                        form_data=form_data,
+                        metadata=metadata,
+                        system_message=system_message,
+                        history_messages=history_messages,
+                        summary_state=summary_state,
+                        force_inline_compaction=True,
+                    )
+                )
+
+                telemetry["maintenance_telemetry"] = (
+                    maintenance_result.get("telemetry")
+                    if isinstance(maintenance_result, dict)
+                    else None
+                )
+                if isinstance(compacted_messages, list) and compacted_messages:
+                    compacted_form_data["messages"] = compacted_messages
+                    telemetry["compaction_applied"] = True
+                else:
+                    telemetry["reason"] = "empty_compacted_messages"
+        except Exception as exc:
+            telemetry["reason"] = f"compaction_error:{exc}"
+
+        if telemetry["compaction_applied"]:
+            retry_response = await chat_completion_handler(
+                request, compacted_form_data, user
+            )
+            retry_error_detail = _extract_error_detail_from_response(retry_response)
+            if _is_context_overflow_error(retry_error_detail):
+                final_error = _format_context_overflow_error(
+                    retry_error_detail,
+                    requested_tokens=requested_tokens,
+                    available_tokens=available_tokens,
+                )
+                response_obj = {"error": {"detail": final_error}}
+                telemetry["reason"] = "retry_still_overflow"
+            else:
+                response_obj = retry_response
+                telemetry["succeeded"] = retry_error_detail is None
+            form_data = compacted_form_data
+        else:
+            final_error = _format_context_overflow_error(
+                error_detail,
+                requested_tokens=requested_tokens,
+                available_tokens=available_tokens,
+            )
+            response_obj = {"error": {"detail": final_error}}
+
+        if event_emitter:
+            description = (
+                "Context compaction retry succeeded"
+                if telemetry["succeeded"]
+                else "Context compaction retry failed"
+            )
+            try:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "context_maintenance",
+                            "description": description,
+                            "done": True,
+                        },
+                    }
+                )
+            except Exception:
+                pass
+
+        return form_data, response_obj, telemetry
+
     async def process_chat(request, form_data, user, metadata, model):
         try:
             form_data, metadata, events = await process_chat_payload(
@@ -2143,6 +2348,33 @@ async def chat_completion(
                     {
                         "tokenTelemetryUnavailable": True,
                         "tokenTelemetryUnavailableReason": "unsupported_logprobs",
+                    }
+                )
+
+            (
+                form_data,
+                response,
+                context_overflow_retry,
+            ) = await _attempt_context_overflow_retry(
+                request, form_data, response, user, metadata, model
+            )
+            if context_overflow_retry.get("attempted"):
+                events.append(
+                    {
+                        "contextOverflowRetry": True,
+                        "contextOverflowRetrySucceeded": bool(
+                            context_overflow_retry.get("succeeded")
+                        ),
+                        "contextOverflowCompactionApplied": bool(
+                            context_overflow_retry.get("compaction_applied")
+                        ),
+                        "contextOverflowRequestedTokens": context_overflow_retry.get(
+                            "requested_tokens"
+                        ),
+                        "contextOverflowAvailableTokens": context_overflow_retry.get(
+                            "available_tokens"
+                        ),
+                        "contextOverflowReason": context_overflow_retry.get("reason"),
                     }
                 )
 
