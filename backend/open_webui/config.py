@@ -1656,6 +1656,11 @@ USER_PERMISSIONS_FEATURES_CODE_INTERPRETER = (
     == "true"
 )
 
+USER_PERMISSIONS_FEATURES_DEEP_RESEARCH = (
+    os.environ.get("USER_PERMISSIONS_FEATURES_DEEP_RESEARCH", "False").lower()
+    == "true"
+)
+
 USER_PERMISSIONS_FEATURES_FOLDERS = (
     os.environ.get("USER_PERMISSIONS_FEATURES_FOLDERS", "True").lower() == "true"
 )
@@ -1746,6 +1751,7 @@ DEFAULT_USER_PERMISSIONS = {
         "web_search": USER_PERMISSIONS_FEATURES_WEB_SEARCH,
         "image_generation": USER_PERMISSIONS_FEATURES_IMAGE_GENERATION,
         "code_interpreter": USER_PERMISSIONS_FEATURES_CODE_INTERPRETER,
+        "deep_research": USER_PERMISSIONS_FEATURES_DEEP_RESEARCH,
         "memories": USER_PERMISSIONS_FEATURES_MEMORIES,
     },
     "settings": {
@@ -3371,6 +3377,48 @@ YOUTUBE_LOADER_PROXY_URL = PersistentConfig(
 ####################################
 # Web Search (RAG)
 ####################################
+
+ENABLE_DEEP_RESEARCH = PersistentConfig(
+    "ENABLE_DEEP_RESEARCH",
+    "deep_research.enable",
+    os.getenv("ENABLE_DEEP_RESEARCH", "False").lower() == "true",
+)
+
+DEEP_RESEARCH_SIDECAR_URL = PersistentConfig(
+    "DEEP_RESEARCH_SIDECAR_URL",
+    "deep_research.sidecar_url",
+    os.getenv("DEEP_RESEARCH_SIDECAR_URL", ""),
+)
+
+DEEP_RESEARCH_SIDECAR_USERNAME = PersistentConfig(
+    "DEEP_RESEARCH_SIDECAR_USERNAME",
+    "deep_research.username",
+    os.getenv("DEEP_RESEARCH_SIDECAR_USERNAME", ""),
+)
+
+DEEP_RESEARCH_SIDECAR_PASSWORD = PersistentConfig(
+    "DEEP_RESEARCH_SIDECAR_PASSWORD",
+    "deep_research.password",
+    os.getenv("DEEP_RESEARCH_SIDECAR_PASSWORD", ""),
+)
+
+DEEP_RESEARCH_POLL_INTERVAL_MS = PersistentConfig(
+    "DEEP_RESEARCH_POLL_INTERVAL_MS",
+    "deep_research.poll_interval_ms",
+    int(os.getenv("DEEP_RESEARCH_POLL_INTERVAL_MS", "3000")),
+)
+
+DEEP_RESEARCH_TIMEOUT_SECONDS = PersistentConfig(
+    "DEEP_RESEARCH_TIMEOUT_SECONDS",
+    "deep_research.timeout_seconds",
+    int(os.getenv("DEEP_RESEARCH_TIMEOUT_SECONDS", "900")),
+)
+
+DEEP_RESEARCH_EXPORT_FORMAT = PersistentConfig(
+    "DEEP_RESEARCH_EXPORT_FORMAT",
+    "deep_research.export_format",
+    os.getenv("DEEP_RESEARCH_EXPORT_FORMAT", "pdf"),
+)
 
 ENABLE_WEB_SEARCH = PersistentConfig(
     "ENABLE_WEB_SEARCH",

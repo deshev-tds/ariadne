@@ -70,6 +70,16 @@ class ConnectionsConfigForm(BaseModel):
     ENABLE_BASE_MODELS_CACHE: bool
 
 
+class DeepResearchConfigForm(BaseModel):
+    ENABLE_DEEP_RESEARCH: bool
+    DEEP_RESEARCH_SIDECAR_URL: str
+    DEEP_RESEARCH_SIDECAR_USERNAME: str
+    DEEP_RESEARCH_SIDECAR_PASSWORD: str
+    DEEP_RESEARCH_POLL_INTERVAL_MS: int
+    DEEP_RESEARCH_TIMEOUT_SECONDS: int
+    DEEP_RESEARCH_EXPORT_FORMAT: str
+
+
 @router.get("/connections", response_model=ConnectionsConfigForm)
 async def get_connections_config(request: Request, user=Depends(get_admin_user)):
     return {
@@ -94,6 +104,56 @@ async def set_connections_config(
     return {
         "ENABLE_DIRECT_CONNECTIONS": request.app.state.config.ENABLE_DIRECT_CONNECTIONS,
         "ENABLE_BASE_MODELS_CACHE": request.app.state.config.ENABLE_BASE_MODELS_CACHE,
+    }
+
+
+@router.get("/deep_research", response_model=DeepResearchConfigForm)
+async def get_deep_research_config(request: Request, user=Depends(get_admin_user)):
+    return {
+        "ENABLE_DEEP_RESEARCH": request.app.state.config.ENABLE_DEEP_RESEARCH,
+        "DEEP_RESEARCH_SIDECAR_URL": request.app.state.config.DEEP_RESEARCH_SIDECAR_URL,
+        "DEEP_RESEARCH_SIDECAR_USERNAME": request.app.state.config.DEEP_RESEARCH_SIDECAR_USERNAME,
+        "DEEP_RESEARCH_SIDECAR_PASSWORD": request.app.state.config.DEEP_RESEARCH_SIDECAR_PASSWORD,
+        "DEEP_RESEARCH_POLL_INTERVAL_MS": request.app.state.config.DEEP_RESEARCH_POLL_INTERVAL_MS,
+        "DEEP_RESEARCH_TIMEOUT_SECONDS": request.app.state.config.DEEP_RESEARCH_TIMEOUT_SECONDS,
+        "DEEP_RESEARCH_EXPORT_FORMAT": request.app.state.config.DEEP_RESEARCH_EXPORT_FORMAT,
+    }
+
+
+@router.post("/deep_research", response_model=DeepResearchConfigForm)
+async def set_deep_research_config(
+    request: Request,
+    form_data: DeepResearchConfigForm,
+    user=Depends(get_admin_user),
+):
+    request.app.state.config.ENABLE_DEEP_RESEARCH = form_data.ENABLE_DEEP_RESEARCH
+    request.app.state.config.DEEP_RESEARCH_SIDECAR_URL = (
+        form_data.DEEP_RESEARCH_SIDECAR_URL.strip()
+    )
+    request.app.state.config.DEEP_RESEARCH_SIDECAR_USERNAME = (
+        form_data.DEEP_RESEARCH_SIDECAR_USERNAME.strip()
+    )
+    request.app.state.config.DEEP_RESEARCH_SIDECAR_PASSWORD = (
+        form_data.DEEP_RESEARCH_SIDECAR_PASSWORD
+    )
+    request.app.state.config.DEEP_RESEARCH_POLL_INTERVAL_MS = max(
+        250, int(form_data.DEEP_RESEARCH_POLL_INTERVAL_MS)
+    )
+    request.app.state.config.DEEP_RESEARCH_TIMEOUT_SECONDS = max(
+        30, int(form_data.DEEP_RESEARCH_TIMEOUT_SECONDS)
+    )
+    request.app.state.config.DEEP_RESEARCH_EXPORT_FORMAT = (
+        form_data.DEEP_RESEARCH_EXPORT_FORMAT.strip().lower() or "pdf"
+    )
+
+    return {
+        "ENABLE_DEEP_RESEARCH": request.app.state.config.ENABLE_DEEP_RESEARCH,
+        "DEEP_RESEARCH_SIDECAR_URL": request.app.state.config.DEEP_RESEARCH_SIDECAR_URL,
+        "DEEP_RESEARCH_SIDECAR_USERNAME": request.app.state.config.DEEP_RESEARCH_SIDECAR_USERNAME,
+        "DEEP_RESEARCH_SIDECAR_PASSWORD": request.app.state.config.DEEP_RESEARCH_SIDECAR_PASSWORD,
+        "DEEP_RESEARCH_POLL_INTERVAL_MS": request.app.state.config.DEEP_RESEARCH_POLL_INTERVAL_MS,
+        "DEEP_RESEARCH_TIMEOUT_SECONDS": request.app.state.config.DEEP_RESEARCH_TIMEOUT_SECONDS,
+        "DEEP_RESEARCH_EXPORT_FORMAT": request.app.state.config.DEEP_RESEARCH_EXPORT_FORMAT,
     }
 
 

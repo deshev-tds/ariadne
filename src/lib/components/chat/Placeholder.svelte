@@ -50,6 +50,8 @@
 	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
 	export let focusedSearchEnabled = false;
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
+	export let deepResearchEnabled = false;
+	export let setChatDeepResearchEnabled: (enabled: boolean) => void = () => {};
 
 	export let selectedToolIds = [];
 	export let selectedFilterIds = [];
@@ -216,6 +218,8 @@
 					{setChatLedgerAgenticEnabled}
 					{focusedSearchEnabled}
 					{setChatFocusedSearchEnabled}
+					{deepResearchEnabled}
+					{setChatDeepResearchEnabled}
 					bind:files
 					bind:prompt
 					bind:autoScroll

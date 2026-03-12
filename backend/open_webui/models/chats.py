@@ -1,7 +1,9 @@
 import logging
 import json
+import shutil
 import time
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -16,6 +18,7 @@ from open_webui.models.simon_lex_index import (
 )
 from open_webui.models.ledger import Ledgers
 from open_webui.utils.misc import sanitize_data_for_db, sanitize_text_for_db
+from open_webui.env import AGENTIC_ARTIFACTS_DIR
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import (
@@ -38,6 +41,30 @@ from sqlalchemy.sql.expression import bindparam
 ####################
 
 log = logging.getLogger(__name__)
+
+
+def _delete_chat_artifact_dirs(chat_ids: list[str]) -> None:
+    if not chat_ids:
+        return
+
+    root = Path(AGENTIC_ARTIFACTS_DIR)
+    if not root.exists():
+        return
+
+    for chat_id in {str(chat_id).strip() for chat_id in chat_ids if chat_id}:
+        if not chat_id or chat_id.startswith("local:"):
+            continue
+        for artifact_dir in root.glob(f"{chat_id}__*"):
+            try:
+                shutil.rmtree(artifact_dir, ignore_errors=False)
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                log.warning(
+                    "Failed to delete chat artifact directory for %s: %s",
+                    chat_id,
+                    exc,
+                )
 
 
 class Chat(Base):
@@ -1531,6 +1558,7 @@ class ChatTable:
                 db.commit()
                 delete_entries_for_chat_id(id, db=db)
                 Ledgers.delete_entries_for_chat_id(id)
+                _delete_chat_artifact_dirs([id])
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1545,6 +1573,7 @@ class ChatTable:
                 db.commit()
                 delete_entries_for_chat_id(id, db=db)
                 Ledgers.delete_entries_for_chat_id(id)
+                _delete_chat_artifact_dirs([id])
                 return True and self.delete_shared_chat_by_chat_id(id, db=db)
         except Exception:
             return False
@@ -1567,6 +1596,7 @@ class ChatTable:
                 db.commit()
                 delete_entries_for_chat_ids(chat_ids, db=db)
                 Ledgers.delete_entries_for_chat_ids(chat_ids)
+                _delete_chat_artifact_dirs(chat_ids)
                 return True
         except Exception:
             return False
@@ -1594,6 +1624,7 @@ class ChatTable:
                 db.commit()
                 delete_entries_for_chat_ids(chat_ids, db=db)
                 Ledgers.delete_entries_for_chat_ids(chat_ids)
+                _delete_chat_artifact_dirs(chat_ids)
                 return True
         except Exception:
             return False

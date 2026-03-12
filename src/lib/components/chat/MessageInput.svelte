@@ -89,6 +89,7 @@
 	import PlusAlt from '../icons/PlusAlt.svelte';
 	import LightBulb from '../icons/LightBulb.svelte';
 	import CommandLine from '../icons/CommandLine.svelte';
+	import DocumentChartBar from '../icons/DocumentChartBar.svelte';
 	import Dropdown from '../common/Dropdown.svelte';
 
 	import { DropdownMenu } from 'bits-ui';
@@ -123,6 +124,8 @@
 	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
 	export let focusedSearchEnabled = false;
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
+	export let deepResearchEnabled = false;
+	export let setChatDeepResearchEnabled: (enabled: boolean) => void = () => {};
 
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
@@ -178,7 +181,8 @@
 		selectedFilterIds,
 		imageGenerationEnabled,
 		webSearchEnabled,
-		codeInterpreterEnabled
+		codeInterpreterEnabled,
+		deepResearchEnabled
 	});
 
 	const inputVariableHandler = async (text: string): Promise<string> => {
@@ -506,6 +510,13 @@
 			webSearchCapableModels.length &&
 		$config?.features?.enable_web_search &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.web_search);
+
+	let showDeepResearchButton = false;
+	$: showDeepResearchButton =
+		!$temporaryChatEnabled &&
+		(atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).length === 1 &&
+		$config?.features?.enable_deep_research &&
+		($_user.role === 'admin' || $_user?.permissions?.features?.deep_research);
 
 	let showImageGenerationButton = false;
 	$: showImageGenerationButton =
@@ -1700,6 +1711,31 @@
 													}}
 												>
 													<GlobeAlt className="size-4.5" strokeWidth="1.75" />
+												</button>
+											</Tooltip>
+										{/if}
+										{#if showDeepResearchButton}
+											<Tooltip
+												content={deepResearchEnabled
+													? $i18n.t('Deep research mode is enabled for this chat')
+													: $i18n.t('Enable deep research mode for this chat')}
+												placement="top"
+											>
+												<button
+													type="button"
+													id="deep-research-toggle-button"
+													aria-label={$i18n.t('Deep research mode')}
+													aria-pressed={deepResearchEnabled}
+													class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {deepResearchEnabled
+														? 'text-rose-700 bg-rose-100/80 hover:bg-rose-200/80 dark:text-rose-200 dark:bg-rose-700/20 dark:hover:bg-rose-700/30'
+														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+													on:click={async () => {
+														setChatDeepResearchEnabled(!deepResearchEnabled);
+														await tick();
+														document.getElementById('chat-input')?.focus();
+													}}
+												>
+													<DocumentChartBar className="size-4.5" strokeWidth="1.75" />
 												</button>
 											</Tooltip>
 										{/if}

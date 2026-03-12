@@ -53,6 +53,7 @@ The important divergences are not cosmetic.
 - A native focused-web tool (`web_research_strong`, with `search_strong_sources` kept as an alias) was added for local-first strong-source search, with broader fallback only when evidence from locally-listed strong domains is weak.
 - Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
 - Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
+- An optional blocking deep-research lane was added through a Local Deep Research (LDR) sidecar, kept separate from normal web/focused search and returning downloadable report artifacts instead of dumping long web/report bodies into model context.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
 - On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
@@ -418,6 +419,92 @@ Where this lives:
 - static registry file: `backend/open_webui/retrieval/web/source_registry.json`
 - admin API (read/update): `/api/v1/retrieval/web/search/planner/source-registry`
 
+## Deep Research as a Separate Lane
+
+This fork now also has an optional deep-research path through a sidecar called Local Deep Research (`LDR`).
+
+This is intentionally not presented as "one more search loop".
+
+Focused search and regular web search still exist to support the normal chat path:
+
+- gather bounded evidence
+- inject enough context for a useful answer
+- stay relatively fast
+
+But there is a different class of request where that is not enough:
+
+- the user wants a real report, not just a short answer with snippets
+- the retrieval path needs more time than a normal turn should pretend not to notice
+- provenance matters, but prompt hygiene still matters too
+
+For those cases, this fork now treats deep research as its own backend lane.
+
+### Why It Is Separate
+
+The main design decision is simple:
+
+- focused/web search improves a normal answer
+- deep research produces a report artifact
+
+Those are not the same workflow, and trying to merge them usually leads to the worst of both:
+
+- bloated prompt context
+- weak report synthesis
+- unclear UX about whether the system is "thinking", "searching", or just stuck
+
+So the fork now treats deep research as a deliberate blocking path for the current turn. That is slower by design, but it is honest about what the system is doing.
+
+### Execution Contract
+
+The contract for this lane is intentionally strict:
+
+- OWUI backend is the only client that talks to the LDR sidecar
+- frontend does not call the sidecar directly
+- sidecar auth is handled through an admin-configured service account
+- once deep mode is selected, the request is no longer allowed to silently fall through into the normal model-completion path
+- final report bodies are not injected back into model context
+- the user gets downloadable artifacts instead: markdown plus an exported report format such as PDF
+
+That last point matters. This fork already spends a lot of effort on prompt-budget hygiene, so deep research is explicitly not allowed to solve one retrieval problem by creating a worse context-pollution problem.
+
+In practical terms, deep mode now behaves more like this:
+
+1. start the sidecar research job
+2. surface visible progress states in chat
+3. wait for a terminal sidecar result
+4. fetch and register report artifacts in OWUI storage
+5. only then commit the assistant success message
+
+That ordering is deliberate. The assistant should not claim "reports attached" before the files are actually registered and linked.
+
+### Provenance and User-Facing Result
+
+The user-visible outcome is also intentionally different from the normal chat path.
+
+Instead of asking the model to rewrite a large sidecar report into yet another long in-chat answer, the system does this:
+
+- attach the generated report files to the assistant turn
+- surface the visited source URLs as normal OWUI source cards
+- keep the assistant text short and factual
+
+So the turn result is "research completed, here are the artifacts and sources", not "here is a giant second-hand summary pasted back into the prompt".
+
+### Cancel and Failure Semantics
+
+Because deep mode is blocking, cancellation semantics matter more than they do in a normal short turn.
+
+This fork therefore treats cancel as a real backend concern:
+
+- if the user cancels while the sidecar is still working, OWUI does a best-effort terminate call to the sidecar
+- if the sidecar has already reached terminal completion and OWUI is only finalizing artifact registration, a late cancel is not allowed to rewrite a successful run into a fake canceled one
+- if export fails after markdown is available, the markdown artifact can still be preserved instead of pretending the whole run never happened
+
+That same discipline also extends to storage:
+
+- raw sidecar artifacts are kept under per-chat OWUI artifact directories
+- attached files are registered through OWUI's normal file pipeline
+- raw per-chat deep-research directories are cleaned up when chats are deleted
+
 ## Voice / TTS
 
 This fork adds Kokoro because local TTS quality matters, and a lot of local stacks are either too robotic or too heavy for the quality they provide.
@@ -523,9 +610,14 @@ That also explains some of the fork's behavior:
 
 - context maintenance exists because `llama.cpp` will not semantically manage long chat history for you
 - recall is bounded because local prompt budget and latency are both visible costs
+- optional deep research is split into its own blocking sidecar lane because report-generation and normal retrieval augmentation are different jobs
 - thinking mode is useful only when the active model template actually honors the flag being sent
 - token exploration is built around telemetry that an OpenAI-compatible local server can actually expose
 - some advanced controls, such as MoE probing, remain conditional on backend support rather than being treated as guaranteed product invariants
+
+If you want the deep-research path, run LDR separately and configure it in `Admin Settings -> Integrations -> Local Deep Research Sidecar`.
+
+The important architectural point is not the exact config form. It is that the browser still talks only to OWUI, and OWUI owns the sidecar interaction, artifact persistence, and permission boundary.
 
 For generic deployment guidance, refer to the upstream Open WebUI documentation:
 

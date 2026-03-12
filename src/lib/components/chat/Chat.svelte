@@ -178,11 +178,13 @@
 	let chatThinkingEnabled = false;
 	let chatLedgerAgenticEnabled = false;
 	let chatFocusedSearchEnabled = false;
+	let chatDeepResearchEnabled = false;
 
 	$: chatThinkingEnabled =
 		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
 	$: chatLedgerAgenticEnabled = (params?.ledger_mode ?? null) === 'agentic';
 	$: chatFocusedSearchEnabled = (params?.focused_search_mode ?? false) === true;
+	$: chatDeepResearchEnabled = (params?.deep_research_mode ?? false) === true;
 
 	const setChatThinkingEnabled = (enabled: boolean) => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
@@ -233,6 +235,7 @@
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
 		if (enabled) {
 			nextParams.focused_search_mode = true;
+			nextParams.deep_research_mode = false;
 			// Focused search requires internet access.
 			webSearchEnabled = true;
 		} else {
@@ -240,6 +243,32 @@
 		}
 		params = nextParams;
 	};
+
+	const setChatDeepResearchEnabled = (enabled: boolean) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		if (enabled) {
+			nextParams.deep_research_mode = true;
+			nextParams.focused_search_mode = false;
+			webSearchEnabled = false;
+		} else {
+			nextParams.deep_research_mode = false;
+		}
+		params = nextParams;
+	};
+
+	$: if (chatDeepResearchEnabled && webSearchEnabled) {
+		setChatDeepResearchEnabled(false);
+	}
+
+	$: if (
+		chatDeepResearchEnabled &&
+		(!$config?.features?.enable_deep_research ||
+			!($user?.role === 'admin' || $user?.permissions?.features?.deep_research) ||
+			selectedModelIds.length !== 1 ||
+			$temporaryChatEnabled)
+	) {
+		setChatDeepResearchEnabled(false);
+	}
 
 	// Message queue for storing messages while generating
 	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
@@ -313,6 +342,9 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						if (typeof input.deepResearchEnabled === 'boolean') {
+							params = { ...(params ?? {}), deep_research_mode: input.deepResearchEnabled };
+						}
 					}
 				} catch (e) {}
 			} else {
@@ -425,7 +457,8 @@
 				if (
 					model.info?.meta?.capabilities?.['web_search'] &&
 					$config?.features?.enable_web_search &&
-					($user?.role === 'admin' || $user?.permissions?.features?.web_search)
+					($user?.role === 'admin' || $user?.permissions?.features?.web_search) &&
+					!chatDeepResearchEnabled
 				) {
 					webSearchEnabled = model.info.meta.defaultFeatureIds.includes('web_search');
 				}
@@ -443,7 +476,11 @@
 				model.info?.meta?.capabilities?.['web_search'] &&
 				$config?.features?.enable_web_search &&
 				($user?.role === 'admin' || $user?.permissions?.features?.web_search);
-			if (focusedSearchSupported && params?.focused_search_mode === undefined) {
+			if (
+				focusedSearchSupported &&
+				params?.focused_search_mode === undefined &&
+				params?.deep_research_mode !== true
+			) {
 				params = { ...(params ?? {}), focused_search_mode: true };
 			}
 		}
@@ -805,6 +842,9 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						if (typeof input.deepResearchEnabled === 'boolean') {
+							params = { ...(params ?? {}), deep_research_mode: input.deepResearchEnabled };
+						}
 					}
 				} catch (e) {}
 			}
@@ -2078,6 +2118,14 @@
 	const getFeatures = () => {
 		let features = {};
 		const currentModels = atSelectedModel?.id ? [atSelectedModel.id] : selectedModels;
+		const deepResearchAllowedByRole =
+			$config?.features?.enable_deep_research &&
+			($user?.role === 'admin' || $user?.permissions?.features?.deep_research);
+		const deepResearchEnabled =
+			deepResearchAllowedByRole &&
+			!$temporaryChatEnabled &&
+			currentModels.length === 1 &&
+			chatDeepResearchEnabled;
 		const webSearchAllowedByRole =
 			$config?.features?.enable_web_search &&
 			($user?.role === 'admin' || $user?.permissions?.features?.web_search);
@@ -2085,9 +2133,10 @@
 			currentModels.filter(
 				(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.web_search ?? true
 			).length === currentModels.length;
-		let internetAccessEnabled = webSearchAllowedByRole
-			? webSearchEnabled || chatFocusedSearchEnabled
-			: false;
+		let internetAccessEnabled =
+			!deepResearchEnabled && webSearchAllowedByRole
+				? webSearchEnabled || chatFocusedSearchEnabled
+				: false;
 
 		if ($config?.features)
 			features = {
@@ -2102,12 +2151,16 @@
 					($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
 						? codeInterpreterEnabled
 						: false,
-				web_search: internetAccessEnabled,
-				focused_search:
-					internetAccessEnabled && allModelsWebSearchCapable ? chatFocusedSearchEnabled : false
+				deep_research: deepResearchEnabled,
+				web_search: deepResearchEnabled ? false : internetAccessEnabled,
+				focused_search: deepResearchEnabled
+					? false
+					: internetAccessEnabled && allModelsWebSearchCapable
+						? chatFocusedSearchEnabled
+						: false
 			};
 
-		if (allModelsWebSearchCapable) {
+		if (!deepResearchEnabled && allModelsWebSearchCapable) {
 			if ($config?.features?.enable_web_search && ($settings?.webSearch ?? false) === 'always') {
 				internetAccessEnabled = true;
 				features = {
@@ -2944,6 +2997,8 @@
 									{setChatLedgerAgenticEnabled}
 									focusedSearchEnabled={chatFocusedSearchEnabled}
 									{setChatFocusedSearchEnabled}
+									deepResearchEnabled={chatDeepResearchEnabled}
+									{setChatDeepResearchEnabled}
 									bind:files
 									bind:prompt
 									bind:autoScroll
@@ -3020,6 +3075,8 @@
 									{setChatLedgerAgenticEnabled}
 									focusedSearchEnabled={chatFocusedSearchEnabled}
 									{setChatFocusedSearchEnabled}
+									deepResearchEnabled={chatDeepResearchEnabled}
+									{setChatDeepResearchEnabled}
 									bind:messageInput
 									bind:files
 									bind:prompt

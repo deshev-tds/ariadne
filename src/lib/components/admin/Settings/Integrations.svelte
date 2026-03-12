@@ -25,7 +25,9 @@
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 
 	import {
+		getDeepResearchConfig,
 		getToolServerConnections,
+		setDeepResearchConfig,
 		setToolServerConnections,
 		getTerminalServerConnections,
 		setTerminalServerConnections
@@ -42,23 +44,38 @@
 	let editTerminalIdx: number | null = null;
 	let showDeleteTerminalConfirm = false;
 	let deleteTerminalIdx: number | null = null;
+	let deepResearchConfig = {
+		ENABLE_DEEP_RESEARCH: false,
+		DEEP_RESEARCH_SIDECAR_URL: '',
+		DEEP_RESEARCH_SIDECAR_USERNAME: '',
+		DEEP_RESEARCH_SIDECAR_PASSWORD: '',
+		DEEP_RESEARCH_POLL_INTERVAL_MS: 3000,
+		DEEP_RESEARCH_TIMEOUT_SECONDS: 900,
+		DEEP_RESEARCH_EXPORT_FORMAT: 'pdf'
+	};
 
 	const addConnectionHandler = async (server) => {
 		servers = [...servers, server];
 		await updateHandler();
 	};
 
-	const updateHandler = async () => {
+	const updateHandler = async (silent = false) => {
 		const res = await setToolServerConnections(localStorage.token, {
 			TOOL_SERVER_CONNECTIONS: servers
 		}).catch((err) => {
-			toast.error($i18n.t('Failed to save connections'));
+			if (!silent) {
+				toast.error($i18n.t('Failed to save connections'));
+			}
 			return null;
 		});
 
 		if (res) {
-			toast.success($i18n.t('Connections saved successfully'));
+			if (!silent) {
+				toast.success($i18n.t('Connections saved successfully'));
+			}
+			return true;
 		}
+		return false;
 	};
 
 	const saveTerminalServers = async () => {
@@ -103,6 +120,40 @@
 		saveTerminalServers();
 	};
 
+	const saveDeepResearchSettings = async (silent = false) => {
+		const res = await setDeepResearchConfig(localStorage.token, deepResearchConfig).catch((err) => {
+			if (!silent) {
+				toast.error($i18n.t('Failed to save deep research settings'));
+			}
+			return null;
+		});
+
+		if (res) {
+			deepResearchConfig = res;
+			if (!silent) {
+				toast.success($i18n.t('Deep research settings saved'));
+			}
+			return true;
+		}
+
+		return false;
+	};
+
+	const submitHandler = async () => {
+		const [toolServersSaved, deepResearchSaved] = await Promise.all([
+			updateHandler(true),
+			saveDeepResearchSettings(true)
+		]);
+
+		if (toolServersSaved && deepResearchSaved) {
+			toast.success($i18n.t('Integration settings saved'));
+		} else if (!toolServersSaved && !deepResearchSaved) {
+			toast.error($i18n.t('Failed to save integration settings'));
+		} else {
+			toast.warning($i18n.t('Some integration settings could not be saved'));
+		}
+	};
+
 	onMount(async () => {
 		const res = await getToolServerConnections(localStorage.token);
 		servers = res.TOOL_SERVER_CONNECTIONS;
@@ -112,6 +163,15 @@
 			const terminalRes = await getTerminalServerConnections(localStorage.token);
 			if (terminalRes?.TERMINAL_SERVER_CONNECTIONS) {
 				terminalConnections = terminalRes.TERMINAL_SERVER_CONNECTIONS;
+			}
+		} catch {
+			// Not configured yet
+		}
+
+		try {
+			const deepResearchRes = await getDeepResearchConfig(localStorage.token);
+			if (deepResearchRes) {
+				deepResearchConfig = deepResearchRes;
 			}
 		} catch {
 			// Not configured yet
@@ -153,12 +213,7 @@
 	}}
 />
 
-<form
-	class="flex flex-col h-full justify-between text-sm"
-	on:submit|preventDefault={() => {
-		updateHandler();
-	}}
->
+<form class="flex flex-col h-full justify-between text-sm" on:submit|preventDefault={submitHandler}>
 	<div class=" overflow-y-scroll scrollbar-hidden h-full">
 		{#if servers !== null}
 			<div class="">
@@ -312,6 +367,83 @@
 									href="https://github.com/open-webui/open-terminal"
 									target="_blank">{$i18n.t('Learn more about Open Terminal')} ↗</a
 								>
+							</div>
+						</div>
+					</div>
+
+					<hr class=" border-gray-100/30 dark:border-gray-850/30 my-4" />
+
+					<div class="mb-2.5 flex flex-col w-full gap-2">
+						<div class="flex justify-between items-center mb-0.5">
+							<div class="font-medium">{$i18n.t('Local Deep Research Sidecar')}</div>
+							<Switch bind:state={deepResearchConfig.ENABLE_DEEP_RESEARCH} />
+						</div>
+
+						<div class="text-xs text-gray-500">
+							{$i18n.t(
+								'Configure a single OWUI-managed Local Deep Research sidecar for blocking deep research turns.'
+							)}
+						</div>
+
+						<div class="grid grid-cols-1 gap-2">
+							<div class="flex flex-col gap-1">
+								<div class="text-xs font-medium">{$i18n.t('Sidecar URL')}</div>
+								<input
+									class="w-full rounded-xl bg-transparent border border-gray-100/30 dark:border-gray-850/30 px-3 py-2 outline-hidden"
+									bind:value={deepResearchConfig.DEEP_RESEARCH_SIDECAR_URL}
+									placeholder="http://localhost:5000"
+								/>
+							</div>
+
+							<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+								<div class="flex flex-col gap-1">
+									<div class="text-xs font-medium">{$i18n.t('Username')}</div>
+									<input
+										class="w-full rounded-xl bg-transparent border border-gray-100/30 dark:border-gray-850/30 px-3 py-2 outline-hidden"
+										bind:value={deepResearchConfig.DEEP_RESEARCH_SIDECAR_USERNAME}
+									/>
+								</div>
+
+								<div class="flex flex-col gap-1">
+									<div class="text-xs font-medium">{$i18n.t('Password')}</div>
+									<SensitiveInput
+										bind:value={deepResearchConfig.DEEP_RESEARCH_SIDECAR_PASSWORD}
+										placeholder={$i18n.t('Password')}
+									/>
+								</div>
+							</div>
+
+							<div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+								<div class="flex flex-col gap-1">
+									<div class="text-xs font-medium">{$i18n.t('Poll Interval (ms)')}</div>
+									<input
+										class="w-full rounded-xl bg-transparent border border-gray-100/30 dark:border-gray-850/30 px-3 py-2 outline-hidden"
+										type="number"
+										min="250"
+										step="250"
+										bind:value={deepResearchConfig.DEEP_RESEARCH_POLL_INTERVAL_MS}
+									/>
+								</div>
+
+								<div class="flex flex-col gap-1">
+									<div class="text-xs font-medium">{$i18n.t('Timeout (s)')}</div>
+									<input
+										class="w-full rounded-xl bg-transparent border border-gray-100/30 dark:border-gray-850/30 px-3 py-2 outline-hidden"
+										type="number"
+										min="30"
+										step="30"
+										bind:value={deepResearchConfig.DEEP_RESEARCH_TIMEOUT_SECONDS}
+									/>
+								</div>
+
+								<div class="flex flex-col gap-1">
+									<div class="text-xs font-medium">{$i18n.t('Export Format')}</div>
+									<input
+										class="w-full rounded-xl bg-transparent border border-gray-100/30 dark:border-gray-850/30 px-3 py-2 outline-hidden lowercase"
+										bind:value={deepResearchConfig.DEEP_RESEARCH_EXPORT_FORMAT}
+										placeholder="pdf"
+									/>
+								</div>
 							</div>
 						</div>
 					</div>

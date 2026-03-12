@@ -4,6 +4,8 @@ import logging
 import sys
 import os
 import base64
+import io
+import mimetypes
 import textwrap
 
 import asyncio
@@ -24,7 +26,7 @@ from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 
 
-from fastapi import Request, HTTPException
+from fastapi import Request, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from starlette.responses import Response, StreamingResponse, JSONResponse
 
@@ -133,7 +135,7 @@ from open_webui.utils.tools import (
     get_updated_tool_function,
     get_terminal_tools,
 )
-from open_webui.utils.access_control import has_connection_access
+from open_webui.utils.access_control import has_connection_access, has_permission
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.filter import (
     get_sorted_filter_ids,
@@ -143,6 +145,12 @@ from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.payload import apply_system_prompt_to_body
 from open_webui.utils.response import normalize_usage
 from open_webui.utils.mcp.client import MCPClient
+from open_webui.utils.deep_research import (
+    LocalDeepResearchAuthError,
+    LocalDeepResearchClient,
+    LocalDeepResearchError,
+)
+from open_webui.routers.files import upload_file_handler
 
 
 from open_webui.config import (
@@ -234,6 +242,7 @@ _BG_CYRILLIC_TO_LATIN = {
 _BG_CYRILLIC_TO_LATIN.update({k.upper(): v.title() for k, v in _BG_CYRILLIC_TO_LATIN.items()})
 
 _CHAT_ARTIFACT_DIR_CACHE: dict[str, Path] = {}
+_DEEP_RESEARCH_TERMINAL_STATUSES = {"completed", "failed", "suspended", "error"}
 
 
 def _transliterate_cyrillic_to_latin(text: str) -> str:
@@ -301,6 +310,568 @@ def _resolve_chat_artifacts_dir(chat_id: str) -> Optional[Path]:
         log.warning("Failed to write chat artifact index for %s: %s", normalized_chat_id, exc)
     _CHAT_ARTIFACT_DIR_CACHE[normalized_chat_id] = resolved
     return resolved
+
+
+def _set_deep_research_commit_state(metadata: dict[str, Any], state: str) -> str:
+    metadata["deep_research_commit_state"] = state
+    return state
+
+
+def _get_deep_research_failure_message(status_payload: dict[str, Any]) -> str:
+    metadata = status_payload.get("metadata") or {}
+    error_info = metadata.get("error_info") or {}
+    if error_info.get("message"):
+        return str(error_info["message"])
+
+    error = status_payload.get("error") or metadata.get("error")
+    if error:
+        return str(error)
+
+    status_value = str(status_payload.get("status") or "failed").replace("_", " ")
+    return f"Deep research {status_value}."
+
+
+def _build_deep_research_status_description(
+    status_payload: Optional[dict[str, Any]],
+    *,
+    fallback: str,
+) -> str:
+    payload = status_payload or {}
+    log_entry = payload.get("log_entry") or {}
+    if isinstance(log_entry, dict) and log_entry.get("message"):
+        return str(log_entry["message"])
+
+    metadata = payload.get("metadata") or {}
+    error_info = metadata.get("error_info") or {}
+    if error_info.get("message"):
+        return str(error_info["message"])
+
+    status_value = str(payload.get("status") or "").strip()
+    if status_value:
+        return status_value.replace("_", " ").capitalize()
+
+    return fallback
+
+
+async def _emit_deep_research_status(
+    event_emitter,
+    status_state: dict[str, Any],
+    *,
+    status_value: Optional[str] = None,
+    progress: Optional[Any] = None,
+    description: str,
+    done: bool,
+) -> None:
+    if not event_emitter:
+        return
+
+    dedupe_key = (status_value, progress, description)
+    if status_state.get("last_key") == dedupe_key and status_state.get("last_done") == done:
+        return
+
+    status_state["last_key"] = dedupe_key
+    status_state["last_done"] = done
+    payload = {
+        "type": "status",
+        "data": {
+            "action": "deep_research",
+            "description": description,
+            "done": done,
+        },
+    }
+    if status_value is not None:
+        payload["data"]["status"] = status_value
+    if progress is not None:
+        payload["data"]["progress"] = progress
+
+    await event_emitter(payload)
+
+
+def _build_deep_research_sources(urls: list[Any]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    citations: list[dict[str, Any]] = []
+    for item in urls or []:
+        url = str(item or "").strip()
+        if not url or url in seen:
+            continue
+
+        seen.add(url)
+        source_name = urlsplit(url).netloc or url
+        citations.append(
+            {
+                "source": {"id": url, "name": source_name, "url": url},
+                "document": [url],
+                "metadata": [{"source": url, "url": url, "name": source_name}],
+            }
+        )
+    return citations
+
+
+def _resolve_deep_research_export_filename(export_format: str) -> str:
+    normalized = _safe_path_component(export_format, "pdf").lower()
+    if normalized == "md":
+        return "report.export.md"
+    return f"report.{normalized}"
+
+
+def _persist_deep_research_raw_artifacts(
+    chat_id: str,
+    research_id: str,
+    markdown_content: str,
+    export_filename: str,
+    export_content: bytes,
+) -> tuple[Path, Path]:
+    chat_artifacts_dir = _resolve_chat_artifacts_dir(chat_id)
+    if chat_artifacts_dir is None:
+        raise LocalDeepResearchError("Deep research requires a persisted chat.")
+
+    artifact_dir = chat_artifacts_dir / "deep_research" / _safe_path_component(
+        research_id, "research"
+    )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    markdown_path = artifact_dir / "report.md"
+    export_path = artifact_dir / export_filename
+    markdown_path.write_text(markdown_content, encoding="utf-8")
+    export_path.write_bytes(export_content)
+    return markdown_path, export_path
+
+
+def _message_file_from_upload(uploaded_file: Any, *, filename: str) -> dict[str, Any]:
+    file_payload = (
+        uploaded_file.model_dump()
+        if hasattr(uploaded_file, "model_dump")
+        else dict(uploaded_file or {})
+    )
+    meta = file_payload.get("meta") or {}
+    file_id = file_payload.get("id")
+    if not file_id:
+        raise LocalDeepResearchError(
+            "Deep research artifact registration did not return a file ID."
+        )
+
+    content_type = meta.get("content_type") or file_payload.get("content_type")
+    return {
+        "type": "file",
+        "file": file_payload,
+        "id": file_id,
+        "url": str(file_id),
+        "name": meta.get("name") or file_payload.get("filename") or filename,
+        "size": meta.get("size"),
+        "content_type": content_type,
+        **(
+            {"collection_name": meta.get("collection_name")}
+            if meta.get("collection_name")
+            else {}
+        ),
+    }
+
+
+def _register_deep_research_artifact(
+    request: Request,
+    user: Any,
+    *,
+    chat_id: str,
+    message_id: str,
+    filename: str,
+    content: bytes,
+    content_type: Optional[str],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    guessed_content_type = (
+        content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    )
+    upload = UploadFile(
+        file=io.BytesIO(content),
+        filename=filename,
+        headers={"content-type": guessed_content_type},
+    )
+    uploaded_file = upload_file_handler(
+        request,
+        file=upload,
+        metadata={
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "deep_research": {
+                "research_id": metadata.get("deep_research_id"),
+                "artifact_name": filename,
+            },
+        },
+        process=False,
+        user=user,
+    )
+    return _message_file_from_upload(uploaded_file, filename=filename)
+
+
+def _link_deep_research_message_files(
+    chat_id: str,
+    message_id: str,
+    user: Any,
+    message_files: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    file_ids = [item.get("id") for item in message_files if item.get("id")]
+    if not file_ids:
+        raise LocalDeepResearchError(
+            "Deep research artifact registration did not return any file IDs."
+        )
+
+    Chats.insert_chat_files(chat_id, message_id, file_ids, user.id)
+    saved_files = Chats.add_message_files_by_id_and_message_id(
+        chat_id,
+        message_id,
+        message_files,
+    )
+    return saved_files if saved_files is not None else message_files
+
+
+async def _run_deep_research_awaitable(
+    awaitable_factory,
+    metadata: dict[str, Any],
+) -> Any:
+    while True:
+        try:
+            return await awaitable_factory()
+        except asyncio.CancelledError:
+            if metadata.get("deep_research_commit_state") != "polling":
+                task = asyncio.current_task()
+                if task and hasattr(task, "uncancel"):
+                    task.uncancel()
+                    continue
+            raise
+
+
+async def _commit_deep_research_cancel_response(
+    request: Request,
+    form_data: dict[str, Any],
+    user: Any,
+    model: dict[str, Any],
+    metadata: dict[str, Any],
+) -> None:
+    response = {"choices": [{"message": {"content": "Deep research canceled."}}]}
+    ctx = build_chat_response_context(request, form_data, user, model, metadata, None, [])
+    await asyncio.shield(non_streaming_chat_response_handler(response, ctx))
+
+
+async def _close_deep_research_client(
+    client: LocalDeepResearchClient,
+    metadata: dict[str, Any],
+) -> None:
+    try:
+        await client.close()
+    except asyncio.CancelledError:
+        if metadata.get("deep_research_commit_state") == "polling":
+            raise
+        task = asyncio.current_task()
+        if task and hasattr(task, "uncancel"):
+            task.uncancel()
+        return
+
+
+async def chat_deep_research_handler(request, form_data, extra_params, user):
+    metadata = extra_params["__metadata__"]
+    event_emitter = extra_params.get("__event_emitter__")
+    model = extra_params["__model__"]
+    config = request.app.state.config
+    chat_id = metadata.get("chat_id")
+    message_id = metadata.get("message_id")
+
+    if not chat_id or str(chat_id).startswith("local:"):
+        raise LocalDeepResearchError("Deep research is only available for persisted chats.")
+    if not message_id:
+        raise LocalDeepResearchError("Deep research requires a target assistant message.")
+    if not config.ENABLE_DEEP_RESEARCH:
+        raise LocalDeepResearchError("Deep research is currently disabled.")
+    if user.role != "admin" and not has_permission(
+        user.id,
+        "features.deep_research",
+        request.app.state.config.USER_PERMISSIONS,
+    ):
+        raise LocalDeepResearchError("You do not have permission to use deep research.")
+
+    query = get_last_user_message(form_data.get("messages", []))
+    if not str(query or "").strip():
+        raise LocalDeepResearchError("Deep research requires a user message.")
+
+    export_format = _safe_path_component(
+        getattr(config, "DEEP_RESEARCH_EXPORT_FORMAT", "pdf") or "pdf",
+        "pdf",
+    ).lower()
+    poll_interval_ms = max(
+        250, int(getattr(config, "DEEP_RESEARCH_POLL_INTERVAL_MS", 3000))
+    )
+    timeout_seconds = max(
+        30, int(getattr(config, "DEEP_RESEARCH_TIMEOUT_SECONDS", 900))
+    )
+
+    client = LocalDeepResearchClient(
+        base_url=getattr(config, "DEEP_RESEARCH_SIDECAR_URL", ""),
+        username=getattr(config, "DEEP_RESEARCH_SIDECAR_USERNAME", ""),
+        password=getattr(config, "DEEP_RESEARCH_SIDECAR_PASSWORD", ""),
+    )
+
+    status_state: dict[str, Any] = {"last_key": None, "last_done": None}
+    started_at = time.monotonic()
+    research_id: Optional[str] = None
+    _set_deep_research_commit_state(metadata, "polling")
+
+    try:
+        await _emit_deep_research_status(
+            event_emitter,
+            status_state,
+            status_value="queued",
+            description="Starting deep research...",
+            progress=0,
+            done=False,
+        )
+
+        start_payload = await client.start_research(query=query, mode="detailed")
+        research_id = start_payload.get("research_id")
+        metadata["deep_research_id"] = research_id
+
+        terminal_status: Optional[dict[str, Any]] = None
+        while True:
+            if (time.monotonic() - started_at) >= timeout_seconds:
+                raise LocalDeepResearchError(
+                    f"Deep research timed out after {timeout_seconds} seconds."
+                )
+
+            status_payload = await _run_deep_research_awaitable(
+                lambda: client.get_research_status(research_id),
+                metadata,
+            )
+            status_value = str(status_payload.get("status") or "").strip().lower()
+            progress = status_payload.get("progress")
+            description = _build_deep_research_status_description(
+                status_payload,
+                fallback="Deep research in progress...",
+            )
+
+            await _emit_deep_research_status(
+                event_emitter,
+                status_state,
+                status_value=status_value or "in_progress",
+                progress=progress,
+                description=description,
+                done=status_value in _DEEP_RESEARCH_TERMINAL_STATUSES,
+            )
+
+            if status_value in _DEEP_RESEARCH_TERMINAL_STATUSES:
+                terminal_status = status_payload
+                break
+
+            await asyncio.sleep(poll_interval_ms / 1000)
+
+        terminal_value = str(terminal_status.get("status") or "").strip().lower()
+        if terminal_value != "completed":
+            salvage_files: list[dict[str, Any]] = []
+            report_path = terminal_status.get("report_path")
+            if report_path:
+                try:
+                    report_payload = await _run_deep_research_awaitable(
+                        lambda: client.get_report(research_id),
+                        metadata,
+                    )
+                    markdown_content = str(
+                        report_payload.get("content") or report_payload.get("summary") or ""
+                    )
+                    if markdown_content:
+                        chat_artifacts_dir = _resolve_chat_artifacts_dir(chat_id)
+                        artifact_dir = (
+                            chat_artifacts_dir
+                            / "deep_research"
+                            / _safe_path_component(research_id, "research")
+                        )
+                        artifact_dir.mkdir(parents=True, exist_ok=True)
+                        markdown_path = artifact_dir / "report.md"
+                        markdown_path.write_text(markdown_content, encoding="utf-8")
+
+                        markdown_file = _register_deep_research_artifact(
+                            request,
+                            user,
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            filename=markdown_path.name,
+                            content=markdown_content.encode("utf-8"),
+                            content_type="text/markdown",
+                            metadata=metadata,
+                        )
+                        salvage_files = _link_deep_research_message_files(
+                            chat_id,
+                            message_id,
+                            user,
+                            [markdown_file],
+                        )
+                except Exception as exc:
+                    log.warning(
+                        "Failed to salvage deep research markdown for %s: %s",
+                        research_id,
+                        exc,
+                    )
+
+            if salvage_files and event_emitter:
+                await _run_deep_research_awaitable(
+                    lambda: event_emitter({"type": "files", "data": {"files": salvage_files}}),
+                    metadata,
+                )
+
+            metadata["direct_response"] = {
+                "error": {"detail": _get_deep_research_failure_message(terminal_status)}
+            }
+            _set_deep_research_commit_state(metadata, "committed_failure")
+            return form_data, metadata, []
+
+        _set_deep_research_commit_state(metadata, "finalizing")
+        await _emit_deep_research_status(
+            event_emitter,
+            status_state,
+            status_value="completed",
+            progress=terminal_status.get("progress"),
+            description="Preparing report files...",
+            done=False,
+        )
+
+        report_payload = await _run_deep_research_awaitable(
+            lambda: client.get_report(research_id),
+            metadata,
+        )
+        markdown_content = str(
+            report_payload.get("content") or report_payload.get("summary") or ""
+        )
+        if not markdown_content:
+            raise LocalDeepResearchError("Deep research completed without a markdown report.")
+
+        chat_artifacts_dir = _resolve_chat_artifacts_dir(chat_id)
+        artifact_dir = chat_artifacts_dir / "deep_research" / _safe_path_component(
+            research_id, "research"
+        )
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        markdown_path = artifact_dir / "report.md"
+        markdown_path.write_text(markdown_content, encoding="utf-8")
+
+        try:
+            export_payload = await _run_deep_research_awaitable(
+                lambda: client.export_report(research_id, export_format),
+                metadata,
+            )
+            if not export_payload.content:
+                raise LocalDeepResearchError("Deep research completed but export failed.")
+        except (LocalDeepResearchAuthError, LocalDeepResearchError):
+            markdown_file = _register_deep_research_artifact(
+                request,
+                user,
+                chat_id=chat_id,
+                message_id=message_id,
+                filename=markdown_path.name,
+                content=markdown_content.encode("utf-8"),
+                content_type="text/markdown",
+                metadata=metadata,
+            )
+            linked_files = _link_deep_research_message_files(
+                chat_id,
+                message_id,
+                user,
+                [markdown_file],
+            )
+            if event_emitter:
+                await _run_deep_research_awaitable(
+                    lambda: event_emitter({"type": "files", "data": {"files": linked_files}}),
+                    metadata,
+                )
+            raise LocalDeepResearchError("Deep research completed but export failed.")
+
+        export_filename = _resolve_deep_research_export_filename(export_format)
+        export_path = artifact_dir / export_filename
+        export_path.write_bytes(export_payload.content)
+
+        markdown_file = _register_deep_research_artifact(
+            request,
+            user,
+            chat_id=chat_id,
+            message_id=message_id,
+            filename=markdown_path.name,
+            content=markdown_content.encode("utf-8"),
+            content_type="text/markdown",
+            metadata=metadata,
+        )
+        export_file = _register_deep_research_artifact(
+            request,
+            user,
+            chat_id=chat_id,
+            message_id=message_id,
+            filename=export_path.name,
+            content=export_payload.content,
+            content_type=export_payload.content_type,
+            metadata=metadata,
+        )
+        linked_files = _link_deep_research_message_files(
+            chat_id,
+            message_id,
+            user,
+            [markdown_file, export_file],
+        )
+
+        if event_emitter:
+            await _run_deep_research_awaitable(
+                lambda: event_emitter({"type": "files", "data": {"files": linked_files}}),
+                metadata,
+            )
+
+        metadata["direct_response"] = {
+            "choices": [
+                {
+                    "message": {"content": "Deep research completed. Reports attached."}
+                }
+            ],
+            "sources": _build_deep_research_sources(report_payload.get("sources") or []),
+        }
+        _set_deep_research_commit_state(metadata, "committed_success")
+        return form_data, metadata, []
+    except asyncio.CancelledError:
+        if metadata.get("deep_research_commit_state") == "polling":
+            if research_id:
+                try:
+                    await asyncio.shield(client.terminate_research(research_id))
+                except Exception as exc:
+                    log.warning(
+                        "Failed to terminate deep research %s after cancellation: %s",
+                        research_id,
+                        exc,
+                    )
+
+            _set_deep_research_commit_state(metadata, "committed_cancel")
+            await _emit_deep_research_status(
+                event_emitter,
+                status_state,
+                status_value="suspended",
+                description="Deep research canceled.",
+                done=True,
+            )
+            await _commit_deep_research_cancel_response(
+                request, form_data, user, model, metadata
+            )
+        raise
+    except (LocalDeepResearchAuthError, LocalDeepResearchError) as exc:
+        if (
+            metadata.get("deep_research_commit_state") == "finalizing"
+            and "export failed" not in str(exc).lower()
+            and research_id
+        ):
+            error_message = "Deep research completed but export failed."
+        else:
+            error_message = str(exc)
+
+        metadata["direct_response"] = {"error": {"detail": error_message}}
+        _set_deep_research_commit_state(metadata, "committed_failure")
+        await _emit_deep_research_status(
+            event_emitter,
+            status_state,
+            status_value="failed",
+            description=error_message,
+            done=True,
+        )
+        return form_data, metadata, []
+    finally:
+        await _close_deep_research_client(client, metadata)
 
 
 def _normalize_terminal_tool_result_for_persistence(
@@ -4643,6 +5214,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     features = form_data.pop("features", None) or {}
     extra_params["__features__"] = features
     if features:
+        if "deep_research" in features and features["deep_research"]:
+            return await chat_deep_research_handler(
+                request, form_data, extra_params, user
+            )
+
         if "voice" in features and features["voice"]:
             if request.app.state.config.VOICE_MODE_PROMPT_TEMPLATE != None:
                 if request.app.state.config.VOICE_MODE_PROMPT_TEMPLATE != "":
