@@ -55,6 +55,7 @@ from open_webui.tools.builtin import (
     search_web,
     web_research_strong,
     fetch_url,
+    query_web_evidence,
     generate_image,
     edit_image,
     execute_code,
@@ -488,6 +489,7 @@ def get_builtin_tools(
             builtin_functions.append(web_research_strong)
         if features.get("web_search") or features.get("focused_search"):
             builtin_functions.append(fetch_url)
+            builtin_functions.append(query_web_evidence)
 
     # Add image generation/edit tools if builtin category enabled AND enabled globally AND model has image_generation capability
     if (

@@ -11,6 +11,7 @@ import logging
 import time
 import asyncio
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import Request
 
@@ -40,6 +41,10 @@ from open_webui.models.groups import Groups
 from open_webui.models.memories import Memories
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.utils.sanitize import sanitize_code
+from open_webui.utils.web_evidence_store import (
+    query_web_evidence_store,
+    store_web_page,
+)
 
 log = logging.getLogger(__name__)
 
@@ -189,10 +194,15 @@ async def search_web(
 async def _run_web_research_strong(
     query: str,
     mode: str = "search",
+    search_session_id: Optional[str] = None,
+    cursor: Optional[str] = None,
     selected_categories: Optional[list[str]] = None,
     selected_domains: Optional[list[str]] = None,
+    selected_domain_ids: Optional[list[str]] = None,
     selected_time_scope: Optional[str] = None,
     max_domains: int = 4,
+    domain_window_size: int = 4,
+    include_full_options: bool = False,
     max_queries: int = 3,
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
@@ -211,10 +221,15 @@ async def _run_web_research_strong(
             __request__,
             query=query,
             mode=mode,
+            search_session_id=search_session_id,
+            cursor=cursor,
             selected_categories=selected_categories,
             selected_domains=selected_domains,
+            selected_domain_ids=selected_domain_ids,
             selected_time_scope=selected_time_scope,
             max_domains=max_domains,
+            domain_window_size=domain_window_size,
+            include_full_options=include_full_options,
             user=user,
             max_queries=max_queries,
             topic_hint=topic_hint,
@@ -232,10 +247,15 @@ async def _run_web_research_strong(
 async def web_research_strong(
     query: str,
     mode: str = "search",
+    search_session_id: Optional[str] = None,
+    cursor: Optional[str] = None,
     selected_categories: Optional[list[str]] = None,
     selected_domains: Optional[list[str]] = None,
+    selected_domain_ids: Optional[list[str]] = None,
     selected_time_scope: Optional[str] = None,
     max_domains: int = 4,
+    domain_window_size: int = 4,
+    include_full_options: bool = False,
     max_queries: int = 3,
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
@@ -250,13 +270,20 @@ async def web_research_strong(
     Run focused strong-source web research with local-first routing and broad fallback.
     Use this when evidence is uncertain, time-sensitive, or high-risk, and you need
     stronger provenance before answering.
+    If payload returns `next_action=fetch_and_query_evidence`, store target pages via
+    `fetch_url(mode="store")` and then call `query_web_evidence` for compact snippets.
 
     :param query: User question or search objective
     :param mode: list_categories | list_domains | search (default: search)
+    :param search_session_id: Session id from previous step for stateful focused flow
+    :param cursor: Optional pagination cursor for domain options
     :param selected_categories: Optional chosen categories (1-2)
     :param selected_domains: Optional chosen domains (1-4)
+    :param selected_domain_ids: Optional chosen domain IDs (same as normalized domains)
     :param selected_time_scope: Optional time scope (evergreen | recent | breaking)
     :param max_domains: Maximum domains allowed for focused search (default: 4)
+    :param domain_window_size: Domain option window size for progressive disclosure (3-6)
+    :param include_full_options: Return full option metadata (default: false)
     :param max_queries: Maximum site-constrained search queries per phase (default: 3)
     :param topic_hint: Optional topic hint to improve source routing
     :param recency_days: Optional recency hint in days for freshness-sensitive tasks
@@ -266,10 +293,15 @@ async def web_research_strong(
     return await _run_web_research_strong(
         query=query,
         mode=mode,
+        search_session_id=search_session_id,
+        cursor=cursor,
         selected_categories=selected_categories,
         selected_domains=selected_domains,
+        selected_domain_ids=selected_domain_ids,
         selected_time_scope=selected_time_scope,
         max_domains=max_domains,
+        domain_window_size=domain_window_size,
+        include_full_options=include_full_options,
         max_queries=max_queries,
         topic_hint=topic_hint,
         recency_days=recency_days,
@@ -284,10 +316,15 @@ async def web_research_strong(
 async def search_strong_sources(
     query: str,
     mode: str = "search",
+    search_session_id: Optional[str] = None,
+    cursor: Optional[str] = None,
     selected_categories: Optional[list[str]] = None,
     selected_domains: Optional[list[str]] = None,
+    selected_domain_ids: Optional[list[str]] = None,
     selected_time_scope: Optional[str] = None,
     max_domains: int = 4,
+    domain_window_size: int = 4,
+    include_full_options: bool = False,
     max_queries: int = 3,
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
@@ -298,15 +335,22 @@ async def search_strong_sources(
     __event_emitter__=None,
 ) -> str:
     """
+    WEB SOURCES ONLY.
     Backward-compatible alias for `web_research_strong`.
+    Prefer `web_research_strong` in new tool-calling prompts.
     """
     return await _run_web_research_strong(
         query=query,
         mode=mode,
+        search_session_id=search_session_id,
+        cursor=cursor,
         selected_categories=selected_categories,
         selected_domains=selected_domains,
+        selected_domain_ids=selected_domain_ids,
         selected_time_scope=selected_time_scope,
         max_domains=max_domains,
+        domain_window_size=domain_window_size,
+        include_full_options=include_full_options,
         max_queries=max_queries,
         topic_hint=topic_hint,
         recency_days=recency_days,
@@ -320,20 +364,67 @@ async def search_strong_sources(
 
 async def fetch_url(
     url: str,
+    mode: str = "content",
+    title: Optional[str] = None,
     __request__: Request = None,
     __user__: dict = None,
+    __metadata__: dict = None,
 ) -> str:
     """
     Fetch and extract the main text content from a web page URL.
+    Supports two modes:
+    - content (default): returns extracted content text (legacy behavior)
+    - store: stores normalized content as per-chat artifact + local FTS index, and
+      returns pointer metadata only (no raw page dump)
 
     :param url: The URL to fetch content from
-    :return: The extracted text content from the page
+    :param mode: content | store
+    :param title: Optional page title override for stored artifacts
+    :return: Content text (content mode) or artifact metadata (store mode)
     """
     if __request__ is None:
         return json.dumps({"error": "Request context not available"})
 
     try:
         content, _ = await asyncio.to_thread(get_content_from_url, __request__, url)
+        selected_mode = (mode or "content").strip().lower()
+
+        if selected_mode == "store":
+            chat_id = str((__metadata__ or {}).get("chat_id") or "").strip()
+            message_id = str((__metadata__ or {}).get("message_id") or "").strip()
+            if not chat_id:
+                return json.dumps(
+                    {
+                        "error": "chat_id missing in metadata for store mode",
+                        "mode": "store",
+                        "url": url,
+                    },
+                    ensure_ascii=False,
+                )
+
+            inferred_title = (title or "").strip()
+            if not inferred_title:
+                inferred_title = (urlparse(url).netloc or url).strip()
+
+            pointer = await asyncio.to_thread(
+                store_web_page,
+                chat_id=chat_id,
+                message_id=message_id,
+                url=url,
+                content=content,
+                title=inferred_title,
+            )
+            pointer["mode"] = "store"
+            return json.dumps(pointer, ensure_ascii=False)
+
+        if selected_mode != "content":
+            return json.dumps(
+                {
+                    "error": "invalid mode; expected content or store",
+                    "mode": selected_mode,
+                },
+                ensure_ascii=False,
+            )
 
         # Truncate if too long (avoid overwhelming context)
         max_length = 50000
@@ -344,6 +435,64 @@ async def fetch_url(
     except Exception as e:
         log.exception(f"fetch_url error: {e}")
         return json.dumps({"error": str(e)})
+
+
+async def query_web_evidence(
+    query: str,
+    artifact_ids: Optional[list[str]] = None,
+    top_k: int = 6,
+    window_chars: int = 320,
+    widen_if_weak: bool = True,
+    wide_top_k: int = 10,
+    wide_window_chars: int = 640,
+    __request__: Request = None,
+    __user__: dict = None,
+    __metadata__: dict = None,
+) -> str:
+    """
+    WEB SOURCES ONLY.
+    Query per-chat locally stored web artifacts using lexical retrieval (FTS5).
+    Returns compact evidence windows with provenance, not full raw pages.
+
+    :param query: Evidence query to match against stored web artifacts
+    :param artifact_ids: Optional subset of artifact IDs to search
+    :param top_k: Number of snippets for narrow pass (default: 6)
+    :param window_chars: Snippet window chars for narrow pass (default: 320)
+    :param widen_if_weak: Run second wider pass if narrow evidence is weak
+    :param wide_top_k: Number of snippets for wide pass (default: 10)
+    :param wide_window_chars: Snippet window chars for wide pass (default: 640)
+    :return: JSON with snippets and provenance metadata
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    chat_id = str((__metadata__ or {}).get("chat_id") or "").strip()
+    if not chat_id:
+        return json.dumps(
+            {
+                "error": "chat_id missing in metadata for evidence query",
+                "query": query,
+                "snippets": [],
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        payload = await asyncio.to_thread(
+            query_web_evidence_store,
+            chat_id=chat_id,
+            query=query,
+            artifact_ids=artifact_ids,
+            top_k=top_k,
+            window_chars=window_chars,
+            widen_if_weak=widen_if_weak,
+            wide_top_k=wide_top_k,
+            wide_window_chars=wide_window_chars,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"query_web_evidence error: {e}")
+        return json.dumps({"error": str(e), "query": query}, ensure_ascii=False)
 
 
 # =============================================================================

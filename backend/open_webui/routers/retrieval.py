@@ -2817,6 +2817,183 @@ TIME_SCOPE_ALLOWED = {
 }
 DEFAULT_RECENT_RECENCY_DAYS = 365
 DEFAULT_BREAKING_RECENCY_DAYS = 30
+FOCUSED_DOMAIN_WINDOW_MIN = 3
+FOCUSED_DOMAIN_WINDOW_MAX = 6
+FOCUSED_DOMAIN_WINDOW_DEFAULT = 4
+FOCUSED_SEARCH_SESSION_TTL_SECONDS = 1800
+
+_FOCUSED_SEARCH_SESSIONS: dict[str, dict[str, Any]] = {}
+_FOCUSED_SEARCH_SESSIONS_BY_SCOPE: dict[str, set[str]] = {}
+
+
+def _focused_scope_key(metadata: Optional[dict[str, Any]]) -> str:
+    payload = metadata or {}
+    chat_id = str(payload.get("chat_id") or "").strip()
+    message_id = str(payload.get("message_id") or "").strip()
+    if not chat_id or not message_id:
+        return ""
+    return f"{chat_id}:{message_id}"
+
+
+def _reset_focused_scope(scope_key: str) -> None:
+    if not scope_key:
+        return
+    existing = _FOCUSED_SEARCH_SESSIONS_BY_SCOPE.pop(scope_key, set())
+    for session_id in existing:
+        _FOCUSED_SEARCH_SESSIONS.pop(session_id, None)
+
+
+def _prune_stale_focused_sessions() -> None:
+    now = int(time.time())
+    stale_ids = [
+        session_id
+        for session_id, payload in _FOCUSED_SEARCH_SESSIONS.items()
+        if now - int(payload.get("created_at", 0) or 0) > FOCUSED_SEARCH_SESSION_TTL_SECONDS
+    ]
+    for session_id in stale_ids:
+        _invalidate_focused_search_session(session_id)
+
+
+def _create_focused_search_session(
+    *,
+    metadata: Optional[dict[str, Any]],
+    query: str,
+) -> str:
+    _prune_stale_focused_sessions()
+    scope_key = _focused_scope_key(metadata)
+    if scope_key:
+        _reset_focused_scope(scope_key)
+
+    session_id = f"fss_{uuid.uuid4().hex[:24]}"
+    _FOCUSED_SEARCH_SESSIONS[session_id] = {
+        "query": query,
+        "scope": scope_key,
+        "created_at": int(time.time()),
+    }
+
+    if scope_key:
+        _FOCUSED_SEARCH_SESSIONS_BY_SCOPE.setdefault(scope_key, set()).add(session_id)
+
+    return session_id
+
+
+def _get_focused_search_session(
+    *,
+    search_session_id: Optional[str],
+    metadata: Optional[dict[str, Any]],
+    query: str,
+) -> Optional[dict[str, Any]]:
+    _prune_stale_focused_sessions()
+    session_id = str(search_session_id or "").strip()
+    if not session_id:
+        return None
+
+    session = _FOCUSED_SEARCH_SESSIONS.get(session_id)
+    if not session:
+        return None
+
+    expected_scope = str(session.get("scope") or "")
+    current_scope = _focused_scope_key(metadata)
+    if expected_scope and expected_scope != current_scope:
+        _FOCUSED_SEARCH_SESSIONS.pop(session_id, None)
+        if expected_scope in _FOCUSED_SEARCH_SESSIONS_BY_SCOPE:
+            _FOCUSED_SEARCH_SESSIONS_BY_SCOPE[expected_scope].discard(session_id)
+        return None
+
+    if str(session.get("query") or "") != query:
+        return None
+
+    return session
+
+
+def _invalidate_focused_search_session(
+    search_session_id: Optional[str],
+) -> None:
+    session_id = str(search_session_id or "").strip()
+    if not session_id:
+        return
+    session = _FOCUSED_SEARCH_SESSIONS.pop(session_id, None)
+    if not session:
+        return
+    scope_key = str(session.get("scope") or "")
+    if scope_key in _FOCUSED_SEARCH_SESSIONS_BY_SCOPE:
+        _FOCUSED_SEARCH_SESSIONS_BY_SCOPE[scope_key].discard(session_id)
+        if not _FOCUSED_SEARCH_SESSIONS_BY_SCOPE[scope_key]:
+            _FOCUSED_SEARCH_SESSIONS_BY_SCOPE.pop(scope_key, None)
+
+
+def _clamp_domain_window_size(value: Optional[int]) -> int:
+    try:
+        parsed = int(value or FOCUSED_DOMAIN_WINDOW_DEFAULT)
+    except Exception:
+        parsed = FOCUSED_DOMAIN_WINDOW_DEFAULT
+    return max(FOCUSED_DOMAIN_WINDOW_MIN, min(FOCUSED_DOMAIN_WINDOW_MAX, parsed))
+
+
+def _decode_domain_cursor(cursor: Optional[str]) -> int:
+    token = str(cursor or "").strip()
+    if not token:
+        return 0
+    try:
+        value = int(token)
+    except Exception:
+        return 0
+    return max(0, value)
+
+
+def _compact_category_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in options:
+        category = str(item.get("category") or "").strip()
+        if not category:
+            continue
+        compact.append(
+            {
+                "id": category,
+                "category": category,
+                "label": category,
+                "domain_count": int(item.get("domain_count", 0) or 0),
+                "has_local_domains": bool(item.get("has_local_domains", False)),
+            }
+        )
+    return compact
+
+
+def _compact_domain_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in options:
+        domain = normalize_domain(str(item.get("domain") or ""))
+        if not domain:
+            continue
+        compact.append(
+            {
+                "id": domain,
+                "domain": domain,
+                "trust": round(float(item.get("trust", 0.0) or 0.0), 4),
+                "is_local": bool(item.get("is_local", False)),
+                "source_type": str(item.get("source_type") or ""),
+            }
+        )
+    return compact
+
+
+def _paginate_domain_options(
+    options: list[dict[str, Any]],
+    *,
+    cursor: Optional[str],
+    window_size: int,
+) -> tuple[list[dict[str, Any]], Optional[str], int, int]:
+    total = len(options)
+    if total == 0:
+        return [], None, 0, 0
+
+    start = _decode_domain_cursor(cursor)
+    if start >= total:
+        start = max(0, total - window_size)
+    end = min(total, start + window_size)
+    window = options[start:end]
+    next_cursor = str(end) if end < total else None
+    return window, next_cursor, len(window), total
 
 
 def _topics_for_category(category: str) -> list[str]:
@@ -3112,6 +3289,11 @@ def _build_step_payload(
     message: Optional[str] = None,
     errors: Optional[list[str]] = None,
     unavailable_categories: Optional[list[dict[str, Any]]] = None,
+    search_session_id: Optional[str] = None,
+    cursor: Optional[str] = None,
+    next_cursor: Optional[str] = None,
+    domain_options_shown: Optional[int] = None,
+    domain_options_total: Optional[int] = None,
 ) -> dict[str, Any]:
     return {
         "phase": phase,
@@ -3127,6 +3309,11 @@ def _build_step_payload(
         "effective_recency_days": effective_recency_days,
         "recency_policy_reason": recency_policy_reason,
         "fallback_reason": fallback_reason,
+        "search_session_id": search_session_id,
+        "cursor": cursor,
+        "next_cursor": next_cursor,
+        "domain_options_shown": domain_options_shown,
+        "domain_options_total": domain_options_total,
         "errors": errors or [],
         "unavailable_categories": unavailable_categories or [],
         "message": message or "",
@@ -3154,10 +3341,15 @@ async def execute_strong_source_search(
     user=None,
     max_queries: int = 3,
     mode: str = "search",
+    search_session_id: Optional[str] = None,
+    cursor: Optional[str] = None,
     selected_categories: Optional[list[str]] = None,
     selected_domains: Optional[list[str]] = None,
+    selected_domain_ids: Optional[list[str]] = None,
     selected_time_scope: Optional[str] = None,
     max_domains: int = 4,
+    domain_window_size: int = 4,
+    include_full_options: bool = False,
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
     include_community: bool = False,
@@ -3192,6 +3384,8 @@ async def execute_strong_source_search(
     debug_tool_journey = bool(
         ((metadata or {}).get("params", {}) or {}).get("debug_tool_journey", False)
     )
+    include_full_option_payload = bool(include_full_options or debug_tool_journey)
+    bounded_domain_window = _clamp_domain_window_size(domain_window_size)
 
     planner_context = (
         sanitize_query(topic_hint or "", max_length=512) if topic_hint else None
@@ -3235,16 +3429,26 @@ async def execute_strong_source_search(
         str(item.get("category") or ""): int(item.get("domain_count", 0) or 0)
         for item in all_category_options
     }
-    category_options = [
+    category_options_full = [
         item
         for item in all_category_options
         if int(item.get("domain_count", 0) or 0) > 0
     ]
-    unavailable_categories = [
+    unavailable_categories_full = [
         item
         for item in all_category_options
         if int(item.get("domain_count", 0) or 0) <= 0
     ]
+    category_options = (
+        category_options_full
+        if include_full_option_payload
+        else _compact_category_options(category_options_full)
+    )
+    unavailable_categories = (
+        unavailable_categories_full
+        if include_full_option_payload
+        else _compact_category_options(unavailable_categories_full)
+    )
 
     normalized_categories = _unique_ordered(
         [
@@ -3258,6 +3462,13 @@ async def execute_strong_source_search(
             normalize_domain(str(domain))
             for domain in (selected_domains or [])
             if normalize_domain(str(domain))
+        ]
+    )
+    normalized_domain_ids = _unique_ordered(
+        [
+            normalize_domain(str(domain_id))
+            for domain_id in (selected_domain_ids or [])
+            if normalize_domain(str(domain_id))
         ]
     )
     normalized_time_scope = _normalize_time_scope(selected_time_scope)
@@ -3274,6 +3485,75 @@ async def execute_strong_source_search(
         recency_days_hint=recency_days,
         plan_time_sensitive=plan.time_sensitive,
     )
+
+    provided_session_id = str(search_session_id or "").strip()
+    session_scope_key = _focused_scope_key(metadata)
+    enforce_session_scope = bool(session_scope_key)
+    resolved_session = _get_focused_search_session(
+        search_session_id=provided_session_id,
+        metadata=metadata,
+        query=cleaned_query,
+    )
+    has_selection_inputs = bool(
+        normalized_categories or normalized_domains or normalized_domain_ids
+    )
+
+    if mode == "list_categories":
+        active_search_session_id = (
+            _create_focused_search_session(
+                metadata=metadata,
+                query=cleaned_query,
+            )
+            if enforce_session_scope
+            else provided_session_id
+        )
+    else:
+        if enforce_session_scope and resolved_session is None:
+            if mode == "search" and not has_selection_inputs and not provided_session_id:
+                active_search_session_id = _create_focused_search_session(
+                    metadata=metadata,
+                    query=cleaned_query,
+                )
+            else:
+                restart_session_id = _create_focused_search_session(
+                    metadata=metadata,
+                    query=cleaned_query,
+                )
+                await emit_focus_status(
+                    {
+                        "action": "web_search",
+                        "description": "Focused search session expired. Restarting category selection",
+                        "done": True,
+                        "plan": {"mode": "focused_local_first"},
+                        "planner": {
+                            "mode": "focused_local_first",
+                            "fallback_reason": "session_expired",
+                        },
+                    }
+                )
+                return _build_step_payload(
+                    query=cleaned_query,
+                    phase="awaiting_category_selection",
+                    next_action="restart_selection",
+                    coarse_route=coarse_route,
+                    category_options=category_options,
+                    domain_options=[],
+                    selected_categories=[],
+                    selected_domains=[],
+                    time_scope_options=time_scope_options,
+                    selected_time_scope=normalized_time_scope,
+                    effective_recency_days=effective_recency_days,
+                    recency_policy_reason=recency_policy_reason,
+                    fallback_reason="session_expired",
+                    unavailable_categories=unavailable_categories,
+                    search_session_id=restart_session_id,
+                    message=(
+                        "Focused search session is missing or expired. "
+                        "Restart category selection with this new session."
+                    ),
+                )
+        else:
+            active_search_session_id = provided_session_id
 
     async def run_broader_discovery(
         *,
@@ -3385,10 +3665,20 @@ async def execute_strong_source_search(
         ]
         citation_items = _dedupe_items_by_canonical_url(citation_items)
 
+        evidence_adequate = bool(
+            coverage_complete and trusted_domains >= 2 and len(citation_items) >= 3
+        )
+        adequacy_reason = (
+            "sufficient_snippet_evidence"
+            if evidence_adequate
+            else "insufficient_snippet_evidence"
+        )
+        recommended_urls = [item.get("link") for item in citation_items[:3] if item.get("link")]
+
         payload = {
             "phase": "completed",
-            "next_action": "answer",
-            "category_options": category_options,
+            "next_action": "answer" if evidence_adequate else "fetch_and_query_evidence",
+            "category_options": category_options if include_full_option_payload else [],
             "domain_options": [],
             "selected_categories": selected_categories_for_payload,
             "time_scope_options": time_scope_options,
@@ -3413,6 +3703,10 @@ async def execute_strong_source_search(
             "trusted_domains": trusted_domains,
             "message": message,
             "unavailable_categories": unavailable_categories,
+            "search_session_id": active_search_session_id,
+            "evidence_adequate": evidence_adequate,
+            "adequacy_reason": adequacy_reason,
+            "recommended_urls": recommended_urls,
         }
 
         await emit_focus_status(
@@ -3448,6 +3742,7 @@ async def execute_strong_source_search(
                 "urls": [],
             }
         )
+        _invalidate_focused_search_session(active_search_session_id)
         return payload
 
     if mode == "list_categories":
@@ -3473,6 +3768,7 @@ async def execute_strong_source_search(
             effective_recency_days=effective_recency_days,
             recency_policy_reason=recency_policy_reason,
             unavailable_categories=unavailable_categories,
+            search_session_id=active_search_session_id,
             message=message,
         )
         await emit_focus_status(
@@ -3505,20 +3801,21 @@ async def execute_strong_source_search(
                     effective_recency_days=effective_recency_days,
                     recency_policy_reason=recency_policy_reason,
                     unavailable_categories=unavailable_categories,
+                    search_session_id=active_search_session_id,
                     message="Category selection required before domain selection.",
                 )
 
         if len(normalized_categories) > 2:
             normalized_categories = normalized_categories[:2]
 
-        domain_options = _build_domain_options_for_categories(
+        domain_options_full = _build_domain_options_for_categories(
             normalized_categories,
             include_community=include_community,
             local_first=local_first,
             time_sensitive=plan.time_sensitive,
         )
 
-        if not domain_options:
+        if not domain_options_full:
             payload = _build_step_payload(
                 query=cleaned_query,
                 phase="awaiting_category_selection",
@@ -3534,6 +3831,7 @@ async def execute_strong_source_search(
                 recency_policy_reason=recency_policy_reason,
                 fallback_reason="no_curated_domains_in_category",
                 unavailable_categories=unavailable_categories,
+                search_session_id=active_search_session_id,
                 message=(
                     "No curated domains exist for the selected category yet. "
                     "Choose another category or allow broader web discovery."
@@ -3542,13 +3840,26 @@ async def execute_strong_source_search(
             payload["missing_curated_domains_for"] = normalized_categories
             return payload
 
+        domain_options_public_all = (
+            domain_options_full
+            if include_full_option_payload
+            else _compact_domain_options(domain_options_full)
+        )
+        paged_domain_options, next_domain_cursor, shown_count, total_count = (
+            _paginate_domain_options(
+                domain_options_public_all,
+                cursor=cursor,
+                window_size=bounded_domain_window,
+            )
+        )
+
         return _build_step_payload(
             query=cleaned_query,
             phase="awaiting_domain_selection",
             next_action="select_domains",
             coarse_route=coarse_route,
             category_options=category_options,
-            domain_options=domain_options,
+            domain_options=paged_domain_options,
             selected_categories=normalized_categories,
             selected_domains=[],
             time_scope_options=time_scope_options,
@@ -3556,7 +3867,15 @@ async def execute_strong_source_search(
             effective_recency_days=effective_recency_days,
             recency_policy_reason=recency_policy_reason,
             unavailable_categories=unavailable_categories,
-            message="Choose 1-4 domains and a time scope, then call mode=search.",
+            search_session_id=active_search_session_id,
+            cursor=str(_decode_domain_cursor(cursor)),
+            next_cursor=next_domain_cursor,
+            domain_options_shown=shown_count,
+            domain_options_total=total_count,
+            message=(
+                "Choose 1-4 domains and a time scope, then call mode=search. "
+                "Use cursor to page domain options when needed."
+            ),
         )
 
     # mode == "search"
@@ -3588,6 +3907,7 @@ async def execute_strong_source_search(
                 effective_recency_days=effective_recency_days,
                 recency_policy_reason=recency_policy_reason,
                 unavailable_categories=unavailable_categories,
+                search_session_id=active_search_session_id,
                 message="Category selection required before focused search.",
             )
             await emit_focus_status(
@@ -3604,15 +3924,32 @@ async def execute_strong_source_search(
     if len(normalized_categories) > 2:
         normalized_categories = normalized_categories[:2]
 
-    domain_options = _build_domain_options_for_categories(
+    domain_options_full = _build_domain_options_for_categories(
         normalized_categories,
         include_community=include_community,
         local_first=local_first,
         time_sensitive=plan.time_sensitive,
     )
-    domain_allowlist = {item["domain"] for item in domain_options}
+    domain_allowlist = {item["domain"] for item in domain_options_full}
+    domain_options_public_all = (
+        domain_options_full
+        if include_full_option_payload
+        else _compact_domain_options(domain_options_full)
+    )
+    paged_domain_options, next_domain_cursor, shown_count, total_count = (
+        _paginate_domain_options(
+            domain_options_public_all,
+            cursor=cursor,
+            window_size=bounded_domain_window,
+        )
+    )
 
-    if not domain_options and not normalized_domains:
+    if normalized_domain_ids and not normalized_domains:
+        normalized_domains = [
+            domain for domain in normalized_domain_ids if domain in domain_allowlist
+        ]
+
+    if not domain_options_full and not normalized_domains:
         return await run_broader_discovery(
             fallback_reason="no_curated_domains_in_category",
             selected_categories_for_payload=normalized_categories,
@@ -3629,13 +3966,18 @@ async def execute_strong_source_search(
             next_action="select_domains",
             coarse_route=coarse_route,
             category_options=category_options,
-            domain_options=domain_options,
+            domain_options=paged_domain_options,
             selected_categories=normalized_categories,
             selected_domains=[],
             time_scope_options=time_scope_options,
             selected_time_scope=normalized_time_scope,
             effective_recency_days=effective_recency_days,
             recency_policy_reason=recency_policy_reason,
+            search_session_id=active_search_session_id,
+            cursor=str(_decode_domain_cursor(cursor)),
+            next_cursor=next_domain_cursor,
+            domain_options_shown=shown_count,
+            domain_options_total=total_count,
             message="Domain selection required before focused search.",
         )
         await emit_focus_status(
@@ -3668,13 +4010,18 @@ async def execute_strong_source_search(
             next_action="fix_domain_selection",
             coarse_route=coarse_route,
             category_options=category_options,
-            domain_options=domain_options,
+            domain_options=paged_domain_options,
             selected_categories=normalized_categories,
             selected_domains=normalized_domains,
             time_scope_options=time_scope_options,
             selected_time_scope=normalized_time_scope,
             effective_recency_days=effective_recency_days,
             recency_policy_reason=recency_policy_reason,
+            search_session_id=active_search_session_id,
+            cursor=str(_decode_domain_cursor(cursor)),
+            next_cursor=next_domain_cursor,
+            domain_options_shown=shown_count,
+            domain_options_total=total_count,
             errors=validation_errors,
             message="Domain selection is invalid. Pick 1-4 domains from domain_options.",
         )
@@ -3699,7 +4046,7 @@ async def execute_strong_source_search(
     normalized_domains = normalized_domains[:bounded_max_domains]
     selected_domain_meta = {
         item["domain"]: item
-        for item in domain_options
+        for item in domain_options_full
         if item["domain"] in set(normalized_domains)
     }
     local_domains = [
@@ -3930,11 +4277,21 @@ async def execute_strong_source_search(
     ]
     citation_items = _dedupe_items_by_canonical_url(citation_items)
 
+    evidence_adequate = bool(
+        coverage_complete and trusted_domains >= 2 and len(citation_items) >= 3
+    )
+    adequacy_reason = (
+        "sufficient_snippet_evidence"
+        if evidence_adequate
+        else "insufficient_snippet_evidence"
+    )
+    recommended_urls = [item.get("link") for item in citation_items[:3] if item.get("link")]
+
     payload = {
         "phase": "completed",
-        "next_action": "answer",
-        "category_options": category_options,
-        "domain_options": domain_options,
+        "next_action": "answer" if evidence_adequate else "fetch_and_query_evidence",
+        "category_options": category_options if include_full_option_payload else [],
+        "domain_options": domain_options_public_all if include_full_option_payload else [],
         "selected_categories": normalized_categories,
         "time_scope_options": time_scope_options,
         "selected_time_scope": normalized_time_scope,
@@ -3956,6 +4313,10 @@ async def execute_strong_source_search(
         "topic": plan.topic,
         "local_primary_hits": len(local_primary_domains),
         "trusted_domains": trusted_domains,
+        "search_session_id": active_search_session_id,
+        "evidence_adequate": evidence_adequate,
+        "adequacy_reason": adequacy_reason,
+        "recommended_urls": recommended_urls,
     }
 
     planner_payload: dict[str, Any] = {
@@ -3994,6 +4355,8 @@ async def execute_strong_source_search(
             "urls": domain_urls(normalized_domains),
         }
     )
+
+    _invalidate_focused_search_session(active_search_session_id)
 
     return payload
 

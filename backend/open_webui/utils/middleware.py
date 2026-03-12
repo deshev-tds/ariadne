@@ -788,6 +788,7 @@ def get_citation_source_from_tool_result(
         "view_knowledge_file",
         "search_strong_sources",
         "web_research_strong",
+        "query_web_evidence",
     }
 
     try:
@@ -864,6 +865,42 @@ def get_citation_source_from_tool_result(
                     "source": {
                         "name": "web_research_strong",
                         "id": "web_research_strong",
+                    },
+                    "document": documents,
+                    "metadata": metadata,
+                }
+            ]
+        elif tool_name == "query_web_evidence":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            snippets = payload.get("snippets", []) if isinstance(payload, dict) else []
+            documents = []
+            metadata = []
+            for snippet in snippets:
+                if not isinstance(snippet, dict):
+                    continue
+                link = snippet.get("url", "")
+                text = snippet.get("text", "")
+                if not link or not text:
+                    continue
+                title = snippet.get("title", "") or link
+                documents.append(f"{title}\n{text}")
+                metadata.append(
+                    {
+                        "source": link,
+                        "name": title,
+                        "url": link,
+                        "artifact_id": snippet.get("artifact_id"),
+                        "domain": snippet.get("domain"),
+                        "start": snippet.get("start"),
+                        "end": snippet.get("end"),
+                        "score": snippet.get("score"),
+                    }
+                )
+            return [
+                {
+                    "source": {
+                        "name": "query_web_evidence",
+                        "id": "query_web_evidence",
                     },
                     "document": documents,
                     "metadata": metadata,
@@ -1039,6 +1076,16 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
             "local_phase_executed": bool(parsed.get("local_phase_executed", False)),
             "brave_fallback_used": bool(parsed.get("brave_fallback_used", False)),
             "fallback_reason": parsed.get("fallback_reason"),
+        }
+
+    if tool_name == "query_web_evidence" and isinstance(parsed, dict):
+        return {
+            "status": parsed.get("status"),
+            "snippets": len(parsed.get("snippets") or []),
+            "narrow_count": parsed.get("narrow_count"),
+            "wide_count": parsed.get("wide_count"),
+            "wide_pass_used": bool(parsed.get("wide_pass_used", False)),
+            "weak_narrow_evidence": bool(parsed.get("weak_narrow_evidence", False)),
         }
 
     if tool_name == "search_web" and isinstance(parsed, list):
@@ -6900,6 +6947,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 "search_web",
                                 "web_research_strong",
                                 "search_strong_sources",
+                                "query_web_evidence",
                                 "fetch_url",
                                 "view_knowledge_file",
                                 "query_knowledge_files",

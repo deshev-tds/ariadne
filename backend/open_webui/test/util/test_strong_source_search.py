@@ -1211,3 +1211,114 @@ async def test_execute_strong_source_search_emits_fallback_status(monkeypatch):
         "Focused search did not return enough evidence, trying broader search now"
         in status_messages
     )
+
+
+@pytest.mark.asyncio
+async def test_followup_modes_require_session_when_metadata_scope_present(monkeypatch):
+    request = _make_request()
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "software",
+            "confidence": 0.9,
+            "ambiguous": False,
+            "scores": {"software": 2},
+        },
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="python api docs",
+        mode="list_domains",
+        selected_categories=["software"],
+        metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+    )
+
+    assert payload["phase"] == "awaiting_category_selection"
+    assert payload["next_action"] == "restart_selection"
+    assert payload["fallback_reason"] == "session_expired"
+    assert payload["search_session_id"].startswith("fss_")
+
+
+@pytest.mark.asyncio
+async def test_list_categories_returns_session_id_when_metadata_scope_present():
+    request = _make_request()
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="python api docs",
+        mode="list_categories",
+        metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+    )
+
+    assert payload["phase"] == "awaiting_category_selection"
+    assert payload["search_session_id"].startswith("fss_")
+
+
+@pytest.mark.asyncio
+async def test_list_domains_paginates_domain_options_with_cursor(monkeypatch):
+    request = _make_request()
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "software",
+            "confidence": 0.9,
+            "ambiguous": False,
+            "scores": {"software": 3},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options(
+            [
+                ("d1.example", True, "primary_docs"),
+                ("d2.example", True, "primary_docs"),
+                ("d3.example", False, "primary_docs"),
+                ("d4.example", False, "primary_docs"),
+                ("d5.example", False, "primary_docs"),
+                ("d6.example", False, "primary_docs"),
+                ("d7.example", False, "primary_docs"),
+            ]
+        ),
+    )
+
+    bootstrap = await retrieval.execute_strong_source_search(
+        request,
+        query="python api docs",
+        mode="list_categories",
+        metadata={"chat_id": "chat-2", "message_id": "msg-2"},
+    )
+    session_id = bootstrap["search_session_id"]
+
+    page1 = await retrieval.execute_strong_source_search(
+        request,
+        query="python api docs",
+        mode="list_domains",
+        selected_categories=["software"],
+        domain_window_size=4,
+        search_session_id=session_id,
+        metadata={"chat_id": "chat-2", "message_id": "msg-2"},
+    )
+
+    assert page1["phase"] == "awaiting_domain_selection"
+    assert page1["domain_options_shown"] == 4
+    assert page1["domain_options_total"] == 7
+    assert page1["next_cursor"] == "4"
+
+    page2 = await retrieval.execute_strong_source_search(
+        request,
+        query="python api docs",
+        mode="list_domains",
+        selected_categories=["software"],
+        domain_window_size=4,
+        cursor=page1["next_cursor"],
+        search_session_id=session_id,
+        metadata={"chat_id": "chat-2", "message_id": "msg-2"},
+    )
+
+    assert page2["phase"] == "awaiting_domain_selection"
+    assert page2["domain_options_shown"] == 3
+    assert page2["domain_options_total"] == 7
+    assert page2["next_cursor"] is None

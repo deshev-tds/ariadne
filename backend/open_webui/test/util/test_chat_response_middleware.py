@@ -326,6 +326,35 @@ def test_web_research_strong_citation_source_prefers_citation_items():
     assert metadata[0]["source"] == "https://citation.example/b"
 
 
+def test_query_web_evidence_citation_source_uses_snippets():
+    tool_result = {
+        "snippets": [
+            {
+                "title": "Evidence A",
+                "url": "https://example.org/a",
+                "text": "Window around match",
+                "artifact_id": "wp_1",
+                "domain": "example.org",
+                "start": 10,
+                "end": 42,
+                "score": 0.91,
+            }
+        ]
+    }
+
+    sources = middleware.get_citation_source_from_tool_result(
+        "query_web_evidence",
+        {},
+        tool_result,
+    )
+
+    assert len(sources) == 1
+    metadata = sources[0]["metadata"]
+    assert len(metadata) == 1
+    assert metadata[0]["source"] == "https://example.org/a"
+    assert metadata[0]["artifact_id"] == "wp_1"
+
+
 def test_is_empty_search_notes_result_detects_empty_payloads():
     assert middleware._is_empty_search_notes_result("[]") is True
     assert middleware._is_empty_search_notes_result([]) is True
