@@ -788,6 +788,7 @@ def get_citation_source_from_tool_result(
         "view_knowledge_file",
         "search_strong_sources",
         "web_research_strong",
+        "notes_research_strong",
         "query_web_evidence",
     }
 
@@ -832,7 +833,11 @@ def get_citation_source_from_tool_result(
                     "metadata": metadata,
                 }
             ]
-        elif tool_name in {"search_strong_sources", "web_research_strong"}:
+        elif tool_name in {
+            "search_strong_sources",
+            "web_research_strong",
+            "notes_research_strong",
+        }:
             payload = tool_result if isinstance(tool_result, dict) else {}
             results = []
             if isinstance(payload, dict):
@@ -1027,11 +1032,16 @@ def get_citation_source_from_tool_result(
 TOOL_JOURNEY_EVENT_CAP = 120
 TOOL_JOURNEY_PREVIEW_CHARS = 280
 SEARCH_NOTES_EMPTY_STREAK_LIMIT = 2
-STRONG_WEB_TOOL_NAMES = {"web_research_strong", "search_strong_sources"}
+STRONG_WEB_TOOL_NAMES = {
+    "web_research_strong",
+    "search_strong_sources",
+    "notes_research_strong",
+}
 NOTES_LOOKUP_TOOL_NAMES = {"notes_lookup", "search_notes"}
 TOOL_NAME_ALIASES = {
     "search_strong_sources": "web_research_strong",
     "search_notes": "notes_lookup",
+    "notes_research_strong": "web_research_strong",
 }
 
 
@@ -1170,9 +1180,34 @@ def _is_empty_search_notes_result(tool_result: Any) -> bool:
     return False
 
 
+def _preferred_web_tool_for_loop_breaker(tools: dict[str, Any]) -> Optional[str]:
+    if "web_research_strong" in tools:
+        return "web_research_strong"
+    if "search_web" in tools:
+        return "search_web"
+    return None
+
+
 def _build_search_notes_loop_breaker_result(
-    streak: int, blocked: bool = False, tool_name: str = "notes_lookup"
+    streak: int,
+    blocked: bool = False,
+    tool_name: str = "notes_lookup",
+    next_tool: Optional[str] = "web_research_strong",
 ) -> str:
+    if next_tool:
+        hint = (
+            "Stop using notes tools for web discovery. "
+            f"Use {next_tool} for web evidence."
+        )
+        next_action = "switch_tool"
+    else:
+        hint = (
+            "Stop using notes tools for web discovery. "
+            "Internet tools are not available in this chat. Enable Internet Access, "
+            "then retry."
+        )
+        next_action = "enable_internet_access"
+
     payload = {
         "status": "loop_breaker_active" if blocked else "loop_breaker_triggered",
         "tool": tool_name,
@@ -1181,11 +1216,9 @@ def _build_search_notes_loop_breaker_result(
             f"{tool_name} returned no matches multiple times. "
             "This tool searches user notes only, not the web."
         ),
-        "hint": (
-            "Stop using notes tools for web discovery. "
-            "Use web_research_strong for focused web evidence."
-        ),
-        "next_tool": "web_research_strong",
+        "hint": hint,
+        "next_tool": next_tool,
+        "next_action": next_action,
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -6755,6 +6788,7 @@ async def streaming_chat_response_handler(response, ctx):
                         direct_tool = False
                         tool_execution_error = None
                         search_notes_blocked = False
+                        next_web_tool = _preferred_web_tool_for_loop_breaker(tools)
 
                         if (
                             resolved_tool_function_name in NOTES_LOOKUP_TOOL_NAMES
@@ -6765,6 +6799,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 search_notes_empty_streak,
                                 blocked=True,
                                 tool_name=tool_function_name,
+                                next_tool=next_web_tool,
                             )
                             blocked_event = _append_tool_journey_event(
                                 metadata,
@@ -6773,7 +6808,7 @@ async def streaming_chat_response_handler(response, ctx):
                                     "call_id": tool_call_id,
                                     "tool": resolved_tool_function_name,
                                     "empty_streak": search_notes_empty_streak,
-                                    "next_tool": "web_research_strong",
+                                    "next_tool": next_web_tool,
                                 },
                             )
                             if blocked_event:
@@ -6885,6 +6920,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 tool_result = _build_search_notes_loop_breaker_result(
                                     search_notes_empty_streak,
                                     tool_name=tool_function_name,
+                                    next_tool=next_web_tool,
                                 )
                                 breaker_event = _append_tool_journey_event(
                                     metadata,
@@ -6893,7 +6929,7 @@ async def streaming_chat_response_handler(response, ctx):
                                         "call_id": tool_call_id,
                                         "tool": resolved_tool_function_name,
                                         "empty_streak": search_notes_empty_streak,
-                                        "next_tool": "web_research_strong",
+                                        "next_tool": next_web_tool,
                                     },
                                 )
                                 if breaker_event:

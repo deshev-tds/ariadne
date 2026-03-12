@@ -388,3 +388,19 @@ def test_build_search_notes_loop_breaker_result_keeps_tool_alias_when_passed():
     )
     assert payload["tool"] == "search_notes"
     assert payload["next_tool"] == "web_research_strong"
+
+
+def test_build_search_notes_loop_breaker_result_without_web_tool():
+    payload = json.loads(
+        middleware._build_search_notes_loop_breaker_result(2, next_tool=None)
+    )
+    assert payload["next_tool"] is None
+    assert payload["next_action"] == "enable_internet_access"
+    assert "Internet tools are not available" in payload["hint"]
+
+
+def test_tool_name_alias_maps_notes_research_strong():
+    assert (
+        middleware.TOOL_NAME_ALIASES.get("notes_research_strong")
+        == "web_research_strong"
+    )

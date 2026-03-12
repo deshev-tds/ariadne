@@ -234,7 +234,7 @@
 		if (enabled) {
 			nextParams.focused_search_mode = true;
 		} else {
-			delete nextParams.focused_search_mode;
+			nextParams.focused_search_mode = false;
 		}
 		params = nextParams;
 	};
@@ -435,6 +435,14 @@
 				) {
 					codeInterpreterEnabled = model.info.meta.defaultFeatureIds.includes('code_interpreter');
 				}
+			}
+
+			const focusedSearchSupported =
+				model.info?.meta?.capabilities?.['web_search'] &&
+				$config?.features?.enable_web_search &&
+				($user?.role === 'admin' || $user?.permissions?.features?.web_search);
+			if (focusedSearchSupported && params?.focused_search_mode === undefined) {
+				params = { ...(params ?? {}), focused_search_mode: true };
 			}
 		}
 	};
@@ -2075,6 +2083,7 @@
 			currentModels.filter(
 				(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.web_search ?? true
 			).length === currentModels.length;
+		let internetAccessEnabled = webSearchAllowedByRole ? webSearchEnabled : false;
 
 		if ($config?.features)
 			features = {
@@ -2089,14 +2098,19 @@
 					($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
 						? codeInterpreterEnabled
 						: false,
-				web_search: webSearchAllowedByRole ? webSearchEnabled : false,
+				web_search: internetAccessEnabled,
 				focused_search:
-					webSearchAllowedByRole && allModelsWebSearchCapable ? chatFocusedSearchEnabled : false
+					internetAccessEnabled && allModelsWebSearchCapable ? chatFocusedSearchEnabled : false
 			};
 
 		if (allModelsWebSearchCapable) {
 			if ($config?.features?.enable_web_search && ($settings?.webSearch ?? false) === 'always') {
-				features = { ...features, web_search: true };
+				internetAccessEnabled = true;
+				features = {
+					...features,
+					web_search: true,
+					focused_search: chatFocusedSearchEnabled
+				};
 			}
 		}
 
