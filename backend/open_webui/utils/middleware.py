@@ -108,6 +108,8 @@ from open_webui.utils.ledger import (
     run_background_ledger_capture,
 )
 from open_webui.utils.task import (
+    RUNTIME_TIMESTAMP_MARKER,
+    append_runtime_temporal_grounding,
     get_task_model_id,
     query_generation_template,
     rag_template,
@@ -196,6 +198,20 @@ DEFAULT_REASONING_TAGS = [
     ("<|begin_of_thought|>", "<|end_of_thought|>"),
     ("◁think▷", "◁/think▷"),
 ]
+
+
+def _inject_runtime_timestamp_once(messages: list[dict]) -> list[dict]:
+    system_message = get_system_message(messages)
+    if system_message:
+        system_content = get_content_from_message(system_message) or ""
+        if RUNTIME_TIMESTAMP_MARKER in system_content:
+            return messages
+
+    return add_or_update_system_message(
+        append_runtime_temporal_grounding(""),
+        messages,
+        append=True,
+    )
 DEFAULT_SOLUTION_TAGS = [("<|begin_of_solution|>", "<|end_of_solution|>")]
 DEFAULT_CODE_INTERPRETER_TAGS = [("<code_interpreter>", "</code_interpreter>")]
 
@@ -5083,6 +5099,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             )  # Required to handle system prompt variables
         except:
             pass
+
+    form_data["messages"] = _inject_runtime_timestamp_once(
+        form_data.get("messages", [])
+    )
 
     form_data = await convert_url_images_to_base64(form_data)
     extra_params = {

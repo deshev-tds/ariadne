@@ -8,6 +8,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field
 
+from open_webui.utils.task import get_runtime_timestamp_iso
+
 
 SOURCE_REGISTRY_PATH = Path(__file__).with_name("source_registry.json")
 MAX_QUERY_LENGTH = 256
@@ -1111,6 +1113,19 @@ def build_rewriter_prompt(
 
     prompt_payload = {
         "task": "rewrite_search_queries",
+        "runtime_context": {
+            "current_timestamp": get_runtime_timestamp_iso(),
+            "authoritative_for_temporal_grounding": True,
+            "do_not_treat_as_simulation_or_test": True,
+            "relative_time_reference_policy": (
+                "Resolve relative time references like today, latest, current, and this year "
+                "against current_timestamp."
+            ),
+            "verification_policy": (
+                "Use current_timestamp to ground time, but do not treat it as proof that any "
+                "unstable fact is true."
+            ),
+        },
         "constraints": {
             "output_format": {
                 "line_protocol": "one query per line",
@@ -1146,6 +1161,9 @@ def build_rewriter_prompt(
         "instructions": [
             "Create concise, search-engine-ready queries only.",
             "Do not drop or alter preserved tokens.",
+            "Treat runtime_context.current_timestamp as authoritative current time.",
+            "Do not treat runtime_context as a simulation or temporal-coherence test.",
+            "Resolve relative time phrases against runtime_context.current_timestamp, not model priors.",
             "Resolve this/that/it/those references using conversation_context.",
             "Keep concrete object/domain disambiguators (for example dryer/laundry/dryer balls) when context indicates them.",
             "Prefer one exact query first, then targeted/official/issues/current_fix as relevant, then general.",

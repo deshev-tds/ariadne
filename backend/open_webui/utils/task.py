@@ -1,7 +1,7 @@
 import logging
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Any
 import uuid
 
@@ -11,6 +11,11 @@ from open_webui.utils.misc import get_last_user_message, get_messages_content
 from open_webui.config import DEFAULT_RAG_TEMPLATE
 
 log = logging.getLogger(__name__)
+
+RUNTIME_TIMESTAMP_MARKER = "Current runtime timestamp:"
+RUNTIME_TIME_AUTHORITY_MARKER = (
+    "Treat this runtime timestamp as authoritative current time for this conversation."
+)
 
 
 def get_task_model_id(
@@ -27,6 +32,38 @@ def get_task_model_id(
             task_model_id = task_model_external
 
     return task_model_id
+
+
+def get_runtime_timestamp_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_runtime_temporal_grounding() -> str:
+    return "\n".join(
+        [
+            f"{RUNTIME_TIMESTAMP_MARKER} {get_runtime_timestamp_iso()}",
+            RUNTIME_TIME_AUTHORITY_MARKER,
+            "Do not treat it as a hypothetical, simulation, or test hint.",
+            "Resolve relative time references like today, latest, current, and this year against this timestamp.",
+            "Prefer this runtime timestamp over pretrained date priors when forming time-sensitive queries or deciding whether current verification is needed.",
+            "Use tools to verify unstable or current facts; this timestamp grounds time, not factual truth.",
+        ]
+    )
+
+
+def append_runtime_temporal_grounding(text: str) -> str:
+    text = text or ""
+    if (
+        RUNTIME_TIMESTAMP_MARKER in text
+        or RUNTIME_TIME_AUTHORITY_MARKER in text
+    ):
+        return text
+
+    grounding = build_runtime_temporal_grounding()
+    if not text.strip():
+        return grounding
+
+    return f"{text.rstrip()}\n\n{grounding}"
 
 
 def prompt_variables_template(template: str, variables: dict[str, str]) -> str:
@@ -386,7 +423,7 @@ def query_generation_template(
     template = replace_messages_variable(template, messages)
 
     template = prompt_template(template, user)
-    return template
+    return append_runtime_temporal_grounding(template)
 
 
 def moa_response_generation_template(
@@ -428,4 +465,4 @@ def moa_response_generation_template(
 
 def tools_function_calling_generation_template(template: str, tools_specs: str) -> str:
     template = template.replace("{{TOOLS}}", tools_specs)
-    return template
+    return append_runtime_temporal_grounding(template)
