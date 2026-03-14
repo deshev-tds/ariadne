@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -80,6 +81,72 @@ async def test_non_streaming_chat_response_persists_without_event_emitter(monkey
     assert saved_messages[0][2]["content"] == "ok"
     assert saved_messages[0][2]["output"][0]["role"] == "assistant"
     assert saved_messages[0][2]["usage"]["completion_tokens"] == 1
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_chat_response_persists_prompt_telemetry(monkeypatch):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    prompt_telemetry = {
+        "enabled": True,
+        "version": 1,
+        "entries": [{"provider": "openai", "payload": {"messages": []}}],
+        "capped": False,
+    }
+
+    ctx = {
+        "request": SimpleNamespace(
+            state=SimpleNamespace(metadata={"prompt_telemetry": prompt_telemetry}),
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            ),
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {"debug_prompt_telemetry": True},
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    result = await non_streaming_chat_response_handler(
+        {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 1},
+        },
+        ctx,
+    )
+
+    assert result["promptTelemetry"] == prompt_telemetry
+    assert saved_messages[0][2]["promptTelemetry"] == prompt_telemetry
 
 
 @pytest.mark.asyncio

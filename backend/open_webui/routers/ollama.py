@@ -70,6 +70,7 @@ from open_webui.env import (
     BYPASS_MODEL_ACCESS_CONTROL,
 )
 from open_webui.constants import ERROR_MESSAGES
+from open_webui.utils.prompt_telemetry import append_prompt_telemetry
 
 log = logging.getLogger(__name__)
 
@@ -1370,6 +1371,14 @@ async def generate_chat_completion(
     prefix_id = api_config.get("prefix_id", None)
     if prefix_id:
         payload["model"] = payload["model"].replace(f"{prefix_id}.", "")
+
+    append_prompt_telemetry(
+        request,
+        metadata,
+        provider="ollama",
+        request_url=f"{url}/api/chat",
+        payload=payload,
+    )
 
     return await send_post_request(
         url=f"{url}/api/chat",

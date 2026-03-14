@@ -145,6 +145,10 @@ from open_webui.utils.filter import (
 )
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.payload import apply_system_prompt_to_body
+from open_webui.utils.prompt_telemetry import (
+    get_prompt_telemetry,
+    is_prompt_telemetry_enabled,
+)
 from open_webui.utils.response import normalize_usage
 from open_webui.utils.mcp.client import MCPClient
 from open_webui.utils.deep_research import (
@@ -6088,6 +6092,11 @@ async def non_streaming_chat_response_handler(response, ctx):
         if _is_debug_flag_enabled(metadata.get("params", {}).get("debug_tool_journey"))
         else None
     )
+    prompt_telemetry = (
+        get_prompt_telemetry(request, metadata)
+        if is_prompt_telemetry_enabled(metadata)
+        else None
+    )
     if isinstance(tool_journey_telemetry, dict):
         tool_journey_telemetry["completed_at"] = int(time.time())
 
@@ -6099,6 +6108,8 @@ async def non_streaming_chat_response_handler(response, ctx):
         response_data["memoryTelemetry"] = memory_telemetry
     if tool_journey_telemetry:
         response_data["toolJourneyTelemetry"] = tool_journey_telemetry
+    if prompt_telemetry:
+        response_data["promptTelemetry"] = prompt_telemetry
 
     try:
         if "error" in response_data:
@@ -6114,6 +6125,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                 metadata["message_id"],
                 {
                     "error": {"content": error},
+                    **({"promptTelemetry": prompt_telemetry} if prompt_telemetry else {}),
                 },
             )
             if event_emitter and (isinstance(error, str) or isinstance(error, dict)):
@@ -6182,6 +6194,11 @@ async def non_streaming_chat_response_handler(response, ctx):
                                     if tool_journey_telemetry
                                     else {}
                                 ),
+                                **(
+                                    {"promptTelemetry": prompt_telemetry}
+                                    if prompt_telemetry
+                                    else {}
+                                ),
                             },
                         }
                     )
@@ -6205,6 +6222,11 @@ async def non_streaming_chat_response_handler(response, ctx):
                         **(
                             {"toolJourneyTelemetry": tool_journey_telemetry}
                             if tool_journey_telemetry
+                            else {}
+                        ),
+                        **(
+                            {"promptTelemetry": prompt_telemetry}
+                            if prompt_telemetry
                             else {}
                         ),
                         **({"usage": usage} if usage else {}),
@@ -7963,6 +7985,11 @@ async def streaming_chat_response_handler(response, ctx):
                     )
                     else None
                 )
+                prompt_telemetry = (
+                    get_prompt_telemetry(request, metadata)
+                    if is_prompt_telemetry_enabled(metadata)
+                    else None
+                )
                 if isinstance(tool_journey_telemetry, dict):
                     tool_journey_telemetry["completed_at"] = int(time.time())
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
@@ -7985,6 +8012,11 @@ async def streaming_chat_response_handler(response, ctx):
                     **(
                         {"toolJourneyTelemetry": tool_journey_telemetry}
                         if tool_journey_telemetry
+                        else {}
+                    ),
+                    **(
+                        {"promptTelemetry": prompt_telemetry}
+                        if prompt_telemetry
                         else {}
                     ),
                 }
@@ -8014,6 +8046,11 @@ async def streaming_chat_response_handler(response, ctx):
                                 if tool_journey_telemetry
                                 else {}
                             ),
+                            **(
+                                {"promptTelemetry": prompt_telemetry}
+                                if prompt_telemetry
+                                else {}
+                            ),
                         },
                     )
                 elif (
@@ -8022,6 +8059,7 @@ async def streaming_chat_response_handler(response, ctx):
                     or token_branch
                     or memory_telemetry
                     or tool_journey_telemetry
+                    or prompt_telemetry
                 ):
                     update_payload = {}
                     if usage:
@@ -8034,6 +8072,8 @@ async def streaming_chat_response_handler(response, ctx):
                         update_payload["memoryTelemetry"] = memory_telemetry
                     if tool_journey_telemetry:
                         update_payload["toolJourneyTelemetry"] = tool_journey_telemetry
+                    if prompt_telemetry:
+                        update_payload["promptTelemetry"] = prompt_telemetry
                     Chats.upsert_message_to_chat_by_id_and_message_id(
                         metadata["chat_id"],
                         metadata["message_id"],

@@ -59,6 +59,7 @@ from open_webui.utils.misc import (
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.utils.anthropic import is_anthropic_url, get_anthropic_models
+from open_webui.utils.prompt_telemetry import append_prompt_telemetry
 
 log = logging.getLogger(__name__)
 
@@ -1542,6 +1543,14 @@ async def generate_chat_completion(
             request_url = f"{url}/responses"
         else:
             request_url = f"{url}/chat/completions"
+
+    append_prompt_telemetry(
+        request,
+        metadata,
+        provider="openai",
+        request_url=request_url,
+        payload=payload,
+    )
 
     payload = json.dumps(payload)
 

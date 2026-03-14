@@ -49,6 +49,7 @@ from open_webui.utils.filter import (
     get_sorted_filter_ids,
     process_filter_functions,
 )
+from open_webui.utils.prompt_telemetry import append_prompt_telemetry
 
 from open_webui.env import GLOBAL_LOG_LEVEL, BYPASS_MODEL_ACCESS_CONTROL
 
@@ -74,6 +75,14 @@ async def generate_direct_chat_completion(
 
     channel = f"{user_id}:{session_id}:{request_id}"
     logging.info(f"WebSocket channel: {channel}")
+
+    append_prompt_telemetry(
+        request,
+        metadata,
+        provider="direct",
+        request_url="direct://chat-completion",
+        payload=form_data,
+    )
 
     if form_data.get("stream"):
         q = asyncio.Queue()
