@@ -184,6 +184,7 @@ from open_webui.env import (
     ENABLE_FORWARD_USER_INFO_HEADERS,
     FORWARD_SESSION_INFO_HEADER_CHAT_ID,
     FORWARD_SESSION_INFO_HEADER_MESSAGE_ID,
+    AIOHTTP_CLIENT_TIMEOUT,
 )
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.constants import TASKS
@@ -218,6 +219,61 @@ def _inject_runtime_timestamp_once(messages: list[dict]) -> list[dict]:
     )
 DEFAULT_SOLUTION_TAGS = [("<|begin_of_solution|>", "<|end_of_solution|>")]
 DEFAULT_CODE_INTERPRETER_TAGS = [("<code_interpreter>", "</code_interpreter>")]
+
+
+def _stringify_termination_detail(value: Any, *, limit: int = 300) -> str:
+    if value is None:
+        return ""
+
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    except Exception:
+        text = str(value)
+
+    text = text.replace("\r", " ").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3]}..."
+
+
+def _build_agent_loop_termination_cause(
+    *,
+    kind: str,
+    phase: str,
+    detail: Any = None,
+    exc: Exception | None = None,
+) -> dict[str, Any]:
+    cause: dict[str, Any] = {
+        "kind": kind,
+        "phase": phase,
+        "timestamp": int(time.time()),
+    }
+
+    if AIOHTTP_CLIENT_TIMEOUT is not None:
+        cause["client_timeout_seconds"] = AIOHTTP_CLIENT_TIMEOUT
+
+    if detail is not None:
+        rendered_detail = _stringify_termination_detail(detail)
+        if rendered_detail:
+            cause["detail"] = rendered_detail
+
+    if exc is not None:
+        cause["exception_type"] = exc.__class__.__name__
+
+        status_code = getattr(exc, "status_code", None)
+        if isinstance(status_code, int):
+            cause["status_code"] = status_code
+
+        exc_detail = getattr(exc, "detail", None)
+        rendered_exc_detail = _stringify_termination_detail(exc_detail)
+        if rendered_exc_detail:
+            cause["error"] = rendered_exc_detail
+        else:
+            rendered_exc = _stringify_termination_detail(str(exc))
+            if rendered_exc:
+                cause["error"] = rendered_exc
+
+    return cause
 
 TOKEN_TELEMETRY_VERSION = 1
 TOKEN_TELEMETRY_PROVIDER = "openai_logprobs"
@@ -6600,6 +6656,7 @@ async def streaming_chat_response_handler(response, ctx):
             usage = None
             token_telemetry_state = {"tokens": [], "capped": False}
             token_branch = metadata.get("tokenBranch")
+            termination_cause = None
             debug_tool_journey = _is_debug_flag_enabled(
                 metadata.get("params", {}).get("debug_tool_journey")
             )
@@ -6667,6 +6724,7 @@ async def streaming_chat_response_handler(response, ctx):
                     nonlocal content
                     nonlocal usage
                     nonlocal output
+                    nonlocal termination_cause
 
                     response_tool_calls = []
 
@@ -7777,9 +7835,31 @@ async def streaming_chat_response_handler(response, ctx):
                         if isinstance(res, StreamingResponse):
                             await stream_body_handler(res, new_form_data)
                         else:
+                            termination_cause = _build_agent_loop_termination_cause(
+                                kind="unexpected_non_streaming_response",
+                                phase="tool_loop_continuation",
+                                detail={"response_type": type(res).__name__},
+                            )
+                            log.warning(
+                                "Agent loop stopped after tool continuation without streaming response: chat_id=%s message_id=%s cause=%s",
+                                metadata.get("chat_id"),
+                                metadata.get("message_id"),
+                                termination_cause,
+                            )
                             break
                     except Exception as e:
-                        log.debug(e)
+                        termination_cause = _build_agent_loop_termination_cause(
+                            kind="continuation_exception",
+                            phase="tool_loop_continuation",
+                            exc=e,
+                        )
+                        log.warning(
+                            "Agent loop stopped after tool continuation exception: chat_id=%s message_id=%s cause=%s",
+                            metadata.get("chat_id"),
+                            metadata.get("message_id"),
+                            termination_cause,
+                            exc_info=True,
+                        )
                         break
 
                 if DETECT_CODE_INTERPRETER:
@@ -7962,9 +8042,33 @@ async def streaming_chat_response_handler(response, ctx):
                             if isinstance(res, StreamingResponse):
                                 await stream_body_handler(res, new_form_data)
                             else:
+                                termination_cause = (
+                                    _build_agent_loop_termination_cause(
+                                        kind="unexpected_non_streaming_response",
+                                        phase="code_interpreter_continuation",
+                                        detail={"response_type": type(res).__name__},
+                                    )
+                                )
+                                log.warning(
+                                    "Agent loop stopped after code interpreter continuation without streaming response: chat_id=%s message_id=%s cause=%s",
+                                    metadata.get("chat_id"),
+                                    metadata.get("message_id"),
+                                    termination_cause,
+                                )
                                 break
                         except Exception as e:
-                            log.debug(e)
+                            termination_cause = _build_agent_loop_termination_cause(
+                                kind="continuation_exception",
+                                phase="code_interpreter_continuation",
+                                exc=e,
+                            )
+                            log.warning(
+                                "Agent loop stopped after code interpreter continuation exception: chat_id=%s message_id=%s cause=%s",
+                                metadata.get("chat_id"),
+                                metadata.get("message_id"),
+                                termination_cause,
+                                exc_info=True,
+                            )
                             break
 
                 # Mark all in-progress items as completed
@@ -8019,6 +8123,11 @@ async def streaming_chat_response_handler(response, ctx):
                         if prompt_telemetry
                         else {}
                     ),
+                    **(
+                        {"terminationCause": termination_cause}
+                        if termination_cause
+                        else {}
+                    ),
                 }
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
@@ -8051,6 +8160,11 @@ async def streaming_chat_response_handler(response, ctx):
                                 if prompt_telemetry
                                 else {}
                             ),
+                            **(
+                                {"terminationCause": termination_cause}
+                                if termination_cause
+                                else {}
+                            ),
                         },
                     )
                 elif (
@@ -8060,6 +8174,7 @@ async def streaming_chat_response_handler(response, ctx):
                     or memory_telemetry
                     or tool_journey_telemetry
                     or prompt_telemetry
+                    or termination_cause
                 ):
                     update_payload = {}
                     if usage:
@@ -8074,6 +8189,8 @@ async def streaming_chat_response_handler(response, ctx):
                         update_payload["toolJourneyTelemetry"] = tool_journey_telemetry
                     if prompt_telemetry:
                         update_payload["promptTelemetry"] = prompt_telemetry
+                    if termination_cause:
+                        update_payload["terminationCause"] = termination_cause
                     Chats.upsert_message_to_chat_by_id_and_message_id(
                         metadata["chat_id"],
                         metadata["message_id"],
@@ -8106,6 +8223,10 @@ async def streaming_chat_response_handler(response, ctx):
                 await background_tasks_handler(ctx)
             except asyncio.CancelledError:
                 log.warning("Task was cancelled!")
+                termination_cause = _build_agent_loop_termination_cause(
+                    kind="task_cancelled",
+                    phase="streaming_chat_response_handler",
+                )
                 await event_emitter({"type": "chat:tasks:cancel"})
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
@@ -8116,6 +8237,7 @@ async def streaming_chat_response_handler(response, ctx):
                         {
                             "content": serialize_output(output),
                             "output": output,
+                            "terminationCause": termination_cause,
                         },
                     )
 

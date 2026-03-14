@@ -1675,6 +1675,7 @@
 			selected_model_id,
 			error,
 			usage,
+			terminationCause,
 			tokenTelemetry,
 			tokenBranch,
 			tokenTelemetryUnavailable,
@@ -1786,6 +1787,10 @@
 
 		if (usage) {
 			message.usage = usage;
+		}
+
+		if (terminationCause) {
+			message.terminationCause = terminationCause;
 		}
 
 		history.messages[message.id] = message;

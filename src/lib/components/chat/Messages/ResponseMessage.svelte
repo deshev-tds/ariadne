@@ -112,6 +112,16 @@
 			load_duration?: number;
 			usage?: unknown;
 		};
+		terminationCause?: {
+			kind?: string;
+			phase?: string;
+			timestamp?: number;
+			client_timeout_seconds?: number;
+			status_code?: number;
+			exception_type?: string;
+			error?: string;
+			detail?: string;
+		};
 			annotation?: { type: string; rating: number };
 			tokenTelemetry?: any;
 			tokenBranch?: any;
@@ -197,6 +207,38 @@
 		$: if (!tokenExplorerAvailable && showTokenExplorer) {
 			showTokenExplorer = false;
 		}
+
+	const formatGenerationInfoBlock = (value: unknown) => {
+		const serialized =
+			typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? String(value);
+
+		return serialized
+			.replace(/"([^(")"]+)":/g, '$1:')
+			.slice(1, -1)
+			.split('\n')
+			.map((line) => line.slice(2))
+			.map((line) => (line.endsWith(',') ? line.slice(0, -1) : line))
+			.join('\n');
+	};
+
+	let generationInfoTooltipContent = '';
+	$: {
+		const blocks: string[] = [];
+
+		if (message?.usage) {
+			blocks.push(formatGenerationInfoBlock(message.usage));
+		}
+
+		if (message?.terminationCause) {
+			blocks.push(
+				['termination_cause:', formatGenerationInfoBlock(message.terminationCause)].join('\n')
+			);
+		}
+
+		generationInfoTooltipContent = blocks.length
+			? `<pre>${sanitizeResponseContent(blocks.join('\n\n'))}</pre>`
+			: '';
+	}
 
 	const copyToClipboard = async (text) => {
 		text = removeAllDetails(text);
@@ -1175,23 +1217,13 @@
 									</Tooltip>
 								{/if}
 
-								{#if message.usage}
+								{#if generationInfoTooltipContent}
 									<Tooltip
-										content={message.usage
-											? `<pre>${sanitizeResponseContent(
-													JSON.stringify(message.usage, null, 2)
-														.replace(/"([^(")"]+)":/g, '$1:')
-														.slice(1, -1)
-														.split('\n')
-														.map((line) => line.slice(2))
-														.map((line) => (line.endsWith(',') ? line.slice(0, -1) : line))
-														.join('\n')
-												)}</pre>`
-											: ''}
+										content={generationInfoTooltipContent}
 										placement="bottom"
 									>
 										<button
-											aria-hidden="true"
+											aria-label={$i18n.t('Generation Info')}
 											class=" {isLastMessage || ($settings?.highContrastMode ?? false)
 												? 'visible'
 												: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition whitespace-pre-wrap"

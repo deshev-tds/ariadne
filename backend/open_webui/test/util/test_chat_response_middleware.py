@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 import open_webui.utils.middleware as middleware
 from open_webui.utils.middleware import (
@@ -260,6 +261,20 @@ def test_append_tool_journey_event_is_on_demand():
         metadata["tool_journey_telemetry"]["events"][0]["tool"]
         == "search_strong_sources"
     )
+
+
+def test_build_agent_loop_termination_cause_includes_error_metadata():
+    cause = middleware._build_agent_loop_termination_cause(
+        kind="continuation_exception",
+        phase="tool_loop_continuation",
+        exc=HTTPException(status_code=504, detail="upstream timed out"),
+    )
+
+    assert cause["kind"] == "continuation_exception"
+    assert cause["phase"] == "tool_loop_continuation"
+    assert cause["status_code"] == 504
+    assert cause["exception_type"] == "HTTPException"
+    assert cause["error"] == "upstream timed out"
 
 
 @pytest.mark.asyncio
