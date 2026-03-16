@@ -28,6 +28,12 @@ from open_webui.retrieval.local_corpus import (
     view_local_corpus_table,
     view_local_corpus_figure_metadata,
 )
+from open_webui.retrieval.local_corpus_reasoning import (
+    frame_local_corpus_problem,
+    plan_local_corpus_axes,
+    collect_local_corpus_axis_evidence,
+    assess_local_corpus_evidence,
+)
 from open_webui.routers.images import (
     image_generations,
     image_edits,
@@ -585,6 +591,126 @@ async def local_corpus_view_figure_metadata(
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"local_corpus_view_figure_metadata error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_frame_problem(
+    query: str,
+    domain_hint: Optional[str] = None,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Frame an abstract local-corpus question into a structured working problem.
+    Use this before planning reasoning axes for broad, multi-factor, or orientation-style questions.
+
+    :param query: The user question to frame
+    :param domain_hint: Optional domain hint such as medicine or chemistry
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            frame_local_corpus_problem,
+            query=query,
+            domain_hint=domain_hint,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_frame_problem error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_plan_axes(
+    problem_frame: dict,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Turn a framed local-corpus problem into a bounded set of reasoning axes.
+    The backend enforces an axis budget so this remains inspectable and affordable.
+
+    :param problem_frame: The structured payload returned by local_corpus_frame_problem
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            plan_local_corpus_axes,
+            problem_frame=problem_frame,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_plan_axes error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_collect_axis_evidence(
+    problem_frame: dict,
+    axes: list[dict],
+    max_books_per_axis: int = 2,
+    include_related_tables: bool = True,
+    include_related_figures: bool = False,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Collect grouped evidence for each planned reasoning axis using the existing local corpus retrieval path.
+
+    :param problem_frame: The structured payload returned by local_corpus_frame_problem
+    :param axes: Planned axes returned by local_corpus_plan_axes
+    :param max_books_per_axis: Maximum shortlisted books per axis, capped by backend policy
+    :param include_related_tables: Include nearby table pointers in grouped evidence
+    :param include_related_figures: Include nearby figure pointers in grouped evidence
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            collect_local_corpus_axis_evidence,
+            problem_frame=problem_frame,
+            axes=axes,
+            max_books_per_axis=max_books_per_axis,
+            include_related_tables=include_related_tables,
+            include_related_figures=include_related_figures,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_collect_axis_evidence error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_assess_evidence(
+    problem_frame: dict,
+    evidence_bundle: dict,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Assess grouped local-corpus evidence conservatively before the model synthesizes a final answer.
+
+    :param problem_frame: The structured payload returned by local_corpus_frame_problem
+    :param evidence_bundle: The grouped evidence payload returned by local_corpus_collect_axis_evidence
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            assess_local_corpus_evidence,
+            problem_frame=problem_frame,
+            evidence_bundle=evidence_bundle,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_assess_evidence error: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

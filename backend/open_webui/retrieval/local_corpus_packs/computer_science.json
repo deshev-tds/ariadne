@@ -1,0 +1,174 @@
+{
+  "domain": "computer_science",
+  "version": 1,
+  "maturity_tier": 1,
+  "default_task_type": "concept_explanation",
+  "default_axis_budget": 4,
+  "max_axis_budget": 6,
+  "answer_modes": ["design_options", "debugging_workup", "tradeoff_map", "reference_locator"],
+  "ranking_profiles": {
+    "systems_tradeoffs": {
+      "classification_terms": ["system", "design", "performance", "debug", "tradeoff", "algorithm", "latency", "throughput"]
+    },
+    "reference": {
+      "classification_terms": ["where", "reference", "which source", "book", "page"]
+    }
+  },
+  "risk_profiles": {
+    "cs_pragmatic": {
+      "must_surface_red_flags": false,
+      "red_flag_terms": []
+    }
+  },
+  "insufficiency_profiles": {
+    "cs_conservative": {
+      "default_posture": "scoped",
+      "weak_posture": "cautious",
+      "partial_posture": "scoped",
+      "strong_posture": "grounded",
+      "must_admit_gaps": true,
+      "avoid_exhaustive_language": true,
+      "guidance": "Name constraints and tradeoffs explicitly instead of implying one universally best answer."
+    }
+  },
+  "axes": {
+    "problem_class": {
+      "intent": "what_kind_of_problem_this_is",
+      "slot_sources": ["entities", "constraints"],
+      "literal_terms": ["problem class", "category of problem", "shape of problem"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["algorithms", "systems"]
+    },
+    "candidate_approaches": {
+      "intent": "plausible_design_or_algorithm_choices",
+      "slot_sources": ["entities", "constraints", "observations"],
+      "literal_terms": ["candidate approaches", "possible approaches", "design options", "algorithm choices"],
+      "preferred_resource_types": ["textbook", "reference", "handbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["systems", "algorithms", "software_engineering"]
+    },
+    "constraints_and_tradeoffs": {
+      "intent": "what_forces_the_choice",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["tradeoff", "constraints", "latency", "throughput", "memory", "correctness"],
+      "preferred_resource_types": ["reference", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["systems", "software_engineering"]
+    },
+    "failure_modes": {
+      "intent": "where_it_breaks",
+      "slot_sources": ["observations", "constraints"],
+      "literal_terms": ["failure mode", "bottleneck", "bug pattern", "edge case"],
+      "preferred_resource_types": ["reference", "handbook", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["systems", "software_engineering"]
+    },
+    "implementation_considerations": {
+      "intent": "real_world_implementation_costs",
+      "slot_sources": ["constraints", "observations"],
+      "literal_terms": ["implementation", "integration", "operational concerns", "deployability"],
+      "preferred_resource_types": ["reference", "handbook", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["software_engineering", "systems"]
+    },
+    "measurement_and_validation": {
+      "intent": "how_to_validate_the_choice",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["benchmark", "measure", "validate", "profiling", "testing"],
+      "preferred_resource_types": ["reference", "handbook"],
+      "preferred_evidence_tiers": ["reference"],
+      "boost_table_like": true,
+      "max_books": 1,
+      "top_k": 2,
+      "discipline_hints": ["systems", "software_engineering"]
+    }
+  },
+  "task_types": {
+    "concept_explanation": {
+      "answer_mode": "tradeoff_map",
+      "required_axis_ids": ["problem_class", "candidate_approaches"],
+      "optional_axis_ids": ["constraints_and_tradeoffs"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "systems_tradeoffs",
+      "risk_profile": "cs_pragmatic",
+      "insufficiency_profile": "cs_conservative",
+      "classification_terms": ["what is", "concept", "explain", "how does"]
+    },
+    "algorithm_selection": {
+      "answer_mode": "design_options",
+      "required_axis_ids": ["problem_class", "candidate_approaches", "constraints_and_tradeoffs"],
+      "optional_axis_ids": ["measurement_and_validation"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "systems_tradeoffs",
+      "risk_profile": "cs_pragmatic",
+      "insufficiency_profile": "cs_conservative",
+      "classification_terms": ["algorithm", "choose", "selection", "data structure"]
+    },
+    "systems_design_orientation": {
+      "answer_mode": "design_options",
+      "required_axis_ids": ["candidate_approaches", "constraints_and_tradeoffs"],
+      "optional_axis_ids": ["implementation_considerations", "failure_modes"],
+      "frame_slots": ["entities", "constraints", "unknowns"],
+      "ranking_profile": "systems_tradeoffs",
+      "risk_profile": "cs_pragmatic",
+      "insufficiency_profile": "cs_conservative",
+      "classification_terms": ["design", "architecture", "system", "build", "service"]
+    },
+    "performance_bottleneck_reasoning": {
+      "answer_mode": "debugging_workup",
+      "required_axis_ids": ["failure_modes", "constraints_and_tradeoffs"],
+      "optional_axis_ids": ["measurement_and_validation", "implementation_considerations"],
+      "frame_slots": ["observations", "constraints"],
+      "ranking_profile": "systems_tradeoffs",
+      "risk_profile": "cs_pragmatic",
+      "insufficiency_profile": "cs_conservative",
+      "classification_terms": ["slow", "performance", "bottleneck", "latency", "throughput", "profiling"]
+    },
+    "debugging_orientation": {
+      "answer_mode": "debugging_workup",
+      "required_axis_ids": ["failure_modes", "measurement_and_validation"],
+      "optional_axis_ids": ["implementation_considerations"],
+      "frame_slots": ["observations", "constraints"],
+      "ranking_profile": "systems_tradeoffs",
+      "risk_profile": "cs_pragmatic",
+      "insufficiency_profile": "cs_conservative",
+      "classification_terms": ["debug", "bug", "error", "broken", "failing"]
+    },
+    "tradeoff_analysis": {
+      "answer_mode": "tradeoff_map",
+      "required_axis_ids": ["constraints_and_tradeoffs", "candidate_approaches"],
+      "optional_axis_ids": ["implementation_considerations", "measurement_and_validation"],
+      "frame_slots": ["constraints", "unknowns"],
+      "ranking_profile": "systems_tradeoffs",
+      "risk_profile": "cs_pragmatic",
+      "insufficiency_profile": "cs_conservative",
+      "classification_terms": ["tradeoff", "pros and cons", "compare", "choose between"]
+    },
+    "reference_locator": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["problem_class"],
+      "optional_axis_ids": ["candidate_approaches"],
+      "frame_slots": ["entities"],
+      "ranking_profile": "reference",
+      "risk_profile": "cs_pragmatic",
+      "insufficiency_profile": "cs_conservative",
+      "classification_terms": ["where", "which source", "which page", "reference"]
+    }
+  }
+}

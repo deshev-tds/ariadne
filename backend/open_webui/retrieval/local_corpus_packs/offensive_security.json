@@ -1,0 +1,165 @@
+{
+  "domain": "offensive_security",
+  "version": 1,
+  "maturity_tier": 3,
+  "default_task_type": "attack_surface_orientation",
+  "default_axis_budget": 4,
+  "max_axis_budget": 6,
+  "answer_modes": ["risk_oriented_overview", "assessment_checklist", "defense_mapping", "reference_locator"],
+  "ranking_profiles": {
+    "operator_scope": {
+      "classification_terms": ["attack surface", "exploitability", "engagement", "scope", "prerequisite", "detection", "mitigation"]
+    },
+    "reference": {
+      "classification_terms": ["where", "source", "book", "page", "reference"]
+    }
+  },
+  "risk_profiles": {
+    "authorized_operator": {
+      "must_surface_red_flags": false,
+      "must_name_preconditions": true,
+      "red_flag_terms": ["production", "internet-facing", "credentialed", "unauthorized"]
+    }
+  },
+  "insufficiency_profiles": {
+    "offsec_scoped": {
+      "default_posture": "scoped",
+      "weak_posture": "cautious",
+      "partial_posture": "scoped",
+      "strong_posture": "grounded",
+      "must_admit_gaps": true,
+      "avoid_exhaustive_language": true,
+      "guidance": "Keep scope, preconditions, impact, detection opportunities, and mitigations explicit."
+    }
+  },
+  "axes": {
+    "attack_surface": {
+      "intent": "what_is_exposed",
+      "slot_sources": ["entities", "constraints"],
+      "literal_terms": ["attack surface", "entry points", "exposed components"],
+      "preferred_resource_types": ["reference", "handbook", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["general_reference", "web_security", "network_security"]
+    },
+    "preconditions": {
+      "intent": "what_must_be_true_first",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["preconditions", "prerequisites", "required access", "required assumptions"],
+      "preferred_resource_types": ["reference", "handbook"],
+      "preferred_evidence_tiers": ["reference"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_reference", "web_security", "network_security"]
+    },
+    "impact": {
+      "intent": "what_success_changes",
+      "slot_sources": ["entities", "constraints"],
+      "literal_terms": ["impact", "post-compromise effect", "blast radius"],
+      "preferred_resource_types": ["reference", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_reference"]
+    },
+    "detection_opportunities": {
+      "intent": "where_blue_team_can_see_it",
+      "slot_sources": ["constraints", "observations"],
+      "literal_terms": ["detection", "telemetry", "logging", "monitoring opportunities"],
+      "preferred_resource_types": ["reference", "handbook"],
+      "preferred_evidence_tiers": ["reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_reference", "incident_response"]
+    },
+    "mitigations": {
+      "intent": "what_reduces_risk",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["mitigation", "hardening", "remediation", "reduce risk"],
+      "preferred_resource_types": ["reference", "handbook"],
+      "preferred_evidence_tiers": ["reference"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_reference", "incident_response"]
+    },
+    "scope_authorization": {
+      "intent": "what_scope_is_assumed",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["authorized scope", "rules of engagement", "lab context", "engagement scope"],
+      "preferred_resource_types": ["reference", "handbook"],
+      "preferred_evidence_tiers": ["reference"],
+      "boost_table_like": false,
+      "max_books": 1,
+      "top_k": 2,
+      "discipline_hints": ["general_reference"]
+    }
+  },
+  "task_types": {
+    "attack_surface_orientation": {
+      "answer_mode": "risk_oriented_overview",
+      "required_axis_ids": ["attack_surface", "preconditions"],
+      "optional_axis_ids": ["impact", "detection_opportunities"],
+      "frame_slots": ["entities", "constraints", "unknowns"],
+      "ranking_profile": "operator_scope",
+      "risk_profile": "authorized_operator",
+      "insufficiency_profile": "offsec_scoped",
+      "classification_terms": ["attack surface", "what should i look at", "recon", "enumeration", "exposed"]
+    },
+    "authorized_assessment_workflow": {
+      "answer_mode": "assessment_checklist",
+      "required_axis_ids": ["scope_authorization", "attack_surface", "preconditions"],
+      "optional_axis_ids": ["detection_opportunities", "mitigations"],
+      "frame_slots": ["constraints", "unknowns"],
+      "ranking_profile": "operator_scope",
+      "risk_profile": "authorized_operator",
+      "insufficiency_profile": "offsec_scoped",
+      "classification_terms": ["engagement", "authorized", "workflow", "assessment", "checklist"]
+    },
+    "exploitability_reasoning": {
+      "answer_mode": "risk_oriented_overview",
+      "required_axis_ids": ["preconditions", "impact"],
+      "optional_axis_ids": ["attack_surface", "detection_opportunities"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "operator_scope",
+      "risk_profile": "authorized_operator",
+      "insufficiency_profile": "offsec_scoped",
+      "classification_terms": ["exploitability", "how exploitable", "can this be exploited", "chain"]
+    },
+    "detection_and_mitigation_mapping": {
+      "answer_mode": "defense_mapping",
+      "required_axis_ids": ["detection_opportunities", "mitigations"],
+      "optional_axis_ids": ["attack_surface", "impact"],
+      "frame_slots": ["constraints", "unknowns"],
+      "ranking_profile": "operator_scope",
+      "risk_profile": "authorized_operator",
+      "insufficiency_profile": "offsec_scoped",
+      "classification_terms": ["detection", "mitigation", "monitoring", "blue team", "hardening"]
+    },
+    "posture_review": {
+      "answer_mode": "assessment_checklist",
+      "required_axis_ids": ["attack_surface", "mitigations"],
+      "optional_axis_ids": ["preconditions", "impact"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "operator_scope",
+      "risk_profile": "authorized_operator",
+      "insufficiency_profile": "offsec_scoped",
+      "classification_terms": ["posture", "review", "risk review", "security posture"]
+    },
+    "reference_locator": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["attack_surface"],
+      "optional_axis_ids": ["preconditions"],
+      "frame_slots": ["entities"],
+      "ranking_profile": "reference",
+      "risk_profile": "authorized_operator",
+      "insufficiency_profile": "offsec_scoped",
+      "classification_terms": ["where", "which source", "which page", "reference"]
+    }
+  }
+}

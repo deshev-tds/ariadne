@@ -215,6 +215,7 @@ def test_apply_params_strips_ledger_mode_from_openai_payload():
     form_data = {
         "params": {
             "ledger_mode": "agentic",
+            "local_corpus_mode": "prefer",
             "temperature": 0.2,
         }
     }
@@ -223,6 +224,7 @@ def test_apply_params_strips_ledger_mode_from_openai_payload():
     result = apply_params_to_form_data(form_data, model)
 
     assert "ledger_mode" not in result
+    assert "local_corpus_mode" not in result
     assert result["temperature"] == 0.2
 
 
@@ -230,6 +232,7 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
     form_data = {
         "params": {
             "ledger_mode": "agentic",
+            "local_corpus_mode": "prefer",
             "temperature": 0.2,
         }
     }
@@ -239,6 +242,7 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
 
     assert result["options"].get("temperature") == 0.2
     assert "ledger_mode" not in result["options"]
+    assert "local_corpus_mode" not in result["options"]
 
 
 def test_append_tool_journey_event_is_on_demand():
@@ -483,6 +487,37 @@ def test_local_corpus_view_table_citation_source_uses_content_text():
     assert len(sources) == 1
     assert "ACE inhibitor" in sources[0]["document"][0]
     assert sources[0]["metadata"][0]["book_id"] == "med-guide"
+
+
+def test_local_corpus_collect_axis_evidence_citation_source_groups_by_book():
+    tool_result = {
+        "axis_results": [
+            {
+                "axis_id": "management_guidance",
+                "evidence_items": [
+                    {
+                        "domain": "medicine",
+                        "book_id": "med-guide",
+                        "title": "Hypertension management guideline",
+                        "page_no": 2,
+                        "section_path": "Management",
+                        "citation_label": "Hypertension management guideline | p. 2 | Management",
+                        "content": "Start treatment when blood pressure remains above threshold."
+                    }
+                ]
+            }
+        ]
+    }
+
+    sources = middleware.get_citation_source_from_tool_result(
+        "local_corpus_collect_axis_evidence",
+        {},
+        tool_result,
+    )
+
+    assert len(sources) == 1
+    assert sources[0]["source"]["id"] == "med-guide"
+    assert sources[0]["metadata"][0]["axis_id"] == "management_guidance"
 
 
 def test_is_empty_search_notes_result_detects_empty_payloads():

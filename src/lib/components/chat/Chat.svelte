@@ -179,12 +179,16 @@
 	let chatLedgerAgenticEnabled = false;
 	let chatFocusedSearchEnabled = false;
 	let chatDeepResearchEnabled = false;
+	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 
 	$: chatThinkingEnabled =
 		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
 	$: chatLedgerAgenticEnabled = (params?.ledger_mode ?? null) === 'agentic';
 	$: chatFocusedSearchEnabled = (params?.focused_search_mode ?? false) === true;
 	$: chatDeepResearchEnabled = (params?.deep_research_mode ?? false) === true;
+	$: chatLocalCorpusMode = ['off', 'auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
+		? params.local_corpus_mode
+		: 'auto';
 
 	const setChatThinkingEnabled = (enabled: boolean) => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
@@ -253,6 +257,12 @@
 		} else {
 			nextParams.deep_research_mode = false;
 		}
+		params = nextParams;
+	};
+
+	const setChatLocalCorpusMode = (mode: 'off' | 'auto' | 'prefer') => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		nextParams.local_corpus_mode = mode;
 		params = nextParams;
 	};
 
@@ -344,6 +354,14 @@
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
 						if (typeof input.deepResearchEnabled === 'boolean') {
 							params = { ...(params ?? {}), deep_research_mode: input.deepResearchEnabled };
+						}
+						if (typeof input.localCorpusMode === 'string') {
+							params = {
+								...(params ?? {}),
+								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
+									? input.localCorpusMode
+									: 'auto'
+							};
 						}
 					}
 				} catch (e) {}
@@ -844,6 +862,14 @@
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
 						if (typeof input.deepResearchEnabled === 'boolean') {
 							params = { ...(params ?? {}), deep_research_mode: input.deepResearchEnabled };
+						}
+						if (typeof input.localCorpusMode === 'string') {
+							params = {
+								...(params ?? {}),
+								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
+									? input.localCorpusMode
+									: 'auto'
+							};
 						}
 					}
 				} catch (e) {}
@@ -3004,6 +3030,8 @@
 									{setChatFocusedSearchEnabled}
 									deepResearchEnabled={chatDeepResearchEnabled}
 									{setChatDeepResearchEnabled}
+									localCorpusMode={chatLocalCorpusMode}
+									{setChatLocalCorpusMode}
 									bind:files
 									bind:prompt
 									bind:autoScroll
@@ -3082,6 +3110,8 @@
 									{setChatFocusedSearchEnabled}
 									deepResearchEnabled={chatDeepResearchEnabled}
 									{setChatDeepResearchEnabled}
+									localCorpusMode={chatLocalCorpusMode}
+									{setChatLocalCorpusMode}
 									bind:messageInput
 									bind:files
 									bind:prompt

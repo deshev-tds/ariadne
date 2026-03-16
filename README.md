@@ -467,6 +467,11 @@ It supports a domain-first lane with a split architecture:
 - a lightweight serving layer for source selection
 - per-document compiled artifacts for actual evidence retrieval
 
+There are now two local-corpus operating paths:
+
+- `v1`: direct lookup, shortlist, book card narrowing, evidence retrieval, table follow-up
+- `v2`: a bounded reasoning layer for abstract questions, with problem framing, axis planning, grouped evidence, and conservative sufficiency assessment
+
 ### Why This Exists
 
 The immediate practical reason was medical literature.
@@ -531,6 +536,10 @@ The model-facing tool family is intentionally narrow and explicit:
 
 - `local_corpus_list_domains`
 - `local_corpus_list_disciplines`
+- `local_corpus_frame_problem`
+- `local_corpus_plan_axes`
+- `local_corpus_collect_axis_evidence`
+- `local_corpus_assess_evidence`
 - `local_corpus_shortlist_books`
 - `local_corpus_view_book_cards`
 - `local_corpus_retrieve_evidence`
@@ -540,6 +549,13 @@ The model-facing tool family is intentionally narrow and explicit:
 That tool split is not cosmetic.
 
 It is there to stop the system from pretending that "find a likely book" and "quote the evidence inside that book" are the same operation.
+
+The important constraint is that `v2` is still bounded and inspectable.
+
+- axis count is backend-capped
+- axes are scaffolds, not claims of completeness
+- the backend assessor is intentionally conservative and narrow
+- packs exist at different maturity tiers and are not presented as equally battle-tested
 
 ### What A Corpus Should Look Like
 
@@ -580,6 +596,16 @@ The important toggles are:
 
 - `ENABLE_LOCAL_CORPUS_TOOLS`
 - `LOCAL_CORPUS_ROOT`
+
+There is also a chat-scoped operating control:
+
+- `local_corpus_mode = off | auto | prefer`
+
+That control exists because users do not always want the same thing.
+
+- `off`: answer from weights and other enabled lanes; do not inject local corpus tools
+- `auto`: let routing decide
+- `prefer`: bias toward local corpus when the question is compatible
 
 By default, the fork will auto-enable the tool family when a compatible `literature_corpus/` directory exists at the repo root.
 

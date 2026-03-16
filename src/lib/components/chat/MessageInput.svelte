@@ -78,6 +78,7 @@
 	import GlobeAlt from '../icons/GlobeAlt.svelte';
 	import Photo from '../icons/Photo.svelte';
 	import Wrench from '../icons/Wrench.svelte';
+	import BookOpen from '../icons/BookOpen.svelte';
 	import Sparkles from '../icons/Sparkles.svelte';
 
 	import InputVariablesModal from './MessageInput/InputVariablesModal.svelte';
@@ -126,6 +127,8 @@
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
 	export let deepResearchEnabled = false;
 	export let setChatDeepResearchEnabled: (enabled: boolean) => void = () => {};
+	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
+	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
 
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
@@ -182,7 +185,8 @@
 		imageGenerationEnabled,
 		webSearchEnabled,
 		codeInterpreterEnabled,
-		deepResearchEnabled
+		deepResearchEnabled,
+		localCorpusMode
 	});
 
 	const inputVariableHandler = async (text: string): Promise<string> => {
@@ -1687,6 +1691,39 @@
 												}}
 											>
 												<CommandLine className="size-4.5" strokeWidth="1.75" />
+											</button>
+										</Tooltip>
+										<Tooltip
+											content={localCorpusMode === 'prefer'
+												? $i18n.t('Prefer local corpus mode is enabled for this chat')
+												: localCorpusMode === 'off'
+													? $i18n.t('Local corpus mode is off for this chat')
+													: $i18n.t('Local corpus mode is automatic for this chat')}
+											placement="top"
+										>
+											<button
+												type="button"
+												id="local-corpus-mode-button"
+												aria-label={$i18n.t('Local corpus mode')}
+												aria-pressed={localCorpusMode !== 'off'}
+												class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {localCorpusMode === 'prefer'
+													? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
+													: localCorpusMode === 'auto'
+														? 'text-sky-700 bg-sky-100/80 hover:bg-sky-200/80 dark:text-sky-200 dark:bg-sky-700/20 dark:hover:bg-sky-700/30'
+														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+												on:click={async () => {
+													const nextMode =
+														localCorpusMode === 'off'
+															? 'auto'
+															: localCorpusMode === 'auto'
+																? 'prefer'
+																: 'off';
+													setChatLocalCorpusMode(nextMode);
+													await tick();
+													document.getElementById('chat-input')?.focus();
+												}}
+											>
+												<BookOpen className="size-4.5" strokeWidth="1.75" />
 											</button>
 										</Tooltip>
 										{#if showWebSearchButton}
