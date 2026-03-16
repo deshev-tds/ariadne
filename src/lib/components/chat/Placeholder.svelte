@@ -50,6 +50,8 @@
 	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
 	export let focusedSearchEnabled = false;
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
+	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
+	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
 
 	export let selectedToolIds = [];
 	export let selectedFilterIds = [];
@@ -216,6 +218,8 @@
 					{setChatLedgerAgenticEnabled}
 					{focusedSearchEnabled}
 					{setChatFocusedSearchEnabled}
+					{localCorpusMode}
+					{setChatLocalCorpusMode}
 					bind:files
 					bind:prompt
 					bind:autoScroll

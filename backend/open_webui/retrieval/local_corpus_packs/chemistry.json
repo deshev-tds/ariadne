@@ -1,0 +1,174 @@
+{
+  "domain": "chemistry",
+  "version": 1,
+  "maturity_tier": 2,
+  "default_task_type": "reaction_interpretation",
+  "default_axis_budget": 4,
+  "max_axis_budget": 6,
+  "answer_modes": ["hypothesis_buckets", "mechanism_explanation", "stepwise_orientation", "reference_locator"],
+  "ranking_profiles": {
+    "conditions_mechanism": {
+      "classification_terms": ["reaction", "mechanism", "solvent", "pH", "temperature", "yield", "product"]
+    },
+    "reference": {
+      "classification_terms": ["where", "source", "reference", "page", "handbook"]
+    }
+  },
+  "risk_profiles": {
+    "chemistry_safety": {
+      "must_surface_red_flags": false,
+      "red_flag_terms": ["explosive", "toxic", "oxidizer", "runaway", "fire"]
+    }
+  },
+  "insufficiency_profiles": {
+    "chemistry_conservative": {
+      "default_posture": "scoped",
+      "weak_posture": "cautious",
+      "partial_posture": "scoped",
+      "strong_posture": "grounded",
+      "must_admit_gaps": true,
+      "avoid_exhaustive_language": true,
+      "guidance": "Do not silently fill in missing reaction conditions."
+    }
+  },
+  "axes": {
+    "core_mechanism": {
+      "intent": "explain_observed_behavior",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["mechanism", "reaction pathway", "transformation"],
+      "preferred_resource_types": ["reference", "textbook", "handbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["organic_chemistry", "physical_chemistry"]
+    },
+    "conditions_and_dependencies": {
+      "intent": "condition_sensitivity",
+      "slot_sources": ["observations", "constraints"],
+      "literal_terms": ["conditions", "solvent", "temperature", "pH", "catalyst"],
+      "preferred_resource_types": ["reference", "handbook"],
+      "preferred_evidence_tiers": ["reference"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["organic_chemistry", "analytical_chemistry"]
+    },
+    "competing_explanations": {
+      "intent": "alternative_mechanisms",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["alternative mechanism", "competing explanation", "side reaction"],
+      "preferred_resource_types": ["reference", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["organic_chemistry", "physical_chemistry"]
+    },
+    "safety_risks": {
+      "intent": "hazard_visibility",
+      "slot_sources": ["constraints", "observations"],
+      "literal_terms": ["safety", "hazard", "incompatibility", "danger"],
+      "preferred_resource_types": ["reference", "handbook"],
+      "preferred_evidence_tiers": ["reference"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_reference", "organic_chemistry"]
+    },
+    "parameter_sensitivity": {
+      "intent": "which_variables_matter",
+      "slot_sources": ["observations", "constraints"],
+      "literal_terms": ["parameter sensitivity", "depends on", "what changes outcome"],
+      "preferred_resource_types": ["reference", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["physical_chemistry", "organic_chemistry"]
+    },
+    "missing_conditions": {
+      "intent": "what_is_still_needed",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["missing conditions", "what else is needed", "underspecified"],
+      "preferred_resource_types": ["reference", "handbook"],
+      "preferred_evidence_tiers": ["reference"],
+      "boost_table_like": false,
+      "max_books": 1,
+      "top_k": 2,
+      "discipline_hints": ["general_reference", "organic_chemistry"]
+    }
+  },
+  "task_types": {
+    "reaction_interpretation": {
+      "answer_mode": "hypothesis_buckets",
+      "required_axis_ids": ["core_mechanism", "conditions_and_dependencies"],
+      "optional_axis_ids": ["competing_explanations", "missing_conditions"],
+      "frame_slots": ["entities", "observations", "constraints"],
+      "ranking_profile": "conditions_mechanism",
+      "risk_profile": "chemistry_safety",
+      "insufficiency_profile": "chemistry_conservative",
+      "classification_terms": ["reaction", "product", "yield", "starting material", "observed", "formed"]
+    },
+    "mechanism_orientation": {
+      "answer_mode": "mechanism_explanation",
+      "required_axis_ids": ["core_mechanism"],
+      "optional_axis_ids": ["competing_explanations", "conditions_and_dependencies"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "conditions_mechanism",
+      "risk_profile": "chemistry_safety",
+      "insufficiency_profile": "chemistry_conservative",
+      "classification_terms": ["mechanism", "pathway", "why", "how"]
+    },
+    "compound_property_lookup": {
+      "answer_mode": "stepwise_orientation",
+      "required_axis_ids": ["parameter_sensitivity"],
+      "optional_axis_ids": ["safety_risks"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "conditions_mechanism",
+      "risk_profile": "chemistry_safety",
+      "insufficiency_profile": "chemistry_conservative",
+      "classification_terms": ["property", "solubility", "boiling point", "stability", "reactivity"]
+    },
+    "synthesis_route_orientation": {
+      "answer_mode": "stepwise_orientation",
+      "required_axis_ids": ["conditions_and_dependencies", "core_mechanism"],
+      "optional_axis_ids": ["safety_risks", "parameter_sensitivity"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "conditions_mechanism",
+      "risk_profile": "chemistry_safety",
+      "insufficiency_profile": "chemistry_conservative",
+      "classification_terms": ["synthesis", "route", "retrosynthesis", "make", "prepare"]
+    },
+    "analytical_signal_interpretation": {
+      "answer_mode": "hypothesis_buckets",
+      "required_axis_ids": ["competing_explanations", "parameter_sensitivity"],
+      "optional_axis_ids": ["conditions_and_dependencies"],
+      "frame_slots": ["observations", "constraints"],
+      "ranking_profile": "conditions_mechanism",
+      "risk_profile": "chemistry_safety",
+      "insufficiency_profile": "chemistry_conservative",
+      "classification_terms": ["nmr", "ir", "ms", "chromatography", "signal", "peak"]
+    },
+    "safety_compatibility_check": {
+      "answer_mode": "stepwise_orientation",
+      "required_axis_ids": ["safety_risks", "missing_conditions"],
+      "optional_axis_ids": ["conditions_and_dependencies"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "conditions_mechanism",
+      "risk_profile": "chemistry_safety",
+      "insufficiency_profile": "chemistry_conservative",
+      "classification_terms": ["safe", "safety", "compatible", "incompatible", "hazard", "dangerous"]
+    },
+    "reference_locator": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["conditions_and_dependencies"],
+      "optional_axis_ids": ["core_mechanism"],
+      "frame_slots": ["entities"],
+      "ranking_profile": "reference",
+      "risk_profile": "chemistry_safety",
+      "insufficiency_profile": "chemistry_conservative",
+      "classification_terms": ["where", "which source", "which book", "which page", "reference"]
+    }
+  }
+}

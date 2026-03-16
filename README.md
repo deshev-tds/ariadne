@@ -418,6 +418,198 @@ Where this lives:
 - static registry file: `backend/open_webui/retrieval/web/source_registry.json`
 - admin API (read/update): `/api/v1/retrieval/web/search/planner/source-registry`
 
+## Optional Local Corpus Lane
+
+This fork now also supports a separate local-corpus path for cases where the strongest evidence is not on the web at all, but on disk.
+
+That matters for a very specific class of workflows:
+
+- proprietary literature
+- bought handbooks and textbooks
+- internal review corpora
+- local material that should not be flattened into a generic OWUI knowledge blob
+
+The important design choice here is the same one that shows up elsewhere in this fork:
+
+do not collapse unlike jobs into one vague retrieval step.
+
+For a real literature corpus, there are at least two different jobs:
+
+- shortlist which local sources are worth searching
+- retrieve evidence inside those selected sources
+
+This fork therefore does not treat a local corpus as "just another text pile to ingest".
+
+It supports a domain-first lane with a split architecture:
+
+- a lightweight serving layer for source selection
+- per-document compiled artifacts for actual evidence retrieval
+
+There are now two local-corpus operating paths:
+
+- `v1`: direct lookup, shortlist, book card narrowing, evidence retrieval, table follow-up
+- `v2`: a bounded reasoning layer for abstract questions, with problem framing, axis planning, grouped evidence, and conservative sufficiency assessment
+
+### Why This Exists
+
+The immediate practical reason was medical literature.
+
+If you take a shelf of guidelines, manuals, and textbooks and dump all of it into a generic flattened RAG collection, you lose exactly the distinctions that matter:
+
+- which domain a source belongs to
+- which discipline it belongs to
+- whether it is a guideline, handbook, textbook, atlas, or reference
+- where the relevant evidence actually lives
+- whether the useful answer is in a nearby table rather than in a prose paragraph
+
+So the local-corpus path here was built around a stricter idea:
+
+first narrow the source set, then retrieve evidence inside that narrowed set.
+
+That gives the model a better chance of behaving like a careful reader instead of a stochastic blender.
+
+### Engineering Path
+
+The path that led here was intentionally incremental.
+
+1. Keep the literature outside OWUI's generic ingest path.
+2. Compile each source into a per-document artifact set.
+3. Build a tiny markdown serving layer in front of those artifacts.
+4. Add a domain-first router instead of a medicine-only one, so future domains can be added without redesign.
+5. Add native tools that preserve `domain`, `discipline`, `book_id`, `resource_type`, page metadata, and nearby tables/figures.
+6. Use lexical-first retrieval with metadata-aware reranking instead of jumping straight to embedding-heavy complexity.
+7. Validate the whole flow against a live OWUI instance with tool telemetry turned on.
+
+That last step matters.
+
+The point was not just to make the tools exist. The point was to prove that a single loaded model could actually:
+
+- choose the right local domain
+- narrow to the right books
+- retrieve evidence from those books
+- open a table when the evidence was table-shaped
+- answer with book/page/section grounding instead of free-floating synthesis
+
+### How The Local Corpus Path Behaves
+
+At a high level, the local-corpus lane behaves like this:
+
+1. user asks a question
+2. OWUI routes to a local domain when that is appropriate, or asks for domain narrowing if the query is ambiguous
+3. the model shortlists books from the serving layer
+4. the model opens book cards only for the shortlisted books
+5. retrieval searches only those selected books
+6. results return page, section, and nearby table/figure pointers
+7. the model can open a table explicitly when the answer depends on it
+
+That means the serving layer is not the evidence base.
+
+It is the selector that sits in front of the evidence base.
+
+The evidence base is still the per-document compiled output.
+
+### Native Tool Surface
+
+The model-facing tool family is intentionally narrow and explicit:
+
+- `local_corpus_list_domains`
+- `local_corpus_list_disciplines`
+- `local_corpus_frame_problem`
+- `local_corpus_plan_axes`
+- `local_corpus_collect_axis_evidence`
+- `local_corpus_assess_evidence`
+- `local_corpus_shortlist_books`
+- `local_corpus_view_book_cards`
+- `local_corpus_retrieve_evidence`
+- `local_corpus_view_table`
+- `local_corpus_view_figure_metadata`
+
+That tool split is not cosmetic.
+
+It is there to stop the system from pretending that "find a likely book" and "quote the evidence inside that book" are the same operation.
+
+The important constraint is that `v2` is still bounded and inspectable.
+
+- axis count is backend-capped
+- axes are scaffolds, not claims of completeness
+- the backend assessor is intentionally conservative and narrow
+- packs exist at different maturity tiers and are not presented as equally battle-tested
+
+### What A Corpus Should Look Like
+
+If you want to use this path in your own fork, the expected shape is simple and strict.
+
+At the corpus root:
+
+- `_serving/domains/index.md`
+- `_serving/serving-catalog.jsonl`
+
+Then, per domain:
+
+- `_serving/domains/<domain>/index.md`
+- `_serving/domains/<domain>/disciplines/*.md`
+- `_serving/domains/<domain>/books/*.md`
+
+Then, per document:
+
+- `<slug>--<book_id>/selected/retrieval.md`
+- `<slug>--<book_id>/selected/catalog.json`
+- `<slug>--<book_id>/selected/figures.json`
+- `<slug>--<book_id>/selected/tables/`
+
+That split is the contract.
+
+The `_serving` tree is the canonical model-facing selection layer.
+The per-document `selected/` tree is the canonical evidence layer.
+
+If you preserve that distinction, the router and tool chain stay useful even as the corpus grows across domains.
+
+If you flatten everything into one undifferentiated collection, you are throwing away the main value of the design.
+
+### Configuration and Runtime Expectations
+
+The local-corpus lane is optional and local-first.
+
+The important toggles are:
+
+- `ENABLE_LOCAL_CORPUS_TOOLS`
+- `LOCAL_CORPUS_ROOT`
+
+There is also a chat-scoped operating control:
+
+- `local_corpus_mode = off | auto | prefer`
+
+That control exists because users do not always want the same thing.
+
+- `off`: answer from weights and other enabled lanes; do not inject local corpus tools
+- `auto`: let routing decide
+- `prefer`: bias toward local corpus when the question is compatible
+
+By default, the fork will auto-enable the tool family when a compatible `literature_corpus/` directory exists at the repo root.
+
+Derived lexical indexes are built as disposable local cache artifacts under `backend/data/local_corpus/`. The corpus itself remains the source of truth.
+
+### What Was Actually Proven
+
+The useful claim here is not "medical RAG is solved".
+
+The useful claim is narrower and more honest:
+
+- the domain-first architecture works
+- the tool flow is stable enough for real local use
+- table-aware retrieval is viable
+- page/section-grounded answers are achievable without flattening the corpus
+
+What still determines answer quality after that is ordinary retrieval work:
+
+- shortlist quality
+- intra-book ranking quality
+- evidence sufficiency discipline in the final answer
+
+That is a good place to be.
+
+Architecture problems are expensive.
+Ranking problems are irritating, but fixable.
 ## Voice / TTS
 
 This fork adds Kokoro because local TTS quality matters, and a lot of local stacks are either too robotic or too heavy for the quality they provide.

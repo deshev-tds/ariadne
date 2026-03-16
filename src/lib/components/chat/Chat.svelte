@@ -178,11 +178,15 @@
 	let chatThinkingEnabled = false;
 	let chatLedgerAgenticEnabled = false;
 	let chatFocusedSearchEnabled = false;
+	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 
 	$: chatThinkingEnabled =
 		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
 	$: chatLedgerAgenticEnabled = (params?.ledger_mode ?? null) === 'agentic';
 	$: chatFocusedSearchEnabled = (params?.focused_search_mode ?? false) === true;
+	$: chatLocalCorpusMode = ['off', 'auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
+		? params.local_corpus_mode
+		: 'auto';
 
 	const setChatThinkingEnabled = (enabled: boolean) => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
@@ -239,6 +243,11 @@
 		params = nextParams;
 	};
 
+	const setChatLocalCorpusMode = (mode: 'off' | 'auto' | 'prefer') => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		nextParams.local_corpus_mode = mode;
+		params = nextParams;
+	};
 	// Message queue for storing messages while generating
 	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
 
@@ -311,6 +320,14 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						if (typeof input.localCorpusMode === 'string') {
+							params = {
+								...(params ?? {}),
+								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
+									? input.localCorpusMode
+									: 'auto'
+							};
+						}
 					}
 				} catch (e) {}
 			} else {
@@ -795,6 +812,14 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						if (typeof input.localCorpusMode === 'string') {
+							params = {
+								...(params ?? {}),
+								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
+									? input.localCorpusMode
+									: 'auto'
+							};
+						}
 					}
 				} catch (e) {}
 			}
@@ -2926,6 +2951,8 @@
 									{setChatLedgerAgenticEnabled}
 									focusedSearchEnabled={chatFocusedSearchEnabled}
 									{setChatFocusedSearchEnabled}
+									localCorpusMode={chatLocalCorpusMode}
+									{setChatLocalCorpusMode}
 									bind:files
 									bind:prompt
 									bind:autoScroll
@@ -3002,6 +3029,8 @@
 									{setChatLedgerAgenticEnabled}
 									focusedSearchEnabled={chatFocusedSearchEnabled}
 									{setChatFocusedSearchEnabled}
+									localCorpusMode={chatLocalCorpusMode}
+									{setChatLocalCorpusMode}
 									bind:messageInput
 									bind:files
 									bind:prompt

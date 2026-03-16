@@ -1,0 +1,174 @@
+{
+  "domain": "biology",
+  "version": 1,
+  "maturity_tier": 2,
+  "default_task_type": "mechanism_orientation",
+  "default_axis_budget": 4,
+  "max_axis_budget": 6,
+  "answer_modes": ["mechanism_explanation", "hypothesis_buckets", "systems_map", "reference_locator"],
+  "ranking_profiles": {
+    "scale_context": {
+      "classification_terms": ["pathway", "phenotype", "process", "cell", "organism", "mechanism", "expression"]
+    },
+    "reference": {
+      "classification_terms": ["where", "book", "page", "atlas", "reference"]
+    }
+  },
+  "risk_profiles": {
+    "biology_context": {
+      "must_surface_red_flags": false,
+      "red_flag_terms": []
+    }
+  },
+  "insufficiency_profiles": {
+    "biology_conservative": {
+      "default_posture": "scoped",
+      "weak_posture": "cautious",
+      "partial_posture": "scoped",
+      "strong_posture": "grounded",
+      "must_admit_gaps": true,
+      "avoid_exhaustive_language": true,
+      "guidance": "Keep scale and context explicit, and do not collapse association into mechanism."
+    }
+  },
+  "axes": {
+    "level_of_organization": {
+      "intent": "which_scale_is_relevant",
+      "slot_sources": ["entities", "constraints"],
+      "literal_terms": ["molecule", "cell", "tissue", "organism", "level of organization"],
+      "preferred_resource_types": ["textbook", "reference", "atlas"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_reference", "cell_biology", "molecular_biology"]
+    },
+    "core_process": {
+      "intent": "main_biological_process",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["pathway", "core process", "biological mechanism"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["molecular_biology", "cell_biology", "physiology"]
+    },
+    "upstream_downstream_effects": {
+      "intent": "causal_neighbors",
+      "slot_sources": ["observations", "constraints"],
+      "literal_terms": ["upstream", "downstream", "feedback", "regulation"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["molecular_biology", "systems_biology"]
+    },
+    "alternative_mechanisms": {
+      "intent": "competing_explanations",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["alternative mechanism", "competing explanation", "different pathway"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["molecular_biology", "general_reference"]
+    },
+    "experimental_context": {
+      "intent": "what_context_matters",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["in vitro", "in vivo", "model organism", "experimental context"],
+      "preferred_resource_types": ["reference", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_reference", "molecular_biology"]
+    },
+    "missing_context": {
+      "intent": "what_is_still_unspecified",
+      "slot_sources": ["unknowns", "constraints"],
+      "literal_terms": ["missing context", "what else matters", "underspecified"],
+      "preferred_resource_types": ["reference"],
+      "preferred_evidence_tiers": ["reference"],
+      "boost_table_like": false,
+      "max_books": 1,
+      "top_k": 2,
+      "discipline_hints": ["general_reference"]
+    }
+  },
+  "task_types": {
+    "mechanism_orientation": {
+      "answer_mode": "mechanism_explanation",
+      "required_axis_ids": ["level_of_organization", "core_process"],
+      "optional_axis_ids": ["upstream_downstream_effects", "alternative_mechanisms"],
+      "frame_slots": ["entities", "observations", "constraints"],
+      "ranking_profile": "scale_context",
+      "risk_profile": "biology_context",
+      "insufficiency_profile": "biology_conservative",
+      "classification_terms": ["mechanism", "pathway", "process", "how does", "why does"]
+    },
+    "pathway_interpretation": {
+      "answer_mode": "systems_map",
+      "required_axis_ids": ["core_process", "upstream_downstream_effects"],
+      "optional_axis_ids": ["alternative_mechanisms", "experimental_context"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "scale_context",
+      "risk_profile": "biology_context",
+      "insufficiency_profile": "biology_conservative",
+      "classification_terms": ["pathway", "signaling", "regulation", "cascade"]
+    },
+    "phenotype_to_process": {
+      "answer_mode": "hypothesis_buckets",
+      "required_axis_ids": ["level_of_organization", "alternative_mechanisms"],
+      "optional_axis_ids": ["core_process", "experimental_context"],
+      "frame_slots": ["entities", "observations", "constraints"],
+      "ranking_profile": "scale_context",
+      "risk_profile": "biology_context",
+      "insufficiency_profile": "biology_conservative",
+      "classification_terms": ["phenotype", "trait", "observation", "what could explain"]
+    },
+    "experimental_result_interpretation": {
+      "answer_mode": "hypothesis_buckets",
+      "required_axis_ids": ["experimental_context", "alternative_mechanisms"],
+      "optional_axis_ids": ["core_process", "missing_context"],
+      "frame_slots": ["observations", "constraints"],
+      "ranking_profile": "scale_context",
+      "risk_profile": "biology_context",
+      "insufficiency_profile": "biology_conservative",
+      "classification_terms": ["experiment", "result", "data", "expression", "assay"]
+    },
+    "taxonomy_or_structure_lookup": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["level_of_organization"],
+      "optional_axis_ids": ["missing_context"],
+      "frame_slots": ["entities"],
+      "ranking_profile": "reference",
+      "risk_profile": "biology_context",
+      "insufficiency_profile": "biology_conservative",
+      "classification_terms": ["taxonomy", "structure", "atlas", "where", "reference"]
+    },
+    "systems_level_orientation": {
+      "answer_mode": "systems_map",
+      "required_axis_ids": ["level_of_organization", "upstream_downstream_effects"],
+      "optional_axis_ids": ["alternative_mechanisms", "experimental_context"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "scale_context",
+      "risk_profile": "biology_context",
+      "insufficiency_profile": "biology_conservative",
+      "classification_terms": ["system", "network", "multi-scale", "organism level"]
+    },
+    "reference_locator": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["core_process"],
+      "optional_axis_ids": ["level_of_organization"],
+      "frame_slots": ["entities"],
+      "ranking_profile": "reference",
+      "risk_profile": "biology_context",
+      "insufficiency_profile": "biology_conservative",
+      "classification_terms": ["where", "which source", "which page", "reference"]
+    }
+  }
+}

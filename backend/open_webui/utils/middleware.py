@@ -143,6 +143,7 @@ from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.payload import apply_system_prompt_to_body
 from open_webui.utils.response import normalize_usage
 from open_webui.utils.mcp.client import MCPClient
+from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 
 
 from open_webui.config import (
@@ -153,6 +154,12 @@ from open_webui.config import (
     DEFAULT_CODE_INTERPRETER_PROMPT,
     CODE_INTERPRETER_PYODIDE_PROMPT,
     CODE_INTERPRETER_BLOCKED_MODULES,
+)
+
+LOCAL_CORPUS_PREFER_SYSTEM_PROMPT = (
+    "This chat prefers the local corpus when it is compatible with the question. "
+    "When local corpus tools are available, prefer grounded local evidence over unsupported "
+    "answering from model weights alone. If local corpus evidence is weak or unavailable, say so plainly."
 )
 from open_webui.env import (
     AGENTIC_ARTIFACTS_DIR,
@@ -790,6 +797,10 @@ def get_citation_source_from_tool_result(
         "web_research_strong",
         "local_corpus_list_domains",
         "local_corpus_list_disciplines",
+        "local_corpus_frame_problem",
+        "local_corpus_plan_axes",
+        "local_corpus_collect_axis_evidence",
+        "local_corpus_assess_evidence",
         "local_corpus_shortlist_books",
         "local_corpus_view_book_cards",
         "local_corpus_retrieve_evidence",
@@ -957,6 +968,44 @@ def get_citation_source_from_tool_result(
                     }
                 )
             return list(grouped_sources.values())
+        elif tool_name == "local_corpus_collect_axis_evidence":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            axis_results = (
+                payload.get("axis_results", []) if isinstance(payload, dict) else []
+            )
+            grouped_sources = {}
+            for axis in axis_results:
+                if not isinstance(axis, dict):
+                    continue
+                for item in axis.get("evidence_items") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    title = item.get("title", "") or "local corpus"
+                    book_id = item.get("book_id", "")
+                    key = book_id or title
+                    if key not in grouped_sources:
+                        grouped_sources[key] = {
+                            "source": {
+                                "id": book_id,
+                                "name": title,
+                                "type": "local_corpus_book",
+                            },
+                            "document": [],
+                            "metadata": [],
+                        }
+                    grouped_sources[key]["document"].append(item.get("content", ""))
+                    grouped_sources[key]["metadata"].append(
+                        {
+                            "source": item.get("citation_label", title),
+                            "name": title,
+                            "book_id": book_id,
+                            "domain": item.get("domain", ""),
+                            "page_no": item.get("page_no"),
+                            "section_path": item.get("section_path", ""),
+                            "axis_id": axis.get("axis_id", ""),
+                        }
+                    )
+            return list(grouped_sources.values())
         elif tool_name == "local_corpus_view_table":
             payload = tool_result if isinstance(tool_result, dict) else {}
             if payload.get("error"):
@@ -1117,6 +1166,50 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
             "candidate_count": parsed.get("candidate_count"),
             "fts_enabled": bool(parsed.get("fts_enabled", False)),
             "freshness_note": bool(parsed.get("freshness_note")),
+        }
+
+    if tool_name == "local_corpus_collect_axis_evidence" and isinstance(parsed, dict):
+        axis_results = parsed.get("axis_results") or []
+        direct_axes = sum(
+            1 for axis in axis_results if (axis or {}).get("directness") == "direct"
+        )
+        return {
+            "phase": parsed.get("phase"),
+            "domain": parsed.get("domain"),
+            "task_type": parsed.get("task_type"),
+            "axis_count": parsed.get("axis_count"),
+            "axes_with_evidence": sum(
+                1 for axis in axis_results if (axis or {}).get("evidence_items")
+            ),
+            "direct_axes": direct_axes,
+        }
+
+    if tool_name == "local_corpus_frame_problem" and isinstance(parsed, dict):
+        return {
+            "phase": parsed.get("phase"),
+            "domain": parsed.get("domain"),
+            "primary_task_type": parsed.get("primary_task_type"),
+            "secondary_task_types": len(parsed.get("secondary_task_types") or []),
+            "needs_clarification": bool(parsed.get("needs_clarification")),
+        }
+
+    if tool_name == "local_corpus_plan_axes" and isinstance(parsed, dict):
+        return {
+            "phase": parsed.get("phase"),
+            "domain": parsed.get("domain"),
+            "task_type": parsed.get("task_type"),
+            "axis_budget": parsed.get("axis_budget"),
+            "coverage_limited": bool(parsed.get("coverage_limited")),
+        }
+
+    if tool_name == "local_corpus_assess_evidence" and isinstance(parsed, dict):
+        return {
+            "phase": parsed.get("phase"),
+            "domain": parsed.get("domain"),
+            "task_type": parsed.get("task_type"),
+            "evidence_sufficiency": parsed.get("evidence_sufficiency"),
+            "covered_axes": len(parsed.get("covered_axes") or []),
+            "missing_axes": len(parsed.get("missing_axes") or []),
         }
 
     if tool_name == "local_corpus_shortlist_books" and isinstance(parsed, dict):
@@ -4126,6 +4219,7 @@ def apply_params_to_form_data(form_data, model):
         "reasoning_tags": list,
         "ledger_mode": str,
         "focused_search_mode": bool,
+        "local_corpus_mode": str,
         "system": str,
     }
 
@@ -4713,6 +4807,24 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         CODE_INTERPRETER_PYODIDE_PROMPT,
                         form_data["messages"],
                     )
+
+    local_corpus_mode = normalize_local_corpus_mode(
+        metadata.get("params", {}).get("local_corpus_mode")
+    )
+    if (
+        local_corpus_mode == "prefer"
+        and metadata.get("params", {}).get("function_calling") == "native"
+        and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
+        and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
+    ):
+        current_system = get_system_message(form_data.get("messages", []))
+        current_content = current_system.get("content", "") if current_system else ""
+        if LOCAL_CORPUS_PREFER_SYSTEM_PROMPT not in str(current_content):
+            form_data["messages"] = add_or_update_system_message(
+                LOCAL_CORPUS_PREFER_SYSTEM_PROMPT,
+                form_data["messages"],
+                append=True,
+            )
 
     tool_ids = form_data.pop("tool_ids", None)
     terminal_id = form_data.pop("terminal_id", None)

@@ -1,0 +1,174 @@
+{
+  "domain": "mathematics",
+  "version": 1,
+  "maturity_tier": 3,
+  "default_task_type": "concept_definition",
+  "default_axis_budget": 4,
+  "max_axis_budget": 6,
+  "answer_modes": ["formal_overview", "proof_outline", "solution_strategy_buckets", "reference_locator"],
+  "ranking_profiles": {
+    "rigor_first": {
+      "classification_terms": ["proof", "theorem", "assumption", "counterexample", "definition", "strategy"]
+    },
+    "reference": {
+      "classification_terms": ["where", "which source", "page", "book", "reference"]
+    }
+  },
+  "risk_profiles": {
+    "math_rigor": {
+      "must_surface_red_flags": false,
+      "red_flag_terms": []
+    }
+  },
+  "insufficiency_profiles": {
+    "math_conservative": {
+      "default_posture": "scoped",
+      "weak_posture": "cautious",
+      "partial_posture": "scoped",
+      "strong_posture": "grounded",
+      "must_admit_gaps": true,
+      "avoid_exhaustive_language": true,
+      "guidance": "Never present intuition as proof, and keep assumptions explicit."
+    }
+  },
+  "axes": {
+    "formal_objects": {
+      "intent": "define_objects_precisely",
+      "slot_sources": ["entities", "constraints"],
+      "literal_terms": ["definition", "formal object", "precise statement"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["general_mathematics"]
+    },
+    "applicable_theorems": {
+      "intent": "which_theorems_apply",
+      "slot_sources": ["entities", "constraints"],
+      "literal_terms": ["applicable theorem", "lemma", "criterion"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["general_mathematics"]
+    },
+    "required_assumptions": {
+      "intent": "what_must_be_true",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["assumptions", "domain restrictions", "conditions"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_mathematics"]
+    },
+    "proof_or_solution_strategies": {
+      "intent": "strategy_space",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["proof strategy", "solution strategy", "approach"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_mathematics"]
+    },
+    "failure_cases": {
+      "intent": "where_the_claim_breaks",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["failure case", "when this fails", "counterexample"],
+      "preferred_resource_types": ["reference", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_mathematics"]
+    },
+    "examples_and_counterexamples": {
+      "intent": "ground_the_statement",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["example", "counterexample", "special case"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 1,
+      "top_k": 2,
+      "discipline_hints": ["general_mathematics"]
+    }
+  },
+  "task_types": {
+    "concept_definition": {
+      "answer_mode": "formal_overview",
+      "required_axis_ids": ["formal_objects", "required_assumptions"],
+      "optional_axis_ids": ["examples_and_counterexamples"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "rigor_first",
+      "risk_profile": "math_rigor",
+      "insufficiency_profile": "math_conservative",
+      "classification_terms": ["definition", "define", "what is", "formal meaning"]
+    },
+    "theorem_orientation": {
+      "answer_mode": "formal_overview",
+      "required_axis_ids": ["applicable_theorems", "required_assumptions"],
+      "optional_axis_ids": ["failure_cases"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "rigor_first",
+      "risk_profile": "math_rigor",
+      "insufficiency_profile": "math_conservative",
+      "classification_terms": ["theorem", "lemma", "criterion", "result"]
+    },
+    "proof_strategy": {
+      "answer_mode": "proof_outline",
+      "required_axis_ids": ["proof_or_solution_strategies", "required_assumptions"],
+      "optional_axis_ids": ["applicable_theorems", "failure_cases"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "rigor_first",
+      "risk_profile": "math_rigor",
+      "insufficiency_profile": "math_conservative",
+      "classification_terms": ["prove", "proof", "show that", "how would you prove"]
+    },
+    "problem_classification": {
+      "answer_mode": "solution_strategy_buckets",
+      "required_axis_ids": ["formal_objects", "applicable_theorems"],
+      "optional_axis_ids": ["proof_or_solution_strategies"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "rigor_first",
+      "risk_profile": "math_rigor",
+      "insufficiency_profile": "math_conservative",
+      "classification_terms": ["classify", "what kind of problem", "which area"]
+    },
+    "computation_method_lookup": {
+      "answer_mode": "solution_strategy_buckets",
+      "required_axis_ids": ["proof_or_solution_strategies"],
+      "optional_axis_ids": ["required_assumptions", "examples_and_counterexamples"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "rigor_first",
+      "risk_profile": "math_rigor",
+      "insufficiency_profile": "math_conservative",
+      "classification_terms": ["compute", "method", "algorithm", "numerical", "solve"]
+    },
+    "counterexample_search": {
+      "answer_mode": "solution_strategy_buckets",
+      "required_axis_ids": ["failure_cases", "examples_and_counterexamples"],
+      "optional_axis_ids": ["required_assumptions"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "rigor_first",
+      "risk_profile": "math_rigor",
+      "insufficiency_profile": "math_conservative",
+      "classification_terms": ["counterexample", "fails", "not always", "false claim"]
+    },
+    "reference_locator": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["formal_objects"],
+      "optional_axis_ids": ["applicable_theorems"],
+      "frame_slots": ["entities"],
+      "ranking_profile": "reference",
+      "risk_profile": "math_rigor",
+      "insufficiency_profile": "math_conservative",
+      "classification_terms": ["where", "which source", "which page", "reference"]
+    }
+  }
+}
