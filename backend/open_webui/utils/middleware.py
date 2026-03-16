@@ -788,6 +788,13 @@ def get_citation_source_from_tool_result(
         "view_knowledge_file",
         "search_strong_sources",
         "web_research_strong",
+        "local_corpus_list_domains",
+        "local_corpus_list_disciplines",
+        "local_corpus_shortlist_books",
+        "local_corpus_view_book_cards",
+        "local_corpus_retrieve_evidence",
+        "local_corpus_view_table",
+        "local_corpus_view_figure_metadata",
     }
 
     try:
@@ -918,6 +925,65 @@ def get_citation_source_from_tool_result(
                 }
             ]
 
+        elif tool_name == "local_corpus_retrieve_evidence":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            grouped_sources = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                title = item.get("title", "") or "local corpus"
+                book_id = item.get("book_id", "")
+                key = book_id or title
+                if key not in grouped_sources:
+                    grouped_sources[key] = {
+                        "source": {
+                            "id": book_id,
+                            "name": title,
+                            "type": "local_corpus_book",
+                        },
+                        "document": [],
+                        "metadata": [],
+                    }
+                grouped_sources[key]["document"].append(item.get("content", ""))
+                grouped_sources[key]["metadata"].append(
+                    {
+                        "source": item.get("citation_label", title),
+                        "name": title,
+                        "book_id": book_id,
+                        "domain": item.get("domain", ""),
+                        "page_no": item.get("page_no"),
+                        "section_path": item.get("section_path", ""),
+                    }
+                )
+            return list(grouped_sources.values())
+        elif tool_name == "local_corpus_view_table":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            if payload.get("error"):
+                return []
+            title = payload.get("title", "local corpus table")
+            table_id = payload.get("table_id", "")
+            return [
+                {
+                    "source": {
+                        "id": table_id,
+                        "name": f"{title} {table_id}".strip(),
+                        "type": "local_corpus_table",
+                    },
+                    "document": [payload.get("content_text", "")],
+                    "metadata": [
+                        {
+                            "source": f"{title} | {table_id}",
+                            "name": title,
+                            "book_id": payload.get("book_id", ""),
+                            "domain": payload.get("domain", ""),
+                            "page_no": payload.get("page_no"),
+                            "section_path": payload.get("section_path", ""),
+                        }
+                    ],
+                }
+            ]
+
         elif tool_name == "query_knowledge_files":
             chunks = tool_result
 
@@ -1039,6 +1105,27 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
             "local_phase_executed": bool(parsed.get("local_phase_executed", False)),
             "brave_fallback_used": bool(parsed.get("brave_fallback_used", False)),
             "fallback_reason": parsed.get("fallback_reason"),
+        }
+
+    if tool_name == "local_corpus_retrieve_evidence" and isinstance(parsed, dict):
+        return {
+            "phase": parsed.get("phase"),
+            "next_action": parsed.get("next_action"),
+            "domain": parsed.get("domain"),
+            "book_ids": len(parsed.get("book_ids") or []),
+            "items": len(parsed.get("items") or []),
+            "candidate_count": parsed.get("candidate_count"),
+            "fts_enabled": bool(parsed.get("fts_enabled", False)),
+            "freshness_note": bool(parsed.get("freshness_note")),
+        }
+
+    if tool_name == "local_corpus_shortlist_books" and isinstance(parsed, dict):
+        return {
+            "phase": parsed.get("phase"),
+            "next_action": parsed.get("next_action"),
+            "domain": parsed.get("domain"),
+            "items": len(parsed.get("items") or []),
+            "candidate_count": parsed.get("candidate_count"),
         }
 
     if tool_name == "search_web" and isinstance(parsed, list):

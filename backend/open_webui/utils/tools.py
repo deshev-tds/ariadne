@@ -54,6 +54,13 @@ from open_webui.utils.headers import include_user_info_headers
 from open_webui.tools.builtin import (
     search_web,
     web_research_strong,
+    local_corpus_list_domains,
+    local_corpus_list_disciplines,
+    local_corpus_shortlist_books,
+    local_corpus_view_book_cards,
+    local_corpus_retrieve_evidence,
+    local_corpus_view_table,
+    local_corpus_view_figure_metadata,
     fetch_url,
     generate_image,
     edit_image,
@@ -488,6 +495,23 @@ def get_builtin_tools(
             builtin_functions.append(web_research_strong)
         if features.get("web_search") or features.get("focused_search"):
             builtin_functions.append(fetch_url)
+
+    if (
+        is_builtin_tool_enabled("local_corpus")
+        and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
+        and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
+    ):
+        builtin_functions.extend(
+            [
+                local_corpus_list_domains,
+                local_corpus_list_disciplines,
+                local_corpus_shortlist_books,
+                local_corpus_view_book_cards,
+                local_corpus_retrieve_evidence,
+                local_corpus_view_table,
+                local_corpus_view_figure_metadata,
+            ]
+        )
 
     # Add image generation/edit tools if builtin category enabled AND enabled globally AND model has image_generation capability
     if (
