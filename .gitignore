@@ -11,7 +11,7 @@ backend/models/
 .env.*
 !.env.example
 # Proprietary local corpus must never be committed from this repo.
-/literature_corpus/
+/literature_corpus*/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 # Byte-compiled / optimized / DLL files
