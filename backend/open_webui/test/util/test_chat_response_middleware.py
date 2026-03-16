@@ -520,6 +520,33 @@ def test_local_corpus_collect_axis_evidence_citation_source_groups_by_book():
     assert sources[0]["metadata"][0]["axis_id"] == "management_guidance"
 
 
+def test_local_corpus_expand_axis_evidence_citation_source_groups_by_book():
+    tool_result = {
+        "items": [
+            {
+                "axis_id": "management_guidance",
+                "domain": "medicine",
+                "book_id": "med-guide",
+                "title": "Hypertension management guideline",
+                "page_no": 2,
+                "section_path": "Management",
+                "citation_label": "Hypertension management guideline | p. 2 | Management",
+                "content": "Start treatment when blood pressure remains above threshold and escalate according to risk.",
+            }
+        ]
+    }
+
+    sources = middleware.get_citation_source_from_tool_result(
+        "local_corpus_expand_axis_evidence",
+        {},
+        tool_result,
+    )
+
+    assert len(sources) == 1
+    assert sources[0]["source"]["id"] == "med-guide"
+    assert sources[0]["metadata"][0]["axis_id"] == "management_guidance"
+
+
 def test_is_empty_search_notes_result_detects_empty_payloads():
     assert middleware._is_empty_search_notes_result("[]") is True
     assert middleware._is_empty_search_notes_result([]) is True

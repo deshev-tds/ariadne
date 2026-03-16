@@ -470,7 +470,7 @@ It supports a domain-first lane with a split architecture:
 There are now two local-corpus operating paths:
 
 - `v1`: direct lookup, shortlist, book card narrowing, evidence retrieval, table follow-up
-- `v2`: a bounded reasoning layer for abstract questions, with problem framing, axis planning, grouped evidence, and conservative sufficiency assessment
+- `v2`: a bounded reasoning layer for abstract questions, with problem framing, axis planning, compact grouped evidence, explicit evidence expansion, and conservative sufficiency assessment
 
 ### Why This Exists
 
@@ -521,8 +521,9 @@ At a high level, the local-corpus lane behaves like this:
 3. the model shortlists books from the serving layer
 4. the model opens book cards only for the shortlisted books
 5. retrieval searches only those selected books
-6. results return page, section, and nearby table/figure pointers
-7. the model can open a table explicitly when the answer depends on it
+6. `v1` returns direct evidence; `v2` returns a compact evidence projection first
+7. results return page, section, and nearby table/figure pointers
+8. the model can explicitly expand evidence or open a table when the answer depends on it
 
 That means the serving layer is not the evidence base.
 
@@ -539,6 +540,7 @@ The model-facing tool family is intentionally narrow and explicit:
 - `local_corpus_frame_problem`
 - `local_corpus_plan_axes`
 - `local_corpus_collect_axis_evidence`
+- `local_corpus_expand_axis_evidence`
 - `local_corpus_assess_evidence`
 - `local_corpus_shortlist_books`
 - `local_corpus_view_book_cards`
@@ -554,8 +556,27 @@ The important constraint is that `v2` is still bounded and inspectable.
 
 - axis count is backend-capped
 - axes are scaffolds, not claims of completeness
+- compact evidence is a projection of the retrieval surface, not the whole retrieval surface
+- expansion is explicit instead of dumping every snippet into model context up front
 - the backend assessor is intentionally conservative and narrow
 - packs exist at different maturity tiers and are not presented as equally battle-tested
+
+That compact-first behavior is now a deliberate performance constraint, not just an implementation detail.
+
+The problem it solves is practical:
+
+- abstract `v2` questions can fan out across multiple axes
+- each axis can shortlist multiple books
+- each shortlisted book can produce multiple plausible snippets
+
+If all of that is returned to the model at once, the tool call looks "slow" even when the retrieval itself is fine, because the runtime is spending time digesting a giant JSON payload.
+
+So `v2` now behaves more like a careful staged reader:
+
+- compact evidence first
+- explicit expansion only when the answer actually needs it
+
+That keeps the path grounded without turning every abstract question into a latency monster.
 
 ### What A Corpus Should Look Like
 

@@ -14,6 +14,15 @@ LOCAL_CORPUS_REASONING_SCHEMA_VERSION = 1
 LOCAL_CORPUS_REASONING_HARD_MAX_AXES = 6
 LOCAL_CORPUS_MODES = {"off", "auto", "prefer"}
 MATURITY_LABELS = {1: "tier_1", 2: "tier_2", 3: "tier_3"}
+LOCAL_CORPUS_VISIBLE_ITEMS_PER_AXIS = 2
+LOCAL_CORPUS_VISIBLE_SNIPPET_CHARS = 600
+LOCAL_CORPUS_VISIBLE_SNIPPET_HARD_CAP = 800
+LOCAL_CORPUS_MAX_TOTAL_VISIBLE_ITEMS = 6
+LOCAL_CORPUS_MAX_TOTAL_VISIBLE_CHARS = 4000
+LOCAL_CORPUS_EXPAND_MAX_HANDLES = 4
+LOCAL_CORPUS_EXPANDED_EXCERPT_CHARS = 2200
+LOCAL_CORPUS_COMPACT_TABLE_LIMIT = 2
+LOCAL_CORPUS_COMPACT_FIGURE_LIMIT = 2
 
 _GENERIC_ORIENTATION_TERMS = {
     "approach",
@@ -514,6 +523,190 @@ def _build_axis_query(problem_frame: dict[str, Any], axis_id: str, axis_config: 
     return " ".join(ordered_parts[:18]).strip() or problem_frame.get("query", "")
 
 
+def _coverage_priority(coverage: str) -> int:
+    return {"strong": 3, "partial": 2, "weak": 1}.get(str(coverage or "").lower(), 0)
+
+
+def _artifact_priority(
+    artifact: dict[str, Any],
+    *,
+    visible_keys: set[tuple[str, Any]],
+    query_text: str,
+) -> tuple[int, int, int, str]:
+    page_no = int(artifact.get("page_no") or 0)
+    key = (artifact.get("table_id") or artifact.get("figure_id"), artifact.get("page_no"))
+    linked_to_visible = 1 if key in visible_keys else 0
+    normalized_query = corpus._phrase_ready_text(query_text)
+    table_like = any(
+        term in normalized_query for term in ("criteria", "threshold", "score", "staging", "dose", "regimen")
+    )
+    section = corpus._phrase_ready_text(str(artifact.get("section_path") or ""))
+    relevance = 1 if table_like and any(
+        token in section for token in ("criteria", "threshold", "regimen", "dose", "staging", "score")
+    ) else 0
+    return (-linked_to_visible, -relevance, page_no, str(key))
+
+
+def _rank_artifacts(
+    artifacts: list[dict[str, Any]],
+    *,
+    visible_keys: set[tuple[str, Any]],
+    query_text: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    unique = []
+    seen = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        key = (artifact.get("table_id") or artifact.get("figure_id"), artifact.get("page_no"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(artifact)
+    unique.sort(key=lambda artifact: _artifact_priority(artifact, visible_keys=visible_keys, query_text=query_text))
+    return unique[:limit]
+
+
+def _compact_content(text: str, *, max_chars: int) -> tuple[str, bool]:
+    normalized = corpus._normalize_text(text)
+    if len(normalized) <= max_chars:
+        return normalized, False
+    snippet = normalized[:max_chars].rstrip()
+    return f"{snippet}...", True
+
+
+def _build_evidence_handle(axis_id: str, book_id: str, chunk_id: str) -> str:
+    return f"{axis_id}|{book_id}|{chunk_id}"
+
+
+def _parse_evidence_handle(handle: str) -> tuple[str, str, str]:
+    parts = str(handle or "").split("|", 2)
+    if len(parts) != 3 or not all(parts):
+        raise ValueError(f"Invalid evidence handle: {handle}")
+    return parts[0], parts[1], parts[2]
+
+
+def _axis_priority(axis_result: dict[str, Any]) -> tuple[int, int, str]:
+    return (
+        -1 if axis_result.get("directness") == "direct" else 0,
+        -_coverage_priority(str(axis_result.get("coverage") or "")),
+        str(axis_result.get("axis_id") or ""),
+    )
+
+
+def _candidate_priority(candidate: dict[str, Any]) -> tuple[int, int, int, float, int, str]:
+    rationale = set(candidate.get("rationale") or [])
+    direct = 1 if candidate.get("directness") == "direct" else 0
+    coverage = _coverage_priority(str(candidate.get("coverage") or ""))
+    policy_signal = 1 if rationale & {"table_locality", "treatment_signal", "direct_topic"} else 0
+    score = float(candidate.get("score") or 0.0)
+    rank_index = int(candidate.get("rank_index") or 0)
+    return (-direct, -coverage, -policy_signal, -score, rank_index, str(candidate.get("handle") or ""))
+
+
+def _apply_global_visible_budget(axis_results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    total_items_budget = LOCAL_CORPUS_MAX_TOTAL_VISIBLE_ITEMS
+    total_chars_budget = LOCAL_CORPUS_MAX_TOTAL_VISIBLE_CHARS
+
+    primary_candidates = []
+    overflow_candidates = []
+    for axis in axis_results:
+        visible_items = list(axis.get("evidence_items") or [])
+        if visible_items:
+            primary_candidates.append((axis.get("axis_id"), visible_items[0]))
+            for item in visible_items[1:]:
+                overflow_candidates.append((axis.get("axis_id"), item))
+
+    primary_candidates.sort(key=lambda pair: _candidate_priority(pair[1]))
+    overflow_candidates.sort(key=lambda pair: _candidate_priority(pair[1]))
+
+    kept_handles: set[str] = set()
+    used_chars = 0
+    kept_items = 0
+    budget_limited = False
+
+    for bucket in (primary_candidates, overflow_candidates):
+        for axis_id, item in bucket:
+            if kept_items >= total_items_budget:
+                budget_limited = True
+                continue
+            item_chars = len(str(item.get("content") or ""))
+            if used_chars + item_chars > total_chars_budget:
+                budget_limited = True
+                continue
+            kept_handles.add(str(item.get("handle") or ""))
+            kept_items += 1
+            used_chars += item_chars
+
+    compact_axis_results = []
+    for axis in axis_results:
+        total_items = int(axis.get("total_evidence_count") or 0)
+        visible_items = [
+            item for item in (axis.get("evidence_items") or []) if str(item.get("handle") or "") in kept_handles
+        ]
+        omitted = max(0, total_items - len(visible_items))
+        axis = dict(axis)
+        axis["evidence_items"] = visible_items
+        axis["visible_evidence_count"] = len(visible_items)
+        axis["omitted_evidence_count"] = omitted
+        axis["has_more_evidence"] = omitted > 0
+        if total_items > 0 and not visible_items:
+            budget_limited = True
+        compact_axis_results.append(axis)
+
+    return compact_axis_results, budget_limited
+
+
+def _expansion_reason_codes(
+    *,
+    axis_query: str,
+    coverage: str,
+    directness: str,
+    related_tables: list[dict[str, Any]],
+    budget_limited: bool,
+) -> list[str]:
+    codes = []
+    normalized_query = corpus._phrase_ready_text(axis_query)
+    if coverage in {"weak", "partial"}:
+        codes.append("partial_evidence")
+    if directness == "indirect":
+        codes.append("indirect_evidence")
+    if related_tables:
+        codes.append("table_dependent")
+    if any(
+        term in normalized_query for term in ("criteria", "criterion", "threshold", "score", "staging")
+    ):
+        codes.append("criteria_dependent")
+    if any(
+        term in normalized_query for term in ("regimen", "antibiotic", "dose", "dosing", "empiric")
+    ):
+        codes.append("regimen_dependent")
+    if budget_limited:
+        codes.append("global_budget_limited")
+    deduped = []
+    seen = set()
+    for code in codes:
+        if code not in seen:
+            seen.add(code)
+            deduped.append(code)
+    return deduped
+
+
+def _expansion_reason_text(codes: list[str]) -> str:
+    labels = {
+        "partial_evidence": "retrieved evidence is only partial",
+        "indirect_evidence": "the visible evidence is relevant but indirect",
+        "table_dependent": "nearby tables may materially refine the answer",
+        "criteria_dependent": "criteria or threshold details may matter",
+        "regimen_dependent": "regimen or dosing details may need direct inspection",
+        "conflict_present": "the retrieved sources conflict and need inspection",
+        "global_budget_limited": "the global visible budget hid some potentially useful evidence",
+    }
+    rendered = [labels[code] for code in codes if code in labels]
+    return "; ".join(rendered)
+
+
 def plan_local_corpus_axes(
     *,
     problem_frame: dict[str, Any],
@@ -614,6 +807,7 @@ def collect_local_corpus_axis_evidence(
     task_type = str(problem_frame.get("primary_task_type") or "")
     bounded_books_per_axis = max(1, min(3, int(max_books_per_axis or 2)))
     axis_results = []
+    compact_axis_results = []
 
     for axis in axes[:LOCAL_CORPUS_REASONING_HARD_MAX_AXES]:
         axis_id = str(axis.get("axis_id") or "")
@@ -663,6 +857,7 @@ def collect_local_corpus_axis_evidence(
 
         related_tables = []
         related_figures = []
+        visible_candidates = []
         for item in evidence_items:
             for table in item.get("related_tables") or []:
                 key = (table.get("table_id"), table.get("page_no"))
@@ -672,6 +867,43 @@ def collect_local_corpus_axis_evidence(
                 key = (figure.get("figure_id"), figure.get("page_no"))
                 if key not in {(f.get("figure_id"), f.get("page_no")) for f in related_figures}:
                     related_figures.append(figure)
+
+        for rank_index, item in enumerate(
+            evidence_items[:LOCAL_CORPUS_VISIBLE_ITEMS_PER_AXIS], start=1
+        ):
+            max_chars = min(
+                LOCAL_CORPUS_VISIBLE_SNIPPET_HARD_CAP, LOCAL_CORPUS_VISIBLE_SNIPPET_CHARS
+            )
+            compact_content, content_truncated = _compact_content(
+                str(item.get("content") or ""), max_chars=max_chars
+            )
+            visible_candidates.append(
+                {
+                    "handle": _build_evidence_handle(
+                        axis_id,
+                        str(item.get("book_id") or ""),
+                        str(item.get("chunk_id") or ""),
+                    ),
+                    "chunk_id": item.get("chunk_id"),
+                    "domain": item.get("domain"),
+                    "book_id": item.get("book_id"),
+                    "title": item.get("title"),
+                    "discipline": item.get("discipline"),
+                    "resource_type": item.get("resource_type"),
+                    "evidence_tier": item.get("evidence_tier"),
+                    "page_no": item.get("page_no"),
+                    "section_path": item.get("section_path"),
+                    "content": compact_content,
+                    "content_kind": "snippet",
+                    "content_truncated": content_truncated,
+                    "score": item.get("score"),
+                    "rationale": item.get("rationale") or [],
+                    "citation_label": item.get("citation_label"),
+                    "rank_index": rank_index,
+                    "coverage": coverage,
+                    "directness": directness,
+                }
+            )
 
         axis_results.append(
             {
@@ -687,14 +919,113 @@ def collect_local_corpus_axis_evidence(
                 "freshness_note": evidence_payload.get("freshness_note"),
             }
         )
+        compact_axis_results.append(
+            {
+                "axis_id": axis_id,
+                "intent": axis.get("intent"),
+                "query": axis_query,
+                "shortlisted_books": shortlisted_books,
+                "evidence_items": visible_candidates,
+                "total_evidence_count": len(evidence_items),
+                "visible_evidence_count": len(visible_candidates),
+                "omitted_evidence_count": max(0, len(evidence_items) - len(visible_candidates)),
+                "has_more_evidence": len(evidence_items) > len(visible_candidates),
+                "coverage": coverage,
+                "directness": directness,
+                "freshness_note": evidence_payload.get("freshness_note"),
+                "related_tables": related_tables,
+                "related_figures": related_figures,
+            }
+        )
+
+    compact_axis_results.sort(key=_axis_priority)
+    compact_axis_results, global_budget_limited = _apply_global_visible_budget(compact_axis_results)
+
+    artifacts_by_handle: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for source_axis in axis_results:
+        source_axis_id = str(source_axis.get("axis_id") or "")
+        for original_item in source_axis.get("evidence_items") or []:
+            handle = _build_evidence_handle(
+                source_axis_id,
+                str(original_item.get("book_id") or ""),
+                str(original_item.get("chunk_id") or ""),
+            )
+            artifacts_by_handle[handle] = {
+                "tables": list(original_item.get("related_tables") or []),
+                "figures": list(original_item.get("related_figures") or []),
+            }
+
+    final_axis_results = []
+    for axis in compact_axis_results:
+        visible_table_keys = {
+            (table.get("table_id"), table.get("page_no"))
+            for item in axis.get("evidence_items") or []
+            for table in (artifacts_by_handle.get(str(item.get("handle") or ""), {}) or {}).get("tables", [])
+        }
+        visible_figure_keys = {
+            (figure.get("figure_id"), figure.get("page_no"))
+            for item in axis.get("evidence_items") or []
+            for figure in (artifacts_by_handle.get(str(item.get("handle") or ""), {}) or {}).get("figures", [])
+        }
+        ranked_tables = _rank_artifacts(
+            axis.get("related_tables") or [],
+            visible_keys=visible_table_keys,
+            query_text=str(axis.get("query") or ""),
+            limit=LOCAL_CORPUS_COMPACT_TABLE_LIMIT,
+        )
+        ranked_figures = _rank_artifacts(
+            axis.get("related_figures") or [],
+            visible_keys=visible_figure_keys,
+            query_text=str(axis.get("query") or ""),
+            limit=LOCAL_CORPUS_COMPACT_FIGURE_LIMIT,
+        )
+        reason_codes = _expansion_reason_codes(
+            axis_query=str(axis.get("query") or ""),
+            coverage=str(axis.get("coverage") or ""),
+            directness=str(axis.get("directness") or ""),
+            related_tables=ranked_tables,
+            budget_limited=bool(global_budget_limited and axis.get("has_more_evidence")),
+        )
+        final_axis_results.append(
+            {
+                "axis_id": axis.get("axis_id"),
+                "intent": axis.get("intent"),
+                "query": axis.get("query"),
+                "shortlisted_books": axis.get("shortlisted_books") or [],
+                "evidence_items": axis.get("evidence_items") or [],
+                "visible_evidence_count": axis.get("visible_evidence_count") or 0,
+                "total_evidence_count": axis.get("total_evidence_count") or 0,
+                "omitted_evidence_count": axis.get("omitted_evidence_count") or 0,
+                "has_more_evidence": bool(axis.get("has_more_evidence")),
+                "coverage": axis.get("coverage"),
+                "directness": axis.get("directness"),
+                "freshness_note": axis.get("freshness_note"),
+                "related_tables": ranked_tables,
+                "related_figures": ranked_figures,
+                "expansion_recommended": bool(reason_codes),
+                "expansion_reason_code": reason_codes[0] if reason_codes else None,
+                "expansion_reason_codes": reason_codes,
+                "expansion_reason": _expansion_reason_text(reason_codes) if reason_codes else "",
+            }
+        )
 
     return {
         "status": "ok",
         "phase": "completed",
         "domain": domain,
         "task_type": task_type,
-        "axis_results": axis_results,
-        "axis_count": len(axis_results),
+        "axis_results": final_axis_results,
+        "axis_count": len(final_axis_results),
+        "visible_evidence_count": sum(
+            int(axis.get("visible_evidence_count") or 0) for axis in final_axis_results
+        ),
+        "total_evidence_count": sum(
+            int(axis.get("total_evidence_count") or 0) for axis in final_axis_results
+        ),
+        "omitted_evidence_count": sum(
+            int(axis.get("omitted_evidence_count") or 0) for axis in final_axis_results
+        ),
+        "global_budget_limited": bool(global_budget_limited),
         "coverage_is_scaffold_not_exhaustive": True,
     }
 
@@ -720,11 +1051,14 @@ def assess_local_corpus_evidence(
     risk_profile = (pack.get("risk_profiles") or {}).get(task_config.get("risk_profile"), {})
 
     axis_results = evidence_bundle.get("axis_results") or []
-    covered_axes = [axis["axis_id"] for axis in axis_results if axis.get("evidence_items")]
+    # Important invariant: assess over retrieval-derived totals/directness, not only the compact visible projection.
+    covered_axes = [
+        axis["axis_id"] for axis in axis_results if int(axis.get("total_evidence_count") or 0) > 0
+    ]
     required_axes = list(task_config.get("required_axis_ids") or [])
     missing_axes = [axis_id for axis_id in required_axes if axis_id not in covered_axes]
     direct_axes = [axis["axis_id"] for axis in axis_results if axis.get("directness") == "direct"]
-    total_items = sum(len(axis.get("evidence_items") or []) for axis in axis_results)
+    total_items = sum(int(axis.get("total_evidence_count") or 0) for axis in axis_results)
     source_conflicts = []
     freshness_note = next(
         (axis.get("freshness_note") for axis in axis_results if axis.get("freshness_note")),
@@ -784,4 +1118,63 @@ def assess_local_corpus_evidence(
         "answer_guidance": " ".join(guidance_parts).strip(),
         "coverage_is_scaffold_not_exhaustive": True,
         "freshness_note": freshness_note,
+    }
+
+
+def expand_local_corpus_axis_evidence(
+    *,
+    handles: list[str],
+    include_related_tables: bool = True,
+    include_related_figures: bool = False,
+    config_or_path: Any = None,
+) -> dict[str, Any]:
+    normalized_handles = [str(handle).strip() for handle in (handles or []) if str(handle).strip()]
+    if not normalized_handles:
+        return {"status": "error", "error": "At least one evidence handle is required"}
+
+    bounded_handles = normalized_handles[:LOCAL_CORPUS_EXPAND_MAX_HANDLES]
+    parsed_handles = []
+    for handle in bounded_handles:
+        axis_id, book_id, chunk_id = _parse_evidence_handle(handle)
+        parsed_handles.append(
+            {
+                "handle": handle,
+                "axis_id": axis_id,
+                "book_id": book_id,
+                "chunk_id": chunk_id,
+            }
+        )
+
+    book_ids = list(dict.fromkeys(entry["book_id"] for entry in parsed_handles))
+    chunk_ids = list(dict.fromkeys(entry["chunk_id"] for entry in parsed_handles))
+    payload = corpus.expand_local_corpus_evidence_chunks(
+        book_ids=book_ids,
+        chunk_ids=chunk_ids,
+        excerpt_chars=LOCAL_CORPUS_EXPANDED_EXCERPT_CHARS,
+        include_related_tables=include_related_tables,
+        include_related_figures=include_related_figures,
+        config_or_path=config_or_path,
+    )
+    if payload.get("status") == "error":
+        return payload
+
+    items_by_chunk = {str(item.get("chunk_id") or ""): item for item in payload.get("items") or []}
+    expanded_items = []
+    for entry in parsed_handles:
+        item = items_by_chunk.get(entry["chunk_id"])
+        if not item:
+            continue
+        expanded_items.append(
+            {
+                **item,
+                "handle": entry["handle"],
+                "axis_id": entry["axis_id"],
+            }
+        )
+
+    return {
+        "status": "ok",
+        "phase": "completed",
+        "items": expanded_items,
+        "expanded_count": len(expanded_items),
     }
