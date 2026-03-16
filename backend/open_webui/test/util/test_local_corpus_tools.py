@@ -242,9 +242,255 @@ Reaction mechanisms explain substitution, elimination, and synthesis strategy.
     return root
 
 
+def _cap_corpus(root: Path) -> Path:
+    _write(
+        root / "_serving" / "domains" / "index.md",
+        """# Local Corpus Index
+
+- medicine: 3 usable medical books and guidelines
+""",
+    )
+    _write(
+        root / "_serving" / "domains" / "medicine" / "index.md",
+        """# Medicine Local Index
+
+- infectious_disease: 2 sources; syndrome-based antimicrobial therapy and clinical infectious syndromes.
+- pulmonology: 1 source; hospital-acquired and ventilator-associated pneumonia.
+""",
+    )
+    _write(
+        root / "_serving" / "domains" / "medicine" / "books" / "cap-handbook.md",
+        """# Antimicrobial therapy handbook
+
+What this is:
+Handbook for syndrome-based antimicrobial therapy and adult empiric regimens.
+""",
+    )
+    _write(
+        root / "_serving" / "domains" / "medicine" / "books" / "vap-guide.md",
+        """# Hospital pneumonia guide
+
+What this is:
+Guide for hospital-acquired and ventilator-associated pneumonia.
+""",
+    )
+    _write(
+        root / "_serving" / "domains" / "medicine" / "books" / "lung-abscess.md",
+        """# Lung abscess reference
+
+What this is:
+Reference for lung abscess diagnosis and treatment.
+""",
+    )
+
+    serving_rows = [
+        {
+            "book_id": "cap-handbook",
+            "domain": "medicine",
+            "primary_discipline": "infectious_disease",
+            "title": "Antimicrobial therapy handbook",
+            "resource_type": "handbook",
+            "evidence_tier": "handbook",
+            "authority_or_publisher": "Sanford-like",
+            "year": 2025,
+            "document_dir": "cap-handbook-doc",
+            "selected_dir": "cap-handbook-doc/selected",
+            "parse_status": "success",
+            "quarantine_reason": None,
+            "secondary_tags": ["adult regimens", "antimicrobial therapy"],
+            "coverage_phrases": [
+                "syndrome-based antimicrobial therapy",
+                "community-acquired pneumonia adult empiric therapy",
+            ],
+            "negative_scope": [],
+            "clean_toc": [
+                "community-acquired pneumonia",
+                "hospital-acquired pneumonia",
+                "antimicrobial regimens",
+            ],
+            "what_this_is": "Handbook for adult empiric antimicrobial regimens.",
+            "table_count": 1,
+            "figure_count": 0,
+            "review_flags": [],
+        },
+        {
+            "book_id": "vap-guide",
+            "domain": "medicine",
+            "primary_discipline": "pulmonology",
+            "title": "Hospital pneumonia guide",
+            "resource_type": "guideline",
+            "evidence_tier": "guideline",
+            "authority_or_publisher": "NICE",
+            "year": 2024,
+            "document_dir": "vap-guide-doc",
+            "selected_dir": "vap-guide-doc/selected",
+            "parse_status": "success",
+            "quarantine_reason": None,
+            "secondary_tags": ["management"],
+            "coverage_phrases": [
+                "hospital-acquired pneumonia",
+                "ventilator-associated pneumonia management",
+            ],
+            "negative_scope": [],
+            "clean_toc": ["HAP", "VAP", "empiric treatment"],
+            "what_this_is": "Guideline for hospital-acquired and ventilator-associated pneumonia.",
+            "table_count": 0,
+            "figure_count": 0,
+            "review_flags": [],
+        },
+        {
+            "book_id": "lung-abscess",
+            "domain": "medicine",
+            "primary_discipline": "infectious_disease",
+            "title": "Lung abscess reference",
+            "resource_type": "reference",
+            "evidence_tier": "reference",
+            "authority_or_publisher": "Reference Press",
+            "year": 2023,
+            "document_dir": "lung-abscess-doc",
+            "selected_dir": "lung-abscess-doc/selected",
+            "parse_status": "success",
+            "quarantine_reason": None,
+            "secondary_tags": ["respiratory infection"],
+            "coverage_phrases": ["lung abscess treatment", "co-amoxiclav"],
+            "negative_scope": [],
+            "clean_toc": ["Lung abscess", "Treatment"],
+            "what_this_is": "Reference for lung abscess treatment.",
+            "table_count": 0,
+            "figure_count": 0,
+            "review_flags": [],
+        },
+    ]
+    _write(
+        root / "_serving" / "serving-catalog.jsonl",
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in serving_rows) + "\n",
+    )
+
+    _write(
+        root / "cap-handbook-doc" / "selected" / "retrieval.md",
+        """# Document Metadata
+
+## Page 50
+Section path: Community-acquired pneumonia
+Tables on this page: 1
+
+## Community-acquired pneumonia
+
+Adults with outpatient CAP and no comorbidity can receive amoxicillin or doxycycline.
+Adults with comorbidity can receive amoxicillin-clavulanate plus azithromycin or doxycycline.
+
+## Page 51
+Section path: Community-acquired pneumonia > Inpatient treatment
+
+## Treatment
+
+Adults admitted to hospital with CAP can receive ceftriaxone plus azithromycin, or ceftriaxone plus doxycycline.
+""",
+    )
+    _write(
+        root / "cap-handbook-doc" / "selected" / "catalog.json",
+        json.dumps(
+            {
+                "pages": [
+                    {"page_no": 50, "heading_path": ["Community-acquired pneumonia"], "table_count": 1},
+                    {
+                        "page_no": 51,
+                        "heading_path": ["Community-acquired pneumonia", "Inpatient treatment"],
+                        "table_count": 0,
+                    },
+                ]
+            }
+        ),
+    )
+    _write(root / "cap-handbook-doc" / "selected" / "figures.json", "[]")
+    _write(
+        root / "cap-handbook-doc" / "selected" / "document.json",
+        json.dumps(
+            {
+                "tables": [
+                    {
+                        "prov": [{"page_no": 50}],
+                        "captions": [],
+                        "data": {"table_cells": [], "num_rows": 2, "num_cols": 2},
+                    }
+                ]
+            }
+        ),
+    )
+    _write(
+        root / "cap-handbook-doc" / "selected" / "tables" / "table-001.csv",
+        "Scenario,Regimen\nOutpatient no comorbidity,Amoxicillin or doxycycline\n",
+    )
+
+    _write(
+        root / "vap-guide-doc" / "selected" / "retrieval.md",
+        """# Document Metadata
+
+## Page 10
+Section path: Hospital-acquired pneumonia
+
+## Treatment
+
+Hospital-acquired pneumonia can be treated with co-amoxiclav in non-severe cases.
+
+## Page 11
+Section path: Ventilator-associated pneumonia
+
+## Treatment
+
+Ventilator-associated pneumonia requires broad-spectrum empiric therapy.
+""",
+    )
+    _write(
+        root / "vap-guide-doc" / "selected" / "catalog.json",
+        json.dumps(
+            {
+                "pages": [
+                    {"page_no": 10, "heading_path": ["Hospital-acquired pneumonia"], "table_count": 0},
+                    {"page_no": 11, "heading_path": ["Ventilator-associated pneumonia"], "table_count": 0},
+                ]
+            }
+        ),
+    )
+    _write(root / "vap-guide-doc" / "selected" / "figures.json", "[]")
+    _write(root / "vap-guide-doc" / "selected" / "document.json", json.dumps({"tables": []}))
+
+    _write(
+        root / "lung-abscess-doc" / "selected" / "retrieval.md",
+        """# Document Metadata
+
+## Page 85
+Section path: Lung abscess
+
+## Treatment
+
+Empirical therapy for community-acquired lung abscess can include co-amoxiclav.
+""",
+    )
+    _write(
+        root / "lung-abscess-doc" / "selected" / "catalog.json",
+        json.dumps({"pages": [{"page_no": 85, "heading_path": ["Lung abscess"], "table_count": 0}]}),
+    )
+    _write(root / "lung-abscess-doc" / "selected" / "figures.json", "[]")
+    _write(root / "lung-abscess-doc" / "selected" / "document.json", json.dumps({"tables": []}))
+
+    return root
+
+
 @pytest.fixture
 def local_corpus_fixture(tmp_path, monkeypatch):
     corpus_root = _mini_corpus(tmp_path / "literature_corpus")
+    index_dir = tmp_path / "backend-data" / "local_corpus"
+    monkeypatch.setattr(local_corpus, "DEFAULT_LOCAL_CORPUS_ROOT", corpus_root)
+    monkeypatch.setattr(local_corpus, "LOCAL_CORPUS_INDEX_DIR", index_dir)
+    local_corpus.clear_local_corpus_caches()
+    yield corpus_root
+    local_corpus.clear_local_corpus_caches()
+
+
+@pytest.fixture
+def cap_corpus_fixture(tmp_path, monkeypatch):
+    corpus_root = _cap_corpus(tmp_path / "literature_corpus")
     index_dir = tmp_path / "backend-data" / "local_corpus"
     monkeypatch.setattr(local_corpus, "DEFAULT_LOCAL_CORPUS_ROOT", corpus_root)
     monkeypatch.setattr(local_corpus, "LOCAL_CORPUS_INDEX_DIR", index_dir)
@@ -321,6 +567,39 @@ def test_view_table_and_figure_metadata_round_trip(local_corpus_fixture):
     assert table_payload["rows"][0] == ["Drug", "Threshold"]
     assert figure_payload["status"] == "ok"
     assert figure_payload["caption"] == "Treatment pathway"
+
+
+def test_shortlist_books_prefers_antimicrobial_reference_for_cap_regimen_query(
+    cap_corpus_fixture,
+):
+    payload = local_corpus.shortlist_local_corpus_books(
+        query="community-acquired pneumonia initial empiric antibiotics in adults",
+        domain="medicine",
+        max_books=3,
+        config_or_path=str(cap_corpus_fixture),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["items"][0]["book_id"] == "cap-handbook"
+    assert payload["items"][0]["resource_type"] == "handbook"
+
+
+def test_retrieve_evidence_penalizes_hap_vap_and_lung_abscess_for_cap_query(
+    cap_corpus_fixture,
+):
+    payload = local_corpus.retrieve_local_corpus_evidence(
+        query="community-acquired pneumonia initial empiric antibiotics in adults",
+        book_ids=["cap-handbook", "vap-guide", "lung-abscess"],
+        include_related_tables=True,
+        config_or_path=str(cap_corpus_fixture),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["items"][0]["book_id"] == "cap-handbook"
+    assert payload["items"][0]["page_no"] in {50, 51}
+    assert "direct_topic" in payload["items"][0]["rationale"]
+    assert "community-acquired pneumonia" in payload["items"][0]["section_path"].lower()
+    assert payload["evidence_sufficiency"] == "strong"
 
 
 @pytest.mark.asyncio
