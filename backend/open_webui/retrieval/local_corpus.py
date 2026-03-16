@@ -12,7 +12,7 @@ from open_webui.env import BASE_DIR, DATA_DIR
 
 log = logging.getLogger(__name__)
 
-LOCAL_CORPUS_SCHEMA_VERSION = 1
+LOCAL_CORPUS_SCHEMA_VERSION = 2
 LOCAL_CORPUS_INDEX_DIR = DATA_DIR / "local_corpus"
 DEFAULT_LOCAL_CORPUS_ROOT = BASE_DIR / "literature_corpus"
 
@@ -33,6 +33,54 @@ TABLE_LIKE_TERMS = {
     "stage",
     "threshold",
     "thresholds",
+}
+ANTIMICROBIAL_TERMS = {
+    "antibiotic",
+    "antibiotics",
+    "antimicrobial",
+    "antimicrobials",
+    "empiric",
+    "empirical",
+    "firstline",
+    "first_line",
+    "first-line",
+    "regimen",
+    "regimens",
+}
+ANTIMICROBIAL_BOOK_HINTS = {
+    "adult",
+    "adults",
+    "antibiotic",
+    "antimicrobial",
+    "dose",
+    "dosing",
+    "empiric",
+    "empirical",
+    "guide",
+    "guideline",
+    "handbook",
+    "infectious",
+    "regimen",
+    "resistance",
+    "syndrome",
+    "therapy",
+    "treatment",
+}
+REGIMEN_EVIDENCE_TERMS = {
+    "alternative",
+    "alternatives",
+    "empiric",
+    "empirical",
+    "firstline",
+    "first_line",
+    "first-line",
+    "option",
+    "options",
+    "primary",
+    "regimen",
+    "regimens",
+    "treat",
+    "treatment",
 }
 TIME_SENSITIVE_TERMS = {
     "current",
@@ -73,6 +121,27 @@ MEDICAL_BACKGROUND_TERMS = {
     "physiology",
     "why",
 }
+SALIENT_QUERY_STOP_TERMS = (
+    MEDICAL_MANAGEMENT_TERMS
+    | MEDICAL_BACKGROUND_TERMS
+    | ANTIMICROBIAL_TERMS
+    | {
+        "adult",
+        "adults",
+        "algorithm",
+        "and",
+        "for",
+        "in",
+        "initial",
+        "of",
+        "patient",
+        "patients",
+        "question",
+        "the",
+        "use",
+        "with",
+    }
+)
 
 _REGISTRY_CACHE: dict[tuple[str, float], "LocalCorpusRegistry"] = {}
 _REGISTRY_LOCK = threading.Lock()
@@ -141,12 +210,102 @@ def _normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _phrase_ready_text(value: Any) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()),
+    ).strip()
+
+
 def _query_terms(query: str) -> list[str]:
     return [term for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9_./+-]{1,}", query.lower())]
 
 
 def _quoted_phrases(query: str) -> list[str]:
     return [_normalize_text(match).lower() for match in re.findall(r'"([^"]+)"', query or "")]
+
+
+def _expanded_query_terms(query: str, domain: str = "") -> list[str]:
+    terms = _query_terms(query)
+    lowered = set(terms)
+    expanded = list(terms)
+
+    if lowered & ANTIMICROBIAL_TERMS:
+        expanded.extend(
+            [
+                "antibiotic",
+                "antimicrobial",
+                "empiric",
+                "empirical",
+                "regimen",
+                "therapy",
+                "treatment",
+            ]
+        )
+
+    if "pneumonia" in lowered and ({"community", "cap"} & lowered):
+        expanded.extend(["community", "acquired", "pneumonia", "cap"])
+    if "pneumonia" in lowered and ({"hospital", "hap", "nosocomial"} & lowered):
+        expanded.extend(["hospital", "acquired", "pneumonia", "hap", "nosocomial"])
+    if "pneumonia" in lowered and ({"ventilator", "vap"} & lowered):
+        expanded.extend(["ventilator", "associated", "pneumonia", "vap"])
+
+    if domain == "medicine" and lowered & {"adult", "adults"}:
+        expanded.extend(["adult", "adults"])
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in expanded:
+        normalized = term.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+def _salient_query_phrases(query: str) -> list[str]:
+    words = [word for word in re.findall(r"[A-Za-z0-9]+", query.lower()) if word]
+    filtered = [word for word in words if word not in SALIENT_QUERY_STOP_TERMS]
+    phrases: list[str] = []
+    for size in range(4, 1, -1):
+        for index in range(0, max(0, len(filtered) - size + 1)):
+            phrase = " ".join(filtered[index : index + size]).strip()
+            if len(phrase) < 8:
+                continue
+            if phrase not in phrases:
+                phrases.append(phrase)
+    return phrases[:8]
+
+
+def _has_antimicrobial_intent(query: str) -> bool:
+    return bool(set(_expanded_query_terms(query, "medicine")) & ANTIMICROBIAL_TERMS)
+
+
+def _specific_query_terms(query: str, domain: str = "") -> list[str]:
+    terms = _expanded_query_terms(query, domain)
+    specific = [
+        term
+        for term in terms
+        if term not in SALIENT_QUERY_STOP_TERMS and len(term) >= 4
+    ]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in specific:
+        if term in seen:
+            continue
+        seen.add(term)
+        deduped.append(term)
+    return deduped[:10]
+
+
+def _specificity_signal(text: str, specific_terms: list[str]) -> tuple[int, float]:
+    normalized = _phrase_ready_text(text)
+    if not normalized or not specific_terms:
+        return 0, 0.0
+    hits = sum(1 for term in specific_terms if term in normalized)
+    return hits, hits / max(1, len(specific_terms))
 
 
 def _token_overlap_score(text: str, terms: list[str]) -> float:
@@ -422,7 +581,7 @@ def _route_domain(
 
 
 def _medical_query_mode(query: str) -> str:
-    terms = set(_query_terms(query))
+    terms = set(_expanded_query_terms(query, "medicine"))
     if _contains_any(terms, list(MEDICAL_MANAGEMENT_TERMS)):
         return "management"
     if _contains_any(terms, list(MEDICAL_BACKGROUND_TERMS)):
@@ -431,14 +590,25 @@ def _medical_query_mode(query: str) -> str:
 
 
 def _book_score(book: LocalCorpusBook, query: str, domain: str) -> tuple[float, list[str]]:
-    query_terms = _query_terms(query)
+    query_terms = _expanded_query_terms(query, domain)
     phrases = _quoted_phrases(query)
+    salient_phrases = _salient_query_phrases(query)
+    specific_terms = _specific_query_terms(query, domain)
 
     title_text = book.title.lower()
     coverage_text = " ".join(book.coverage_phrases).lower()
     toc_text = " ".join(book.clean_toc).lower()
     summary_text = f"{book.what_this_is} {' '.join(book.secondary_tags)}".lower()
     discipline_text = book.primary_discipline.replace("_", " ")
+    phrase_title = _phrase_ready_text(book.title)
+    phrase_coverage = _phrase_ready_text(" ".join(book.coverage_phrases))
+    phrase_toc = _phrase_ready_text(" ".join(book.clean_toc))
+    phrase_summary = _phrase_ready_text(
+        f"{book.what_this_is} {' '.join(book.secondary_tags)} {' '.join(book.negative_scope)}"
+    )
+    combined_phrase_text = " ".join(
+        [phrase_title, phrase_coverage, phrase_toc, phrase_summary, _phrase_ready_text(discipline_text)]
+    )
 
     score = 0.0
     reasons: list[str] = []
@@ -461,13 +631,32 @@ def _book_score(book: LocalCorpusBook, query: str, domain: str) -> tuple[float, 
             score += 1.2
             reasons.append("quoted_coverage")
 
+    for phrase in salient_phrases:
+        normalized_phrase = _phrase_ready_text(phrase)
+        if normalized_phrase and normalized_phrase in phrase_title:
+            score += 3.0
+            reasons.append("salient_title")
+        elif normalized_phrase and normalized_phrase in phrase_coverage:
+            score += 2.4
+            reasons.append("salient_coverage")
+        elif normalized_phrase and normalized_phrase in phrase_toc:
+            score += 1.4
+            reasons.append("salient_contents")
+
+    specific_hits, specific_ratio = _specificity_signal(combined_phrase_text, specific_terms)
+    if specific_hits:
+        score += specific_ratio * 2.6
+        reasons.append("specificity")
+    elif len(specific_terms) >= 2:
+        score -= 0.8
+
     if domain == "medicine":
         mode = _medical_query_mode(query)
         if mode == "management":
             if book.resource_type in {"guideline", "manual"}:
                 score += 2.4
                 reasons.append("management_resource_type")
-            elif book.resource_type in {"reference", "classification_reference"}:
+            elif book.resource_type in {"reference", "classification_reference", "handbook"}:
                 score += 1.2
             elif book.resource_type == "textbook":
                 score -= 0.4
@@ -483,6 +672,40 @@ def _book_score(book: LocalCorpusBook, query: str, domain: str) -> tuple[float, 
         if _contains_any(set(query_terms), list(TABLE_LIKE_TERMS)) and book.table_count > 0:
             score += 0.4
             reasons.append("table_dense")
+
+        if _has_antimicrobial_intent(query):
+            hint_overlap = _token_overlap_score(
+                " ".join(
+                    [
+                        phrase_title,
+                        phrase_coverage,
+                        phrase_toc,
+                        phrase_summary,
+                        _phrase_ready_text(discipline_text),
+                    ]
+                ),
+                sorted(ANTIMICROBIAL_BOOK_HINTS),
+            )
+            score += hint_overlap * 2.2
+            if book.resource_type in {"guideline", "manual", "handbook", "reference"}:
+                score += 1.6
+                reasons.append("regimen_reference")
+            elif book.resource_type == "textbook":
+                score -= 0.6
+            if book.primary_discipline in {
+                "infectious_disease",
+                "general_reference",
+                "pharmacology",
+                "primary_care",
+                "pulmonology",
+            }:
+                score += 1.2
+                reasons.append("clinical_regimen_discipline")
+
+        negative_text = " ".join(book.negative_scope).lower()
+        if negative_text and _token_overlap_score(negative_text, query_terms) > 0:
+            score -= 0.8
+            reasons.append("negative_scope")
     else:
         if book.evidence_tier == "textbook":
             score += 0.2
@@ -1121,17 +1344,27 @@ def _fetch_chunk_candidates(
     conn: sqlite3.Connection,
     *,
     query: str,
+    domain: str,
     book_ids: list[str],
     limit: int,
 ) -> tuple[list[dict[str, Any]], bool]:
-    terms = _query_terms(query)
+    terms = _expanded_query_terms(query, domain)
     fts_enabled = bool(_get_meta(conn, "fts_enabled"))
     placeholders = ",".join("?" for _ in book_ids)
     rows: list[dict[str, Any]] = []
 
     if fts_enabled:
         try:
-            match_query = " OR ".join(terms).strip() or "*"
+            fts_terms = []
+            for term in terms:
+                cleaned = _phrase_ready_text(term)
+                if not cleaned:
+                    continue
+                if " " in cleaned:
+                    fts_terms.append(f'"{cleaned}"')
+                else:
+                    fts_terms.append(cleaned)
+            match_query = " OR ".join(fts_terms).strip() or "*"
             sql = f"""
                 SELECT
                     c.chunk_id,
@@ -1250,11 +1483,16 @@ def _excerpt_for_query(text: str, query: str, max_chars: int = 1400) -> str:
 
 
 def _evidence_score(row: dict[str, Any], query: str, domain: str) -> tuple[float, list[str]]:
-    terms = _query_terms(query)
+    terms = _expanded_query_terms(query, domain)
     phrases = _quoted_phrases(query)
     title = str(row.get("title") or "").lower()
     section = str(row.get("section_path") or "").lower()
     content = str(row.get("content") or "").lower()
+    phrase_title = _phrase_ready_text(title)
+    phrase_section = _phrase_ready_text(section)
+    phrase_content = _phrase_ready_text(content)
+    salient_phrases = _salient_query_phrases(query)
+    specific_terms = _specific_query_terms(query, domain)
 
     lexical_hits = sum(1 for term in terms if term in content)
     lexical_score = lexical_hits / max(1, len(terms)) if terms else 0.0
@@ -1285,6 +1523,29 @@ def _evidence_score(row: dict[str, Any], query: str, domain: str) -> tuple[float
     if _token_overlap_score(title, terms) > 0:
         score += 0.8
 
+    for phrase in salient_phrases:
+        normalized_phrase = _phrase_ready_text(phrase)
+        if normalized_phrase and normalized_phrase in phrase_section:
+            score += 2.2
+            reasons.append("direct_topic")
+        elif normalized_phrase and normalized_phrase in phrase_content:
+            score += 1.8
+            reasons.append("direct_topic")
+        elif normalized_phrase and normalized_phrase in phrase_title:
+            score += 1.0
+            reasons.append("direct_topic")
+
+    specific_hits, specific_ratio = _specificity_signal(
+        " ".join([phrase_title, phrase_section, phrase_content]),
+        specific_terms,
+    )
+    if specific_hits:
+        score += specific_ratio * 2.4
+        reasons.append("specificity")
+    elif len(specific_terms) >= 2:
+        score -= 0.8
+        reasons.append("specificity_gap")
+
     table_ids = json.loads(row.get("table_ids_json") or "[]")
     figure_ids = json.loads(row.get("figure_ids_json") or "[]")
     if table_ids and _contains_any(set(terms), list(TABLE_LIKE_TERMS)):
@@ -1300,12 +1561,28 @@ def _evidence_score(row: dict[str, Any], query: str, domain: str) -> tuple[float
             if resource_type in {"guideline", "manual"}:
                 score += 1.6
                 reasons.append("guideline_first")
+            elif resource_type == "handbook":
+                score += 1.0
+                reasons.append("handbook_support")
             elif resource_type == "textbook":
                 score -= 0.2
         elif mode == "background":
             if resource_type == "textbook":
                 score += 1.2
                 reasons.append("background_textbook")
+
+        if _has_antimicrobial_intent(query):
+            regimen_signal = any(term in phrase_section for term in REGIMEN_EVIDENCE_TERMS) or any(
+                term in phrase_content for term in REGIMEN_EVIDENCE_TERMS
+            )
+            if regimen_signal:
+                score += 1.6
+                reasons.append("treatment_signal")
+            else:
+                score -= 0.7
+            if "references" in phrase_section:
+                score -= 1.6
+                reasons.append("references_only")
 
     return score, reasons[:4]
 
@@ -1356,6 +1633,7 @@ def retrieve_local_corpus_evidence(
         candidates, fts_enabled = _fetch_chunk_candidates(
             conn,
             query=query,
+            domain=domain,
             book_ids=normalized_ids,
             limit=max(bounded_top_k * 6, bounded_top_k),
         )
@@ -1406,6 +1684,32 @@ def retrieve_local_corpus_evidence(
         )
     )
     items = scored_items[:bounded_top_k]
+    direct_topic_hits = sum(
+        1 for item in items if "direct_topic" in (item.get("rationale") or [])
+    )
+    treatment_signal_hits = sum(
+        1 for item in items if "treatment_signal" in (item.get("rationale") or [])
+    )
+    top_score = float(items[0]["score"]) if items else 0.0
+    evidence_sufficiency = "strong"
+    answer_guidance = None
+    if domain == "medicine":
+        if not items:
+            evidence_sufficiency = "weak"
+            answer_guidance = (
+                "No local evidence matched closely enough. Avoid answering from memory."
+            )
+        elif _has_antimicrobial_intent(query):
+            if direct_topic_hits == 0 or treatment_signal_hits == 0 or top_score < 3.0:
+                evidence_sufficiency = "weak"
+                answer_guidance = (
+                    "Local evidence is partial or indirect. Use cautious wording and avoid presenting any regimen as first-line unless a directly on-topic chunk states it."
+                )
+        elif direct_topic_hits == 0 and top_score < 2.5:
+            evidence_sufficiency = "partial"
+            answer_guidance = (
+                "Local evidence is relevant but not tightly on-topic. Prefer scoped language and cite the best-matching page/section."
+            )
     freshness_note = None
     if domain == "medicine" and _contains_any(set(_query_terms(query)), list(TIME_SENSITIVE_TERMS)):
         freshness_note = (
@@ -1422,6 +1726,8 @@ def retrieve_local_corpus_evidence(
         "items": items,
         "candidate_count": len(items),
         "fts_enabled": bool(fts_enabled),
+        "evidence_sufficiency": evidence_sufficiency,
+        "answer_guidance": answer_guidance,
         "freshness_note": freshness_note,
     }
 
