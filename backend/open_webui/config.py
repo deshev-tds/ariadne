@@ -19,6 +19,7 @@ from authlib.integrations.starlette_client import OAuth
 
 
 from open_webui.env import (
+    BASE_DIR,
     DATA_DIR,
     DATABASE_URL,
     ENABLE_DB_MIGRATIONS,
@@ -3609,6 +3610,22 @@ ENABLE_WEB_SEARCH_EVIDENCE_SATURATION = PersistentConfig(
     "ENABLE_WEB_SEARCH_EVIDENCE_SATURATION",
     "rag.web.search.evidence_saturation.enable",
     os.getenv("ENABLE_WEB_SEARCH_EVIDENCE_SATURATION", "False").lower() == "true",
+)
+
+ENABLE_LOCAL_CORPUS_TOOLS = PersistentConfig(
+    "ENABLE_LOCAL_CORPUS_TOOLS",
+    "rag.local_corpus.enable",
+    os.getenv(
+        "ENABLE_LOCAL_CORPUS_TOOLS",
+        "True" if (BASE_DIR / "literature_corpus").exists() else "False",
+    ).lower()
+    == "true",
+)
+
+LOCAL_CORPUS_ROOT = PersistentConfig(
+    "LOCAL_CORPUS_ROOT",
+    "rag.local_corpus.root",
+    os.getenv("LOCAL_CORPUS_ROOT", str(BASE_DIR / "literature_corpus")),
 )
 
 WEB_SEARCH_EVIDENCE_MAX_TOKENS = PersistentConfig(

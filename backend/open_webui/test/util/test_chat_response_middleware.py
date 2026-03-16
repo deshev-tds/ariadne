@@ -437,6 +437,54 @@ def test_query_web_evidence_citation_source_uses_snippets():
     assert metadata[0]["artifact_id"] == "wp_1"
 
 
+def test_local_corpus_retrieve_evidence_citation_source_groups_by_book():
+    tool_result = {
+        "items": [
+            {
+                "domain": "medicine",
+                "book_id": "med-guide",
+                "title": "Hypertension management guideline",
+                "page_no": 2,
+                "section_path": "Management",
+                "citation_label": "Hypertension management guideline | p. 2 | Management",
+                "content": "Start treatment when blood pressure remains above threshold.",
+            }
+        ]
+    }
+
+    sources = middleware.get_citation_source_from_tool_result(
+        "local_corpus_retrieve_evidence",
+        {},
+        tool_result,
+    )
+
+    assert len(sources) == 1
+    assert sources[0]["source"]["id"] == "med-guide"
+    assert sources[0]["metadata"][0]["page_no"] == 2
+
+
+def test_local_corpus_view_table_citation_source_uses_content_text():
+    tool_result = {
+        "domain": "medicine",
+        "book_id": "med-guide",
+        "title": "Hypertension management guideline",
+        "table_id": "table-001",
+        "page_no": 2,
+        "section_path": "Management",
+        "content_text": "Drug | Threshold\nACE inhibitor | >=140/90",
+    }
+
+    sources = middleware.get_citation_source_from_tool_result(
+        "local_corpus_view_table",
+        {},
+        tool_result,
+    )
+
+    assert len(sources) == 1
+    assert "ACE inhibitor" in sources[0]["document"][0]
+    assert sources[0]["metadata"][0]["book_id"] == "med-guide"
+
+
 def test_is_empty_search_notes_result_detects_empty_payloads():
     assert middleware._is_empty_search_notes_result("[]") is True
     assert middleware._is_empty_search_notes_result([]) is True

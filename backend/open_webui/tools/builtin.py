@@ -19,6 +19,15 @@ from open_webui.models.users import UserModel
 from open_webui.routers.retrieval import search_web as _search_web
 from open_webui.routers.retrieval import execute_strong_source_search
 from open_webui.retrieval.utils import get_content_from_url
+from open_webui.retrieval.local_corpus import (
+    list_local_corpus_domains,
+    list_local_corpus_disciplines,
+    shortlist_local_corpus_books,
+    view_local_corpus_book_cards,
+    retrieve_local_corpus_evidence,
+    view_local_corpus_table,
+    view_local_corpus_figure_metadata,
+)
 from open_webui.routers.images import (
     image_generations,
     image_edits,
@@ -369,6 +378,214 @@ async def search_strong_sources(
         __metadata__=__metadata__,
         __event_emitter__=__event_emitter__,
     )
+
+
+# =============================================================================
+# LOCAL CORPUS TOOLS
+# =============================================================================
+
+
+async def local_corpus_list_domains(
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    List the available local corpus domains and source counts.
+    Use this when a query might belong to more than one local domain.
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            list_local_corpus_domains, __request__.app.state.config
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_list_domains error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_list_disciplines(
+    domain: str,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    List disciplines within a chosen local corpus domain.
+    Use this after selecting the domain and before shortlisting books.
+
+    :param domain: The chosen domain, for example medicine
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            list_local_corpus_disciplines,
+            domain,
+            __request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_list_disciplines error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_shortlist_books(
+    query: str,
+    domain: Optional[str] = None,
+    disciplines: Optional[list[str]] = None,
+    max_books: int = 5,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Shortlist the most relevant local corpus books for a query.
+    Start here after selecting the domain. If domain is omitted and routing is ambiguous,
+    the tool returns a domain selection payload instead of forcing a guess.
+
+    :param query: The user question or retrieval need
+    :param domain: Optional selected domain
+    :param disciplines: Optional discipline filters within the domain
+    :param max_books: Maximum number of books to shortlist, capped at 5
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            shortlist_local_corpus_books,
+            query=query,
+            domain=domain,
+            disciplines=disciplines,
+            max_books=max_books,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_shortlist_books error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_view_book_cards(
+    book_ids: list[str],
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Open the serving-layer book cards for shortlisted local corpus books.
+    Use this before evidence retrieval to narrow to the best 1-3 books.
+
+    :param book_ids: One or more shortlisted book ids
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            view_local_corpus_book_cards,
+            book_ids=book_ids,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_view_book_cards error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_retrieve_evidence(
+    query: str,
+    book_ids: list[str],
+    top_k: int = 8,
+    include_related_tables: bool = True,
+    include_related_figures: bool = False,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Retrieve local evidence chunks from the selected books only.
+    Results include page and section metadata plus nearby table or figure pointers.
+
+    :param query: The user question or focused retrieval need
+    :param book_ids: Selected book ids from the same domain
+    :param top_k: Maximum number of evidence chunks to return
+    :param include_related_tables: Include nearby table pointers in results
+    :param include_related_figures: Include nearby figure metadata pointers in results
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            retrieve_local_corpus_evidence,
+            query=query,
+            book_ids=book_ids,
+            top_k=top_k,
+            include_related_tables=include_related_tables,
+            include_related_figures=include_related_figures,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_retrieve_evidence error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_view_table(
+    book_id: str,
+    table_id: str,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Open a local corpus table sidecar when the answer needs structured table content.
+
+    :param book_id: The book that owns the table
+    :param table_id: The table id returned from evidence results
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            view_local_corpus_table,
+            book_id=book_id,
+            table_id=table_id,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_view_table error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def local_corpus_view_figure_metadata(
+    book_id: str,
+    figure_id: str,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    View figure metadata for a local corpus result without loading image bytes.
+
+    :param book_id: The book that owns the figure
+    :param figure_id: The figure id returned from evidence results
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            view_local_corpus_figure_metadata,
+            book_id=book_id,
+            figure_id=figure_id,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"local_corpus_view_figure_metadata error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 async def fetch_url(
