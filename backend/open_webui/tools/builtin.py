@@ -32,7 +32,6 @@ from open_webui.retrieval.local_corpus_reasoning import (
     frame_local_corpus_problem,
     plan_local_corpus_axes,
     collect_local_corpus_axis_evidence,
-    expand_local_corpus_axis_evidence,
     assess_local_corpus_evidence,
 )
 from open_webui.routers.images import (
@@ -684,38 +683,6 @@ async def local_corpus_collect_axis_evidence(
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"local_corpus_collect_axis_evidence error: {e}")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-async def local_corpus_expand_axis_evidence(
-    handles: list[str],
-    include_related_tables: bool = True,
-    include_related_figures: bool = False,
-    __request__: Request = None,
-    __user__: dict = None,
-) -> str:
-    """
-    Expand previously selected compact axis evidence handles into larger excerpts.
-    Use this only when compact evidence is partial, indirect, table-dependent, or otherwise insufficient.
-
-    :param handles: Evidence handles returned by local_corpus_collect_axis_evidence
-    :param include_related_tables: Include nearby table pointers in expanded evidence
-    :param include_related_figures: Include nearby figure pointers in expanded evidence
-    """
-    if __request__ is None:
-        return json.dumps({"error": "Request context not available"})
-
-    try:
-        payload = await asyncio.to_thread(
-            expand_local_corpus_axis_evidence,
-            handles=handles,
-            include_related_tables=include_related_tables,
-            include_related_figures=include_related_figures,
-            config_or_path=__request__.app.state.config,
-        )
-        return json.dumps(payload, ensure_ascii=False)
-    except Exception as e:
-        log.exception(f"local_corpus_expand_axis_evidence error: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

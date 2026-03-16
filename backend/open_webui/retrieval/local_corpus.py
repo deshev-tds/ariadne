@@ -1645,7 +1645,6 @@ def retrieve_local_corpus_evidence(
             figure_ids = json.loads(row.get("figure_ids_json") or "[]")
             scored_items.append(
                 {
-                    "chunk_id": row["chunk_id"],
                     "domain": row["domain"],
                     "book_id": row["book_id"],
                     "title": row["title"],
@@ -1730,127 +1729,6 @@ def retrieve_local_corpus_evidence(
         "evidence_sufficiency": evidence_sufficiency,
         "answer_guidance": answer_guidance,
         "freshness_note": freshness_note,
-    }
-
-
-def expand_local_corpus_evidence_chunks(
-    *,
-    book_ids: list[str],
-    chunk_ids: list[str],
-    excerpt_chars: int = 2200,
-    include_related_tables: bool = True,
-    include_related_figures: bool = False,
-    config_or_path: Any = None,
-) -> dict[str, Any]:
-    registry = load_local_corpus_registry(config_or_path)
-    normalized_book_ids = [
-        str(book_id).strip() for book_id in (book_ids or []) if str(book_id).strip()
-    ]
-    normalized_chunk_ids = [
-        str(chunk_id).strip() for chunk_id in (chunk_ids or []) if str(chunk_id).strip()
-    ]
-    if not normalized_book_ids or not normalized_chunk_ids:
-        return {
-            "status": "error",
-            "error": "At least one book_id and chunk_id are required",
-            "items": [],
-        }
-
-    books = []
-    for book_id in normalized_book_ids:
-        book = registry.books_by_id.get(book_id)
-        if not book or not book.usable:
-            return {
-                "status": "error",
-                "error": f"Unknown or unavailable book_id: {book_id}",
-                "items": [],
-            }
-        books.append(book)
-
-    domains = {book.domain for book in books}
-    if len(domains) != 1:
-        return {
-            "status": "error",
-            "error": "All book_ids must belong to the same domain",
-            "items": [],
-        }
-
-    domain = next(iter(domains))
-    db_path = ensure_domain_index(domain, config_or_path)
-    bounded_excerpt_chars = max(400, min(4000, int(excerpt_chars or 2200)))
-    placeholders = ",".join("?" for _ in normalized_chunk_ids)
-
-    with _sqlite_conn(db_path) as conn:
-        _init_domain_db(conn)
-        sql = f"""
-            SELECT
-                chunk_id,
-                domain,
-                book_id,
-                title,
-                discipline,
-                resource_type,
-                evidence_tier,
-                page_no,
-                section_path,
-                content,
-                table_ids_json,
-                figure_ids_json
-            FROM chunks
-            WHERE chunk_id IN ({placeholders})
-            ORDER BY page_no ASC, chunk_id ASC
-        """
-        rows = [dict(row) for row in conn.execute(sql, normalized_chunk_ids).fetchall()]
-        items = []
-        for row in rows:
-            if row["book_id"] not in normalized_book_ids:
-                continue
-            table_ids = json.loads(row.get("table_ids_json") or "[]")
-            figure_ids = json.loads(row.get("figure_ids_json") or "[]")
-            items.append(
-                {
-                    "chunk_id": row["chunk_id"],
-                    "domain": row["domain"],
-                    "book_id": row["book_id"],
-                    "title": row["title"],
-                    "discipline": row["discipline"],
-                    "resource_type": row["resource_type"],
-                    "evidence_tier": row["evidence_tier"],
-                    "page_no": row["page_no"],
-                    "section_path": row["section_path"],
-                    "content": _excerpt_for_query(
-                        str(row["content"]), "", max_chars=bounded_excerpt_chars
-                    ),
-                    "content_kind": "expanded_excerpt",
-                    "content_truncated": len(_normalize_text(str(row["content"])))
-                    > bounded_excerpt_chars,
-                    "citation_label": (
-                        f"{row['title']} | p. {row['page_no']} | {row['section_path']}"
-                    ),
-                    "related_tables": (
-                        _retrieve_table_metadata(
-                            conn, book_id=row["book_id"], table_ids=table_ids[:3]
-                        )
-                        if include_related_tables
-                        else []
-                    ),
-                    "related_figures": (
-                        _retrieve_figure_metadata(
-                            conn, book_id=row["book_id"], figure_ids=figure_ids[:3]
-                        )
-                        if include_related_figures
-                        else []
-                    ),
-                }
-            )
-
-    return {
-        "status": "ok",
-        "phase": "completed",
-        "domain": domain,
-        "book_ids": normalized_book_ids,
-        "chunk_ids": normalized_chunk_ids,
-        "items": items,
     }
 
 

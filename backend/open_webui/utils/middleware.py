@@ -1449,7 +1449,6 @@ def get_citation_source_from_tool_result(
         "local_corpus_frame_problem",
         "local_corpus_plan_axes",
         "local_corpus_collect_axis_evidence",
-        "local_corpus_expand_axis_evidence",
         "local_corpus_assess_evidence",
         "local_corpus_shortlist_books",
         "local_corpus_view_book_cards",
@@ -1646,39 +1645,6 @@ def get_citation_source_from_tool_result(
                             "axis_id": axis.get("axis_id", ""),
                         }
                     )
-            return list(grouped_sources.values())
-        elif tool_name == "local_corpus_expand_axis_evidence":
-            payload = tool_result if isinstance(tool_result, dict) else {}
-            items = payload.get("items", []) if isinstance(payload, dict) else []
-            grouped_sources = {}
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                title = item.get("title", "") or "local corpus"
-                book_id = item.get("book_id", "")
-                key = book_id or title
-                if key not in grouped_sources:
-                    grouped_sources[key] = {
-                        "source": {
-                            "id": book_id,
-                            "name": title,
-                            "type": "local_corpus_book",
-                        },
-                        "document": [],
-                        "metadata": [],
-                    }
-                grouped_sources[key]["document"].append(item.get("content", ""))
-                grouped_sources[key]["metadata"].append(
-                    {
-                        "source": item.get("citation_label", title),
-                        "name": title,
-                        "book_id": book_id,
-                        "domain": item.get("domain", ""),
-                        "page_no": item.get("page_no"),
-                        "section_path": item.get("section_path", ""),
-                        "axis_id": item.get("axis_id", ""),
-                    }
-                )
             return list(grouped_sources.values())
         elif tool_name == "local_corpus_view_table":
             payload = tool_result if isinstance(tool_result, dict) else {}
@@ -1916,20 +1882,9 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
             "task_type": parsed.get("task_type"),
             "axis_count": parsed.get("axis_count"),
             "axes_with_evidence": sum(
-                1 for axis in axis_results if int((axis or {}).get("total_evidence_count") or 0) > 0
+                1 for axis in axis_results if (axis or {}).get("evidence_items")
             ),
             "direct_axes": direct_axes,
-            "visible_evidence_count": parsed.get("visible_evidence_count"),
-            "total_evidence_count": parsed.get("total_evidence_count"),
-            "omitted_evidence_count": parsed.get("omitted_evidence_count"),
-            "global_budget_limited": bool(parsed.get("global_budget_limited", False)),
-        }
-
-    if tool_name == "local_corpus_expand_axis_evidence" and isinstance(parsed, dict):
-        return {
-            "phase": parsed.get("phase"),
-            "expanded_count": parsed.get("expanded_count"),
-            "items": len(parsed.get("items") or []),
         }
 
     if tool_name == "local_corpus_frame_problem" and isinstance(parsed, dict):

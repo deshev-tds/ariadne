@@ -672,123 +672,6 @@ def test_collect_axis_evidence_groups_results_by_axis(local_corpus_fixture):
     assert payload["axis_count"] >= 1
     assert payload["axis_results"][0]["axis_id"]
     assert isinstance(payload["axis_results"][0]["shortlisted_books"], list)
-    assert payload["axis_results"][0]["visible_evidence_count"] <= 2
-    assert payload["axis_results"][0]["total_evidence_count"] >= payload["axis_results"][0]["visible_evidence_count"]
-    if payload["axis_results"][0]["evidence_items"]:
-        item = payload["axis_results"][0]["evidence_items"][0]
-        assert item["content_kind"] == "snippet"
-        assert item["handle"]
-        assert item["chunk_id"]
-
-
-def test_collect_axis_evidence_respects_global_visible_budget(local_corpus_fixture, monkeypatch):
-    monkeypatch.setattr(local_corpus_reasoning, "LOCAL_CORPUS_MAX_TOTAL_VISIBLE_ITEMS", 1)
-    monkeypatch.setattr(local_corpus_reasoning, "LOCAL_CORPUS_MAX_TOTAL_VISIBLE_CHARS", 700)
-
-    def _shortlist(**kwargs):
-        return {
-            "status": "ok",
-            "items": [
-                {
-                    "domain": "medicine",
-                    "discipline": "cardiology",
-                    "book_id": "med-guide",
-                    "title": "Hypertension management guideline",
-                    "resource_type": "guideline",
-                    "evidence_tier": "guideline",
-                }
-            ],
-        }
-
-    def _retrieve(**kwargs):
-        return {
-            "status": "ok",
-            "evidence_sufficiency": "strong",
-            "items": [
-                {
-                    "chunk_id": "med-guide:2:001",
-                    "domain": "medicine",
-                    "book_id": "med-guide",
-                    "title": "Hypertension management guideline",
-                    "discipline": "cardiology",
-                    "resource_type": "guideline",
-                    "evidence_tier": "guideline",
-                    "page_no": 2,
-                    "section_path": "Management",
-                    "content": "Start treatment when blood pressure remains above threshold and escalate according to risk.",
-                    "score": 9.0,
-                    "rationale": ["direct_topic", "table_locality"],
-                    "citation_label": "Hypertension management guideline | p. 2 | Management",
-                    "related_tables": [{"table_id": "table-001", "page_no": 2, "section_path": "Management"}],
-                    "related_figures": [],
-                },
-                {
-                    "chunk_id": "med-guide:1:001",
-                    "domain": "medicine",
-                    "book_id": "med-guide",
-                    "title": "Hypertension management guideline",
-                    "discipline": "cardiology",
-                    "resource_type": "guideline",
-                    "evidence_tier": "guideline",
-                    "page_no": 1,
-                    "section_path": "Hypertension",
-                    "content": "Hypertension diagnosis depends on repeated blood pressure assessment and cardiovascular risk.",
-                    "score": 7.0,
-                    "rationale": ["direct_topic"],
-                    "citation_label": "Hypertension management guideline | p. 1 | Hypertension",
-                    "related_tables": [],
-                    "related_figures": [],
-                },
-            ],
-        }
-
-    monkeypatch.setattr(local_corpus_reasoning.corpus, "shortlist_local_corpus_books", _shortlist)
-    monkeypatch.setattr(local_corpus_reasoning.corpus, "retrieve_local_corpus_evidence", _retrieve)
-
-    problem_frame = {
-        "status": "ok",
-        "query": "What broad differential buckets should I think about for hypertension and symptoms?",
-        "domain": "medicine",
-        "primary_task_type": "differential_orientation",
-        "unknowns": [],
-    }
-    plan = {
-        "axes": [
-            {"axis_id": "common_causes", "intent": "baseline", "query": "common causes"},
-            {"axis_id": "pattern_match", "intent": "pattern", "query": "pattern match"},
-        ]
-    }
-
-    payload = local_corpus_reasoning.collect_local_corpus_axis_evidence(
-        problem_frame=problem_frame,
-        axes=plan["axes"],
-        config_or_path=str(local_corpus_fixture),
-    )
-
-    assert payload["status"] == "ok"
-    assert payload["visible_evidence_count"] <= 1
-    assert payload["global_budget_limited"] is True
-    assert payload["omitted_evidence_count"] >= 0
-
-
-def test_expand_axis_evidence_returns_expanded_excerpt(local_corpus_fixture):
-    evidence_payload = local_corpus.retrieve_local_corpus_evidence(
-        query="blood pressure threshold",
-        book_ids=["med-guide"],
-        config_or_path=str(local_corpus_fixture),
-    )
-    chunk_id = evidence_payload["items"][0]["chunk_id"]
-    handle = f"management_guidance|med-guide|{chunk_id}"
-
-    expanded = local_corpus_reasoning.expand_local_corpus_axis_evidence(
-        handles=[handle],
-        config_or_path=str(local_corpus_fixture),
-    )
-
-    assert expanded["status"] == "ok"
-    assert expanded["expanded_count"] == len(expanded["items"])
-    assert expanded["items"][0]["content_kind"] == "expanded_excerpt"
-    assert expanded["items"][0]["handle"] == handle
 
 
 def test_assess_evidence_returns_cautious_state_for_missing_required_axes(local_corpus_fixture):
@@ -803,7 +686,6 @@ def test_assess_evidence_returns_cautious_state_for_missing_required_axes(local_
             {
                 "axis_id": "management_guidance",
                 "evidence_items": [],
-                "total_evidence_count": 0,
                 "directness": "none",
             }
         ],
@@ -880,22 +762,6 @@ async def test_builtin_reasoning_tools_use_request_config(local_corpus_fixture):
         __request__=request,
     )
     collect_payload = json.loads(collect_output)
-    evidence_output = await builtin_tools.local_corpus_retrieve_evidence(
-        query="blood pressure threshold",
-        book_ids=["med-guide"],
-        __request__=request,
-    )
-    evidence_payload = json.loads(evidence_output)
-    handle = (
-        f"management_guidance|med-guide|"
-        f"{evidence_payload['items'][0]['chunk_id']}"
-    )
-
-    expand_output = await builtin_tools.local_corpus_expand_axis_evidence(
-        handles=[handle],
-        __request__=request,
-    )
-    expand_payload = json.loads(expand_output)
 
     assess_output = await builtin_tools.local_corpus_assess_evidence(
         problem_frame=frame_payload,
@@ -907,5 +773,4 @@ async def test_builtin_reasoning_tools_use_request_config(local_corpus_fixture):
     assert frame_payload["status"] == "ok"
     assert plan_payload["status"] == "ok"
     assert collect_payload["status"] == "ok"
-    assert expand_payload["status"] == "ok"
     assert assess_payload["status"] == "ok"
