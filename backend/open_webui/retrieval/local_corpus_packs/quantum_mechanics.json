@@ -1,0 +1,174 @@
+{
+  "domain": "quantum_mechanics",
+  "version": 1,
+  "maturity_tier": 3,
+  "default_task_type": "formalism_selection",
+  "default_axis_budget": 4,
+  "max_axis_budget": 6,
+  "answer_modes": ["formal_overview", "derivation_outline", "conceptual_map", "reference_locator"],
+  "ranking_profiles": {
+    "formalism_first": {
+      "classification_terms": ["basis", "operator", "state", "measurement", "observable", "hamiltonian", "approximation"]
+    },
+    "reference": {
+      "classification_terms": ["where", "book", "page", "reference", "source"]
+    }
+  },
+  "risk_profiles": {
+    "qm_formalism": {
+      "must_surface_red_flags": false,
+      "red_flag_terms": []
+    }
+  },
+  "insufficiency_profiles": {
+    "qm_conservative": {
+      "default_posture": "scoped",
+      "weak_posture": "cautious",
+      "partial_posture": "scoped",
+      "strong_posture": "grounded",
+      "must_admit_gaps": true,
+      "avoid_exhaustive_language": true,
+      "guidance": "Separate the formal object, the physical meaning, and the approximation or interpretation being used."
+    }
+  },
+  "axes": {
+    "formal_objects": {
+      "intent": "identify_state_space_and_objects",
+      "slot_sources": ["entities", "constraints"],
+      "literal_terms": ["formal objects", "state", "operator", "Hilbert space"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["quantum_mechanics", "theoretical_physics"]
+    },
+    "representation_choice": {
+      "intent": "which_basis_or_picture",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["basis", "representation", "Schrodinger picture", "Heisenberg picture"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["quantum_mechanics", "theoretical_physics"]
+    },
+    "operator_or_state_view": {
+      "intent": "which_formal_view_is_more_natural",
+      "slot_sources": ["entities", "constraints"],
+      "literal_terms": ["operator view", "state view", "wavefunction", "density matrix"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["quantum_mechanics"]
+    },
+    "measurement_structure": {
+      "intent": "how_measurement_enters",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["measurement", "observable", "expectation value", "collapse"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["quantum_mechanics"]
+    },
+    "approximation_limits": {
+      "intent": "when_the_approximation_breaks",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["approximation", "perturbation", "adiabatic", "semiclassical", "limit"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["quantum_mechanics", "theoretical_physics"]
+    },
+    "classical_analogy_failures": {
+      "intent": "where_classical_intuition_breaks",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["classical analogy", "where intuition fails", "nonclassical behavior"],
+      "preferred_resource_types": ["textbook"],
+      "preferred_evidence_tiers": ["textbook"],
+      "boost_table_like": false,
+      "max_books": 1,
+      "top_k": 2,
+      "discipline_hints": ["quantum_mechanics"]
+    }
+  },
+  "task_types": {
+    "formalism_selection": {
+      "answer_mode": "formal_overview",
+      "required_axis_ids": ["formal_objects", "representation_choice"],
+      "optional_axis_ids": ["operator_or_state_view", "approximation_limits"],
+      "frame_slots": ["entities", "constraints", "unknowns"],
+      "ranking_profile": "formalism_first",
+      "risk_profile": "qm_formalism",
+      "insufficiency_profile": "qm_conservative",
+      "classification_terms": ["formalism", "basis", "representation", "which picture", "which operator"]
+    },
+    "interpretation_orientation": {
+      "answer_mode": "conceptual_map",
+      "required_axis_ids": ["measurement_structure", "classical_analogy_failures"],
+      "optional_axis_ids": ["formal_objects"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "formalism_first",
+      "risk_profile": "qm_formalism",
+      "insufficiency_profile": "qm_conservative",
+      "classification_terms": ["interpretation", "what does it mean", "collapse", "measurement problem"]
+    },
+    "measurement_and_observables": {
+      "answer_mode": "formal_overview",
+      "required_axis_ids": ["measurement_structure", "formal_objects"],
+      "optional_axis_ids": ["operator_or_state_view"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "formalism_first",
+      "risk_profile": "qm_formalism",
+      "insufficiency_profile": "qm_conservative",
+      "classification_terms": ["measurement", "observable", "expectation value", "eigenvalue"]
+    },
+    "state_dynamics": {
+      "answer_mode": "derivation_outline",
+      "required_axis_ids": ["formal_objects", "operator_or_state_view"],
+      "optional_axis_ids": ["representation_choice", "approximation_limits"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "formalism_first",
+      "risk_profile": "qm_formalism",
+      "insufficiency_profile": "qm_conservative",
+      "classification_terms": ["time evolution", "dynamics", "Schrodinger equation", "density matrix evolution"]
+    },
+    "approximation_regime": {
+      "answer_mode": "formal_overview",
+      "required_axis_ids": ["approximation_limits", "representation_choice"],
+      "optional_axis_ids": ["classical_analogy_failures"],
+      "frame_slots": ["constraints", "unknowns"],
+      "ranking_profile": "formalism_first",
+      "risk_profile": "qm_formalism",
+      "insufficiency_profile": "qm_conservative",
+      "classification_terms": ["approximation", "perturbation", "adiabatic", "wkb", "semiclassical"]
+    },
+    "problem_solving_strategy": {
+      "answer_mode": "derivation_outline",
+      "required_axis_ids": ["formal_objects", "representation_choice"],
+      "optional_axis_ids": ["measurement_structure", "approximation_limits"],
+      "frame_slots": ["entities", "constraints"],
+      "ranking_profile": "formalism_first",
+      "risk_profile": "qm_formalism",
+      "insufficiency_profile": "qm_conservative",
+      "classification_terms": ["how to solve", "strategy", "approach", "steps"]
+    },
+    "reference_locator": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["formal_objects"],
+      "optional_axis_ids": ["measurement_structure"],
+      "frame_slots": ["entities"],
+      "ranking_profile": "reference",
+      "risk_profile": "qm_formalism",
+      "insufficiency_profile": "qm_conservative",
+      "classification_terms": ["where", "which source", "which page", "reference"]
+    }
+  }
+}

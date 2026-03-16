@@ -56,6 +56,10 @@ from open_webui.tools.builtin import (
     web_research_strong,
     local_corpus_list_domains,
     local_corpus_list_disciplines,
+    local_corpus_frame_problem,
+    local_corpus_plan_axes,
+    local_corpus_collect_axis_evidence,
+    local_corpus_assess_evidence,
     local_corpus_shortlist_books,
     local_corpus_view_book_cards,
     local_corpus_retrieve_evidence,
@@ -91,6 +95,7 @@ from open_webui.tools.builtin import (
     view_knowledge_file,
     view_skill,
 )
+from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 
 import copy
 
@@ -500,11 +505,21 @@ def get_builtin_tools(
         is_builtin_tool_enabled("local_corpus")
         and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
         and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
+        and normalize_local_corpus_mode(
+            (extra_params.get("__metadata__", {}) or {}).get("params", {}).get(
+                "local_corpus_mode"
+            )
+        )
+        != "off"
     ):
         builtin_functions.extend(
             [
                 local_corpus_list_domains,
                 local_corpus_list_disciplines,
+                local_corpus_frame_problem,
+                local_corpus_plan_axes,
+                local_corpus_collect_axis_evidence,
+                local_corpus_assess_evidence,
                 local_corpus_shortlist_books,
                 local_corpus_view_book_cards,
                 local_corpus_retrieve_evidence,

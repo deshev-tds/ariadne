@@ -1,0 +1,174 @@
+{
+  "domain": "physics",
+  "version": 1,
+  "maturity_tier": 2,
+  "default_task_type": "conceptual_orientation",
+  "default_axis_budget": 4,
+  "max_axis_budget": 6,
+  "answer_modes": ["conceptual_map", "derivation_outline", "stepwise_orientation", "reference_locator"],
+  "ranking_profiles": {
+    "regime_first": {
+      "classification_terms": ["regime", "approximation", "assumption", "limit", "scale", "equation"]
+    },
+    "reference": {
+      "classification_terms": ["where", "source", "book", "page", "section"]
+    }
+  },
+  "risk_profiles": {
+    "physics_rigor": {
+      "must_surface_red_flags": false,
+      "red_flag_terms": []
+    }
+  },
+  "insufficiency_profiles": {
+    "physics_conservative": {
+      "default_posture": "scoped",
+      "weak_posture": "cautious",
+      "partial_posture": "scoped",
+      "strong_posture": "grounded",
+      "must_admit_gaps": true,
+      "avoid_exhaustive_language": true,
+      "guidance": "Separate assumptions, approximation regime, and limiting cases."
+    }
+  },
+  "axes": {
+    "governing_regime": {
+      "intent": "which_model_family_applies",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["regime", "governing physics", "which model applies"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["general_physics", "theoretical_physics"]
+    },
+    "assumptions": {
+      "intent": "required_assumptions",
+      "slot_sources": ["constraints", "unknowns"],
+      "literal_terms": ["assumptions", "boundary conditions", "idealization"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_physics", "theoretical_physics"]
+    },
+    "limiting_cases": {
+      "intent": "check_special_cases",
+      "slot_sources": ["observations", "constraints"],
+      "literal_terms": ["limiting case", "small parameter", "large parameter", "approximation limit"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_physics", "theoretical_physics"]
+    },
+    "relevant_quantities": {
+      "intent": "what_variables_matter",
+      "slot_sources": ["observations", "unknowns"],
+      "literal_terms": ["relevant quantities", "state variables", "measurable quantities"],
+      "preferred_resource_types": ["reference", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["general_physics"]
+    },
+    "order_of_magnitude": {
+      "intent": "scaling_estimate",
+      "slot_sources": ["observations", "constraints"],
+      "literal_terms": ["order of magnitude", "scaling", "estimate"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook"],
+      "boost_table_like": false,
+      "max_books": 1,
+      "top_k": 2,
+      "discipline_hints": ["general_physics"]
+    },
+    "competing_models": {
+      "intent": "alternative_descriptions",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["competing models", "alternative formulation", "different regime"],
+      "preferred_resource_types": ["textbook", "reference"],
+      "preferred_evidence_tiers": ["textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["theoretical_physics", "general_physics"]
+    }
+  },
+  "task_types": {
+    "conceptual_orientation": {
+      "answer_mode": "conceptual_map",
+      "required_axis_ids": ["governing_regime", "assumptions"],
+      "optional_axis_ids": ["limiting_cases", "relevant_quantities"],
+      "frame_slots": ["entities", "observations", "constraints"],
+      "ranking_profile": "regime_first",
+      "risk_profile": "physics_rigor",
+      "insufficiency_profile": "physics_conservative",
+      "classification_terms": ["what should i think about", "conceptual", "intuition", "how to think", "framework"]
+    },
+    "regime_selection": {
+      "answer_mode": "stepwise_orientation",
+      "required_axis_ids": ["governing_regime", "assumptions"],
+      "optional_axis_ids": ["competing_models", "limiting_cases"],
+      "frame_slots": ["entities", "constraints", "unknowns"],
+      "ranking_profile": "regime_first",
+      "risk_profile": "physics_rigor",
+      "insufficiency_profile": "physics_conservative",
+      "classification_terms": ["regime", "which model", "approximation", "valid when"]
+    },
+    "equation_family_lookup": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["governing_regime", "relevant_quantities"],
+      "optional_axis_ids": ["assumptions"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "reference",
+      "risk_profile": "physics_rigor",
+      "insufficiency_profile": "physics_conservative",
+      "classification_terms": ["equation", "formula", "which equation", "governing equation"]
+    },
+    "phenomenon_explanation": {
+      "answer_mode": "conceptual_map",
+      "required_axis_ids": ["governing_regime", "competing_models"],
+      "optional_axis_ids": ["assumptions", "limiting_cases"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "regime_first",
+      "risk_profile": "physics_rigor",
+      "insufficiency_profile": "physics_conservative",
+      "classification_terms": ["why", "how", "phenomenon", "explain"]
+    },
+    "estimation_and_scaling": {
+      "answer_mode": "stepwise_orientation",
+      "required_axis_ids": ["order_of_magnitude", "relevant_quantities"],
+      "optional_axis_ids": ["assumptions"],
+      "frame_slots": ["observations", "constraints"],
+      "ranking_profile": "regime_first",
+      "risk_profile": "physics_rigor",
+      "insufficiency_profile": "physics_conservative",
+      "classification_terms": ["estimate", "scaling", "order of magnitude"]
+    },
+    "experimental_interpretation": {
+      "answer_mode": "stepwise_orientation",
+      "required_axis_ids": ["relevant_quantities", "competing_models"],
+      "optional_axis_ids": ["governing_regime", "assumptions"],
+      "frame_slots": ["observations", "constraints"],
+      "ranking_profile": "regime_first",
+      "risk_profile": "physics_rigor",
+      "insufficiency_profile": "physics_conservative",
+      "classification_terms": ["measurement", "experiment", "signal", "data"]
+    },
+    "reference_locator": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["governing_regime"],
+      "optional_axis_ids": ["assumptions"],
+      "frame_slots": ["entities"],
+      "ranking_profile": "reference",
+      "risk_profile": "physics_rigor",
+      "insufficiency_profile": "physics_conservative",
+      "classification_terms": ["where", "which source", "which page", "reference"]
+    }
+  }
+}

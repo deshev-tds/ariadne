@@ -1,0 +1,206 @@
+{
+  "domain": "medicine",
+  "version": 1,
+  "maturity_tier": 1,
+  "default_task_type": "reference_locator",
+  "default_axis_budget": 4,
+  "max_axis_budget": 6,
+  "answer_modes": [
+    "differential_buckets",
+    "decision_support",
+    "reference_locator",
+    "mechanism_explanation"
+  ],
+  "ranking_profiles": {
+    "clinical_orientation": {
+      "classification_terms": ["symptom", "symptoms", "lab", "labs", "differential", "workup", "management"]
+    },
+    "mechanism_background": {
+      "classification_terms": ["why", "mechanism", "pathophysiology", "physiology", "pathogenesis"]
+    },
+    "locator": {
+      "classification_terms": ["where", "book", "page", "section", "source", "reference"]
+    }
+  },
+  "risk_profiles": {
+    "clinical_high_risk": {
+      "must_surface_red_flags": true,
+      "red_flag_terms": ["chest pain", "syncope", "shortness of breath", "fever", "weight loss", "neurologic deficit"]
+    },
+    "clinical_lookup": {
+      "must_surface_red_flags": false,
+      "red_flag_terms": []
+    }
+  },
+  "insufficiency_profiles": {
+    "clinical_conservative": {
+      "default_posture": "scoped",
+      "weak_posture": "cautious",
+      "partial_posture": "scoped",
+      "strong_posture": "grounded",
+      "must_admit_gaps": true,
+      "avoid_exhaustive_language": true,
+      "guidance": "Do not diagnose by default. Separate what fits from what must still be ruled out."
+    },
+    "locator": {
+      "default_posture": "grounded",
+      "weak_posture": "cautious",
+      "partial_posture": "scoped",
+      "strong_posture": "grounded",
+      "must_admit_gaps": true,
+      "avoid_exhaustive_language": true,
+      "guidance": "Point to the best local source and cite book, page, and section."
+    }
+  },
+  "axes": {
+    "dangerous_causes": {
+      "intent": "high_priority_exclusions",
+      "slot_sources": ["entities", "observations", "risk_flags"],
+      "literal_terms": ["dangerous causes", "urgent causes", "must not miss"],
+      "preferred_resource_types": ["guideline", "manual", "reference", "handbook"],
+      "preferred_evidence_tiers": ["guideline", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["emergency_medicine", "internal_medicine", "general_reference"]
+    },
+    "common_causes": {
+      "intent": "baseline_differential",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["common causes", "typical causes", "common differential"],
+      "preferred_resource_types": ["reference", "handbook", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["internal_medicine", "general_reference", "primary_care"]
+    },
+    "pattern_match": {
+      "intent": "symptom_lab_pattern",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["symptom pattern", "lab pattern", "pattern recognition"],
+      "preferred_resource_types": ["reference", "handbook", "textbook"],
+      "preferred_evidence_tiers": ["reference", "textbook"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["internal_medicine", "general_reference"]
+    },
+    "red_flags": {
+      "intent": "escalation_signals",
+      "slot_sources": ["risk_flags", "entities"],
+      "literal_terms": ["red flags", "escalation", "when urgent", "seek urgent care"],
+      "preferred_resource_types": ["guideline", "manual", "reference"],
+      "preferred_evidence_tiers": ["guideline", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["emergency_medicine", "primary_care", "general_reference"]
+    },
+    "diagnostic_workup": {
+      "intent": "diagnostic_next_steps",
+      "slot_sources": ["entities", "observations", "constraints"],
+      "literal_terms": ["diagnostic workup", "initial workup", "initial evaluation", "what to check next"],
+      "preferred_resource_types": ["guideline", "reference", "manual"],
+      "preferred_evidence_tiers": ["guideline", "reference"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["internal_medicine", "primary_care", "general_reference"]
+    },
+    "management_guidance": {
+      "intent": "management_lookup",
+      "slot_sources": ["entities", "observations"],
+      "literal_terms": ["management", "treatment", "regimen", "monitoring"],
+      "preferred_resource_types": ["guideline", "manual", "handbook", "reference"],
+      "preferred_evidence_tiers": ["guideline", "reference"],
+      "boost_table_like": true,
+      "max_books": 2,
+      "top_k": 4,
+      "discipline_hints": ["internal_medicine", "general_reference", "primary_care"]
+    },
+    "monitoring_followup": {
+      "intent": "follow_up_guidance",
+      "slot_sources": ["entities", "constraints"],
+      "literal_terms": ["monitoring", "follow-up", "while waiting", "what to watch"],
+      "preferred_resource_types": ["guideline", "reference", "handbook"],
+      "preferred_evidence_tiers": ["guideline", "reference"],
+      "boost_table_like": false,
+      "max_books": 2,
+      "top_k": 3,
+      "discipline_hints": ["primary_care", "general_reference"]
+    }
+  },
+  "task_types": {
+    "symptom_lab_orientation": {
+      "answer_mode": "differential_buckets",
+      "required_axis_ids": ["dangerous_causes", "pattern_match"],
+      "optional_axis_ids": ["common_causes", "red_flags", "diagnostic_workup"],
+      "frame_slots": ["entities", "observations", "constraints", "unknowns"],
+      "ranking_profile": "clinical_orientation",
+      "risk_profile": "clinical_high_risk",
+      "insufficiency_profile": "clinical_conservative",
+      "classification_terms": ["symptom", "symptoms", "lab", "labs", "value", "values", "headache", "fatigue", "waiting for my gp"]
+    },
+    "differential_orientation": {
+      "answer_mode": "differential_buckets",
+      "required_axis_ids": ["dangerous_causes", "common_causes"],
+      "optional_axis_ids": ["pattern_match", "red_flags"],
+      "frame_slots": ["entities", "observations", "unknowns"],
+      "ranking_profile": "clinical_orientation",
+      "risk_profile": "clinical_high_risk",
+      "insufficiency_profile": "clinical_conservative",
+      "classification_terms": ["differential", "possible causes", "what could cause", "thought vectors", "buckets"]
+    },
+    "management_lookup": {
+      "answer_mode": "decision_support",
+      "required_axis_ids": ["management_guidance"],
+      "optional_axis_ids": ["diagnostic_workup", "monitoring_followup"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "clinical_orientation",
+      "risk_profile": "clinical_lookup",
+      "insufficiency_profile": "clinical_conservative",
+      "classification_terms": ["management", "treatment", "how to manage", "guideline", "recommendation"]
+    },
+    "diagnostic_workup": {
+      "answer_mode": "decision_support",
+      "required_axis_ids": ["diagnostic_workup"],
+      "optional_axis_ids": ["red_flags", "pattern_match"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "clinical_orientation",
+      "risk_profile": "clinical_high_risk",
+      "insufficiency_profile": "clinical_conservative",
+      "classification_terms": ["workup", "diagnosis", "diagnostic", "what to check"]
+    },
+    "mechanism_explanation": {
+      "answer_mode": "mechanism_explanation",
+      "required_axis_ids": ["pattern_match"],
+      "optional_axis_ids": ["common_causes"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "mechanism_background",
+      "risk_profile": "clinical_lookup",
+      "insufficiency_profile": "clinical_conservative",
+      "classification_terms": ["why", "mechanism", "pathophysiology", "physiology", "how does"]
+    },
+    "drug_regimen_lookup": {
+      "answer_mode": "decision_support",
+      "required_axis_ids": ["management_guidance"],
+      "optional_axis_ids": ["monitoring_followup"],
+      "frame_slots": ["entities", "observations"],
+      "ranking_profile": "clinical_orientation",
+      "risk_profile": "clinical_lookup",
+      "insufficiency_profile": "clinical_conservative",
+      "classification_terms": ["regimen", "antibiotic", "empiric", "dose", "dosing", "first line"]
+    },
+    "reference_locator": {
+      "answer_mode": "reference_locator",
+      "required_axis_ids": ["diagnostic_workup"],
+      "optional_axis_ids": ["management_guidance"],
+      "frame_slots": ["entities"],
+      "ranking_profile": "locator",
+      "risk_profile": "clinical_lookup",
+      "insufficiency_profile": "locator",
+      "classification_terms": ["where", "which book", "which source", "what page", "what section"]
+    }
+  }
+}

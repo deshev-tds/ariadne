@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 import open_webui.retrieval.local_corpus as local_corpus
+import open_webui.retrieval.local_corpus_reasoning as local_corpus_reasoning
 import open_webui.tools.builtin as builtin_tools
+import open_webui.utils.tools as tool_utils
 
 
 def _write(path: Path, content: str) -> None:
@@ -484,8 +486,10 @@ def local_corpus_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(local_corpus, "DEFAULT_LOCAL_CORPUS_ROOT", corpus_root)
     monkeypatch.setattr(local_corpus, "LOCAL_CORPUS_INDEX_DIR", index_dir)
     local_corpus.clear_local_corpus_caches()
+    local_corpus_reasoning.clear_local_corpus_reasoning_caches()
     yield corpus_root
     local_corpus.clear_local_corpus_caches()
+    local_corpus_reasoning.clear_local_corpus_reasoning_caches()
 
 
 @pytest.fixture
@@ -495,8 +499,10 @@ def cap_corpus_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(local_corpus, "DEFAULT_LOCAL_CORPUS_ROOT", corpus_root)
     monkeypatch.setattr(local_corpus, "LOCAL_CORPUS_INDEX_DIR", index_dir)
     local_corpus.clear_local_corpus_caches()
+    local_corpus_reasoning.clear_local_corpus_reasoning_caches()
     yield corpus_root
     local_corpus.clear_local_corpus_caches()
+    local_corpus_reasoning.clear_local_corpus_reasoning_caches()
 
 
 def _request_for_corpus(corpus_root: Path) -> SimpleNamespace:
@@ -602,6 +608,114 @@ def test_retrieve_evidence_penalizes_hap_vap_and_lung_abscess_for_cap_query(
     assert payload["evidence_sufficiency"] == "strong"
 
 
+def test_reasoning_pack_loader_reads_canonical_pack():
+    pack = local_corpus_reasoning.load_local_corpus_pack("medicine")
+
+    assert pack["domain"] == "medicine"
+    assert pack["maturity_tier"] == 1
+    assert "symptom_lab_orientation" in pack["task_types"]
+
+
+def test_frame_problem_returns_primary_and_secondary_task_types(local_corpus_fixture):
+    payload = local_corpus_reasoning.frame_local_corpus_problem(
+        query="I have symptoms and lab values. What differential buckets should I think about while waiting?",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["domain"] == "medicine"
+    assert payload["primary_task_type"] in {
+        "symptom_lab_orientation",
+        "differential_orientation",
+    }
+    assert isinstance(payload["secondary_task_types"], list)
+    assert payload["coverage_is_scaffold_not_exhaustive"] is True
+
+
+def test_plan_axes_respects_backend_cap(local_corpus_fixture):
+    problem_frame = local_corpus_reasoning.frame_local_corpus_problem(
+        query="I have symptoms and lab values. What differential buckets should I think about while waiting?",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    payload = local_corpus_reasoning.plan_local_corpus_axes(
+        problem_frame=problem_frame,
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["axis_budget"] <= 6
+    assert payload["coverage_is_scaffold_not_exhaustive"] is True
+    assert len(payload["axes"]) == payload["axis_budget"]
+
+
+def test_collect_axis_evidence_groups_results_by_axis(local_corpus_fixture):
+    problem_frame = local_corpus_reasoning.frame_local_corpus_problem(
+        query="hypertension management threshold and treatment workup",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+    plan = local_corpus_reasoning.plan_local_corpus_axes(
+        problem_frame=problem_frame,
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    payload = local_corpus_reasoning.collect_local_corpus_axis_evidence(
+        problem_frame=problem_frame,
+        axes=plan["axes"],
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["axis_count"] >= 1
+    assert payload["axis_results"][0]["axis_id"]
+    assert isinstance(payload["axis_results"][0]["shortlisted_books"], list)
+
+
+def test_assess_evidence_returns_cautious_state_for_missing_required_axes(local_corpus_fixture):
+    problem_frame = local_corpus_reasoning.frame_local_corpus_problem(
+        query="hypertension management threshold and treatment workup",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+    evidence_bundle = {
+        "status": "ok",
+        "axis_results": [
+            {
+                "axis_id": "management_guidance",
+                "evidence_items": [],
+                "directness": "none",
+            }
+        ],
+    }
+
+    payload = local_corpus_reasoning.assess_local_corpus_evidence(
+        problem_frame=problem_frame,
+        evidence_bundle=evidence_bundle,
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["evidence_sufficiency"] in {"weak", "partial"}
+    assert payload["coverage_is_scaffold_not_exhaustive"] is True
+
+
+def test_builtin_local_corpus_tools_respect_off_chat_mode(local_corpus_fixture):
+    request = _request_for_corpus(local_corpus_fixture)
+    model = {"info": {"meta": {"capabilities": {}, "builtinTools": {"local_corpus": True}}}}
+
+    tools = tool_utils.get_builtin_tools(
+        request,
+        {"__metadata__": {"params": {"local_corpus_mode": "off"}}},
+        features={},
+        model=model,
+    )
+
+    assert "local_corpus_shortlist_books" not in tools
+
+
 @pytest.mark.asyncio
 async def test_builtin_local_corpus_tools_use_request_config(local_corpus_fixture):
     request = _request_for_corpus(local_corpus_fixture)
@@ -623,3 +737,40 @@ async def test_builtin_local_corpus_tools_use_request_config(local_corpus_fixtur
     assert shortlist_payload["items"][0]["domain"] == "chemistry"
     assert evidence_payload["status"] == "ok"
     assert evidence_payload["items"][0]["domain"] == "medicine"
+
+
+@pytest.mark.asyncio
+async def test_builtin_reasoning_tools_use_request_config(local_corpus_fixture):
+    request = _request_for_corpus(local_corpus_fixture)
+
+    frame_output = await builtin_tools.local_corpus_frame_problem(
+        query="What differential buckets should I think about for symptoms and lab values?",
+        domain_hint="medicine",
+        __request__=request,
+    )
+    frame_payload = json.loads(frame_output)
+
+    plan_output = await builtin_tools.local_corpus_plan_axes(
+        problem_frame=frame_payload,
+        __request__=request,
+    )
+    plan_payload = json.loads(plan_output)
+
+    collect_output = await builtin_tools.local_corpus_collect_axis_evidence(
+        problem_frame=frame_payload,
+        axes=plan_payload["axes"],
+        __request__=request,
+    )
+    collect_payload = json.loads(collect_output)
+
+    assess_output = await builtin_tools.local_corpus_assess_evidence(
+        problem_frame=frame_payload,
+        evidence_bundle=collect_payload,
+        __request__=request,
+    )
+    assess_payload = json.loads(assess_output)
+
+    assert frame_payload["status"] == "ok"
+    assert plan_payload["status"] == "ok"
+    assert collect_payload["status"] == "ok"
+    assert assess_payload["status"] == "ok"
