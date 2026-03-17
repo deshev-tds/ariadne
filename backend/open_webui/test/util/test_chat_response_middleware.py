@@ -268,6 +268,8 @@ def test_local_corpus_prefer_system_prompt_encourages_brief_human_preamble():
     assert "Before your first local corpus tool call" in prompt
     assert "1 to 3 short sentences" in prompt
     assert "Do not answer the substance yet" in prompt
+    assert "preserve the user's substantive topic terms" in prompt
+    assert "what should I think about" in prompt
 
 
 def test_tool_narration_system_prompt_mentions_phase_changes():
@@ -276,6 +278,7 @@ def test_tool_narration_system_prompt_mentions_phase_changes():
     assert "first major tool phase" in prompt
     assert "meaningful phase changes" in prompt
     assert "do not restate tool names or raw status labels" in prompt
+    assert "preserve the user's substantive topic terms" in prompt
 
 
 def test_should_enable_shared_tool_narration_for_local_corpus_prefer():
