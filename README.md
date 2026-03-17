@@ -68,6 +68,7 @@ The important divergences are not cosmetic.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
 - A native focused-web tool (`web_research_strong`, with `search_strong_sources` kept as an alias) was added for local-first strong-source search, with broader fallback only when evidence from locally-listed strong domains is weak.
 - A domain-first local corpus path was added for proprietary or bought literature, with selection-layer markdown, per-book evidence retrieval, and table-aware follow-up tools instead of flattening everything into one generic knowledge pile.
+- The `v2` local-corpus reasoning lane now uses deterministic retrieval projection so user-facing framing text does not quietly pollute axis queries and slow or misroute retrieval.
 - Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
 - Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
 - An optional blocking deep-research lane was added through a Local Deep Research (LDR) sidecar, kept separate from normal web/focused search and returning downloadable report artifacts instead of dumping long web/report bodies into model context.
@@ -632,6 +633,78 @@ That is a good place to be.
 
 Architecture problems are expensive.
 Ranking problems are irritating, but fixable.
+
+### Recent Ledger: What Actually Hurt, and What Finally Helped
+
+The clean architecture was not the hard part.
+
+The hard part was getting a real local model, on a real local OWUI instance, to behave like a disciplined reader instead of a clever liar with a search box.
+
+The recent path looked like this:
+
+1. Prove that `v1` works end to end on a live instance, with real tool traces, real page/section citations, and real table opening.
+2. Add `v2` so abstract questions could use a bounded reasoning scaffold instead of overloading the direct lookup path.
+3. Discover that tool obedience is model-dependent in an extremely practical way:
+   - some models answer from weights and ignore tools
+   - some emit fake tool syntax as plain text
+   - some half-follow the tool chain and then drop required fields between calls
+   - some actually do the job
+4. Discover that one of the most annoying local failures was not "deep reasoning" at all. It was query hygiene.
+
+That last one deserves to be said plainly.
+
+Once `v2` existed, it became obvious that user-facing framing text could leak into retrieval terms:
+
+- `while waiting for a GP appointment`
+- `at a high level`
+- `for a lab meeting tomorrow`
+
+Those phrases matter for answer posture. They usually do not belong in the retrieval core.
+
+When they leaked through, two things happened:
+
+- retrieval got slower
+- shortlist quality got noisier
+
+In practice this produced exactly the kind of absurd-but-instructive results local systems are good at producing when they are almost right:
+
+- `ICD-11` showing up where a bedside clinical reference should have won
+- generic handbook/routing noise outranking the book that actually deserved to be opened
+- agent traces that looked "smart" but were spending work on the wrong lexical substrate
+
+There was also a tempting detour here.
+
+An intermediate patch tried to solve latency by shrinking the `v2` evidence payload and adding explicit follow-up expansion. That worked mechanically, but it damaged the emergent conversational behavior of the better model. The system became drier, more toolish, and less pleasant to use. The latency win was real but not large enough to justify the UX loss, so that patch was reverted.
+
+That was a useful failure.
+
+It forced the distinction between:
+
+- shaving payload size after retrieval
+- improving the lexical substrate before retrieval
+
+The second one was the right problem.
+
+The fix that stayed is deliberately boring:
+
+- deterministic retrieval projection for `v2`
+- separate retrieval-bearing terms from answer/context/control text
+- build axis queries from normalized high-signal terms instead of from the whole surface query
+- keep selector-like terms when they actually change the corpus slice or search regime
+- do not solve this with a growing blacklist of human phrases
+
+That last point matters.
+
+The system is not trying to memorize every annoying way a person can phrase "please answer this in a specific context". It is trying to identify what content has earned the right to affect retrieval at all.
+
+That change was worth making because it improved both latency and correctness at the same time:
+
+- noisy and clean versions of the same abstract query converged to the same shortlist
+- retrieval no longer paid a penalty just because the user spoke like a person instead of a benchmark prompt
+
+This is the kind of work that turns a feature into a lane you can trust.
+
+Not because it becomes magical, but because the remaining failures get smaller, more legible, and less embarrassing.
 
 ## Deep Research as a Separate Lane
 
