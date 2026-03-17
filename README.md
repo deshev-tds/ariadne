@@ -70,7 +70,7 @@ The important divergences are not cosmetic.
 - A domain-first local corpus path was added for proprietary or bought literature, with selection-layer markdown, per-book evidence retrieval, and table-aware follow-up tools instead of flattening everything into one generic knowledge pile.
 - The `v2` local-corpus reasoning lane now uses deterministic retrieval projection so user-facing framing text does not quietly pollute axis queries and slow or misroute retrieval.
 - The `default` function-calling selector now has its own runtime discipline layer, so local-corpus preference, retrieval term hygiene, and prior-work fallback do not depend entirely on native tool-calling behavior.
-- In `default` function calling, `local_corpus_mode=auto` now performs a single local shelf-inspection step first (`local_corpus_list_domains`) before jumping to web or model-only answering, and only continues locally when the returned usable domains show a real thematic fit.
+- In `default` function calling, `local_corpus_mode=auto` now deterministically performs a single local shelf-inspection step first (`local_corpus_list_domains`) before any web or model-only fallback, and only continues locally when the returned usable domains show a real thematic fit.
 - Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
 - Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
 - An optional blocking deep-research lane was added through a Local Deep Research (LDR) sidecar, kept separate from normal web/focused search and returning downloadable report artifacts instead of dumping long web/report bodies into model context.
@@ -607,7 +607,7 @@ There is also a chat-scoped operating control:
 That control exists because users do not always want the same thing.
 
 - `off`: answer from weights and other enabled lanes; do not inject local corpus tools
-- `auto`: let routing decide, but in `default` function calling first inspect the currently usable local domains once before abandoning the local lane
+- `auto`: let routing decide, but in `default` function calling first perform one deterministic inspection of the currently usable local domains before abandoning the local lane
 - `prefer`: bias toward local corpus when the question is compatible
 
 By default, the fork will auto-enable the tool family when a compatible `literature_corpus/` directory exists at the repo root.
