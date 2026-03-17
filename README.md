@@ -1,24 +1,26 @@
-# Open WebUI Fork for Bounded Local Work
+# Ariadne
 
-This is an opinionated Open WebUI fork for local-first long-chat work on real local runtimes: bounded hot context, evidence-oriented recall, planned retrieval, practical local voice, and inspectable generation.
+Ariadne is a local-first LLM workbench for bounded long-chat continuity, exact recall, evidence-first retrieval, practical local voice, and inspectable generation.
+
+Through its Open WebUI inheritance, Ariadne remains a full local AI workbench with chat, voice, files, tools, and the broader interaction surface people expect from a real daily driver.
 
 It is for people already running local models, especially `llama.cpp`-style stacks, who care about prompt-budget hygiene, controllable behavior, and being able to inspect what the system actually did.
 
-The thesis is simple: local LLM UX fails predictably when chat history is replayed naively, retrieval is allowed to sprawl, literature is flattened into generic ingest, and generation becomes an opaque black box. This fork is narrow on purpose. It is not trying to replace upstream Open WebUI. It is trying to make a specific local workflow sharper.
+The thesis is simple: local LLM UX fails predictably when chat history is replayed naively, retrieval is allowed to sprawl, literature is flattened into generic ingest, and generation becomes an opaque black box. Ariadne is narrow on purpose. It exists to make one local workflow sharper, not to flatten every workflow into a generic chat surface.
 
-Upstream Open WebUI remains a strong base platform and UI for self-hosted LLM workflows. This fork keeps that base, but diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, deliberate literature handling, and generation inspection that is useful during real debugging rather than only during demos.
+Built on Open WebUI, Ariadne diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, deliberate literature handling, and generation inspection that is useful during real debugging rather than only during demos.
 
-This README should be read as documentation for the fork as a distinct project, not as an implicit description of upstream behavior. The architectural and runtime behavior described below has either drifted too far from upstream to be treated as canonical Open WebUI behavior, or introduces non-canonical ideas that exist only in this fork. If a lane, continuity model, corpus path, telemetry surface, or control surface is described here in detail, assume it is fork-owned until stated otherwise.
+This README documents Ariadne as its own project, not as an annotated description of upstream behavior. If a lane, continuity model, corpus path, telemetry surface, or control surface is described here in detail, assume it belongs to Ariadne unless stated otherwise.
 
-In practice, the local stack behind this fork is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. A lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
+In practice, the local stack behind Ariadne is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. A lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
 
 ## Quick Navigation
 
-- [The Fork in One View](#the-fork-in-one-view)
-- [Why This Fork Exists](#why-this-fork-exists)
+- [Ariadne in One View](#ariadne-in-one-view)
+- [Why Ariadne Exists](#why-ariadne-exists)
 - [What Changed from Upstream](#what-changed-from-upstream)
 - [What Was Actually Validated](#what-was-actually-validated)
-- [Context and Memory in This Fork](#context-and-memory-in-this-fork)
+- [Context and Memory in Ariadne](#context-and-memory-in-ariadne)
 - [Web Search and Retrieval Planning](#web-search-and-retrieval-planning)
 - [Optional Local Corpus Lane](#optional-local-corpus-lane)
 - [Deep Research as a Separate Lane](#deep-research-as-a-separate-lane)
@@ -31,13 +33,13 @@ In practice, the local stack behind this fork is centered on `llama.cpp`, OpenAI
 Reading paths:
 
 > **Architecture path**  
-> [The Fork in One View](#the-fork-in-one-view) -> [What Was Actually Validated](#what-was-actually-validated) -> [Context and Memory in This Fork](#context-and-memory-in-this-fork) -> [Web Search and Retrieval Planning](#web-search-and-retrieval-planning) -> [Optional Local Corpus Lane](#optional-local-corpus-lane) -> [Deep Research as a Separate Lane](#deep-research-as-a-separate-lane)
+> [Ariadne in One View](#ariadne-in-one-view) -> [What Was Actually Validated](#what-was-actually-validated) -> [Context and Memory in Ariadne](#context-and-memory-in-ariadne) -> [Web Search and Retrieval Planning](#web-search-and-retrieval-planning) -> [Optional Local Corpus Lane](#optional-local-corpus-lane) -> [Deep Research as a Separate Lane](#deep-research-as-a-separate-lane)
 >
 > **Local corpus path**  
-> [The Fork in One View](#the-fork-in-one-view) -> [What Was Actually Validated](#what-was-actually-validated) -> [Optional Local Corpus Lane](#optional-local-corpus-lane) -> [Recent Lessons](#recent-lessons)
+> [Ariadne in One View](#ariadne-in-one-view) -> [What Was Actually Validated](#what-was-actually-validated) -> [Optional Local Corpus Lane](#optional-local-corpus-lane) -> [Recent Lessons](#recent-lessons)
 >
 > **Local runtime UX path**  
-> [The Fork in One View](#the-fork-in-one-view) -> [Context and Memory in This Fork](#context-and-memory-in-this-fork) -> [Voice / TTS](#voice--tts) -> [Token Exploration and Response Branching](#token-exploration-and-response-branching) -> [Thinking / Reasoning Controls](#thinking--reasoning-controls)
+> [Ariadne in One View](#ariadne-in-one-view) -> [Context and Memory in Ariadne](#context-and-memory-in-ariadne) -> [Voice / TTS](#voice--tts) -> [Token Exploration and Response Branching](#token-exploration-and-response-branching) -> [Thinking / Reasoning Controls](#thinking--reasoning-controls)
 
 The priority set here is:
 
@@ -51,9 +53,9 @@ The priority set here is:
 
 That is the frame for the rest of this document.
 
-## The Fork in One View
+## Ariadne in One View
 
-There are four deliberate lanes in this fork. That separation is not product packaging. Trying to force all of them through one vague "chat with tools" path is how local stacks become slow, opaque, and prompt-heavy.
+There are four deliberate lanes in Ariadne. That separation is not product packaging. Trying to force all of them through one vague "chat with tools" path is how local stacks become slow, opaque, and prompt-heavy.
 
 ```text
 User request
@@ -80,9 +82,9 @@ This is the on-disk evidence path for proprietary, bought, or locally curated li
 
 This is a separate blocking backend path for report generation through a sidecar. It returns artifacts and sources, not a giant report dump in model context. That makes it slower than the chat and retrieval lanes by design, but also more honest about what the system is doing.
 
-## Why This Fork Exists
+## Why Ariadne Exists
 
-The upstream project is broad. This fork is narrow on purpose.
+Ariadne is narrow on purpose.
 
 The main idea is that local LLM UX falls apart in a few predictable places:
 
@@ -93,7 +95,7 @@ The main idea is that local LLM UX falls apart in a few predictable places:
 - local TTS often sounds either too synthetic or too heavyweight
 - token-level generation is usually hidden, even when you need to inspect or steer it
 
-So this fork biases toward:
+So Ariadne biases toward:
 
 - server-side context hygiene
 - bounded recall instead of blind replay
@@ -102,17 +104,17 @@ So this fork biases toward:
 - lightweight but good local TTS
 - generation observability and deliberate branching
 
-The point is not upstream replacement. The point is a sharper local workflow with clearer operational contracts.
+The point is a sharper local workflow with clearer operational contracts.
 
 ## What Changed from Upstream
 
 The important divergences are not cosmetic. They fall into a few deliberate clusters.
 
-The labels in this section are fork-specific runtime concepts, not upstream Open WebUI vocabulary. In this fork, context maintenance, exact recall, and ledger continuity are treated as explicit backend-owned runtime layers with their own lifecycle and telemetry, rather than being left implicit inside a more general chat path.
+The labels in this section belong to Ariadne's runtime model, not generic Open WebUI vocabulary. Here, context maintenance, exact recall, and ledger continuity are treated as explicit backend-owned runtime layers with their own lifecycle and telemetry, rather than being left implicit inside a more general chat path.
 
 ### Continuity Model at a Glance
 
-At request time, the continuity path in this fork is now more like this:
+At request time, the continuity path in Ariadne is now more like this:
 
 ```text
 persisted branch history
@@ -129,7 +131,7 @@ The key concepts are:
 - `hot context`: the bounded working set for the current turn, built against the live prompt budget of the active runtime
 - `structured state snapshot`: the durable earlier-turn state that replaces older raw turns during compaction
 - `exact recall`: the bounded evidence-recovery layer used when older raw facts are needed again, closer to a server-side "find in earlier conversation" path than to always-on RAG
-- `ledger`: a separate fork-owned continuity layer for durable task-state or style guidance, with explicit `vibe` and `agentic` modes
+- `ledger`: a separate Ariadne continuity layer for durable task-state or style guidance, with explicit `vibe` and `agentic` modes
 
 **Memory and Context**
 
@@ -154,7 +156,7 @@ The key concepts are:
 - Kokoro adds a practical local TTS path.
 - Token explorer support and manual response branching make compatible local generation less of a black box. Current `llama.cpp` does not surface that telemetry for streamed native/tool-call responses - rely on function_calling=default whenever required. 
 
-The rest of this README explains the rationale and constraints behind those divergences.
+The rest of this README explains the rationale and constraints behind those choices.
 
 ## What Was Actually Validated
 
@@ -171,18 +173,18 @@ It does not claim that local RAG is solved, that models obey tools reliably by d
 
 The main validation corpus was medical literature. That was not a branding choice. It was an engineering choice joined to a real need: a domain with near-zero tolerance for citation sloppiness, bad ingest, and casual reasoning drift. If the system is going to flatten distinctions, misroute retrieval, or bluff its grounding, medicine is a fast place to find out.
 
-Architecture problems are expensive. Ranking problems, tool obedience, and query hygiene are irritating, but fixable. This fork is aimed at getting the expensive mistakes out of the way first.
+Architecture problems are expensive. Ranking problems, tool obedience, and query hygiene are irritating, but fixable. Ariadne is aimed at getting the expensive mistakes out of the way first.
 
-## Context and Memory in This Fork
+## Context and Memory in Ariadne
 
 This section is about keeping long chats usable on local runtimes. It is not a license to replay everything until the model breaks, and it is not an excuse to run retrieval on every turn. The job is to maintain a bounded working set, recover older facts when needed, and keep that behavior inspectable.
 
-The terms in this section are fork terms. They describe runtime layers implemented in this repo, not generic Open WebUI concepts.
+The terms in this section belong to Ariadne's runtime model. They describe layers implemented in this repo, not generic Open WebUI concepts.
 
 - `hot context`: the bounded request-time working set assembled by backend context maintenance against a live prompt cap derived from the active runtime
 - `structured state snapshot`: the canonical summary block produced during compaction and merged into the system message as durable earlier-turn state
 - `exact recall`: a bounded evidence-recovery step that runs only when the current turn appears to need older raw facts, currently through SQLite `FTS5` with `bm25(...)` ranking over persisted earlier turns
-- `ledger`: a separate fork memory layer for durable task-state or style continuity, with explicit `vibe` and `agentic` modes
+- `ledger`: a separate Ariadne memory layer for durable task-state or style continuity, with explicit `vibe` and `agentic` modes
 
 At request time, the memory path is now more like this:
 
@@ -216,7 +218,7 @@ That compaction layer has since been tightened into a more explicit `hot context
 
 The second change was not a new memory system. It was a better recap format.
 
-Instead of asking the model for a narrative summary, this fork asks for a structured state snapshot with sections such as:
+Instead of asking the model for a narrative summary, Ariadne asks for a structured state snapshot with sections such as:
 
 - User Objectives
 - Constraints and Preferences
@@ -274,7 +276,7 @@ Evidence from earlier conversation:
 
 That provenance matters. The model is being shown evidence, not a second-hand retelling.
 
-One subtle but important detail here is that the recall path now follows the real OWUI request lifecycle more closely. In the normal frontend flow, the newest user turn may exist in the in-flight request before it has been persisted back into chat history. This fork now reconstructs request history accordingly: if the current user turn is not yet in the database, it loads persisted history up to its parent and appends the current in-flight user turn before running maintenance and recall. That keeps the cold-history path aligned with how the product actually behaves, not just how a simplified synthetic pipeline would behave.
+One subtle but important detail here is that the recall path now follows the real OWUI request lifecycle more closely. In the normal frontend flow, the newest user turn may exist in the in-flight request before it has been persisted back into chat history. Ariadne reconstructs request history accordingly: if the current user turn is not yet in the database, it loads persisted history up to its parent and appends the current in-flight user turn before running maintenance and recall. That keeps the cold-history path aligned with how the product actually behaves, not just how a simplified synthetic pipeline would behave.
 
 ### Simulated User Flows
 
@@ -320,7 +322,7 @@ The result is not "perfect memory". The result is a layered memory system that i
 
 ### Runtime Semantics and Memory Telemetry
 
-This fork also now exposes the context system in its own runtime terms instead of hiding it behind a pile of internal budget math.
+Ariadne also exposes the context system in its own runtime terms instead of hiding it behind a pile of internal budget math.
 
 On each turn, the server can reason explicitly about:
 
@@ -336,7 +338,7 @@ On each turn, the server can reason explicitly about:
 
 When needed, that telemetry can be requested per turn with a debug flag and returned in the response as `memoryTelemetry`.
 
-That design matters for a local-first system. Without it, the architecture may be doing the right thing but still remain opaque when something goes wrong. With it, the fork becomes inspectable in its own terms:
+That design matters for a local-first system. Without it, the architecture may be doing the right thing but still remain opaque when something goes wrong. With it, Ariadne becomes inspectable in its own terms:
 
 - was working memory too large?
 - did snapshotting happen?
@@ -367,7 +369,7 @@ It is off by default, capped, and explicitly opt-in per request.
 
 ### Ledger Continuity Modes
 
-This fork now treats ledger mode as an explicit fork memory control instead of a backend heuristic.
+Ariadne treats ledger mode as an explicit memory control instead of a backend heuristic.
 
 The ledger is not "memory" in the same sense as the structured state snapshot.
 
@@ -398,11 +400,11 @@ On the first turn after a mode switch, the selected mode can force a single ledg
 
 ### Legacy Simon Pipe Cleanup
 
-The old `simon-cognitive-engine` pipe stack is no longer part of the supported runtime path in this fork.
+The old `simon-cognitive-engine` pipe stack is no longer part of Ariadne's supported runtime path.
 
-That pipe mattered historically. `Simon` was the first standalone inference layer behind a frontend and backend in this ecosystem: voice-first, but not voice-only, with bounded memory, explicit recall, lexical search, and a deliberate split between fast answers and slower evidence-heavy paths. A lot of the design pressure that shaped this fork was first worked through there.
+That pipe mattered historically. `Simon` was the first standalone inference layer behind a frontend and backend in this ecosystem: voice-first, but not voice-only, with bounded memory, explicit recall, lexical search, and a deliberate split between fast answers and slower evidence-heavy paths. A lot of the design pressure that shaped Ariadne was first worked through there.
 
-The reason to remove the pipe anyway was architectural, not emotional. Keeping Simon as a live embedded runtime would have pushed this fork further away from upstream Open WebUI, and it would have meant carrying Simon-specific plumbing, valves, and deployment assumptions everywhere this fork runs. The decision here was to keep the ideas, but re-implement the important runtime behavior natively in the OWUI request path.
+The reason to remove the pipe anyway was architectural, not emotional. Keeping Simon as a live embedded runtime would have pushed Ariadne further away from upstream Open WebUI, and it would have meant carrying Simon-specific plumbing, valves, and deployment assumptions everywhere Ariadne runs. The decision here was to keep the ideas, but re-implement the important runtime behavior natively in the OWUI request path.
 
 What got rewritten into OWUI-native behavior instead of staying in the old Simon pipe stack:
 
@@ -452,7 +454,7 @@ In practice, this means the web path here is more structured than a flat search 
 The important behavioral shift is this:
 
 - upstream-style web search is often thought of as "query provider -> collect results -> inject results"
-- this fork pushes it toward "plan -> target sources -> bound evidence -> stop when enough evidence exists"
+- Ariadne pushes it toward "plan -> target sources -> bound evidence -> stop when enough evidence exists"
 
 That matters more on local setups than it first appears. Prompt budget is finite, retrieval latency is visible, and low-quality web evidence is actively harmful when it crowds out the rest of the conversation. The planner/rewriter/source-registry work is there to make web retrieval less brute-force and less noisy.
 
@@ -492,7 +494,7 @@ Model-callable tool names are part of the behavioral interface, not just cosmeti
 
 In practice, shared generic prefixes encouraged tool-name blending during selection. A notes-only tool and a focused web-research tool were close enough in model space that the model could invent plausible but nonexistent hybrids and keep reaching for the wrong call path.
 
-To reduce that drift, this fork moved toward clearer affordances:
+To reduce that drift, Ariadne moved toward clearer affordances:
 
 - `search_notes` -> `notes_lookup` (`search_notes` kept as a backward-compatible alias)
 - `search_strong_sources` -> `web_research_strong` (`search_strong_sources` kept as a backward-compatible alias)
@@ -508,7 +510,7 @@ This significantly improves real-world tool selection behavior, especially in lo
 
 Classifier bloat was avoided on purpose.
 
-This fork keeps a lightweight coarse gate with obvious buckets:
+Ariadne keeps a lightweight coarse gate with obvious buckets:
 
 - `software`, `medicine`, `legal`, `science`, `news`, `shopping`, `general`
 
@@ -570,7 +572,7 @@ This is expected behavior, not a planner bug: the routing contract is "prefer lo
 
 ### Strong Domains in Practice
 
-This fork does not ship a local evidence corpus. It ships a locally maintained strong-source domain registry used for routing and query constraints.
+Ariadne does not ship a local evidence corpus. It ships a locally maintained strong-source domain registry used for routing and query constraints.
 
 Current examples (from the registry) include:
 
@@ -586,7 +588,7 @@ Where this lives:
 
 ## Optional Local Corpus Lane
 
-This fork now also supports a separate local-corpus path for cases where the strongest evidence is not on the web at all, but on disk.
+Ariadne also supports a separate local-corpus path for cases where the strongest evidence is not on the web at all, but on disk.
 
 That matters for a very specific class of workflows:
 
@@ -595,7 +597,7 @@ That matters for a very specific class of workflows:
 - internal review corpora
 - local material that should not be flattened into a generic OWUI knowledge blob
 
-The important design choice here is the same one that shows up elsewhere in this fork:
+The important design choice here is the same one that shows up elsewhere in Ariadne:
 
 do not collapse unlike jobs into one vague retrieval step.
 
@@ -604,7 +606,7 @@ For a real literature corpus, there are at least two different jobs:
 - shortlist which local sources are worth searching
 - retrieve evidence inside those selected sources
 
-This fork therefore does not treat a local corpus as "just another text pile to ingest".
+Ariadne does not treat a local corpus as "just another text pile to ingest".
 
 It supports a domain-first lane with a split architecture:
 
@@ -802,7 +804,7 @@ That control exists because users do not always want the same thing.
 - `auto`: let routing decide, but in `default` function calling first perform one deterministic inspection of the currently usable local domains before abandoning the local lane
 - `prefer`: bias toward local corpus when the question is compatible
 
-By default, the fork will auto-enable the tool family when a compatible `literature_corpus/` directory exists at the repo root.
+By default, Ariadne will auto-enable the tool family when a compatible `literature_corpus/` directory exists at the repo root.
 
 Derived lexical indexes are built as disposable local cache artifacts under `backend/data/local_corpus/`. The corpus itself remains the source of truth.
 
@@ -823,7 +825,7 @@ Those are not the same workflow, and trying to merge them usually leads to the w
 - weak report synthesis
 - unclear UX about whether the system is "thinking", "searching", or just stuck
 
-So the fork now treats deep research as a deliberate blocking path for the current turn. That is slower by design, but it is honest about what the system is doing.
+So Ariadne treats deep research as a deliberate blocking path for the current turn. That is slower by design, but it is honest about what the system is doing.
 
 ### Execution Contract
 
@@ -836,7 +838,7 @@ The contract for this lane is intentionally strict:
 - final report bodies are not injected back into model context
 - the user gets downloadable artifacts instead: markdown plus an exported report format such as PDF
 
-That last point matters. This fork already spends a lot of effort on prompt-budget hygiene, so deep research is explicitly not allowed to solve one retrieval problem by creating a worse context-pollution problem.
+That last point matters. Ariadne already spends a lot of effort on prompt-budget hygiene, so deep research is explicitly not allowed to solve one retrieval problem by creating a worse context-pollution problem.
 
 In practical terms, deep mode now behaves more like this:
 
@@ -864,7 +866,7 @@ So the turn result is "research completed, here are the artifacts and sources", 
 
 Because deep mode is blocking, cancellation semantics matter more than they do in a normal short turn.
 
-This fork therefore treats cancel as a real backend concern:
+Ariadne treats cancel as a real backend concern:
 
 - if the user cancels while the sidecar is still working, OWUI does a best-effort terminate call to the sidecar
 - if the sidecar has already reached terminal completion and OWUI is only finalizing artifact registration, a late cancel is not allowed to rewrite a successful run into a fake canceled one
@@ -878,7 +880,7 @@ That same discipline also extends to storage:
 
 ## Voice / TTS
 
-This fork adds Kokoro because local TTS quality matters, and a lot of local stacks are either too robotic or too heavy for the quality they provide.
+Ariadne adds Kokoro because local TTS quality matters, and a lot of local stacks are either too robotic or too heavy for the quality they provide.
 
 Kokoro was added as a practical compromise:
 
@@ -886,7 +888,7 @@ Kokoro was added as a practical compromise:
 - lightweight enough to remain useful in local deployments
 - broad enough voice selection to make experimentation worthwhile
 
-This fork supports Kokoro in the places where it is actually useful:
+Ariadne supports Kokoro in the places where it is actually useful:
 
 - backend/local Kokoro ONNX
 - browser-side Kokoro.js where that path makes sense
@@ -897,9 +899,9 @@ The point is not to chase the largest TTS stack. The point is to improve voice q
 
 Most chat UIs hide generation internals completely. That is convenient until you need to inspect why a response happened, or you want to deliberately fork from a different token path.
 
-This fork adds token explorer support so you can inspect token/logit alternatives when the backend exposes the necessary telemetry. In the author's local stack, that means `llama.cpp` speaking an OpenAI-compatible API and returning usable logprob/top-logprob style data.
+Ariadne adds token explorer support so you can inspect token/logit alternatives when the backend exposes the necessary telemetry. In the author's local stack, that means `llama.cpp` speaking an OpenAI-compatible API and returning usable logprob/top-logprob style data.
 
-The explorer itself is fully implemented in this fork. The constraint is not the UI path; the constraint is backend capability.
+The explorer itself is fully implemented in Ariadne. The constraint is not the UI path; the constraint is backend capability.
 
 Current `llama.cpp` does not surface usable token telemetry for streamed native/tool-call responses, so Token Explorer is unavailable on that path. Upstream's tool-calling and streamed-tool-delta work makes the reason explicit: the server reparses partial model output into semantic `tool_calls` deltas instead of exposing a stable per-token stream there, and it explicitly rejects `logprobs` when `tools` and `stream` are enabled together. If you need to work with token telemetry and streaming responses, simply choose function_calling=default. 
 
@@ -933,11 +935,11 @@ Creating a branch from `Wait` does not just change one word. It flips the recomm
 
 This is not presented here as "full interpretability". It is a practical debugging and exploration tool for model behavior.
 
-It is also intentionally not implemented as "keep the whole live generation tree resident forever". In this fork, manual branching is driven by bounded token telemetry and a fallback prefix-forcing strategy, which is far more practical on local hardware than pretending every backend will give you infinite branching state for free.
+It is also intentionally not implemented as "keep the whole live generation tree resident forever". In Ariadne, manual branching is driven by bounded token telemetry and a fallback prefix-forcing strategy, which is far more practical on local hardware than pretending every backend will give you infinite branching state for free.
 
 ## Thinking / Reasoning Controls
 
-Open WebUI already has a fair amount of upstream reasoning/thinking plumbing. What matters in this fork is not inventing a separate "reasoning mode", but documenting how that plumbing actually behaves in a `llama.cpp`-centric local stack.
+Open WebUI already has a fair amount of upstream reasoning/thinking plumbing. What matters here is not inventing a separate "reasoning mode", but documenting how that plumbing actually behaves in a `llama.cpp`-centric local stack.
 
 For the `llama.cpp`-centric stack used here, the important path is template-aware thinking control. The chat UI can set `custom_params.chat_template_kwargs.enable_thinking`, which is useful when the loaded model's Jinja chat template actually checks that flag and switches behavior accordingly.
 
@@ -946,7 +948,7 @@ That distinction matters:
 - if the template honors `enable_thinking`, the toggle is real
 - if the template ignores it, the toggle is just a no-op parameter
 
-So this is not advertised here as a fork-specific universal "reasoning mode". It is better understood as a practical control surface for backends and model templates that already expose a thinking/not-thinking branch.
+So this is not advertised here as a universal "reasoning mode". It is better understood as a practical control surface for backends and model templates that already expose a thinking/not-thinking branch.
 
 That also means `enable_thinking` is not a universal cross-model convention. In this stack, `llama.cpp` passes Jinja template kwargs through to the active chat template; the template itself decides what those kwargs mean. Some templates use `enable_thinking`, some use different flags, and some ignore the concept entirely.
 
@@ -960,9 +962,9 @@ chat-template-file = /path/to/models/templates/qwen35-27b-think-toggle.jinja
 chat-template-kwargs = {"enable_thinking": false}
 ```
 
-In that kind of setup, the fork's UI toggle is not inventing a new reasoning protocol. It is sending a real signal back to a template that was explicitly authored to switch between thinking and non-thinking prompt shapes.
+In that kind of setup, Ariadne's UI toggle is not inventing a new reasoning protocol. It is sending a real signal back to a template that was explicitly authored to switch between thinking and non-thinking prompt shapes.
 
-The important distinction for this README is attribution: most of the generic reasoning-tag handling, thought-block rendering, and provider-specific reasoning params come from Open WebUI itself. The fork-specific point is that this repo treats template-aware thinking control as operationally important for local `llama.cpp` deployments and describes it accordingly, without pretending that one toggle can force every model/backend pair into a coherent thinking mode.
+The important distinction here is attribution: most of the generic reasoning-tag handling, thought-block rendering, and provider-specific reasoning params come from Open WebUI itself. Ariadne's own contribution is to treat template-aware thinking control as operationally important for local `llama.cpp` deployments and describe it accordingly, without pretending that one toggle can force every model/backend pair into a coherent thinking mode.
 
 ## Recent Lessons
 
@@ -1040,7 +1042,7 @@ Not because it becomes magical, but because the remaining failures get smaller, 
 
 There was one more practical wrinkle after that.
 
-Some of the nicest behavior in the system was showing up while the chat was still using `default` function calling rather than `native`. That exposed an easy mistake to make while debugging this fork: assuming that native-only prompt work was responsible for everything good that happened in tool runs.
+Some of the nicest behavior in the system was showing up while the chat was still using `default` function calling rather than `native`. That exposed an easy mistake to make while debugging Ariadne: assuming that native-only prompt work was responsible for everything good that happened in tool runs.
 
 It was not.
 
@@ -1062,7 +1064,7 @@ The corrected version is intentionally conservative:
 - incomplete prompts are not treated as a reason to rummage through old chats
 - prior-work guidance is injected only when there is a positive signal that the missing context plausibly lives in prior conversation or user-owned workspace material
 
-This matters because the fork is trying to produce procedural honesty, not just lots of motion.
+This matters because Ariadne is trying to produce procedural honesty, not just lots of motion.
 
 A selector that searches old artifacts every time primary lanes are disabled is not being careful. It is being anxious.
 
@@ -1070,17 +1072,17 @@ That distinction is worth preserving.
 
 ## Closing Notes
 
-The most important differences in this fork are the ones above, but the operating theme is consistent: better local behavior, better debuggability, fewer "just trust the model" assumptions.
+The most important differences in Ariadne are the ones above, but the operating theme is consistent: better local behavior, better debuggability, fewer "just trust the model" assumptions.
 
-There is also early scaffolding for runtime MoE experts probing/control on compatible OpenAI-style backends. That work is real, but it is still backend-dependent and not yet central enough to this fork's identity to present as a headline capability.
+There is also early scaffolding for runtime MoE experts probing/control on compatible OpenAI-style backends. That work is real, but it is still backend-dependent and not yet central enough to Ariadne's identity to present as a headline capability.
 
 Also, as a matter of principle, chat does not try to steal `Cmd+R` from the browser. Reload still means reload. Some boundaries deserve respect.
 
 ## Compatibility / Install
 
-This is still Open WebUI under the hood, and the basic deployment model remains broadly compatible with upstream expectations. If you already know how to run Open WebUI, that knowledge still transfers.
+Ariadne remains operationally close enough to Open WebUI that existing deployment knowledge transfers cleanly.
 
-This README intentionally does not duplicate the upstream install matrix. The fork is primarily aimed at local deployments and local model runners, and the most practical path is usually to keep using the deployment method you already use for Open WebUI while applying this fork's code and settings.
+This README intentionally does not duplicate the upstream install matrix. Ariadne is primarily aimed at local deployments and local model runners, and the most practical path is usually to keep using the deployment method you already use for Open WebUI while applying Ariadne's code and settings.
 
 The author's practical target stack is:
 
@@ -1089,9 +1091,9 @@ The author's practical target stack is:
 - the prebuilt Strix Halo toolboxes maintained here:
   - https://github.com/kyuz0/amd-strix-halo-toolboxes/tree/main
 
-Those toolboxes are worth calling out because they make `llama.cpp` on Strix Halo much less painful to operate, and this fork has been developed with that runtime reality in mind rather than against an abstract "supports every backend equally" ideal.
+Those toolboxes are worth calling out because they make `llama.cpp` on Strix Halo much less painful to operate, and Ariadne has been developed with that runtime reality in mind rather than against an abstract "supports every backend equally" ideal.
 
-That also explains some of the fork's behavior:
+That also explains some of Ariadne's behavior:
 
 - context maintenance exists because `llama.cpp` will not semantically manage long chat history for you
 - recall is bounded because local prompt budget and latency are both visible costs
@@ -1111,17 +1113,17 @@ For generic deployment guidance, refer to the upstream Open WebUI documentation:
 
 ## Related Practical Systems
 
-This fork is not the only place where these operating lessons show up.
+Ariadne is not the only place where these operating lessons show up.
 
-- [Simon](https://github.com/deshev-tds/simon) was the first standalone frontend+backend inference layer in this ecosystem: voice-first, but not only, and the place where many of the bounded-memory, exact-recall, and explicit-reasoning ideas were first tested before being reworked more natively into this fork.
+- [Simon](https://github.com/deshev-tds/simon) was the first standalone frontend+backend inference layer in this ecosystem: voice-first, but not only, and the place where many of the bounded-memory, exact-recall, and explicit-reasoning ideas were first tested before being reworked more natively into Ariadne.
 - [VERA](https://github.com/deshev-tds/vera) is a local verification-oriented research agent built around evidence hooks, tool discipline, and auditable verification loops.
 
-They are separate projects, not hidden subsystems of this fork. They are included here simply because they come from the same practical ecosystem and many of the same learned constraints.
+They belong to the same practical ecosystem and reflect many of the same learned constraints.
 
 ## Upstream Attribution
 
-This fork is built on Open WebUI, and upstream remains the base platform.
+Ariadne is built on Open WebUI.
 
-The goal here is not to replace upstream, but to diverge where local-first usage benefits from different tradeoffs: tighter context management, bounded recall, better lightweight voice options, and more transparent generation tooling.
+Open WebUI remains the upstream project and software substrate from which Ariadne diverged.
 
-Licensing and attribution remain those of the underlying project and this fork's codebase. See [LICENSE](./LICENSE) and [LICENSE_HISTORY](./LICENSE_HISTORY).
+Licensing and attribution remain those of the underlying project and this codebase. See [LICENSE](./LICENSE) and [LICENSE_HISTORY](./LICENSE_HISTORY).
