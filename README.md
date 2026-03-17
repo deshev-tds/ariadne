@@ -152,7 +152,7 @@ The key concepts are:
 **Runtime Surfaces**
 
 - Kokoro adds a practical local TTS path.
-- Token explorer support and manual response branching make compatible local generation less of a black box.
+- Token explorer support and manual response branching make compatible local generation less of a black box. Current `llama.cpp` does not surface that telemetry for streamed native/tool-call responses - rely on function_calling=default whenever required. 
 
 The rest of this README explains the rationale and constraints behind those divergences.
 
@@ -900,6 +900,8 @@ Most chat UIs hide generation internals completely. That is convenient until you
 This fork adds token explorer support so you can inspect token/logit alternatives when the backend exposes the necessary telemetry. In the author's local stack, that means `llama.cpp` speaking an OpenAI-compatible API and returning usable logprob/top-logprob style data.
 
 The explorer itself is fully implemented in this fork. The constraint is not the UI path; the constraint is backend capability.
+
+Current `llama.cpp` does not surface usable token telemetry for streamed native/tool-call responses, so Token Explorer is unavailable on that path. Upstream's tool-calling and streamed-tool-delta work makes the reason explicit: the server reparses partial model output into semantic `tool_calls` deltas instead of exposing a stable per-token stream there, and it explicitly rejects `logprobs` when `tools` and `stream` are enabled together. If you need to work with token telemetry and streaming responses, simply choose function_calling=default. 
 
 It also supports manually creating a new response branch from a selected token alternative instead of treating the sampled continuation as sacred.
 
