@@ -13,6 +13,23 @@ from open_webui.utils.middleware import (
 )
 
 
+def _build_request(
+    *,
+    enable_local_corpus: bool = False,
+    local_corpus_root: str | None = None,
+):
+    return SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    ENABLE_LOCAL_CORPUS_TOOLS=enable_local_corpus,
+                    LOCAL_CORPUS_ROOT=local_corpus_root,
+                )
+            )
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_non_streaming_chat_response_persists_without_event_emitter(monkeypatch):
     saved_messages = []
@@ -251,6 +268,117 @@ def test_local_corpus_prefer_system_prompt_encourages_brief_human_preamble():
     assert "Before your first local corpus tool call" in prompt
     assert "1 to 3 short sentences" in prompt
     assert "Do not answer the substance yet" in prompt
+
+
+def test_tool_narration_system_prompt_mentions_phase_changes():
+    prompt = middleware.TOOL_NARRATION_SYSTEM_PROMPT
+
+    assert "first major tool phase" in prompt
+    assert "meaningful phase changes" in prompt
+    assert "do not restate tool names or raw status labels" in prompt
+
+
+def test_should_enable_shared_tool_narration_for_local_corpus_prefer():
+    request = _build_request(
+        enable_local_corpus=True, local_corpus_root="/tmp/local-corpus"
+    )
+    metadata = {"params": {"function_calling": "native", "local_corpus_mode": "prefer"}}
+
+    assert (
+        middleware._should_enable_shared_tool_narration(request, metadata, {})
+        is True
+    )
+
+
+def test_should_enable_shared_tool_narration_for_focused_search():
+    request = _build_request()
+    metadata = {"params": {"function_calling": "native"}}
+
+    assert (
+        middleware._should_enable_shared_tool_narration(
+            request, metadata, {"focused_search": True}
+        )
+        is True
+    )
+
+
+def test_initialize_tool_narration_state_reserves_local_corpus_orientation():
+    request = _build_request(
+        enable_local_corpus=True, local_corpus_root="/tmp/local-corpus"
+    )
+    metadata = {"params": {"function_calling": "native", "local_corpus_mode": "prefer"}}
+
+    state = middleware._initialize_tool_narration_state(request, metadata, {})
+
+    assert state["enabled"] is True
+    assert state["last_narrated_phase"] == "orientation"
+    assert state["narration_count"] == 1
+
+
+def test_register_tool_narration_phase_transition_requires_real_phase_change():
+    state = {
+        "enabled": True,
+        "last_narrated_phase": "orientation",
+        "current_major_phase": None,
+        "narration_count": 1,
+        "max_beats": 3,
+    }
+
+    assert (
+        middleware._register_tool_narration_phase_transition(
+            state, ["orientation", "orientation"]
+        )
+        is None
+    )
+
+    instruction = middleware._register_tool_narration_phase_transition(
+        state, ["planning", "orientation"]
+    )
+
+    assert instruction is not None
+    assert "framed the task and are narrowing the path" in instruction
+    assert state["last_narrated_phase"] == "planning"
+    assert state["narration_count"] == 2
+
+
+def test_register_tool_narration_phase_transition_respects_beat_cap():
+    state = {
+        "enabled": True,
+        "last_narrated_phase": "planning",
+        "current_major_phase": "planning",
+        "narration_count": 3,
+        "max_beats": 3,
+    }
+
+    assert (
+        middleware._register_tool_narration_phase_transition(
+            state, ["evidence_gathering"]
+        )
+        is None
+    )
+
+
+def test_build_tool_continuation_messages_uses_temporary_system_append():
+    form_messages = [{"role": "system", "content": "base prompt"}]
+    output = [
+        {
+            "type": "message",
+            "id": "msg_1",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Working on it."}],
+        }
+    ]
+
+    messages = middleware._build_tool_continuation_messages(
+        form_messages,
+        output,
+        narration_instruction="phase guidance",
+    )
+
+    assert "phase guidance" in messages[0]["content"]
+    assert "phase guidance" not in form_messages[0]["content"]
+    assert messages[-1]["role"] == "assistant"
 
 
 def test_append_tool_journey_event_is_on_demand():
