@@ -74,6 +74,108 @@ _DOMAIN_CONTEXT_GAPS = {
         ("scope", "authorized scope, target assumptions, and environment"),
     ],
 }
+_GENERIC_CONTEXT_TERMS = {
+    "about",
+    "appointment",
+    "best",
+    "brief",
+    "briefly",
+    "broad",
+    "currently",
+    "general",
+    "gp",
+    "high",
+    "interview",
+    "level",
+    "looking",
+    "need",
+    "overview",
+    "please",
+    "plus",
+    "quick",
+    "quickly",
+    "should",
+    "think",
+    "tomorrow",
+    "while",
+    "waiting",
+    "want",
+    "meeting",
+}
+_SELECTOR_TERMS_BY_DOMAIN = {
+    "medicine": {
+        "adult",
+        "adults",
+        "child",
+        "children",
+        "female",
+        "infant",
+        "male",
+        "pediatric",
+        "pregnant",
+        "postpartum",
+        "renal",
+        "hepatic",
+        "elderly",
+    },
+    "chemistry": {
+        "aqueous",
+        "anhydrous",
+        "catalyst",
+        "ph",
+        "pressure",
+        "solvent",
+        "temperature",
+    },
+    "physics": {
+        "approximate",
+        "asymptotic",
+        "boundary",
+        "exact",
+        "limit",
+        "regime",
+    },
+    "mathematics": {
+        "constructive",
+        "intuition",
+        "proof",
+        "rigorous",
+    },
+    "quantum_mechanics": {
+        "approximation",
+        "basis",
+        "hamiltonian",
+        "operator",
+        "state",
+        "wavefunction",
+    },
+    "biology": {
+        "cell",
+        "human",
+        "mouse",
+        "organism",
+        "tissue",
+        "vitro",
+        "vivo",
+    },
+    "computer_science": {
+        "environment",
+        "latency",
+        "memory",
+        "production",
+        "throughput",
+    },
+    "offensive_security": {
+        "air",
+        "airgapped",
+        "authorized",
+        "engagement",
+        "environment",
+        "lab",
+        "scope",
+        "target",
+    },
+}
 
 
 def clear_local_corpus_reasoning_caches() -> None:
@@ -228,6 +330,303 @@ def _extract_measurements(query: str) -> list[str]:
         if normalized and normalized not in seen:
             seen.append(normalized)
     return seen
+
+
+def _span_tokens(value: str) -> list[str]:
+    return corpus._query_terms(value)
+
+
+def _normalized_token_set(value: str) -> set[str]:
+    return {token for token in _span_tokens(value) if token}
+
+
+def _content_tokens(tokens: list[str]) -> list[str]:
+    return [
+        token
+        for token in tokens
+        if token not in corpus.SALIENT_QUERY_STOP_TERMS and token not in _GENERIC_CONTEXT_TERMS
+    ]
+
+
+def _trim_context_edges(value: str) -> str:
+    tokens = _span_tokens(value)
+    if not tokens:
+        return ""
+
+    start = 0
+    end = len(tokens)
+    edge_terms = set(corpus.SALIENT_QUERY_STOP_TERMS) | _GENERIC_CONTEXT_TERMS
+    while start < end and tokens[start] in edge_terms:
+        start += 1
+    while end > start and tokens[end - 1] in edge_terms:
+        end -= 1
+    return " ".join(tokens[start:end]).strip()
+
+
+def _stem_like(token: str) -> str:
+    token = token.lower().strip()
+    for suffix in ("ing", "ers", "ies", "ied", "ed", "es", "s"):
+        if len(token) > len(suffix) + 2 and token.endswith(suffix):
+            if suffix in {"ies", "ied"}:
+                return token[: -len(suffix)] + "y"
+            return token[: -len(suffix)]
+    return token
+
+
+def _canonicalize_span(value: str) -> str:
+    tokens = _content_tokens(_span_tokens(value))
+    if not tokens:
+        return ""
+    stems: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        stemmed = _stem_like(token)
+        if stemmed and stemmed not in seen:
+            seen.add(stemmed)
+            stems.append(stemmed)
+    return " ".join(stems[:4]).strip()
+
+
+def _candidate_content_signal(
+    value: str,
+    *,
+    domain_term_set: set[str],
+    salient_terms: set[str],
+    measurements: set[str],
+    support_count: int,
+    sources: set[str],
+) -> float:
+    tokens = _span_tokens(value)
+    token_set = set(tokens)
+    if not tokens:
+        return 0.0
+
+    content_tokens = _content_tokens(tokens)
+    context_hits = sum(1 for token in tokens if token in _GENERIC_CONTEXT_TERMS)
+    score = 0.0
+    score += min(2.0, 0.55 * len(content_tokens))
+    score += min(2.0, 0.7 * len(token_set & domain_term_set))
+    score += min(1.6, 0.45 * len(token_set & salient_terms))
+    if "quoted" in sources:
+        score += 0.8
+    if "salient" in sources:
+        score += 0.5
+    if "specific" in sources:
+        score += 0.35
+    if any(measurement in value.lower() for measurement in measurements):
+        score += 1.6
+    if support_count > 1:
+        score += min(1.2, 0.5 * (support_count - 1))
+    if context_hits:
+        score -= min(2.4, 0.8 * context_hits)
+    if tokens and tokens[0] in _GENERIC_CONTEXT_TERMS:
+        score -= 0.65
+    if tokens and tokens[-1] in _GENERIC_CONTEXT_TERMS:
+        score -= 0.65
+    if len(content_tokens) < 2 and not any(measurement in value.lower() for measurement in measurements):
+        score -= 1.25
+    if sources <= {"segment"} or sources <= {"constraint"}:
+        score -= 0.8
+    if len(tokens) > 6 and (len(content_tokens) / max(1, len(tokens))) < 0.6:
+        score -= 1.2
+    if len(tokens) > 10:
+        score -= 1.0
+    return round(score, 4)
+
+
+def _candidate_selector_signal(value: str, *, domain: str, is_constraint: bool) -> float:
+    tokens = _span_tokens(value)
+    token_set = set(tokens)
+    if not token_set:
+        return 0.0
+
+    score = 0.0
+    selector_terms = {_stem_like(term) for term in _SELECTOR_TERMS_BY_DOMAIN.get(domain, set())}
+    selector_hits = sum(1 for token in token_set if _stem_like(token) in selector_terms)
+    score += min(2.0, 1.0 * selector_hits)
+    if selector_hits and len(tokens) <= 3:
+        score += 0.35
+    if is_constraint and len(tokens) <= 5:
+        score += 0.45
+    if is_constraint and len(_content_tokens(tokens)) >= 2:
+        score += 0.3
+    return round(score, 4)
+
+
+def _build_retrieval_projection(
+    query: str,
+    *,
+    domain: str,
+    constraints: list[str],
+    measurements: list[str],
+) -> dict[str, Any]:
+    quoted = corpus._quoted_phrases(query)
+    salient_phrases = corpus._salient_query_phrases(query)
+    segments = _extract_segments(query)
+    specific_terms = corpus._specific_query_terms(query, domain)
+    salient_terms = {
+        token
+        for phrase in salient_phrases
+        for token in _content_tokens(_span_tokens(phrase))
+    }
+    domain_term_set = set(specific_terms)
+    measurement_set = {measurement.lower() for measurement in measurements}
+    constraint_set = {corpus._normalize_text(item) for item in constraints}
+
+    candidate_sources: dict[str, set[str]] = {}
+    for source, values in (
+        ("quoted", quoted),
+        ("salient", salient_phrases),
+        ("segment", segments),
+        ("specific", specific_terms),
+        ("measurement", measurements),
+        ("constraint", constraints),
+    ):
+        for value in values:
+            normalized = corpus._normalize_text(_trim_context_edges(value) or value)
+            if normalized:
+                candidate_sources.setdefault(normalized, set()).add(source)
+
+    candidates: list[dict[str, Any]] = []
+    for value, sources in candidate_sources.items():
+        content_score = _candidate_content_signal(
+            value,
+            domain_term_set=domain_term_set,
+            salient_terms=salient_terms,
+            measurements=measurement_set,
+            support_count=len(sources),
+            sources=sources,
+        )
+        selector_score = _candidate_selector_signal(
+            value,
+            domain=domain,
+            is_constraint=value in constraint_set or "constraint" in sources,
+        )
+        canonical = _canonicalize_span(value)
+        tokens = _span_tokens(value)
+        candidate = {
+            "value": value,
+            "canonical": canonical,
+            "tokens": tokens,
+            "sources": sorted(sources),
+            "content_signal_score": content_score,
+            "selector_signal_score": selector_score,
+            "salience_weight": max(1, len(sources)),
+            "is_constraint_like": value in constraint_set or "constraint" in sources,
+            "is_measurement_like": "measurement" in sources,
+            "is_selector_promoted": False,
+        }
+        candidates.append(candidate)
+
+    candidates.sort(
+        key=lambda item: (
+            -item["content_signal_score"],
+            -item["selector_signal_score"],
+            -item["salience_weight"],
+            len(item["tokens"]),
+            item["value"],
+        )
+    )
+
+    retrieval_entities: list[str] = []
+    retrieval_observations: list[str] = []
+    answer_context: list[str] = []
+    promoted_selectors: list[str] = []
+    retrieval_term_surface_meta: dict[str, dict[str, float]] = {}
+    retrieval_term_canonical_meta: dict[str, dict[str, float]] = {}
+
+    for candidate in candidates:
+        normalized = candidate["value"]
+        content_score = candidate["content_signal_score"]
+        selector_score = candidate["selector_signal_score"]
+        qualifies_content = content_score >= 2.75
+        qualifies_selector = selector_score >= 1.2
+
+        if qualifies_selector:
+            candidate["is_selector_promoted"] = True
+            if normalized not in promoted_selectors:
+                promoted_selectors.append(normalized)
+
+        if qualifies_content or qualifies_selector or candidate["is_measurement_like"]:
+            if normalized not in retrieval_entities and len(retrieval_entities) < 8:
+                retrieval_entities.append(normalized)
+            if (
+                (candidate["is_measurement_like"] or len(candidate["tokens"]) >= 2)
+                and normalized not in retrieval_observations
+                and len(retrieval_observations) < 6
+            ):
+                retrieval_observations.append(normalized)
+
+            surface_weight = content_score + (0.75 * selector_score) + (0.2 * candidate["salience_weight"])
+            current_surface = retrieval_term_surface_meta.get(normalized)
+            if not current_surface or surface_weight > current_surface["weight"]:
+                retrieval_term_surface_meta[normalized] = {
+                    "weight": surface_weight,
+                    "salience": candidate["salience_weight"],
+                }
+
+            canonical = candidate["canonical"]
+            if canonical:
+                canonical_weight = content_score + selector_score + (0.15 * candidate["salience_weight"])
+                current_canonical = retrieval_term_canonical_meta.get(canonical)
+                if not current_canonical or canonical_weight > current_canonical["weight"]:
+                    retrieval_term_canonical_meta[canonical] = {
+                        "weight": canonical_weight,
+                        "salience": candidate["salience_weight"],
+                    }
+        else:
+            if normalized not in answer_context and len(answer_context) < 6:
+                answer_context.append(normalized)
+
+    if not retrieval_entities:
+        top_candidates = [
+            candidate["value"]
+            for candidate in candidates
+            if candidate["content_signal_score"] > 0 or candidate["selector_signal_score"] > 0
+        ][:4]
+        retrieval_entities.extend(top_candidates)
+        for value in top_candidates:
+            if value not in retrieval_observations and len(value.split()) >= 2:
+                retrieval_observations.append(value)
+
+    retrieval_terms_surface = [
+        key
+        for key, _ in sorted(
+            retrieval_term_surface_meta.items(),
+            key=lambda item: (-item[1]["weight"], -item[1]["salience"], len(item[0]), item[0]),
+        )[:10]
+    ]
+    retrieval_terms_canonical = [
+        key
+        for key, _ in sorted(
+            retrieval_term_canonical_meta.items(),
+            key=lambda item: (-item[1]["weight"], -item[1]["salience"], len(item[0]), item[0]),
+        )[:10]
+    ]
+
+    if not retrieval_terms_surface:
+        retrieval_terms_surface = retrieval_entities[:6]
+    if not retrieval_terms_canonical:
+        retrieval_terms_canonical = [
+            term for term in (_canonicalize_span(value) for value in retrieval_entities[:6]) if term
+        ][:6]
+
+    return {
+        "retrieval_entities": retrieval_entities[:8],
+        "retrieval_observations": retrieval_observations[:6],
+        "retrieval_terms_surface": retrieval_terms_surface[:10],
+        "retrieval_terms_canonical": retrieval_terms_canonical[:10],
+        "answer_context": answer_context[:6],
+        "control_constraints": constraints[:6],
+        "promoted_selectors": promoted_selectors[:6],
+        "normalization_applied": True,
+        "retrieval_projection_summary": {
+            "candidate_count": len(candidates),
+            "retrieval_entity_count": len(retrieval_entities[:8]),
+            "retrieval_term_count": len(retrieval_terms_surface[:10]),
+            "promoted_selector_count": len(promoted_selectors[:6]),
+        },
+    }
 
 
 def _extract_entities(query: str, domain: str) -> list[str]:
@@ -434,12 +833,13 @@ def frame_local_corpus_problem(
 
     measurements = _extract_measurements(query)
     constraints = _extract_constraints(query)
-    observations = measurements + [
-        segment
-        for segment in _extract_segments(query)
-        if any(char.isdigit() for char in segment) or len(segment.split()) >= 4
-    ][:4]
-    observations = list(dict.fromkeys(observations))[:6]
+    projection = _build_retrieval_projection(
+        query,
+        domain=domain,
+        constraints=constraints,
+        measurements=measurements,
+    )
+    observations = list(dict.fromkeys(projection["retrieval_observations"]))[:6]
 
     task_confidence = min(1.0, round(primary_score, 4))
     if secondary_task_types and (primary_score - secondary_task_types[0]["score"]) < 0.35:
@@ -459,11 +859,20 @@ def frame_local_corpus_problem(
         "primary_task_type": primary_task_type,
         "secondary_task_types": secondary_task_types,
         "task_type_confidence": task_confidence,
-        "entities": _extract_entities(query, domain),
+        "entities": list(dict.fromkeys(projection["retrieval_entities"]))[:8],
         "observations": observations,
         "constraints": constraints,
         "risk_flags": _extract_risk_flags(query, risk_profile),
         "unknowns": _infer_unknowns(domain, query, measurements, constraints),
+        "retrieval_entities": projection["retrieval_entities"],
+        "retrieval_observations": projection["retrieval_observations"],
+        "retrieval_terms_surface": projection["retrieval_terms_surface"],
+        "retrieval_terms_canonical": projection["retrieval_terms_canonical"],
+        "answer_context": projection["answer_context"],
+        "control_constraints": projection["control_constraints"],
+        "normalization_applied": projection["normalization_applied"],
+        "retrieval_projection_summary": projection["retrieval_projection_summary"],
+        "promoted_selectors": projection["promoted_selectors"],
         "answer_mode": task_config.get("answer_mode"),
         "pack_version": pack.get("version"),
         "maturity_tier": MATURITY_LABELS.get(pack.get("maturity_tier"), "tier_3"),
@@ -477,8 +886,12 @@ def _axis_score(problem_frame: dict[str, Any], axis_config: dict[str, Any]) -> f
     combined = " ".join(
         [
             problem_frame.get("query", ""),
-            " ".join(problem_frame.get("entities") or []),
-            " ".join(problem_frame.get("observations") or []),
+            " ".join(problem_frame.get("retrieval_entities") or problem_frame.get("entities") or []),
+            " ".join(
+                problem_frame.get("retrieval_observations") or problem_frame.get("observations") or []
+            ),
+            " ".join(problem_frame.get("retrieval_terms_surface") or []),
+            " ".join(problem_frame.get("retrieval_terms_canonical") or []),
             " ".join(problem_frame.get("risk_flags") or []),
         ]
     )
@@ -497,8 +910,12 @@ def _axis_score(problem_frame: dict[str, Any], axis_config: dict[str, Any]) -> f
 
 def _build_axis_query(problem_frame: dict[str, Any], axis_id: str, axis_config: dict[str, Any]) -> str:
     parts: list[str] = []
-    parts.extend(problem_frame.get("entities") or [])
-    parts.extend(problem_frame.get("observations") or [])
+    parts.extend(problem_frame.get("retrieval_terms_surface") or [])
+    parts.extend(problem_frame.get("retrieval_terms_canonical") or [])
+    parts.extend(problem_frame.get("retrieval_entities") or problem_frame.get("entities") or [])
+    parts.extend(
+        problem_frame.get("retrieval_observations") or problem_frame.get("observations") or []
+    )
     parts.extend((axis_config.get("literal_terms") or [])[:4])
     if problem_frame.get("risk_flags") and axis_id in {"dangerous_causes", "red_flags", "safety_risks"}:
         parts.extend(problem_frame.get("risk_flags") or [])
@@ -511,7 +928,18 @@ def _build_axis_query(problem_frame: dict[str, Any], axis_id: str, axis_config: 
         if normalized and lowered not in seen:
             seen.add(lowered)
             ordered_parts.append(normalized)
-    return " ".join(ordered_parts[:18]).strip() or problem_frame.get("query", "")
+    if ordered_parts:
+        return " ".join(ordered_parts[:18]).strip()
+
+    fallback_parts = (
+        problem_frame.get("retrieval_entities")
+        or problem_frame.get("retrieval_observations")
+        or problem_frame.get("entities")
+        or []
+    )
+    if fallback_parts:
+        return " ".join(fallback_parts[:6]).strip()
+    return problem_frame.get("query", "")
 
 
 def plan_local_corpus_axes(
