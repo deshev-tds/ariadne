@@ -46,6 +46,8 @@ set -euo pipefail
 #                        1 => before start, stop any process listening on configured ports
 #   CORS_ALLOW_ORIGIN=""  (optional)
 #                        if empty in dev mode, this script auto-builds a LAN-safe origin list
+#   OWUI_STRICT_BUILD_WARNINGS=0|1 (default: 0)
+#                        1 => disable local warning filtering and show full Svelte/Vite build output
 
 MODE="${MODE:-prod}"
 HOST="${HOST:-0.0.0.0}"
@@ -60,6 +62,7 @@ FRONTEND_BUILD_ON_START="${FRONTEND_BUILD_ON_START:-auto}"
 ALLOW_STALE_FRONTEND_ON_BUILD_FAIL="${ALLOW_STALE_FRONTEND_ON_BUILD_FAIL:-1}"
 UNBIND_PORTS="${UNBIND_PORTS:-0}"
 CORS_ALLOW_ORIGIN="${CORS_ALLOW_ORIGIN:-}"
+export OWUI_STRICT_BUILD_WARNINGS="${OWUI_STRICT_BUILD_WARNINGS:-0}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_DIR="$ROOT_DIR/.run"
@@ -95,6 +98,14 @@ FRONTEND_BUILD_SIGNATURE_PATHS=(
 mkdir -p "$RUN_DIR"
 
 say() { printf "%s\n" "$*"; }
+
+print_build_warning_mode() {
+  if [[ "$OWUI_STRICT_BUILD_WARNINGS" == "1" ]]; then
+    say "Build warnings: full output enabled (OWUI_STRICT_BUILD_WARNINGS=1)"
+  else
+    say "Build warnings: noisy Svelte/Vite warnings are filtered (set OWUI_STRICT_BUILD_WARNINGS=1 for full output)"
+  fi
+}
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || { say "Missing command: $1"; exit 1; }
@@ -424,6 +435,7 @@ start_frontend() {
   say "Starting frontend…"
   require_cmd npm
   require_supported_node || return 1
+  print_build_warning_mode
 
   local deps_sig_current deps_sig_previous run_npm_install deps_dirty
   deps_sig_current="$(compute_git_signature "${FRONTEND_DEPS_SIGNATURE_PATHS[@]}" || true)"

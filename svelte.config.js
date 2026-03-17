@@ -3,6 +3,25 @@ import * as child_process from 'node:child_process';
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import fs from 'node:fs';
 
+const STRICT_BUILD_WARNINGS = process.env.OWUI_STRICT_BUILD_WARNINGS === '1';
+const IGNORED_SVELTE_WARNING_CODES = new Set([
+	'css_unused_selector',
+	'element_invalid_self_closing_tag',
+	'export_let_unused',
+	'node_invalid_placement_ssr',
+	'reactive_declaration_module_script_dependency'
+]);
+
+const shouldIgnoreSvelteWarning = (warning) => {
+	if (STRICT_BUILD_WARNINGS) {
+		return false;
+	}
+
+	return (
+		IGNORED_SVELTE_WARNING_CODES.has(warning.code) || warning.code?.startsWith('a11y_')
+	);
+};
+
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
 	// Consult https://kit.svelte.dev/docs/integrations#preprocessors
@@ -39,6 +58,9 @@ const config = {
 		}
 	},
 	vitePlugin: {
+		experimental: {
+			disableSvelteResolveWarnings: !STRICT_BUILD_WARNINGS
+		},
 		// inspector: {
 		// 	toggleKeyCombo: 'meta-shift', // Key combination to open the inspector
 		// 	holdMode: false, // Enable or disable hold mode
@@ -47,8 +69,7 @@ const config = {
 		// }
 	},
 	onwarn: (warning, handler) => {
-		const { code } = warning;
-		if (code === 'css-unused-selector') return;
+		if (shouldIgnoreSvelteWarning(warning)) return;
 
 		handler(warning);
 	}
