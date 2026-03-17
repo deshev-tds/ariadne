@@ -281,6 +281,174 @@ def test_tool_narration_system_prompt_mentions_phase_changes():
     assert "preserve the user's substantive topic terms" in prompt
 
 
+def test_build_default_selector_guidance_adds_local_corpus_prefer_and_term_rules():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "prefer"},
+        "features": {},
+    }
+    tools = {
+        "local_corpus_frame_problem": {},
+        "local_corpus_plan_axes": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(metadata, tools, [])
+
+    assert "preserve the user's substantive topic terms" in guidance
+    assert "Do not preserve conversational scaffolding" in guidance
+    assert "prefer local corpus tools first" in guidance
+    assert "Do not stay loyal to the local lane out of inertia" in guidance
+    assert "prior-work sources" not in guidance
+
+
+def test_selector_prior_work_signal_stays_none_for_short_fresh_question():
+    messages = [{"role": "user", "content": "And why?"}]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_NONE
+
+
+def test_selector_prior_work_signal_stays_none_for_incomplete_generic_question():
+    messages = [{"role": "user", "content": "What broad causes should I think about?"}]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_NONE
+
+
+def test_selector_prior_work_signal_is_weak_for_explicit_hint_with_recent_context():
+    messages = [
+        {"role": "user", "content": "We were discussing the issue."},
+        {"role": "assistant", "content": "I have the context."},
+        {"role": "user", "content": "Check my notes before answering."},
+    ]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_WEAK
+
+
+def test_selector_prior_work_signal_is_strong_for_artifact_reference():
+    messages = [
+        {
+            "role": "user",
+            "content": "Use /c/e288f767-8dd3-4980-ab01-ae8eb107b07f before answering.",
+        }
+    ]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_STRONG
+
+
+def test_selector_prior_work_signal_is_strong_for_explicit_hint_after_prior_work_tool_use():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "search_chats",
+                        "arguments": "{\"query\":\"atrial fibrillation\"}",
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "[]"},
+        {"role": "user", "content": "Check my notes before answering."},
+    ]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_STRONG
+
+
+def test_build_default_selector_guidance_adds_prior_work_fallback_only_when_strong_signal_and_primary_lanes_off():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "off"},
+        "features": {"web_search": False, "focused_search": False},
+    }
+    tools = {
+        "query_knowledge_files": {},
+        "notes_lookup": {},
+        "search_chats": {},
+    }
+    messages = [
+        {
+            "role": "user",
+            "content": "Use /c/e288f767-8dd3-4980-ab01-ae8eb107b07f before answering.",
+        }
+    ]
+
+    guidance = middleware._build_default_selector_guidance(metadata, tools, messages)
+
+    assert "before answering from model knowledge alone" in guidance
+    assert "knowledge files, notes, prior chats" in guidance
+    assert "Treat them as prior work or leads" in guidance
+
+
+def test_build_default_selector_guidance_skips_prior_work_on_structural_gate_alone():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "off"},
+        "features": {"web_search": False, "focused_search": False},
+    }
+    tools = {
+        "query_knowledge_files": {},
+        "notes_lookup": {},
+        "search_chats": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(
+        metadata,
+        tools,
+        [{"role": "user", "content": "What broad causes should I think about?"}],
+    )
+
+    assert "before answering from model knowledge alone" not in guidance
+    assert "knowledge files, notes, prior chats" not in guidance
+
+
+def test_build_default_selector_guidance_skips_prior_work_when_web_is_enabled():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "off"},
+        "features": {"web_search": True, "focused_search": False},
+    }
+    tools = {
+        "query_knowledge_files": {},
+        "notes_lookup": {},
+        "search_chats": {},
+        "search_web": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(
+        metadata,
+        tools,
+        [
+            {
+                "role": "user",
+                "content": "Use /c/e288f767-8dd3-4980-ab01-ae8eb107b07f before answering.",
+            }
+        ],
+    )
+
+    assert "before answering from model knowledge alone" not in guidance
+    assert "knowledge files, notes, prior chats" not in guidance
+    assert "preserve the user's substantive topic terms" in guidance
+
+
+def test_build_default_selector_guidance_is_default_only():
+    metadata = {
+        "params": {"function_calling": "native", "local_corpus_mode": "prefer"},
+        "features": {},
+    }
+    tools = {"local_corpus_frame_problem": {}}
+
+    assert middleware._build_default_selector_guidance(metadata, tools, []) == ""
+
+
 def test_should_enable_shared_tool_narration_for_local_corpus_prefer():
     request = _build_request(
         enable_local_corpus=True, local_corpus_root="/tmp/local-corpus"
@@ -382,6 +550,107 @@ def test_build_tool_continuation_messages_uses_temporary_system_append():
     assert "phase guidance" in messages[0]["content"]
     assert "phase guidance" not in form_messages[0]["content"]
     assert messages[-1]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_tools_handler_injects_default_selector_guidance(
+    monkeypatch,
+):
+    captured_payloads = []
+
+    async def fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        captured_payloads.append(
+            {
+                "form_data": form_data,
+                "bypass_system_prompt": bypass_system_prompt,
+                "user_id": getattr(user, "id", None),
+            }
+        )
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"tool_calls": []}),
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        middleware, "generate_chat_completion", fake_generate_chat_completion
+    )
+    monkeypatch.setattr(
+        middleware,
+        "get_task_model_id",
+        lambda *_args, **_kwargs: "task-model",
+    )
+
+    async def _noop_event_call(_payload):
+        return None
+
+    async def _noop_event_emitter(_payload):
+        return None
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE="",
+                    TASK_MODEL="",
+                    TASK_MODEL_EXTERNAL="",
+                )
+            )
+        )
+    )
+    metadata = {
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "params": {"function_calling": "default", "local_corpus_mode": "prefer"},
+        "features": {"web_search": False, "focused_search": False},
+    }
+    body = {
+        "model": "main-model",
+        "messages": [{"role": "user", "content": "Headache plus mild anemia"}],
+    }
+    tools = {
+        "local_corpus_frame_problem": {
+            "spec": {
+                "name": "local_corpus_frame_problem",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        },
+        "query_knowledge_files": {
+            "spec": {
+                "name": "query_knowledge_files",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        },
+    }
+
+    result_body, flags = await middleware.chat_completion_tools_handler(
+        request,
+        body,
+        {
+            "__event_call__": _noop_event_call,
+            "__event_emitter__": _noop_event_emitter,
+            "__metadata__": metadata,
+        },
+        SimpleNamespace(id="user-1"),
+        {"main-model": {"id": "main-model"}},
+        tools,
+    )
+
+    assert result_body is body
+    assert flags == {"sources": []}
+    assert len(captured_payloads) == 1
+    selector_prompt = captured_payloads[0]["form_data"]["messages"][0]["content"]
+    assert "preserve the user's substantive topic terms" in selector_prompt
+    assert "Do not preserve conversational scaffolding" in selector_prompt
+    assert "prefer local corpus tools first" in selector_prompt
+    assert "Do not stay loyal to the local lane out of inertia" in selector_prompt
+    assert "Current runtime timestamp:" in selector_prompt
 
 
 def test_append_tool_journey_event_is_on_demand():

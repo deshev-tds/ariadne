@@ -69,6 +69,7 @@ The important divergences are not cosmetic.
 - A native focused-web tool (`web_research_strong`, with `search_strong_sources` kept as an alias) was added for local-first strong-source search, with broader fallback only when evidence from locally-listed strong domains is weak.
 - A domain-first local corpus path was added for proprietary or bought literature, with selection-layer markdown, per-book evidence retrieval, and table-aware follow-up tools instead of flattening everything into one generic knowledge pile.
 - The `v2` local-corpus reasoning lane now uses deterministic retrieval projection so user-facing framing text does not quietly pollute axis queries and slow or misroute retrieval.
+- The `default` function-calling selector now has its own runtime discipline layer, so local-corpus preference, retrieval term hygiene, and prior-work fallback do not depend entirely on native tool-calling behavior.
 - Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
 - Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
 - An optional blocking deep-research lane was added through a Local Deep Research (LDR) sidecar, kept separate from normal web/focused search and returning downloadable report artifacts instead of dumping long web/report bodies into model context.
@@ -705,6 +706,36 @@ That change was worth making because it improved both latency and correctness at
 This is the kind of work that turns a feature into a lane you can trust.
 
 Not because it becomes magical, but because the remaining failures get smaller, more legible, and less embarrassing.
+
+There was one more practical wrinkle after that.
+
+Some of the nicest behavior in the system was showing up while the chat was still using `default` function calling rather than `native`. That exposed an easy mistake to make while debugging this fork: assuming that native-only prompt work was responsible for everything good that happened in tool runs.
+
+It was not.
+
+`default` already had a viable selector loop. What it lacked was some of the discipline that native mode had gradually accumulated:
+
+- local-corpus preference as an explicit routing hint
+- protection against vague advisory rewrites polluting retrieval calls
+- a sane fallback story for prior user-owned work when local corpus and web were both unavailable
+
+The first pass at that fix worked, but one part of it was too loose. Prior-work guidance was being injected mostly because the tools existed, not because there was a strong reason to believe prior chats, notes, or knowledge files would actually help.
+
+That was the wrong threshold.
+
+The corrected version is intentionally conservative:
+
+- structural availability is necessary but not sufficient
+- short prompts are not treated as continuation
+- ambiguous prompts are not treated as prior-work dependent
+- incomplete prompts are not treated as a reason to rummage through old chats
+- prior-work guidance is injected only when there is a positive signal that the missing context plausibly lives in prior conversation or user-owned workspace material
+
+This matters because the fork is trying to produce procedural honesty, not just lots of motion.
+
+A selector that searches old artifacts every time primary lanes are disabled is not being careful. It is being anxious.
+
+That distinction is worth preserving.
 
 ## Deep Research as a Separate Lane
 

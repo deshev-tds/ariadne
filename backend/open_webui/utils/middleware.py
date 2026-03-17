@@ -234,6 +234,224 @@ TOOL_NARRATION_PHASE_PROMPTS = {
         "Do not mention tool names, do not restate mechanical status text, and do not present final conclusions yet."
     ),
 }
+
+DEFAULT_SELECTOR_TERM_PRESERVATION_GUIDANCE = (
+    "When choosing framing or retrieval tools, preserve the user's substantive topic "
+    "terms. Do not preserve conversational scaffolding, advisory filler, or rhetorical "
+    "framing unless it changes source selection. Prefer topic-shaped retrieval phrasing "
+    "over conversational restatement."
+)
+
+DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE = (
+    "When the chat prefers the local corpus and the question is compatible with it, "
+    "prefer local corpus tools first. If local evidence appears weak, incompatible, or "
+    "obviously noisy, escalate cleanly. Do not stay loyal to the local lane out of inertia."
+)
+
+DEFAULT_SELECTOR_PRIOR_WORK_FALLBACK_GUIDANCE = (
+    "When primary evidence lanes are unavailable, before answering from model knowledge "
+    "alone, check user-owned prior work when it is likely to contain relevant leads. "
+    "Prefer prior-work sources in this order: knowledge files, notes, prior chats. "
+    "Treat them as prior work or leads, not automatically authoritative evidence."
+)
+
+DEFAULT_SELECTOR_RETRIEVAL_TOOL_NAMES = {
+    "local_corpus_frame_problem",
+    "local_corpus_plan_axes",
+    "local_corpus_collect_axis_evidence",
+    "local_corpus_assess_evidence",
+    "local_corpus_shortlist_books",
+    "local_corpus_retrieve_evidence",
+    "search_web",
+    "web_research_strong",
+    "search_strong_sources",
+    "query_web_evidence",
+    "fetch_url",
+    "query_knowledge_files",
+    "search_knowledge_files",
+    "query_knowledge_bases",
+    "search_knowledge_bases",
+    "notes_lookup",
+    "search_notes",
+    "search_chats",
+}
+
+DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES = {
+    "local_corpus_list_domains",
+    "local_corpus_list_disciplines",
+    "local_corpus_frame_problem",
+    "local_corpus_plan_axes",
+    "local_corpus_collect_axis_evidence",
+    "local_corpus_assess_evidence",
+    "local_corpus_shortlist_books",
+    "local_corpus_view_book_cards",
+    "local_corpus_retrieve_evidence",
+    "local_corpus_view_table",
+    "local_corpus_view_figure_metadata",
+}
+
+DEFAULT_SELECTOR_PRIOR_WORK_TOOL_PREFERENCE = (
+    ("knowledge", ("query_knowledge_files", "search_knowledge_files", "query_knowledge_bases", "search_knowledge_bases")),
+    ("notes", ("notes_lookup", "search_notes")),
+    ("chats", ("search_chats",)),
+)
+
+DEFAULT_SELECTOR_WEB_FEATURE_NAMES = ("web_search", "focused_search")
+DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_NONE = "none"
+DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_WEAK = "weak"
+DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_STRONG = "strong"
+DEFAULT_SELECTOR_PRIOR_WORK_EXPLICIT_TERMS = (
+    "note",
+    "notes",
+    "chat",
+    "chats",
+    "knowledge",
+    "knowledge base",
+    "knowledge file",
+    "prior work",
+    "previous",
+    "earlier",
+    "saved",
+)
+DEFAULT_SELECTOR_PRIOR_WORK_FILE_REF_PATTERN = re.compile(
+    r"\b[\w.-]+\.(?:md|txt|pdf|docx|pptx|csv|json|yaml|yml)\b",
+    re.IGNORECASE,
+)
+DEFAULT_SELECTOR_PRIOR_WORK_CHAT_LINK_PATTERN = re.compile(
+    r"/c/[0-9a-fA-F-]{8,}"
+)
+DEFAULT_SELECTOR_PRIOR_WORK_UUID_PATTERN = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+DEFAULT_SELECTOR_PRIOR_WORK_TOOL_NAMES = {
+    "query_knowledge_files",
+    "search_knowledge_files",
+    "query_knowledge_bases",
+    "search_knowledge_bases",
+    "view_knowledge_file",
+    "notes_lookup",
+    "search_notes",
+    "view_note",
+    "search_chats",
+    "view_chat",
+}
+
+
+def _tool_names_from_selector_tools(tools: dict[str, Any]) -> set[str]:
+    return {str(name) for name in (tools or {}).keys()}
+
+
+def _selector_has_any_tool(tools: dict[str, Any], tool_names: set[str] | tuple[str, ...]) -> bool:
+    available = _tool_names_from_selector_tools(tools)
+    return any(name in available for name in tool_names)
+
+
+def _recent_selector_messages(messages: list[dict], *, limit: int = 8) -> list[dict]:
+    if not messages:
+        return []
+    return messages[-limit:]
+
+
+def _selector_message_has_prior_work_tool_calls(message: dict) -> bool:
+    if message.get("role") != "assistant":
+        return False
+
+    for tool_call in message.get("tool_calls", []) or []:
+        function = tool_call.get("function", {}) or {}
+        if function.get("name") in DEFAULT_SELECTOR_PRIOR_WORK_TOOL_NAMES:
+            return True
+    return False
+
+
+def _selector_prompt_has_explicit_prior_work_hint(text: str) -> bool:
+    normalized = str(text or "").lower()
+    return any(term in normalized for term in DEFAULT_SELECTOR_PRIOR_WORK_EXPLICIT_TERMS)
+
+
+def _selector_prompt_has_prior_work_artifact_reference(text: str) -> bool:
+    source = str(text or "")
+    return bool(
+        DEFAULT_SELECTOR_PRIOR_WORK_CHAT_LINK_PATTERN.search(source)
+        or DEFAULT_SELECTOR_PRIOR_WORK_UUID_PATTERN.search(source)
+        or DEFAULT_SELECTOR_PRIOR_WORK_FILE_REF_PATTERN.search(source)
+    )
+
+
+def _selector_prior_work_signal(messages: list[dict]) -> str:
+    recent_messages = _recent_selector_messages(messages)
+    if not recent_messages:
+        return DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_NONE
+
+    last_user_message = get_last_user_message(recent_messages) or ""
+    if not last_user_message.strip():
+        return DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_NONE
+
+    recent_user_turns = [msg for msg in recent_messages if msg.get("role") == "user"]
+    has_recent_conversation_context = len(recent_user_turns) > 1 or any(
+        msg.get("role") == "assistant" for msg in recent_messages[:-1]
+    )
+    has_recent_prior_work_tool_usage = any(
+        _selector_message_has_prior_work_tool_calls(message)
+        for message in recent_messages[:-1]
+    )
+    has_explicit_prior_work_hint = _selector_prompt_has_explicit_prior_work_hint(
+        last_user_message
+    )
+    has_artifact_reference = _selector_prompt_has_prior_work_artifact_reference(
+        last_user_message
+    )
+
+    if has_artifact_reference:
+        return DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_STRONG
+
+    if has_recent_prior_work_tool_usage and has_explicit_prior_work_hint:
+        return DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_STRONG
+
+    if has_recent_conversation_context and has_explicit_prior_work_hint:
+        return DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_WEAK
+
+    return DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_NONE
+
+
+def _build_default_selector_guidance(
+    metadata: dict, tools: dict[str, Any], messages: list[dict] | None = None
+) -> str:
+    params = metadata.get("params", {}) or {}
+    if params.get("function_calling") != "default":
+        return ""
+
+    features = metadata.get("features", {}) or {}
+    local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
+
+    clauses: list[str] = []
+
+    if _selector_has_any_tool(tools, DEFAULT_SELECTOR_RETRIEVAL_TOOL_NAMES):
+        clauses.append(DEFAULT_SELECTOR_TERM_PRESERVATION_GUIDANCE)
+
+    if (
+        local_corpus_mode == "prefer"
+        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES)
+    ):
+        clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE)
+
+    web_enabled = any(bool(features.get(name)) for name in DEFAULT_SELECTOR_WEB_FEATURE_NAMES)
+    if local_corpus_mode == "off" and not web_enabled:
+        available_prior_work_lanes = [
+            label
+            for label, candidate_tools in DEFAULT_SELECTOR_PRIOR_WORK_TOOL_PREFERENCE
+            if _selector_has_any_tool(tools, candidate_tools)
+        ]
+        prior_work_signal = _selector_prior_work_signal(messages or [])
+        if (
+            available_prior_work_lanes
+            and prior_work_signal == DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_STRONG
+        ):
+            clauses.append(DEFAULT_SELECTOR_PRIOR_WORK_FALLBACK_GUIDANCE)
+
+    if not clauses:
+        return ""
+
+    return "Additional runtime guidance:\n- " + "\n- ".join(clauses)
 from open_webui.env import (
     AGENTIC_ARTIFACTS_DIR,
     GLOBAL_LOG_LEVEL,
@@ -3327,6 +3545,12 @@ async def chat_completion_tools_handler(
         template = request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
     else:
         template = DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+
+    selector_guidance = _build_default_selector_guidance(
+        metadata, tools, body.get("messages", [])
+    )
+    if selector_guidance:
+        template = f"{template.rstrip()}\n\n{selector_guidance}"
 
     tools_function_calling_prompt = tools_function_calling_generation_template(
         template, tools_specs
