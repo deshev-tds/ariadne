@@ -909,6 +909,26 @@ That matters for local workflows because it gives you:
 - a way to compare plausible alternatives
 - a way to fork a response branch deliberately without rewriting the whole prompt
 
+A representative branching flow is worth showing because it captures what this feature is actually for in practice.
+
+**Step 1. The sampled answer commits to one path**
+
+In this example, the model is forced to start with `Deploy` or `Wait`. The sampled answer picks `Deploy` and then builds a full recommendation around that choice.
+
+![Original sampled answer before branching](docs/images/readme/token-explorer-1-original-sampled-answer.png)
+
+**Step 2. Token Explorer exposes the early decision point**
+
+Opening Token Explorer on token `#1` shows that `Deploy` was not the only plausible continuation. In fact, `Wait` is the stronger visible alternative on that token, with the rest of the continuation still available for inspection.
+
+![Token Explorer showing first-token alternatives](docs/images/readme/token-explorer-2-first-token-alternatives.png)
+
+**Step 3. A manual branch can produce a materially different answer**
+
+Creating a branch from `Wait` does not just change one word. It flips the recommendation and produces a new continuation built around the alternative token path. That is the point of the feature: inspect a live decision point, branch deliberately, and compare meaningfully different continuations without rewriting the prompt or regenerating blindly.
+
+![Branched answer after selecting the alternative first token](docs/images/readme/token-explorer-3-branched-wait-path.png)
+
 This is not presented here as "full interpretability". It is a practical debugging and exploration tool for model behavior.
 
 It is also intentionally not implemented as "keep the whole live generation tree resident forever". In this fork, manual branching is driven by bounded token telemetry and a fallback prefix-forcing strategy, which is far more practical on local hardware than pretending every backend will give you infinite branching state for free.
