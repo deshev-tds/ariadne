@@ -451,6 +451,22 @@ def _build_default_selector_guidance(
         return ""
 
     return "Additional runtime guidance:\n- " + "\n- ".join(clauses)
+
+
+def _build_forced_default_selector_tool_call(
+    metadata: dict, tools: dict[str, Any]
+) -> dict[str, Any] | None:
+    params = metadata.get("params", {}) or {}
+    if params.get("function_calling") != "default":
+        return None
+
+    if normalize_local_corpus_mode(params.get("local_corpus_mode")) != "auto":
+        return None
+
+    if "local_corpus_list_domains" not in _tool_names_from_selector_tools(tools):
+        return None
+
+    return {"name": "local_corpus_list_domains", "parameters": {}}
 from open_webui.env import (
     AGENTIC_ARTIFACTS_DIR,
     GLOBAL_LOG_LEVEL,
@@ -2838,6 +2854,165 @@ async def chat_completion_tools_handler(
 
     skip_files = False
     sources = []
+    forced_tool_call = _build_forced_default_selector_tool_call(
+        metadata, tools
+    )
+
+    async def tool_call_handler(tool_call):
+        nonlocal skip_files
+
+        log.debug(f"{tool_call=}")
+
+        tool_function_name = tool_call.get("name", None)
+        if tool_function_name not in tools:
+            return body, {}
+
+        tool_function_params = tool_call.get("parameters", {})
+
+        tool = None
+        tool_type = ""
+        direct_tool = False
+        started_at = time.time()
+
+        start_event = _append_tool_journey_event(
+            metadata,
+            {
+                "phase": "tool_execute_start",
+                "tool": tool_function_name,
+                "params_preview": _truncate_telemetry_value(tool_function_params),
+            },
+        )
+        if start_event and event_emitter:
+            await event_emitter({"type": "chat:tool:journey", "data": start_event})
+
+        try:
+            tool = tools[tool_function_name]
+            tool_type = tool.get("type", "")
+            direct_tool = tool.get("direct", False)
+
+            spec = tool.get("spec", {})
+            allowed_params = (
+                spec.get("parameters", {}).get("properties", {}).keys()
+            )
+            tool_function_params = {
+                k: v for k, v in tool_function_params.items() if k in allowed_params
+            }
+
+            if tool.get("direct", False):
+                tool_result = await event_caller(
+                    {
+                        "type": "execute:tool",
+                        "data": {
+                            "id": str(uuid4()),
+                            "name": tool_function_name,
+                            "params": tool_function_params,
+                            "server": tool.get("server", {}),
+                            "session_id": metadata.get("session_id", None),
+                        },
+                    }
+                )
+            else:
+                tool_function = tool["callable"]
+                tool_result = await tool_function(**tool_function_params)
+
+        except Exception as e:
+            tool_result = str(e)
+
+        tool_result, tool_result_files, tool_result_embeds = process_tool_result(
+            request,
+            tool_function_name,
+            tool_result,
+            tool_type,
+            direct_tool,
+            metadata,
+            user,
+        )
+
+        completion_event = _append_tool_journey_event(
+            metadata,
+            {
+                "phase": "tool_execute_done",
+                "tool": tool_function_name,
+                "duration_ms": int((time.time() - started_at) * 1000),
+                "result_summary": _tool_result_summary(tool_function_name, tool_result),
+            },
+        )
+        if completion_event and event_emitter:
+            await event_emitter(
+                {"type": "chat:tool:journey", "data": completion_event}
+            )
+
+        if event_emitter:
+            await terminal_event_handler(
+                tool_function_name,
+                tool_function_params,
+                tool_result,
+                event_emitter,
+            )
+
+            if tool_result_files:
+                await event_emitter(
+                    {
+                        "type": "files",
+                        "data": {
+                            "files": tool_result_files,
+                        },
+                    }
+                )
+
+            if tool_result_embeds:
+                await event_emitter(
+                    {
+                        "type": "embeds",
+                        "data": {
+                            "embeds": tool_result_embeds,
+                        },
+                    }
+                )
+
+        if tool_result:
+            tool = tools[tool_function_name]
+            tool_id = tool.get("tool_id", "")
+
+            tool_name = (
+                f"{tool_id}/{tool_function_name}" if tool_id else f"{tool_function_name}"
+            )
+
+            sources.append(
+                {
+                    "source": {
+                        "name": (f"{tool_name}"),
+                    },
+                    "document": [str(tool_result)],
+                    "metadata": [
+                        {
+                            "source": (f"{tool_name}"),
+                            "parameters": tool_function_params,
+                        }
+                    ],
+                    "tool_result": True,
+                }
+            )
+
+            if (
+                tools[tool_function_name].get("metadata", {}).get("file_handler", False)
+            ):
+                skip_files = True
+
+    if forced_tool_call:
+        await tool_call_handler(forced_tool_call)
+
+        log.debug(f"tool_contexts: {sources}")
+
+        if skip_files and "files" in body.get("metadata", {}):
+            del body["metadata"]["files"]
+
+        payload = {"sources": sources}
+        if debug_tool_journey and isinstance(metadata.get("tool_journey_telemetry"), dict):
+            metadata["tool_journey_telemetry"]["completed_at"] = int(time.time())
+            payload["toolJourneyTelemetry"] = metadata["tool_journey_telemetry"]
+
+        return body, payload
 
     specs = [tool["spec"] for tool in tools.values()]
     tools_specs = json.dumps(specs, ensure_ascii=False)
@@ -2869,158 +3044,6 @@ async def chat_completion_tools_handler(
                 raise Exception("No JSON object found in the response")
 
             result = json.loads(content)
-
-            async def tool_call_handler(tool_call):
-                nonlocal skip_files
-
-                log.debug(f"{tool_call=}")
-
-                tool_function_name = tool_call.get("name", None)
-                if tool_function_name not in tools:
-                    return body, {}
-
-                tool_function_params = tool_call.get("parameters", {})
-
-                tool = None
-                tool_type = ""
-                direct_tool = False
-                started_at = time.time()
-
-                start_event = _append_tool_journey_event(
-                    metadata,
-                    {
-                        "phase": "tool_execute_start",
-                        "tool": tool_function_name,
-                        "params_preview": _truncate_telemetry_value(tool_function_params),
-                    },
-                )
-                if start_event and event_emitter:
-                    await event_emitter({"type": "chat:tool:journey", "data": start_event})
-
-                try:
-                    tool = tools[tool_function_name]
-                    tool_type = tool.get("type", "")
-                    direct_tool = tool.get("direct", False)
-
-                    spec = tool.get("spec", {})
-                    allowed_params = (
-                        spec.get("parameters", {}).get("properties", {}).keys()
-                    )
-                    tool_function_params = {
-                        k: v
-                        for k, v in tool_function_params.items()
-                        if k in allowed_params
-                    }
-
-                    if tool.get("direct", False):
-                        tool_result = await event_caller(
-                            {
-                                "type": "execute:tool",
-                                "data": {
-                                    "id": str(uuid4()),
-                                    "name": tool_function_name,
-                                    "params": tool_function_params,
-                                    "server": tool.get("server", {}),
-                                    "session_id": metadata.get("session_id", None),
-                                },
-                            }
-                        )
-                    else:
-                        tool_function = tool["callable"]
-                        tool_result = await tool_function(**tool_function_params)
-
-                except Exception as e:
-                    tool_result = str(e)
-
-                tool_result, tool_result_files, tool_result_embeds = (
-                    process_tool_result(
-                        request,
-                        tool_function_name,
-                        tool_result,
-                        tool_type,
-                        direct_tool,
-                        metadata,
-                        user,
-                    )
-                )
-
-                completion_event = _append_tool_journey_event(
-                    metadata,
-                    {
-                        "phase": "tool_execute_done",
-                        "tool": tool_function_name,
-                        "duration_ms": int((time.time() - started_at) * 1000),
-                        "result_summary": _tool_result_summary(
-                            tool_function_name, tool_result
-                        ),
-                    },
-                )
-                if completion_event and event_emitter:
-                    await event_emitter(
-                        {"type": "chat:tool:journey", "data": completion_event}
-                    )
-
-                if event_emitter:
-                    await terminal_event_handler(
-                        tool_function_name,
-                        tool_function_params,
-                        tool_result,
-                        event_emitter,
-                    )
-
-                    if tool_result_files:
-                        await event_emitter(
-                            {
-                                "type": "files",
-                                "data": {
-                                    "files": tool_result_files,
-                                },
-                            }
-                        )
-
-                    if tool_result_embeds:
-                        await event_emitter(
-                            {
-                                "type": "embeds",
-                                "data": {
-                                    "embeds": tool_result_embeds,
-                                },
-                            }
-                        )
-
-                if tool_result:
-                    tool = tools[tool_function_name]
-                    tool_id = tool.get("tool_id", "")
-
-                    tool_name = (
-                        f"{tool_id}/{tool_function_name}"
-                        if tool_id
-                        else f"{tool_function_name}"
-                    )
-
-                    # Citation is enabled for this tool
-                    sources.append(
-                        {
-                            "source": {
-                                "name": (f"{tool_name}"),
-                            },
-                            "document": [str(tool_result)],
-                            "metadata": [
-                                {
-                                    "source": (f"{tool_name}"),
-                                    "parameters": tool_function_params,
-                                }
-                            ],
-                            "tool_result": True,
-                        }
-                    )
-
-                    if (
-                        tools[tool_function_name]
-                        .get("metadata", {})
-                        .get("file_handler", False)
-                    ):
-                        skip_files = True
 
             # check if "tool_calls" in result
             if result.get("tool_calls"):

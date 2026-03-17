@@ -24,6 +24,8 @@ def _build_request(
                 config=SimpleNamespace(
                     ENABLE_LOCAL_CORPUS_TOOLS=enable_local_corpus,
                     LOCAL_CORPUS_ROOT=local_corpus_root,
+                    TASK_MODEL="",
+                    TASK_MODEL_EXTERNAL=False,
                 )
             )
         )
@@ -318,6 +320,103 @@ def test_build_default_selector_guidance_adds_local_corpus_auto_shelf_check_rule
     assert "before going to web search or model-only answering" in guidance
     assert "Do not drill down further just to confirm an empty, weak, or merely nominal shelf" in guidance
     assert "prefer local corpus tools first" not in guidance
+
+
+def test_build_forced_default_selector_tool_call_returns_local_domain_probe_for_auto():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "auto"},
+    }
+    tools = {
+        "local_corpus_list_domains": {},
+        "web_research_strong": {},
+    }
+
+    forced = middleware._build_forced_default_selector_tool_call(metadata, tools)
+
+    assert forced == {"name": "local_corpus_list_domains", "parameters": {}}
+
+
+def test_build_forced_default_selector_tool_call_skips_non_auto_or_missing_tool():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "prefer"},
+    }
+
+    assert (
+        middleware._build_forced_default_selector_tool_call(
+            metadata, {"local_corpus_list_domains": {}}
+        )
+        is None
+    )
+    assert (
+        middleware._build_forced_default_selector_tool_call(
+            {"params": {"function_calling": "default", "local_corpus_mode": "auto"}},
+            {"web_research_strong": {}},
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_tools_handler_forces_local_domain_probe_before_selector(
+    monkeypatch,
+):
+    request = _build_request(enable_local_corpus=True, local_corpus_root="/tmp/local-corpus")
+    user = SimpleNamespace(id="user-1")
+    body = {
+        "model": "demo-model",
+        "messages": [{"role": "user", "content": "What can the local corpus help with?"}],
+    }
+    extra_params = {
+        "__event_call__": None,
+        "__event_emitter__": None,
+        "__metadata__": {
+            "params": {"function_calling": "default", "local_corpus_mode": "auto"},
+        },
+    }
+    models = {"demo-model": {"id": "demo-model"}}
+    called = {"selector": False, "tool": False}
+
+    async def _should_not_run_selector(*_args, **_kwargs):
+        called["selector"] = True
+        raise AssertionError("selector model should not run before local shelf check")
+
+    async def _fake_local_domains(**_kwargs):
+        called["tool"] = True
+        return json.dumps({"status": "ok", "domains": [{"domain": "medicine"}]})
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.generate_chat_completion",
+        _should_not_run_selector,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.get_task_model_id",
+        lambda *_args, **_kwargs: "demo-model",
+    )
+
+    tools = {
+        "local_corpus_list_domains": {
+            "tool_id": "builtin:local_corpus_list_domains",
+            "callable": _fake_local_domains,
+            "spec": {"parameters": {"properties": {}}},
+            "type": "builtin",
+        },
+        "web_research_strong": {
+            "tool_id": "builtin:web_research_strong",
+            "callable": _fake_local_domains,
+            "spec": {"parameters": {"properties": {}}},
+            "type": "builtin",
+        },
+    }
+
+    _body, payload = await middleware.chat_completion_tools_handler(
+        request, body, extra_params, user, models, tools
+    )
+
+    assert called["tool"] is True
+    assert called["selector"] is False
+    assert payload["sources"][0]["source"]["name"] == (
+        "builtin:local_corpus_list_domains/local_corpus_list_domains"
+    )
 
 
 def test_selector_prior_work_signal_stays_none_for_short_fresh_question():
