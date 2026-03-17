@@ -166,6 +166,56 @@ LOCAL_CORPUS_PREFER_SYSTEM_PROMPT = (
     "low-stakes and the user's tone clearly invites it. If local corpus evidence is weak or unavailable, "
     "say so plainly."
 )
+TOOL_NARRATION_SYSTEM_PROMPT = (
+    "For compatible tool-heavy runs, you may give the user brief journey updates in the assistant text. "
+    "When entering the first major tool phase, you may begin with a short orientation preamble. After that, "
+    "only narrate meaningful phase changes, not every tool call. Keep each update to 1 to 3 short sentences, "
+    "stay high-level and user-facing, and do not restate tool names or raw status labels. Warmth is allowed. "
+    "Humor is optional and only when the topic is low-stakes and the user's tone clearly invites it."
+)
+TOOL_NARRATION_MAX_BEATS = 3
+TOOL_NARRATION_PHASE_ORDER = {
+    "orientation": 1,
+    "planning": 2,
+    "evidence_gathering": 3,
+    "evidence_check": 4,
+    "final_response": 5,
+}
+TOOL_NARRATION_TOOL_PHASES = {
+    "local_corpus_list_domains": "orientation",
+    "local_corpus_list_disciplines": "orientation",
+    "local_corpus_frame_problem": "orientation",
+    "local_corpus_plan_axes": "planning",
+    "local_corpus_shortlist_books": "planning",
+    "local_corpus_view_book_cards": "planning",
+    "local_corpus_collect_axis_evidence": "evidence_gathering",
+    "local_corpus_retrieve_evidence": "evidence_gathering",
+    "local_corpus_view_table": "evidence_gathering",
+    "local_corpus_view_figure_metadata": "evidence_gathering",
+    "local_corpus_assess_evidence": "evidence_check",
+    "web_research_strong": "evidence_gathering",
+    "search_strong_sources": "evidence_gathering",
+    "query_web_evidence": "evidence_gathering",
+    "fetch_url": "evidence_gathering",
+    "search_web": "evidence_gathering",
+}
+TOOL_NARRATION_PHASE_PROMPTS = {
+    "planning": (
+        "A new major phase has begun. Before continuing, write 1 to 3 short sentences that orient the user "
+        "at a high level. Explain that you have framed the task and are narrowing the path. Do not mention tool names, "
+        "do not restate mechanical status text, and do not answer the substance yet."
+    ),
+    "evidence_gathering": (
+        "A new major phase has begun. Before continuing, write 1 to 3 short sentences that orient the user "
+        "at a high level. Explain that you have narrowed the path and are now checking evidence. Do not mention tool names, "
+        "do not restate mechanical status text, and do not answer the substance yet."
+    ),
+    "evidence_check": (
+        "A new major phase has begun. Before continuing, write 1 to 3 short sentences that orient the user "
+        "at a high level. Explain that you have candidate evidence and are now checking what actually holds up. "
+        "Do not mention tool names, do not restate mechanical status text, and do not present final conclusions yet."
+    ),
+}
 from open_webui.env import (
     AGENTIC_ARTIFACTS_DIR,
     GLOBAL_LOG_LEVEL,
@@ -200,6 +250,120 @@ DEFAULT_REASONING_TAGS = [
     ("<|begin_of_thought|>", "<|end_of_thought|>"),
     ("◁think▷", "◁/think▷"),
 ]
+
+
+def _should_enable_shared_tool_narration(
+    request: Request, metadata: dict, features: dict
+) -> bool:
+    params = metadata.get("params", {}) or {}
+    if params.get("function_calling") != "native":
+        return False
+
+    local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
+    local_corpus_enabled = (
+        local_corpus_mode == "prefer"
+        and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
+        and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
+    )
+    focused_search_enabled = bool(features.get("focused_search"))
+    return bool(local_corpus_enabled or focused_search_enabled)
+
+
+def _initialize_tool_narration_state(
+    request: Request, metadata: dict, features: dict
+) -> dict[str, Any]:
+    params = metadata.get("params", {}) or {}
+    local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
+    local_corpus_prefer = (
+        local_corpus_mode == "prefer"
+        and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
+        and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
+    )
+    focused_search_enabled = bool(features.get("focused_search"))
+    return {
+        "enabled": _should_enable_shared_tool_narration(request, metadata, features),
+        "last_narrated_phase": "orientation" if local_corpus_prefer else None,
+        "current_major_phase": None,
+        "narration_count": 1 if local_corpus_prefer else 0,
+        "max_beats": TOOL_NARRATION_MAX_BEATS,
+        "initial_preamble_expected": bool(local_corpus_prefer or focused_search_enabled),
+    }
+
+
+def _tool_narration_phase_for_tool(tool_name: str) -> str | None:
+    return TOOL_NARRATION_TOOL_PHASES.get(str(tool_name or ""))
+
+
+def _coalesce_tool_narration_phase(phases: list[str]) -> str | None:
+    if not phases:
+        return None
+    unique = [phase for phase in phases if phase in TOOL_NARRATION_PHASE_ORDER]
+    if not unique:
+        return None
+    return max(unique, key=lambda item: TOOL_NARRATION_PHASE_ORDER.get(item, 0))
+
+
+def _build_tool_narration_instruction(phase: str | None) -> str | None:
+    if not phase:
+        return None
+    return TOOL_NARRATION_PHASE_PROMPTS.get(phase)
+
+
+def _register_tool_narration_phase_transition(
+    state: dict[str, Any], phases: list[str]
+) -> str | None:
+    if not state.get("enabled"):
+        return None
+
+    next_phase = _coalesce_tool_narration_phase(phases)
+    if not next_phase:
+        return None
+
+    state["current_major_phase"] = next_phase
+    if next_phase == state.get("last_narrated_phase"):
+        return None
+    if int(state.get("narration_count", 0) or 0) >= int(state.get("max_beats", 0) or 0):
+        return None
+
+    instruction = _build_tool_narration_instruction(next_phase)
+    if not instruction:
+        return None
+
+    state["last_narrated_phase"] = next_phase
+    state["narration_count"] = int(state.get("narration_count", 0) or 0) + 1
+    return instruction
+
+
+def _build_tool_continuation_messages(
+    form_data_messages: list[dict[str, Any]],
+    output: list[dict[str, Any]],
+    narration_instruction: str | None = None,
+) -> list[dict[str, Any]]:
+    messages = [
+        *copy.deepcopy(form_data_messages),
+        *convert_output_to_messages(output, raw=True),
+    ]
+    if narration_instruction:
+        messages = add_or_update_system_message(
+            narration_instruction,
+            messages,
+            append=True,
+        )
+    return messages
+
+
+def _inject_runtime_timestamp_once(messages: list[dict]) -> list[dict]:
+    system_message = get_system_message(messages)
+    if system_message:
+        system_content = get_content_from_message(system_message) or ""
+        if RUNTIME_TIMESTAMP_MARKER in system_content:
+            return messages
+
+    return add_or_update_system_message(
+        append_runtime_temporal_grounding(""),
+        messages,
+        append=True,
+    )
 DEFAULT_SOLUTION_TAGS = [("<|begin_of_solution|>", "<|end_of_solution|>")]
 DEFAULT_CODE_INTERPRETER_TAGS = [("<code_interpreter>", "</code_interpreter>")]
 
@@ -4831,6 +4995,20 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 append=True,
             )
 
+    if _should_enable_shared_tool_narration(request, metadata, features):
+        metadata.setdefault(
+            "tool_narration_state",
+            _initialize_tool_narration_state(request, metadata, features),
+        )
+        current_system = get_system_message(form_data.get("messages", []))
+        current_content = current_system.get("content", "") if current_system else ""
+        if TOOL_NARRATION_SYSTEM_PROMPT not in str(current_content):
+            form_data["messages"] = add_or_update_system_message(
+                TOOL_NARRATION_SYSTEM_PROMPT,
+                form_data["messages"],
+                append=True,
+            )
+
     tool_ids = form_data.pop("tool_ids", None)
     terminal_id = form_data.pop("terminal_id", None)
     files = form_data.pop("files", None)
@@ -6828,6 +7006,7 @@ async def streaming_chat_response_handler(response, ctx):
                     tools = metadata.get("tools", {})
 
                     results = []
+                    completed_tool_phases = []
 
                     for tool_call in response_tool_calls:
                         tool_call_id = tool_call.get("id", "")
@@ -7137,6 +7316,11 @@ async def streaming_chat_response_handler(response, ctx):
                                 ),
                             }
                         )
+                        phase = _tool_narration_phase_for_tool(
+                            resolved_tool_function_name
+                        )
+                        if phase:
+                            completed_tool_phases.append(phase)
 
                     # Update function_call statuses and append function_call_output items
                     for tc in response_tool_calls:
@@ -7259,14 +7443,20 @@ async def streaming_chat_response_handler(response, ctx):
                     )
 
                     try:
+                        narration_instruction = _register_tool_narration_phase_transition(
+                            metadata.get("tool_narration_state", {}),
+                            completed_tool_phases,
+                        )
+                        continuation_messages = _build_tool_continuation_messages(
+                            form_data["messages"],
+                            output,
+                            narration_instruction=narration_instruction,
+                        )
                         new_form_data = {
                             **form_data,
                             "model": model_id,
                             "stream": True,
-                            "messages": [
-                                *form_data["messages"],
-                                *convert_output_to_messages(output, raw=True),
-                            ],
+                            "messages": continuation_messages,
                         }
 
                         res = await generate_chat_completion(
