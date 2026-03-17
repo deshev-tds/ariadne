@@ -54,6 +54,8 @@
 	export let setChatDeepResearchEnabled: (enabled: boolean) => void = () => {};
 	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
+	export let oldChatsSearchEnabled = true;
+	export let setChatOldChatsSearchEnabled: (enabled: boolean) => void = () => {};
 
 	export let selectedToolIds = [];
 	export let selectedFilterIds = [];
@@ -224,6 +226,8 @@
 					{setChatDeepResearchEnabled}
 					{localCorpusMode}
 					{setChatLocalCorpusMode}
+					{oldChatsSearchEnabled}
+					{setChatOldChatsSearchEnabled}
 					bind:files
 					bind:prompt
 					bind:autoScroll

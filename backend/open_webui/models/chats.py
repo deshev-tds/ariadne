@@ -1233,11 +1233,11 @@ class ChatTable:
             # Check if the database dialect is either 'sqlite' or 'postgresql'
             dialect_name = db.bind.dialect.name
             if dialect_name == "sqlite":
-                # SQLite case: using JSON1 extension for JSON searching
+                # SQLite case: search message content within chat.history.messages
                 sqlite_content_sql = (
                     "EXISTS ("
                     "    SELECT 1 "
-                    "    FROM json_each(Chat.chat, '$.messages') AS message "
+                    "    FROM json_each(Chat.chat, '$.history.messages') AS message "
                     "    WHERE LOWER(message.value->>'content') LIKE '%' || :content_key || '%'"
                     ")"
                 )
@@ -1285,9 +1285,9 @@ class ChatTable:
                 postgres_content_sql = """
                 EXISTS (
                     SELECT 1
-                    FROM json_array_elements(Chat.chat->'messages') AS message
-                    WHERE json_typeof(message->'content') = 'string'
-                    AND LOWER(message->>'content') LIKE '%' || :content_key || '%'
+                    FROM json_each(Chat.chat->'history'->'messages') AS message
+                    WHERE json_typeof(message.value->'content') = 'string'
+                    AND LOWER(message.value->>'content') LIKE '%' || :content_key || '%'
                 )
                 """
 

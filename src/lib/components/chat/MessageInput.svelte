@@ -90,6 +90,7 @@
 	import PlusAlt from '../icons/PlusAlt.svelte';
 	import LightBulb from '../icons/LightBulb.svelte';
 	import CommandLine from '../icons/CommandLine.svelte';
+	import ChatBubbles from '../icons/ChatBubbles.svelte';
 	import DocumentChartBar from '../icons/DocumentChartBar.svelte';
 	import Dropdown from '../common/Dropdown.svelte';
 
@@ -129,6 +130,8 @@
 	export let setChatDeepResearchEnabled: (enabled: boolean) => void = () => {};
 	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
+	export let oldChatsSearchEnabled = true;
+	export let setChatOldChatsSearchEnabled: (enabled: boolean) => void = () => {};
 
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
@@ -186,7 +189,8 @@
 		webSearchEnabled,
 		codeInterpreterEnabled,
 		deepResearchEnabled,
-		localCorpusMode
+		localCorpusMode,
+		oldChatsSearchEnabled
 	});
 
 	const inputVariableHandler = async (text: string): Promise<string> => {
@@ -1724,6 +1728,29 @@
 												}}
 											>
 												<BookOpen className="size-4.5" strokeWidth="1.75" />
+											</button>
+										</Tooltip>
+										<Tooltip
+											content={oldChatsSearchEnabled
+												? $i18n.t('Old chats search is enabled for this chat')
+												: $i18n.t('Old chats search is off for this chat')}
+											placement="top"
+										>
+											<button
+												type="button"
+												id="old-chats-search-toggle-button"
+												aria-label={$i18n.t('Old chats search')}
+												aria-pressed={oldChatsSearchEnabled}
+												class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {oldChatsSearchEnabled
+													? 'text-teal-700 bg-teal-100/80 hover:bg-teal-200/80 dark:text-teal-200 dark:bg-teal-700/20 dark:hover:bg-teal-700/30'
+													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+												on:click={async () => {
+													setChatOldChatsSearchEnabled(!oldChatsSearchEnabled);
+													await tick();
+													document.getElementById('chat-input')?.focus();
+												}}
+											>
+												<ChatBubbles className="size-4.5" strokeWidth="1.75" />
 											</button>
 										</Tooltip>
 										{#if showWebSearchButton}

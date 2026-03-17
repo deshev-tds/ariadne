@@ -180,6 +180,7 @@
 	let chatFocusedSearchEnabled = false;
 	let chatDeepResearchEnabled = false;
 	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
+	let chatOldChatsSearchEnabled = true;
 
 	$: chatThinkingEnabled =
 		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
@@ -189,6 +190,7 @@
 	$: chatLocalCorpusMode = ['off', 'auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
 		? params.local_corpus_mode
 		: 'auto';
+	$: chatOldChatsSearchEnabled = (params?.old_chats_search_enabled ?? true) !== false;
 
 	const setChatThinkingEnabled = (enabled: boolean) => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
@@ -263,6 +265,12 @@
 	const setChatLocalCorpusMode = (mode: 'off' | 'auto' | 'prefer') => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
 		nextParams.local_corpus_mode = mode;
+		params = nextParams;
+	};
+
+	const setChatOldChatsSearchEnabled = (enabled: boolean) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		nextParams.old_chats_search_enabled = enabled;
 		params = nextParams;
 	};
 
@@ -361,6 +369,12 @@
 								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
 									? input.localCorpusMode
 									: 'auto'
+							};
+						}
+						if (typeof input.oldChatsSearchEnabled === 'boolean') {
+							params = {
+								...(params ?? {}),
+								old_chats_search_enabled: input.oldChatsSearchEnabled
 							};
 						}
 					}
@@ -869,6 +883,12 @@
 								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
 									? input.localCorpusMode
 									: 'auto'
+							};
+						}
+						if (typeof input.oldChatsSearchEnabled === 'boolean') {
+							params = {
+								...(params ?? {}),
+								old_chats_search_enabled: input.oldChatsSearchEnabled
 							};
 						}
 					}
@@ -3032,6 +3052,8 @@
 									{setChatDeepResearchEnabled}
 									localCorpusMode={chatLocalCorpusMode}
 									{setChatLocalCorpusMode}
+									oldChatsSearchEnabled={chatOldChatsSearchEnabled}
+									{setChatOldChatsSearchEnabled}
 									bind:files
 									bind:prompt
 									bind:autoScroll
@@ -3112,6 +3134,8 @@
 									{setChatDeepResearchEnabled}
 									localCorpusMode={chatLocalCorpusMode}
 									{setChatLocalCorpusMode}
+									oldChatsSearchEnabled={chatOldChatsSearchEnabled}
+									{setChatOldChatsSearchEnabled}
 									bind:messageInput
 									bind:files
 									bind:prompt

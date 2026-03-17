@@ -103,6 +103,11 @@ import copy
 log = logging.getLogger(__name__)
 
 
+def _old_chats_search_enabled(extra_params: dict) -> bool:
+    params = ((extra_params or {}).get("__metadata__", {}) or {}).get("params", {}) or {}
+    return params.get("old_chats_search_enabled", True) is not False
+
+
 def get_async_tool_function_and_apply_extra_params(
     function: Callable, extra_params: dict
 ) -> Callable[..., Awaitable]:
@@ -474,7 +479,7 @@ def get_builtin_tools(
             )
 
     # Chats tools - search and fetch user's chat history
-    if is_builtin_tool_enabled("chats"):
+    if is_builtin_tool_enabled("chats") and _old_chats_search_enabled(extra_params):
         builtin_functions.extend([search_chats, view_chat])
 
     # Add memory tools if builtin category enabled AND enabled for this chat
