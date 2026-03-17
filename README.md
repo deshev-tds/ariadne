@@ -106,7 +106,7 @@ The point is not upstream replacement. The point is a sharper local workflow wit
 
 The important divergences are not cosmetic. They fall into a few deliberate clusters.
 
-The labels in this section are fork-specific runtime concepts, not upstream Open WebUI vocabulary. On current `upstream/main`, there is no dedicated `context_maintenance.py`, `chat_recall.py`, or `ledger.py` layer doing this kind of backend-owned continuity work.
+The labels in this section are fork-specific runtime concepts, not upstream Open WebUI vocabulary. In this fork, context maintenance, exact recall, and ledger continuity are treated as explicit backend-owned runtime layers with their own lifecycle and telemetry, rather than being left implicit inside a more general chat path.
 
 ### Continuity Model at a Glance
 
