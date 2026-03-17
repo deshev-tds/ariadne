@@ -175,12 +175,37 @@
 	let chatFiles = [];
 	let files = [];
 	let params = {};
+	let paramsHydratedFromSettings = false;
 	let chatThinkingEnabled = false;
 	let chatLedgerAgenticEnabled = false;
 	let chatFocusedSearchEnabled = false;
 	let chatDeepResearchEnabled = false;
 	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 	let chatOldChatsSearchEnabled = true;
+
+	const cloneChatParams = (value: Record<string, unknown> | null | undefined) => {
+		if (!value || typeof value !== 'object') {
+			return {};
+		}
+
+		try {
+			return structuredClone(value);
+		} catch {
+			return JSON.parse(JSON.stringify(value));
+		}
+	};
+
+	const getDefaultChatParams = () => cloneChatParams($settings?.params ?? {});
+
+	const initializeChatParams = (overrides: Record<string, unknown> = {}) => {
+		params = { ...getDefaultChatParams(), ...overrides };
+		paramsHydratedFromSettings = $settings !== undefined;
+	};
+
+	$: if (!paramsHydratedFromSettings && $settings !== undefined) {
+		params = { ...getDefaultChatParams(), ...(params ?? {}) };
+		paramsHydratedFromSettings = true;
+	}
 
 	$: chatThinkingEnabled =
 		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
@@ -360,26 +385,25 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						const nextParams = getDefaultChatParams();
 						if (typeof input.deepResearchEnabled === 'boolean') {
-							params = { ...(params ?? {}), deep_research_mode: input.deepResearchEnabled };
+							nextParams.deep_research_mode = input.deepResearchEnabled;
 						}
 						if (typeof input.localCorpusMode === 'string') {
-							params = {
-								...(params ?? {}),
-								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
-									? input.localCorpusMode
-									: 'auto'
-							};
+							nextParams.local_corpus_mode = ['off', 'auto', 'prefer'].includes(
+								input.localCorpusMode
+							)
+								? input.localCorpusMode
+								: 'auto';
 						}
 						if (typeof input.oldChatsSearchEnabled === 'boolean') {
-							params = {
-								...(params ?? {}),
-								old_chats_search_enabled: input.oldChatsSearchEnabled
-							};
+							nextParams.old_chats_search_enabled = input.oldChatsSearchEnabled;
 						}
+						initializeChatParams(nextParams);
 					}
 				} catch (e) {}
 			} else {
+				initializeChatParams();
 				await setDefaults();
 			}
 
@@ -874,23 +898,21 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						const nextParams = getDefaultChatParams();
 						if (typeof input.deepResearchEnabled === 'boolean') {
-							params = { ...(params ?? {}), deep_research_mode: input.deepResearchEnabled };
+							nextParams.deep_research_mode = input.deepResearchEnabled;
 						}
 						if (typeof input.localCorpusMode === 'string') {
-							params = {
-								...(params ?? {}),
-								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
-									? input.localCorpusMode
-									: 'auto'
-							};
+							nextParams.local_corpus_mode = ['off', 'auto', 'prefer'].includes(
+								input.localCorpusMode
+							)
+								? input.localCorpusMode
+								: 'auto';
 						}
 						if (typeof input.oldChatsSearchEnabled === 'boolean') {
-							params = {
-								...(params ?? {}),
-								old_chats_search_enabled: input.oldChatsSearchEnabled
-							};
+							nextParams.old_chats_search_enabled = input.oldChatsSearchEnabled;
 						}
+						initializeChatParams(nextParams);
 					}
 				} catch (e) {}
 			}
@@ -1293,7 +1315,7 @@
 		};
 
 		chatFiles = [];
-		params = {};
+		initializeChatParams();
 		taskIds = null;
 		messageQueue = [];
 
