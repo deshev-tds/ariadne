@@ -106,12 +106,35 @@ The point is not upstream replacement. The point is a sharper local workflow wit
 
 The important divergences are not cosmetic. They fall into a few deliberate clusters.
 
+The labels in this section are fork-specific runtime concepts, not upstream Open WebUI vocabulary. On current `upstream/main`, there is no dedicated `context_maintenance.py`, `chat_recall.py`, or `ledger.py` layer doing this kind of backend-owned continuity work.
+
+### Continuity Model at a Glance
+
+At request time, the continuity path in this fork is now more like this:
+
+```text
+persisted branch history
+    -> reconstruct request history
+    -> build bounded hot context
+    -> compact older turns into a structured state snapshot when needed
+    -> if the hot context still lacks evidence, query older turns through SQLite FTS5/BM25 or a bounded recent-branch scan
+    -> inject a ledger note only if the selected mode and current turn make it relevant
+    -> send the final prompt to the model
+```
+
+The key concepts are:
+
+- `hot context`: the bounded working set for the current turn, built against the live prompt budget of the active runtime
+- `structured state snapshot`: the durable earlier-turn state that replaces older raw turns during compaction
+- `exact recall`: the bounded evidence-recovery layer used when older raw facts are needed again, closer to a server-side "find in earlier conversation" path than to always-on RAG
+- `ledger`: a separate fork-owned continuity layer for durable task-state or style guidance, with explicit `vibe` and `agentic` modes
+
 **Memory and Context**
 
-- Chat history is maintained inside a bounded hot context instead of being replayed until failure.
-- Conversation recap is structured state, not a loose narrative summary.
-- Exact recall can recover older raw facts as evidence when live context is no longer enough.
-- Ledger continuity is explicit and chat-scoped instead of heuristic.
+- A backend-owned context-maintenance layer builds a bounded hot context for each turn instead of replaying the whole branch until it fails.
+- Earlier history is compacted into a structured state snapshot that preserves durable task state without pretending to be raw evidence.
+- A separate exact-recall layer can recover older raw facts when the hot context is no longer enough, using SQLite `FTS5`/`bm25(...)` over persisted branch history when lexical search is viable and bounded raw branch scans when it is not.
+- Ledger continuity is an explicit, chat-scoped continuity layer that captures durable task state or conversational style and reinjects it only when the selected mode and current turn make it relevant.
 
 **Retrieval Discipline**
 
@@ -152,6 +175,24 @@ Architecture problems are expensive. Ranking problems, tool obedience, and query
 
 This section is about keeping long chats usable on local runtimes. It is not a license to replay everything until the model breaks, and it is not an excuse to run retrieval on every turn. The job is to maintain a bounded working set, recover older facts when needed, and keep that behavior inspectable.
 
+The terms in this section are fork terms. They describe runtime layers implemented in this repo, not generic Open WebUI concepts.
+
+- `hot context`: the bounded request-time working set assembled by backend context maintenance against a live prompt cap derived from the active runtime
+- `structured state snapshot`: the canonical summary block produced during compaction and merged into the system message as durable earlier-turn state
+- `exact recall`: a bounded evidence-recovery step that runs only when the current turn appears to need older raw facts, currently through SQLite `FTS5` with `bm25(...)` ranking over persisted earlier turns
+- `ledger`: a separate fork memory layer for durable task-state or style continuity, with explicit `vibe` and `agentic` modes
+
+At request time, the memory path is now more like this:
+
+```text
+persisted branch history
+    -> reconstruct request history the way OWUI actually sends it
+    -> build bounded working memory (system + anchor + snapshot + recent tail)
+    -> if evidence still looks weak, run exact recall (SQLite FTS5/BM25 or branch_recent)
+    -> if continuity mode requires it, inject a ledger note
+    -> send the final prompt to the model
+```
+
 ### Stage 1: Context Compaction
 
 The first change was server-side context maintenance.
@@ -183,6 +224,12 @@ Instead of asking the model for a narrative summary, this fork asks for a struct
 
 That change matters because models generally behave better when earlier conversation state is presented as explicit structure rather than a prose recap. It reduces drift and makes selective attention less fragile.
 
+It is also worth being explicit about how that snapshot is produced. The snapshot is built from the older middle of the conversation, not from the whole chat indiscriminately: the server keeps the system prompt, preserves an early anchor, preserves a recent raw tail, flattens the older slice between them, and asks the task model to rewrite that slice into exactly five canonical sections. The result is then normalized back into the same canonical shape before it is stored and injected, so the runtime is not depending on a free-form recap style staying stable across turns.
+
+That implementation is also designed to avoid "recap of a recap of a recap". The fork persists both the snapshot text and the exact raw message boundary it summarizes through, then reuses that stored snapshot directly while later turns stay in the raw tail. Refresh is triggered only when enough new raw growth has accumulated beyond that boundary, and the new snapshot is generated from raw history up to the new boundary, not by summarizing the previous snapshot text again.
+
+There is a deliberate contract behind that. The snapshot is for durable state only, not for transient literals, one-off canaries, or recoverable raw evidence. If a literal detail should survive only as evidence from raw history, it should be excluded from the snapshot and recovered later through exact recall.
+
 ### Stage 3: Exact Recall
 
 The third change adds a real recall layer on top of working memory.
@@ -196,15 +243,17 @@ Working memory still looks like this:
 
 But if that live state does not provide enough evidence, the server can now recover older raw facts from earlier turns and inject them back into the prompt as evidence.
 
+The method matters here. On the current SQLite-backed path, this is not a vague "memory search" claim. The fork maintains a lexical index over earlier chat messages and uses SQLite `FTS5` with `bm25(...)` ranking to recover bounded candidates from persisted branch history. Conceptually, it is closer to a server-side version of what a careful user could do with browser Find over an earlier conversation, except the backend can do it against older turns that are no longer in the live prompt window.
+
 This recall layer is intentionally bounded and conservative. It is not an always-on retrieval ritual before every response.
 
 It currently has two modes:
 
 - `FTS recall`
-  Used for explicit references, missing entities, and continuation cases where there is a useful lexical query.
+  Used for explicit references, missing entities, and continuation cases where there is a useful lexical query. This is the preferred path: query the SQLite `FTS5` index, rank candidates with `bm25`, recurse into narrower lexical subqueries when needed, and inject only a few bounded evidence snippets.
 
 - `branch_recent recall`
-  Used for vague referential phrases like "the other tool" or "the old config", where sending pronoun-heavy text into FTS would likely fail.
+  Used for vague referential phrases like "the other tool" or "the old config", where sending pronoun-heavy text into FTS would likely fail. Instead of pretending those are good search queries, the fork inspects a bounded recent branch window and recovers a few likely disambiguating turns.
 
 There is also an important operational distinction now:
 
@@ -239,19 +288,19 @@ Here is what that means in practice.
 
 - `User`: `What did we decide earlier about ffuf?`
 - `Trigger`: bounded `FTS recall`.
-- `Action`: the server searches older turns, recovers the relevant excerpt, injects it as evidence, and only then lets the model answer.
+- `Action`: the server queries the persisted chat index, pulls a few `bm25`-ranked matches for `ffuf`, injects the relevant excerpt as evidence, and only then lets the model answer.
 
 **Flow 3: Missing entity, but no explicit "remember" wording**
 
 - `User`: `Keep the same endpoint, but change the timeout to 5 seconds.`
 - `Trigger`: the entity needed for continuation has fallen out of the live window.
-- `Action`: the server recalls the earlier raw mention instead of leaving the model to guess.
+- `Action`: the server runs lexical recall over older turns, recovers the earlier raw endpoint mention, and avoids making the model guess from the recap alone.
 
 **Flow 4: Vague referential phrase**
 
 - `User`: `What happened with that other tool?`
 - `Trigger`: vague reference with poor lexical retrieval terms.
-- `Action`: `branch_recent` inspects a bounded recent window of older branch messages and injects a few evidence snippets for disambiguation.
+- `Action`: `branch_recent` inspects a bounded recent window of older branch messages and injects a few evidence snippets for disambiguation instead of forcing a bad FTS query.
 
 The design bias is intentional:
 
@@ -316,7 +365,17 @@ It is off by default, capped, and explicitly opt-in per request.
 
 ### Ledger Continuity Modes
 
-This fork now treats ledger mode as an explicit user control instead of a backend heuristic.
+This fork now treats ledger mode as an explicit fork memory control instead of a backend heuristic.
+
+The ledger is not "memory" in the same sense as the structured state snapshot.
+
+- the snapshot is the compacted working-state representation of earlier turns
+- the ledger is a separate durable continuity layer backed by fork-owned extraction and injection rules
+
+In code, the ledger captures different kinds of durable material depending on the selected mode.
+
+- `agentic` mode is for operational continuity: tooling choices, action mode, confirmation policy, evidence policy, side-effect policy, output contract, and durable decisions
+- `vibe` mode is for conversational continuity: tone profile and repeated refrains that should survive compaction without becoming a generic style heuristic
 
 The behavior is:
 
@@ -338,6 +397,30 @@ On the first turn after a mode switch, the selected mode can force a single ledg
 ### Legacy Simon Pipe Cleanup
 
 The old `simon-cognitive-engine` pipe stack is no longer part of the supported runtime path in this fork.
+
+That pipe mattered historically. `Simon` was the first standalone inference layer behind a frontend and backend in this ecosystem: voice-first, but not voice-only, with bounded memory, explicit recall, lexical search, and a deliberate split between fast answers and slower evidence-heavy paths. A lot of the design pressure that shaped this fork was first worked through there.
+
+The reason to remove the pipe anyway was architectural, not emotional. Keeping Simon as a live embedded runtime would have pushed this fork further away from upstream Open WebUI, and it would have meant carrying Simon-specific plumbing, valves, and deployment assumptions everywhere this fork runs. The decision here was to keep the ideas, but re-implement the important runtime behavior natively in the OWUI request path.
+
+What got rewritten into OWUI-native behavior instead of staying in the old Simon pipe stack:
+
+- bounded working-memory construction and overflow-aware compaction in `context_maintenance.py`
+- structured state snapshots with persisted summary boundaries instead of free-form recap loops
+- exact recall and evidence injection in `chat_recall.py`
+- explicit continuity capture/injection in `ledger.py`
+- request-scoped memory telemetry and chat-lifecycle integration in middleware
+
+What did *not* stay as a separate Simon runtime:
+
+- the old pipe model and valve surface
+- the standalone Simon engine/gatekeeper/context-builder/persistence/retrieval orchestration layer
+- the Simon install/dashboard scripts and DB-backed pipe/model override path
+
+A few low-level helpers still carry the Simon name because they were useful to keep as local primitives rather than re-import from another project:
+
+- lexical chat indexing and queue management in `simon_lex_index.py`
+- lightweight memory-intent detection in `extensions/simon_engine/memory_intents.py`
+- cheap token-budget estimation in `extensions/simon_engine/token_budget.py`
 
 If an environment previously installed that pipe as a DB-backed function/model override, purge those records after deploy:
 
@@ -1006,7 +1089,7 @@ For generic deployment guidance, refer to the upstream Open WebUI documentation:
 
 This fork is not the only place where these operating lessons show up.
 
-- [Simon](https://github.com/deshev-tds/simon) is a more direct voice/agent system built around local memory, bounded recall, and explicit control over when the system should pay for deeper reasoning.
+- [Simon](https://github.com/deshev-tds/simon) was the first standalone frontend+backend inference layer in this ecosystem: voice-first, but not only, and the place where many of the bounded-memory, exact-recall, and explicit-reasoning ideas were first tested before being reworked more natively into this fork.
 - [VERA](https://github.com/deshev-tds/vera) is a local verification-oriented research agent built around evidence hooks, tool discipline, and auditable verification loops.
 
 They are separate projects, not hidden subsystems of this fork. They are included here simply because they come from the same practical ecosystem and many of the same learned constraints.
