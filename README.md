@@ -1,22 +1,41 @@
-# Open WebUI Fork for Local Context, Recall, Voice, and Token Inspection
+# Open WebUI Fork for Bounded Local Work
 
-This is an opinionated Open WebUI fork for local-first long-chat work: bounded memory, evidence-oriented recall, planned retrieval, practical local voice, and token-level inspection on real local runtimes.
+This is an opinionated Open WebUI fork for local-first long-chat work on real local runtimes: bounded hot context, evidence-oriented recall, planned retrieval, practical local voice, and inspectable generation.
 
 It is for people already running local models, especially `llama.cpp`-style stacks, who care about prompt-budget hygiene, controllable behavior, and being able to inspect what the system actually did.
 
+The thesis is simple: local LLM UX fails predictably when chat history is replayed naively, retrieval is allowed to sprawl, literature is flattened into generic ingest, and generation becomes an opaque black box. This fork is narrow on purpose. It is not trying to replace upstream Open WebUI. It is trying to make a specific local workflow sharper.
+
+Upstream Open WebUI remains a strong base platform and UI for self-hosted LLM workflows. This fork keeps that base, but diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, deliberate literature handling, and generation inspection that is useful during real debugging rather than only during demos.
+
+In practice, the local stack behind this fork is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. A lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
+
 ## Quick Navigation
 
+- [The Fork in One View](#the-fork-in-one-view)
 - [Why This Fork Exists](#why-this-fork-exists)
 - [What Changed from Upstream](#what-changed-from-upstream)
+- [What Was Actually Validated](#what-was-actually-validated)
 - [Context and Memory in This Fork](#context-and-memory-in-this-fork)
-- [Operating Paths](#operating-paths)
 - [Web Search and Retrieval Planning](#web-search-and-retrieval-planning)
 - [Optional Local Corpus Lane](#optional-local-corpus-lane)
 - [Deep Research as a Separate Lane](#deep-research-as-a-separate-lane)
 - [Voice / TTS](#voice--tts)
 - [Token Exploration and Response Branching](#token-exploration-and-response-branching)
 - [Thinking / Reasoning Controls](#thinking--reasoning-controls)
+- [Recent Lessons](#recent-lessons)
 - [Compatibility / Install](#compatibility--install)
+
+Reading paths:
+
+> **Architecture path**  
+> [The Fork in One View](#the-fork-in-one-view) -> [What Was Actually Validated](#what-was-actually-validated) -> [Context and Memory in This Fork](#context-and-memory-in-this-fork) -> [Web Search and Retrieval Planning](#web-search-and-retrieval-planning) -> [Optional Local Corpus Lane](#optional-local-corpus-lane) -> [Deep Research as a Separate Lane](#deep-research-as-a-separate-lane)
+>
+> **Local corpus path**  
+> [The Fork in One View](#the-fork-in-one-view) -> [What Was Actually Validated](#what-was-actually-validated) -> [Optional Local Corpus Lane](#optional-local-corpus-lane) -> [Recent Lessons](#recent-lessons)
+>
+> **Local runtime UX path**  
+> [The Fork in One View](#the-fork-in-one-view) -> [Context and Memory in This Fork](#context-and-memory-in-this-fork) -> [Voice / TTS](#voice--tts) -> [Token Exploration and Response Branching](#token-exploration-and-response-branching) -> [Thinking / Reasoning Controls](#thinking--reasoning-controls)
 
 The priority set here is:
 
@@ -28,11 +47,36 @@ The priority set here is:
 - token-level inspection and deliberate response branching for real debugging
 - honest control surfaces for `llama.cpp`-style local stacks instead of universal-magic toggles
 
-Upstream Open WebUI is a strong base platform and UI for self-hosted LLM workflows. This fork keeps that base, but diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, and generation inspection that is useful during real debugging rather than only during demos.
-
-In practice, the local stack behind this fork is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. That matters because a lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
-
 That is the frame for the rest of this document.
+
+## The Fork in One View
+
+There are four deliberate lanes in this fork. That separation is not product packaging. Trying to force all of them through one vague "chat with tools" path is how local stacks become slow, opaque, and prompt-heavy.
+
+```text
+User request
+    |
+    +--> Chat lane     -> bounded hot context -> exact recall when needed -> token inspection when supported
+    +--> Web retrieval -> plan -> target -> bound evidence -> stop
+    +--> Local corpus  -> shortlist sources -> retrieve evidence inside them -> open tables/figures explicitly
+    +--> Deep research -> sidecar job -> artifact output -> no report dump in chat context
+```
+
+### Chat lane
+
+The normal fast path stays in chat. It uses server-side context maintenance, a bounded hot working set, structured state snapshots, and exact recall only when evidence is actually needed. When the backend exposes the necessary telemetry, this lane also supports token-level inspection and deliberate response branching, so local generation is less of a black box.
+
+### Web retrieval lane
+
+This is the current-answer evidence path. It plans, targets, and bounds web retrieval for a chat turn, then stops once enough evidence exists. It is there to improve an answer, not to pour search results into context until the prompt is bloated.
+
+### Local corpus lane
+
+This is the on-disk evidence path for proprietary, bought, or locally curated literature. It is domain-first on purpose: first narrow the source set, then retrieve evidence inside that narrowed set. The selector layer and the evidence layer are separate because "find the right source" and "extract the right evidence from that source" are not the same job.
+
+### Deep research lane
+
+This is a separate blocking backend path for report generation through a sidecar. It returns artifacts and sources, not a giant report dump in model context. That makes it slower than the chat and retrieval lanes by design, but also more honest about what the system is doing.
 
 ## Why This Fork Exists
 
@@ -42,6 +86,8 @@ The main idea is that local LLM UX falls apart in a few predictable places:
 
 - context windows fill up long before the conversation is actually "done"
 - summary alone is not memory
+- retrieval lanes get collapsed into one vague "use tools" gesture
+- local literature gets flattened into a generic blob that destroys source boundaries
 - local TTS often sounds either too synthetic or too heavyweight
 - token-level generation is usually hidden, even when you need to inspect or steer it
 
@@ -49,37 +95,58 @@ So this fork biases toward:
 
 - server-side context hygiene
 - bounded recall instead of blind replay
+- planned and bounded evidence gathering
+- domain-first literature handling instead of flattening
 - lightweight but good local TTS
 - generation observability and deliberate branching
 
-It is not trying to replace upstream Open WebUI. It is trying to make a specific local workflow sharper.
+The point is not upstream replacement. The point is a sharper local workflow with clearer operational contracts.
 
 ## What Changed from Upstream
 
-The important divergences are not cosmetic.
+The important divergences are not cosmetic. They fall into a few deliberate clusters.
 
-- Server-side context maintenance was added so long chats do not simply degrade or fail once the prompt gets too large.
-- Summary generation was changed from a loose recap into a structured state snapshot.
-- Exact recall was added so older raw facts can be recovered when they fall out of the live prompt window.
-- The live prompt budget is now derived from the active `llama.cpp` runtime instead of being treated as a static design assumption.
-- Recall is now explicitly layered as `FTS preferred, raw fallback guaranteed` for cases where lexical retrieval is not ready or not good enough.
-- Request-scoped memory telemetry can be turned on per turn for debugging without leaving noisy long-lived logging enabled in production.
-- Ledger continuity now uses explicit chat-scoped mode selection: `vibe` by default, `agentic` only when enabled in the UI toggle.
-- Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
-- A native focused-web tool (`web_research_strong`, with `search_strong_sources` kept as an alias) was added for local-first strong-source search, with broader fallback only when evidence from locally-listed strong domains is weak.
-- A domain-first local corpus path was added for proprietary or bought literature, with selection-layer markdown, per-book evidence retrieval, and table-aware follow-up tools instead of flattening everything into one generic knowledge pile.
-- The `v2` local-corpus reasoning lane now uses deterministic retrieval projection so user-facing framing text does not quietly pollute axis queries and slow or misroute retrieval.
-- The `default` function-calling selector now has its own runtime discipline layer, so local-corpus preference, retrieval term hygiene, and prior-work fallback do not depend entirely on native tool-calling behavior.
-- In `default` function calling, `local_corpus_mode=auto` now deterministically performs a single local shelf-inspection step first (`local_corpus_list_domains`) before any web or model-only fallback, and only continues locally when the returned usable domains show a real thematic fit.
-- In `default` function calling, once the local corpus lane has been used, the web evidence ladder is now enforced as `local corpus -> focused search -> broad web search`, so a raw `search_web` jump cannot skip `web_research_strong` when the focused lane is available.
-- Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
-- Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
-- An optional blocking deep-research lane was added through a Local Deep Research (LDR) sidecar, kept separate from normal web/focused search and returning downloadable report artifacts instead of dumping long web/report bodies into model context.
-- Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
-- Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
-- On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
+**Memory and Context**
 
-The rest of this README explains the rationale behind those changes.
+- Chat history is maintained inside a bounded hot context instead of being replayed until failure.
+- Conversation recap is structured state, not a loose narrative summary.
+- Exact recall can recover older raw facts as evidence when live context is no longer enough.
+- Ledger continuity is explicit and chat-scoped instead of heuristic.
+
+**Retrieval Discipline**
+
+- Web retrieval is planned, strong-source aware, and bounded.
+- Request-scoped memory and tool telemetry make continuity and tool-path failures inspectable without permanent log bloat.
+- Local-corpus routing discipline now exists in both `native` and `default` tool-calling paths.
+
+**Specialized Evidence Lanes**
+
+- A domain-first local corpus lane exists for proprietary or bought literature instead of flattening everything into one generic knowledge pile.
+- Deep research is a separate blocking lane through a Local Deep Research (`LDR`) sidecar.
+
+**Runtime Surfaces**
+
+- Kokoro adds a practical local TTS path.
+- Token explorer support and manual response branching make compatible local generation less of a black box.
+
+The rest of this README explains the rationale and constraints behind those divergences.
+
+## What Was Actually Validated
+
+This README makes narrow claims on purpose.
+
+It does not claim that local RAG is solved, that models obey tools reliably by default, or that one runtime can erase backend differences. What was validated in practice is narrower and more honest:
+
+- the lane split is useful on a real local OWUI instance
+- bounded hot context plus exact recall keeps long chats usable without pretending memory is free
+- focused search can gather bounded evidence without turning into a prompt-dumping ritual
+- a domain-first local corpus architecture works
+- table-aware retrieval and page/section-grounded answers are viable without flattening a literature shelf
+- token-level inspection and manual branching are practical on compatible local runtimes
+
+The main validation corpus was medical literature. That was not a branding choice. It was an engineering choice joined to a real need: a domain with near-zero tolerance for citation sloppiness, bad ingest, and casual reasoning drift. If the system is going to flatten distinctions, misroute retrieval, or bluff its grounding, medicine is a fast place to find out.
+
+Architecture problems are expensive. Ranking problems, tool obedience, and query hygiene are irritating, but fixable. This fork is aimed at getting the expensive mistakes out of the way first.
 
 ## Context and Memory in This Fork
 
@@ -164,31 +231,27 @@ Here is what that means in practice.
 
 **Flow 1: No recall needed**
 
-User:
-`Continue with ffuf for the next step.`
-
-If `ffuf` is still present in the recent raw tail or structured snapshot, the server does nothing special. The request stays on the fast path.
+- `User`: `Continue with ffuf for the next step.`
+- `Trigger`: no recall; `ffuf` is still present in hot context.
+- `Action`: the server does nothing special and the request stays on the fast path.
 
 **Flow 2: Explicit factual recall**
 
-User:
-`What did we decide earlier about ffuf?`
-
-This triggers bounded FTS recall. The server searches older turns, recovers the relevant excerpt, injects it as evidence, and only then lets the model answer.
+- `User`: `What did we decide earlier about ffuf?`
+- `Trigger`: bounded `FTS recall`.
+- `Action`: the server searches older turns, recovers the relevant excerpt, injects it as evidence, and only then lets the model answer.
 
 **Flow 3: Missing entity, but no explicit "remember" wording**
 
-User:
-`Keep the same endpoint, but change the timeout to 5 seconds.`
-
-If the endpoint has already fallen out of the live window, the server can recall the earlier raw mention instead of leaving the model to guess.
+- `User`: `Keep the same endpoint, but change the timeout to 5 seconds.`
+- `Trigger`: the entity needed for continuation has fallen out of the live window.
+- `Action`: the server recalls the earlier raw mention instead of leaving the model to guess.
 
 **Flow 4: Vague referential phrase**
 
-User:
-`What happened with that other tool?`
-
-This is where `branch_recent` recall matters. Instead of issuing a bad FTS query built from vague pronouns, the server inspects a bounded recent window of older branch messages and injects a few evidence snippets for disambiguation.
+- `User`: `What happened with that other tool?`
+- `Trigger`: vague reference with poor lexical retrieval terms.
+- `Action`: `branch_recent` inspects a bounded recent window of older branch messages and injects a few evidence snippets for disambiguation.
 
 The design bias is intentional:
 
@@ -289,14 +352,6 @@ The first command is a dry run. The second command deletes both legacy records:
 - model id: `simon-cognitive-engine`
 
 After `--apply`, restart backend workers to guarantee no stale DB-loaded function modules remain in memory.
-
-## Operating Paths
-
-There are now three distinct lanes in this fork. That separation is deliberate; trying to force all of them through one generic "chat with tools" path is how local stacks become slow, opaque, and prompt-heavy.
-
-- **Chat Path**: the normal fast path. It uses server-side context maintenance, bounded recall, and stays in the chat lane.
-- **Search Path**: regular or focused web retrieval for the current answer. It gathers bounded evidence for a chat turn and then gets out of the way.
-- **Deep Research Path**: a separate blocking backend lane for report generation. It returns artifacts and sources, not a giant report dump in model context.
 
 ## Web Search and Retrieval Planning
 
@@ -476,9 +531,17 @@ There are now two local-corpus operating paths:
 - `v1`: direct lookup, shortlist, book card narrowing, evidence retrieval, table follow-up
 - `v2`: a bounded reasoning layer for abstract questions, with problem framing, axis planning, grouped evidence, and conservative sufficiency assessment
 
+### The Corpus Was Built, Not Ingested
+
+This lane was validated against medical literature, and that choice was deliberate. Medical literature is not forgiving test data. It is a domain where citation sloppiness, weak ingest, and careless reasoning are exposed quickly.
+
+The corpus was not produced by dragging PDFs into a generic knowledge feature and hoping embeddings would sort it out. It was built as a retrieval substrate: dozens of hours of source curation and cleanup, plus dozens of GPU-hours across conversion and fallback passes, aimed at producing something a model could interrogate through tools without immediately losing source boundaries.
+
+If a corpus is going to be used through tools, it should be shaped for tool use from the start. That is the frame for the rest of this section.
+
 ### Why This Exists
 
-The immediate practical reason was medical literature.
+The immediate practical reason was medical literature. The broader architectural reason was stricter evidence handling.
 
 If you take a shelf of guidelines, manuals, and textbooks and dump all of it into a generic flattened RAG collection, you lose exactly the distinctions that matter:
 
@@ -493,73 +556,6 @@ So the local-corpus path here was built around a stricter idea:
 first narrow the source set, then retrieve evidence inside that narrowed set.
 
 That gives the model a better chance of behaving like a careful reader instead of a stochastic blender.
-
-### Engineering Path
-
-The path that led here was intentionally incremental.
-
-1. Keep the literature outside OWUI's generic ingest path.
-2. Compile each source into a per-document artifact set.
-3. Build a tiny markdown serving layer in front of those artifacts.
-4. Add a domain-first router instead of a medicine-only one, so future domains can be added without redesign.
-5. Add native tools that preserve `domain`, `discipline`, `book_id`, `resource_type`, page metadata, and nearby tables/figures.
-6. Use lexical-first retrieval with metadata-aware reranking instead of jumping straight to embedding-heavy complexity.
-7. Validate the whole flow against a live OWUI instance with tool telemetry turned on.
-
-That last step matters.
-
-The point was not just to make the tools exist. The point was to prove that a single loaded model could actually:
-
-- choose the right local domain
-- narrow to the right books
-- retrieve evidence from those books
-- open a table when the evidence was table-shaped
-- answer with book/page/section grounding instead of free-floating synthesis
-
-### How The Local Corpus Path Behaves
-
-At a high level, the local-corpus lane behaves like this:
-
-1. user asks a question
-2. OWUI routes to a local domain when that is appropriate, or asks for domain narrowing if the query is ambiguous
-3. the model shortlists books from the serving layer
-4. the model opens book cards only for the shortlisted books
-5. retrieval searches only those selected books
-6. results return page, section, and nearby table/figure pointers
-7. the model can open a table explicitly when the answer depends on it
-
-That means the serving layer is not the evidence base.
-
-It is the selector that sits in front of the evidence base.
-
-The evidence base is still the per-document compiled output.
-
-### Native Tool Surface
-
-The model-facing tool family is intentionally narrow and explicit:
-
-- `local_corpus_list_domains`
-- `local_corpus_list_disciplines`
-- `local_corpus_frame_problem`
-- `local_corpus_plan_axes`
-- `local_corpus_collect_axis_evidence`
-- `local_corpus_assess_evidence`
-- `local_corpus_shortlist_books`
-- `local_corpus_view_book_cards`
-- `local_corpus_retrieve_evidence`
-- `local_corpus_view_table`
-- `local_corpus_view_figure_metadata`
-
-That tool split is not cosmetic.
-
-It is there to stop the system from pretending that "find a likely book" and "quote the evidence inside that book" are the same operation.
-
-The important constraint is that `v2` is still bounded and inspectable.
-
-- axis count is backend-capped
-- axes are scaffolds, not claims of completeness
-- the backend assessor is intentionally conservative and narrow
-- packs exist at different maturity tiers and are not presented as equally battle-tested
 
 ### What A Corpus Should Look Like
 
@@ -592,6 +588,116 @@ If you preserve that distinction, the router and tool chain stay useful even as 
 
 If you flatten everything into one undifferentiated collection, you are throwing away the main value of the design.
 
+### How The Corpus Was Produced
+
+The production path was engineered in layers rather than as one ingest job.
+
+1. Build a deduped source shelf with an offline pass such as `dedupe_by_filename.py`, so duplicate PDFs do not quietly fork the corpus.
+2. Route each source through a Docling-focused offline compiler such as `medical_corpus_router.py` instead of assuming one pass will fit every document: standard structured parsing, a faster large-document text-first path, OCR/table retune fallback, and optional VLM fallback when needed.
+3. Accept or reject attempts by policy, not optimism. Per-document manifests record selected route, confidence grades, page counts, markdown/plain-text yield, table and figure counts, failure reasons, and selected artifacts.
+4. Emit compiled per-document artifacts: retrieval markdown with page markers, raw audit markdown, structural catalogs, figure metadata, table sidecars, and machine-readable manifests.
+5. Build a small canonical serving layer with a dedicated builder such as `build_markdown_serving_layer.py`: domain indexes, discipline shortlists, book cards, normalized catalog rows, manual overrides, review queues, and quarantined failures.
+
+Those are offline build steps, not runtime conveniences. That split is what lets the model route lightly at decision time while still having deep evidence on demand.
+
+### Why The Corpus Is Shaped for Tools
+
+The model-facing contract is intentionally split:
+
+- `_serving` is the canonical selection layer
+- each document's `selected/retrieval.md`, `selected/catalog.json`, `selected/figures.json`, and `selected/tables/` form the canonical evidence layer
+
+That split exists because `source shortlisting` and `evidence retrieval inside selected sources` are different operations.
+
+- selection happens on compact domain and book-facing markdown instead of a flattened full-text dump
+- retrieval returns page markers, section paths, and nearby table/figure pointers so the model can follow up precisely
+- weak extraction can be suppressed instead of being silently treated as trustworthy evidence
+- failed or suspect sources can be quarantined instead of contaminating the primary shelf
+- the model can open a table or figure metadata explicitly when the answer is table-shaped or image-adjacent
+
+Those are not random implementation details. They are the retrieval contract.
+
+### Engineering Path
+
+With that production path in place, the OWUI integration path was intentionally incremental.
+
+1. Keep the literature outside OWUI's generic ingest path.
+2. Put a tiny serving layer in front of the compiled artifacts.
+3. Add a domain-first router instead of a medicine-only one, so future domains can be added without redesign.
+4. Add native tools that preserve `domain`, `discipline`, `book_id`, `resource_type`, page metadata, and nearby tables/figures.
+5. Use lexical-first retrieval with metadata-aware reranking instead of jumping straight to embedding-heavy complexity.
+6. Validate the whole flow against a live OWUI instance with tool telemetry turned on.
+
+That last step matters.
+
+The point was not just to make the tools exist. The point was to prove that a single loaded model could actually:
+
+- choose the right local domain
+- narrow to the right books
+- retrieve evidence from those books
+- open a table when the evidence was table-shaped
+- answer with book/page/section grounding instead of free-floating synthesis
+
+### How The Local Corpus Path Behaves
+
+At a high level, the local-corpus lane behaves like this:
+
+1. user asks a question
+2. OWUI routes to a local domain when that is appropriate, or asks for domain narrowing if the query is ambiguous
+3. the model shortlists books from the serving layer
+4. the model opens book cards only for the shortlisted books
+5. retrieval searches only those selected books
+6. results return page, section, and nearby table/figure pointers
+7. the model can open a table explicitly when the answer depends on it
+
+That means the serving layer is not the evidence base.
+
+It is the selector that sits in front of the evidence base.
+
+The evidence base is still the per-document compiled output.
+
+In `v2`, the same split still holds. The model can frame a problem, plan axes, and collect grouped evidence, but the underlying contract remains source narrowing first and evidence extraction second.
+
+### Native Tool Surface
+
+The model-facing tool family is intentionally narrow and explicit:
+
+**Discovery and routing**
+
+- `local_corpus_list_domains`
+- `local_corpus_list_disciplines`
+
+**Framing and planning**
+
+- `local_corpus_frame_problem`
+- `local_corpus_plan_axes`
+- `local_corpus_shortlist_books`
+- `local_corpus_view_book_cards`
+
+**Collection and evidence access**
+
+- `local_corpus_collect_axis_evidence`
+- `local_corpus_retrieve_evidence`
+- `local_corpus_view_table`
+- `local_corpus_view_figure_metadata`
+
+**Assessment**
+
+- `local_corpus_assess_evidence`
+
+That tool split is not cosmetic.
+
+It is there to stop the system from pretending that "find a likely book" and "quote the evidence inside that book" are the same operation.
+
+`v1` leans more on shortlist/retrieve/view. `v2` leans more on frame/plan/collect/assess. The phases are still deliberate either way.
+
+The important constraint is that `v2` is still bounded and inspectable.
+
+- axis count is backend-capped
+- axes are scaffolds, not claims of completeness
+- the backend assessor is intentionally conservative and narrow
+- packs exist at different maturity tiers and are not presented as equally battle-tested
+
 ### Configuration and Runtime Expectations
 
 The local-corpus lane is optional and local-first.
@@ -614,130 +720,6 @@ That control exists because users do not always want the same thing.
 By default, the fork will auto-enable the tool family when a compatible `literature_corpus/` directory exists at the repo root.
 
 Derived lexical indexes are built as disposable local cache artifacts under `backend/data/local_corpus/`. The corpus itself remains the source of truth.
-
-### What Was Actually Proven
-
-The useful claim here is not "medical RAG is solved".
-
-The useful claim is narrower and more honest:
-
-- the domain-first architecture works
-- the tool flow is stable enough for real local use
-- table-aware retrieval is viable
-- page/section-grounded answers are achievable without flattening the corpus
-
-What still determines answer quality after that is ordinary retrieval work:
-
-- shortlist quality
-- intra-book ranking quality
-- evidence sufficiency discipline in the final answer
-
-That is a good place to be.
-
-Architecture problems are expensive.
-Ranking problems are irritating, but fixable.
-
-### Recent Ledger: What Actually Hurt, and What Finally Helped
-
-The clean architecture was not the hard part.
-
-The hard part was getting a real local model, on a real local OWUI instance, to behave like a disciplined reader instead of a clever liar with a search box.
-
-The recent path looked like this:
-
-1. Prove that `v1` works end to end on a live instance, with real tool traces, real page/section citations, and real table opening.
-2. Add `v2` so abstract questions could use a bounded reasoning scaffold instead of overloading the direct lookup path.
-3. Discover that tool obedience is model-dependent in an extremely practical way:
-   - some models answer from weights and ignore tools
-   - some emit fake tool syntax as plain text
-   - some half-follow the tool chain and then drop required fields between calls
-   - some actually do the job
-4. Discover that one of the most annoying local failures was not "deep reasoning" at all. It was query hygiene.
-
-That last one deserves to be said plainly.
-
-Once `v2` existed, it became obvious that user-facing framing text could leak into retrieval terms:
-
-- `while waiting for a GP appointment`
-- `at a high level`
-- `for a lab meeting tomorrow`
-
-Those phrases matter for answer posture. They usually do not belong in the retrieval core.
-
-When they leaked through, two things happened:
-
-- retrieval got slower
-- shortlist quality got noisier
-
-In practice this produced exactly the kind of absurd-but-instructive results local systems are good at producing when they are almost right:
-
-- `ICD-11` showing up where a bedside clinical reference should have won
-- generic handbook/routing noise outranking the book that actually deserved to be opened
-- agent traces that looked "smart" but were spending work on the wrong lexical substrate
-
-There was also a tempting detour here.
-
-An intermediate patch tried to solve latency by shrinking the `v2` evidence payload and adding explicit follow-up expansion. That worked mechanically, but it damaged the emergent conversational behavior of the better model. The system became drier, more toolish, and less pleasant to use. The latency win was real but not large enough to justify the UX loss, so that patch was reverted.
-
-That was a useful failure.
-
-It forced the distinction between:
-
-- shaving payload size after retrieval
-- improving the lexical substrate before retrieval
-
-The second one was the right problem.
-
-The fix that stayed is deliberately boring:
-
-- deterministic retrieval projection for `v2`
-- separate retrieval-bearing terms from answer/context/control text
-- build axis queries from normalized high-signal terms instead of from the whole surface query
-- keep selector-like terms when they actually change the corpus slice or search regime
-- do not solve this with a growing blacklist of human phrases
-
-That last point matters.
-
-The system is not trying to memorize every annoying way a person can phrase "please answer this in a specific context". It is trying to identify what content has earned the right to affect retrieval at all.
-
-That change was worth making because it improved both latency and correctness at the same time:
-
-- noisy and clean versions of the same abstract query converged to the same shortlist
-- retrieval no longer paid a penalty just because the user spoke like a person instead of a benchmark prompt
-
-This is the kind of work that turns a feature into a lane you can trust.
-
-Not because it becomes magical, but because the remaining failures get smaller, more legible, and less embarrassing.
-
-There was one more practical wrinkle after that.
-
-Some of the nicest behavior in the system was showing up while the chat was still using `default` function calling rather than `native`. That exposed an easy mistake to make while debugging this fork: assuming that native-only prompt work was responsible for everything good that happened in tool runs.
-
-It was not.
-
-`default` already had a viable selector loop. What it lacked was some of the discipline that native mode had gradually accumulated:
-
-- local-corpus preference as an explicit routing hint
-- protection against vague advisory rewrites polluting retrieval calls
-- a sane fallback story for prior user-owned work when local corpus and web were both unavailable
-
-The first pass at that fix worked, but one part of it was too loose. Prior-work guidance was being injected mostly because the tools existed, not because there was a strong reason to believe prior chats, notes, or knowledge files would actually help.
-
-That was the wrong threshold.
-
-The corrected version is intentionally conservative:
-
-- structural availability is necessary but not sufficient
-- short prompts are not treated as continuation
-- ambiguous prompts are not treated as prior-work dependent
-- incomplete prompts are not treated as a reason to rummage through old chats
-- prior-work guidance is injected only when there is a positive signal that the missing context plausibly lives in prior conversation or user-owned workspace material
-
-This matters because the fork is trying to produce procedural honesty, not just lots of motion.
-
-A selector that searches old artifacts every time primary lanes are disabled is not being careful. It is being anxious.
-
-That distinction is worth preserving.
 
 ## Deep Research as a Separate Lane
 
@@ -875,34 +857,117 @@ In that kind of setup, the fork's UI toggle is not inventing a new reasoning pro
 
 The important distinction for this README is attribution: most of the generic reasoning-tag handling, thought-block rendering, and provider-specific reasoning params come from Open WebUI itself. The fork-specific point is that this repo treats template-aware thinking control as operationally important for local `llama.cpp` deployments and describes it accordingly, without pretending that one toggle can force every model/backend pair into a coherent thinking mode.
 
-## Other Notable Divergences
+## Recent Lessons
 
-The most important differences in this fork are the ones above, but the operating theme is consistent:
+### What Actually Hurt, and What Finally Helped
 
-- working memory is managed server-side instead of being left to overflow
-- recap is structured state, not a loose narrative
-- recall is bounded, evidence-first, and not always-on
-- hot context is treated as a first-class runtime layer instead of an accidental byproduct of reserve math
-- lexical recall is preferred, but raw evidence fallback is now part of the contract
-- memory telemetry can be enabled on demand for a single turn when debugging continuity vs exactness failures
-- web retrieval is planned and bounded rather than treated as a blind append-to-prompt step
-- local TTS is treated as a quality problem worth solving
-- token-level generation is inspectable when the backend exposes enough data
+The clean architecture was not the hard part.
 
-There is also early scaffolding for runtime MoE experts probing/control on compatible OpenAI-style backends. That work is real, but it is still backend-dependent and not yet central enough to this fork's identity to present as a finished headline capability.
+The hard part was getting a real local model, on a real local OWUI instance, to behave like a disciplined reader instead of a clever liar with a search box.
+
+The recent path looked like this:
+
+1. Prove that `v1` works end to end on a live instance, with real tool traces, real page/section citations, and real table opening.
+2. Add `v2` so abstract questions could use a bounded reasoning scaffold instead of overloading the direct lookup path.
+3. Discover that tool obedience is model-dependent in an extremely practical way:
+   - some models answer from weights and ignore tools
+   - some emit fake tool syntax as plain text
+   - some half-follow the tool chain and then drop required fields between calls
+   - some actually do the job
+4. Discover that one of the most annoying local failures was not "deep reasoning" at all. It was query hygiene.
+
+That last one deserves to be said plainly.
+
+Once `v2` existed, it became obvious that user-facing framing text could leak into retrieval terms:
+
+- `while waiting for a GP appointment`
+- `at a high level`
+- `for a lab meeting tomorrow`
+
+Those phrases matter for answer posture. They usually do not belong in the retrieval core.
+
+When they leaked through, two things happened:
+
+- retrieval got slower
+- shortlist quality got noisier
+
+In practice this produced exactly the kind of absurd-but-instructive results local systems are good at producing when they are almost right:
+
+- `ICD-11` showing up where a bedside clinical reference should have won
+- generic handbook/routing noise outranking the book that actually deserved to be opened
+- agent traces that looked "smart" but were spending work on the wrong lexical substrate
+
+There was also a tempting detour here.
+
+An intermediate patch tried to solve latency by shrinking the `v2` evidence payload and adding explicit follow-up expansion. That worked mechanically, but it damaged the emergent conversational behavior of the better model. The system became drier, more toolish, and less pleasant to use. The latency win was real but not large enough to justify the UX loss, so that patch was reverted.
+
+That was a useful failure.
+
+It forced the distinction between:
+
+- shaving payload size after retrieval
+- improving the lexical substrate before retrieval
+
+The second one was the right problem.
+
+The fix that stayed is deliberately boring:
+
+- deterministic retrieval projection for `v2`
+- separate retrieval-bearing terms from answer/context/control text
+- build axis queries from normalized high-signal terms instead of from the whole surface query
+- keep selector-like terms when they actually change the corpus slice or search regime
+- do not solve this with a growing blacklist of human phrases
+
+That last point matters.
+
+The system is not trying to memorize every annoying way a person can phrase "please answer this in a specific context". It is trying to identify what content has earned the right to affect retrieval at all.
+
+That change was worth making because it improved both latency and correctness at the same time:
+
+- noisy and clean versions of the same abstract query converged to the same shortlist
+- retrieval no longer paid a penalty just because the user spoke like a person instead of a benchmark prompt
+
+This is the kind of work that turns a feature into a lane you can trust.
+
+Not because it becomes magical, but because the remaining failures get smaller, more legible, and less embarrassing.
+
+There was one more practical wrinkle after that.
+
+Some of the nicest behavior in the system was showing up while the chat was still using `default` function calling rather than `native`. That exposed an easy mistake to make while debugging this fork: assuming that native-only prompt work was responsible for everything good that happened in tool runs.
+
+It was not.
+
+`default` already had a viable selector loop. What it lacked was some of the discipline that native mode had gradually accumulated:
+
+- local-corpus preference as an explicit routing hint
+- protection against vague advisory rewrites polluting retrieval calls
+- a sane fallback story for prior user-owned work when local corpus and web were both unavailable
+
+The first pass at that fix worked, but one part of it was too loose. Prior-work guidance was being injected mostly because the tools existed, not because there was a strong reason to believe prior chats, notes, or knowledge files would actually help.
+
+That was the wrong threshold.
+
+The corrected version is intentionally conservative:
+
+- structural availability is necessary but not sufficient
+- short prompts are not treated as continuation
+- ambiguous prompts are not treated as prior-work dependent
+- incomplete prompts are not treated as a reason to rummage through old chats
+- prior-work guidance is injected only when there is a positive signal that the missing context plausibly lives in prior conversation or user-owned workspace material
+
+This matters because the fork is trying to produce procedural honesty, not just lots of motion.
+
+A selector that searches old artifacts every time primary lanes are disabled is not being careful. It is being anxious.
+
+That distinction is worth preserving.
+
+## Closing Notes
+
+The most important differences in this fork are the ones above, but the operating theme is consistent: better local behavior, better debuggability, fewer "just trust the model" assumptions.
+
+There is also early scaffolding for runtime MoE experts probing/control on compatible OpenAI-style backends. That work is real, but it is still backend-dependent and not yet central enough to this fork's identity to present as a headline capability.
 
 Also, as a matter of principle, chat does not try to steal `Cmd+R` from the browser. Reload still means reload. Some boundaries deserve respect.
-
-The bias throughout is the same: better local behavior, better debuggability, fewer "just trust the model" assumptions.
-
-## Related Practical Systems
-
-This fork is not the only place where these operating lessons show up.
-
-- [Simon](https://github.com/deshev-tds/simon) is a more direct voice/agent system built around local memory, bounded recall, and explicit control over when the system should pay for deeper reasoning.
-- [VERA](https://github.com/deshev-tds/vera) is a local verification-oriented research agent built around evidence hooks, tool discipline, and auditable verification loops.
-
-They are separate projects, not hidden subsystems of this fork. They are included here simply because they come from the same practical ecosystem and many of the same learned constraints.
 
 ## Compatibility / Install
 
@@ -936,6 +1001,15 @@ For generic deployment guidance, refer to the upstream Open WebUI documentation:
 
 - https://docs.openwebui.com/
 - https://github.com/open-webui/open-webui
+
+## Related Practical Systems
+
+This fork is not the only place where these operating lessons show up.
+
+- [Simon](https://github.com/deshev-tds/simon) is a more direct voice/agent system built around local memory, bounded recall, and explicit control over when the system should pay for deeper reasoning.
+- [VERA](https://github.com/deshev-tds/vera) is a local verification-oriented research agent built around evidence hooks, tool discipline, and auditable verification loops.
+
+They are separate projects, not hidden subsystems of this fork. They are included here simply because they come from the same practical ecosystem and many of the same learned constraints.
 
 ## Upstream Attribution
 
