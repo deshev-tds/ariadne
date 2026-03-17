@@ -162,7 +162,9 @@ LOCAL_CORPUS_PREFER_SYSTEM_PROMPT = (
     "answering from model weights alone. Before your first local corpus tool call, write a brief "
     "orientation preamble of 1 to 3 short sentences stating what you are about to check and how "
     "you will approach it. Do not answer the substance yet, and do not present conclusions before "
-    "checking the local corpus. A light touch of warmth or humor is allowed only when the topic is "
+    "checking the local corpus. When calling local corpus framing or retrieval tools, preserve the user's "
+    "substantive topic terms. Do not rewrite them into vague advisory phrasing such as 'what should I think "
+    "about' or similar filler. A light touch of warmth or humor is allowed only when the topic is "
     "low-stakes and the user's tone clearly invites it. If local corpus evidence is weak or unavailable, "
     "say so plainly."
 )
@@ -170,8 +172,10 @@ TOOL_NARRATION_SYSTEM_PROMPT = (
     "For compatible tool-heavy runs, you may give the user brief journey updates in the assistant text. "
     "When entering the first major tool phase, you may begin with a short orientation preamble. After that, "
     "only narrate meaningful phase changes, not every tool call. Keep each update to 1 to 3 short sentences, "
-    "stay high-level and user-facing, and do not restate tool names or raw status labels. Warmth is allowed. "
-    "Humor is optional and only when the topic is low-stakes and the user's tone clearly invites it."
+    "stay high-level and user-facing, and do not restate tool names or raw status labels. If you call framing "
+    "or retrieval tools, preserve the user's substantive topic terms instead of restating the question as vague "
+    "advice-seeking filler. Warmth is allowed. Humor is optional and only when the topic is low-stakes and "
+    "the user's tone clearly invites it."
 )
 TOOL_NARRATION_MAX_BEATS = 3
 TOOL_NARRATION_PHASE_ORDER = {
