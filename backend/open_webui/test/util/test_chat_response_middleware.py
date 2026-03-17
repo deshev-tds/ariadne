@@ -245,6 +245,14 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
     assert "local_corpus_mode" not in result["options"]
 
 
+def test_local_corpus_prefer_system_prompt_encourages_brief_human_preamble():
+    prompt = middleware.LOCAL_CORPUS_PREFER_SYSTEM_PROMPT
+
+    assert "Before your first local corpus tool call" in prompt
+    assert "1 to 3 short sentences" in prompt
+    assert "Do not answer the substance yet" in prompt
+
+
 def test_append_tool_journey_event_is_on_demand():
     metadata = {"chat_id": "chat-1", "message_id": "msg-1", "params": {}}
     assert (
