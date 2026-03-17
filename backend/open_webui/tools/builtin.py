@@ -603,6 +603,8 @@ async def local_corpus_frame_problem(
     """
     Frame an abstract local-corpus question into a structured working problem.
     Use this before planning reasoning axes for broad, multi-factor, or orientation-style questions.
+    Pass the user's substantive topic terms, not a conversational restatement or vague
+    advice-seeking rewrite of the question.
 
     :param query: The user question to frame
     :param domain_hint: Optional domain hint such as medicine or chemistry
