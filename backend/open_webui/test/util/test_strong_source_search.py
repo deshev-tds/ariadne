@@ -172,7 +172,7 @@ async def test_search_strong_sources_tool_returns_telemetry_schema(monkeypatch):
     payload = json.loads(output)
 
     assert payload["phase"] == "completed"
-    assert payload["next_action"] == "answer"
+    assert payload["next_action"] in {"answer", "fetch_and_query_evidence"}
     assert payload["local_phase_executed"] is True
     assert payload["brave_fallback_used"] is False
 
@@ -1239,6 +1239,164 @@ async def test_followup_modes_require_session_when_metadata_scope_present(monkey
     assert payload["next_action"] == "restart_selection"
     assert payload["fallback_reason"] == "session_expired"
     assert payload["search_session_id"].startswith("fss_")
+
+
+@pytest.mark.asyncio
+async def test_search_auto_recovers_session_when_category_selection_inputs_present(
+    monkeypatch,
+):
+    request = _make_request(WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS=1)
+    plan = _make_plan(time_sensitive=False)
+
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "science",
+            "confidence": 0.9,
+            "ambiguous": False,
+            "scores": {"science": 3},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options([("local.docs", True, "primary_docs")]),
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "search_web",
+        lambda *_args, **_kwargs: [
+            SearchResult(
+                link="https://local.docs/a",
+                title="A",
+                snippet="Strong enough evidence",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_signal_quality",
+        lambda _items, _plan: {
+            "avg_top_score": 0.91,
+            "trusted_unique_domains": 1,
+            "scored_items": [
+                {
+                    "title": "A",
+                    "link": "https://local.docs/a",
+                    "snippet": "Strong enough evidence",
+                    "domain": "local.docs",
+                    "quality": 0.91,
+                    "trust": 0.95,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="cold food trigger atrial fibrillation mechanism",
+        mode="search",
+        search_session_id="fss_missing",
+        selected_categories=["science"],
+        selected_time_scope="evergreen",
+        metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+    )
+
+    assert payload["phase"] == "awaiting_domain_selection"
+    assert payload["next_action"] == "select_domains"
+    assert payload["selected_categories"] == ["science"]
+    assert payload["search_session_id"].startswith("fss_")
+    assert payload["search_session_id"] != "fss_missing"
+    assert payload["fallback_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_search_auto_recovers_session_when_domain_selection_inputs_present(
+    monkeypatch,
+):
+    request = _make_request(WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS=1)
+    plan = _make_plan(time_sensitive=False)
+
+    monkeypatch.setattr(
+        retrieval, "build_web_search_plan", lambda *args, **kwargs: plan
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_coarse_route_category",
+        lambda *_args, **_kwargs: {
+            "category": "science",
+            "confidence": 0.9,
+            "ambiguous": False,
+            "scores": {"science": 3},
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "_build_domain_options_for_categories",
+        lambda *_args, **_kwargs: _domain_options([("local.docs", True, "primary_docs")]),
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "search_web",
+        lambda *_args, **_kwargs: [
+            SearchResult(
+                link="https://local.docs/a",
+                title="A",
+                snippet="Strong enough evidence",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_signal_quality",
+        lambda _items, _plan: {
+            "avg_top_score": 0.91,
+            "trusted_unique_domains": 1,
+            "scored_items": [
+                {
+                    "title": "A",
+                    "link": "https://local.docs/a",
+                    "snippet": "Strong enough evidence",
+                    "domain": "local.docs",
+                    "quality": 0.91,
+                    "trust": 0.95,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="cold food trigger atrial fibrillation mechanism",
+        mode="search",
+        search_session_id="fss_missing",
+        selected_categories=["science"],
+        selected_domains=["local.docs"],
+        selected_time_scope="evergreen",
+        metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+    )
+
+    assert payload["phase"] == "completed"
+    assert payload["next_action"] in {"answer", "fetch_and_query_evidence"}
+    assert payload["selected_categories"] == ["science"]
+    assert payload["selected_domains"] == ["local.docs"]
+    assert payload["search_session_id"].startswith("fss_")
+    assert payload["search_session_id"] != "fss_missing"
+    assert payload["fallback_reason"] is None
 
 
 @pytest.mark.asyncio

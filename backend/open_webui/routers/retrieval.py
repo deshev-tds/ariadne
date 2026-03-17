@@ -3509,7 +3509,24 @@ async def execute_strong_source_search(
         )
     else:
         if enforce_session_scope and resolved_session is None:
-            if mode == "search" and not has_selection_inputs and not provided_session_id:
+            if mode == "search" and has_selection_inputs:
+                active_search_session_id = _create_focused_search_session(
+                    metadata=metadata,
+                    query=cleaned_query,
+                )
+                await emit_focus_status(
+                    {
+                        "action": "web_search",
+                        "description": "Focused search session expired. Recovering with existing selections",
+                        "done": True,
+                        "plan": {"mode": "focused_local_first"},
+                        "planner": {
+                            "mode": "focused_local_first",
+                            "fallback_reason": "session_auto_recovered",
+                        },
+                    }
+                )
+            elif mode == "search" and not has_selection_inputs and not provided_session_id:
                 active_search_session_id = _create_focused_search_session(
                     metadata=metadata,
                     query=cleaned_query,
