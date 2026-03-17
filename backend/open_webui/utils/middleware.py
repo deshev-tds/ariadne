@@ -248,6 +248,14 @@ DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE = (
     "obviously noisy, escalate cleanly. Do not stay loyal to the local lane out of inertia."
 )
 
+DEFAULT_SELECTOR_LOCAL_CORPUS_AUTO_GUIDANCE = (
+    "When local corpus tools are available in auto mode, first inspect the available "
+    "local domains with a single local_corpus_list_domains call before going to web "
+    "search or model-only answering. Continue in the local lane only if the returned "
+    "usable domains show a plausible thematic fit. Do not drill down further just to "
+    "confirm an empty, weak, or merely nominal shelf."
+)
+
 DEFAULT_SELECTOR_PRIOR_WORK_FALLBACK_GUIDANCE = (
     "When primary evidence lanes are unavailable, before answering from model knowledge "
     "alone, check user-owned prior work when it is likely to contain relevant leads. "
@@ -433,6 +441,11 @@ def _build_default_selector_guidance(
         and _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES)
     ):
         clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE)
+    elif (
+        local_corpus_mode == "auto"
+        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES)
+    ):
+        clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_AUTO_GUIDANCE)
 
     web_enabled = any(bool(features.get(name)) for name in DEFAULT_SELECTOR_WEB_FEATURE_NAMES)
     if local_corpus_mode == "off" and not web_enabled:

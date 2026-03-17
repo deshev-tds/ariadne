@@ -300,6 +300,26 @@ def test_build_default_selector_guidance_adds_local_corpus_prefer_and_term_rules
     assert "prior-work sources" not in guidance
 
 
+def test_build_default_selector_guidance_adds_local_corpus_auto_shelf_check_rule():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "auto"},
+        "features": {"focused_search": True},
+    }
+    tools = {
+        "local_corpus_list_domains": {},
+        "local_corpus_frame_problem": {},
+        "web_research_strong": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(metadata, tools, [])
+
+    assert "preserve the user's substantive topic terms" in guidance
+    assert "single local_corpus_list_domains call" in guidance
+    assert "before going to web search or model-only answering" in guidance
+    assert "Do not drill down further just to confirm an empty, weak, or merely nominal shelf" in guidance
+    assert "prefer local corpus tools first" not in guidance
+
+
 def test_selector_prior_work_signal_stays_none_for_short_fresh_question():
     messages = [{"role": "user", "content": "And why?"}]
 
