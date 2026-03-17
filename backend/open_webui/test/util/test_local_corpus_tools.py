@@ -633,6 +633,8 @@ def test_frame_problem_returns_primary_and_secondary_task_types(local_corpus_fix
     assert payload["normalization_applied"] is True
     assert isinstance(payload["retrieval_terms_surface"], list)
     assert isinstance(payload["retrieval_terms_canonical"], list)
+    assert isinstance(payload["retrieval_spine_surface"], list)
+    assert isinstance(payload["retrieval_spine_canonical"], list)
     assert payload["coverage_is_scaffold_not_exhaustive"] is True
 
 
@@ -645,6 +647,7 @@ def test_frame_problem_projects_noisy_query_into_cleaner_retrieval_terms(local_c
 
     joined_entities = " ".join(payload["retrieval_entities"]).lower()
     joined_surface = " ".join(payload["retrieval_terms_surface"]).lower()
+    joined_spine = " ".join(payload["retrieval_spine_surface"]).lower()
     joined_axis_material = " ".join(
         payload["retrieval_terms_surface"] + payload["retrieval_terms_canonical"]
     ).lower()
@@ -654,6 +657,10 @@ def test_frame_problem_projects_noisy_query_into_cleaner_retrieval_terms(local_c
     assert "while waiting a gp" not in joined_entities
     assert "waiting a gp appointment" not in joined_entities
     assert "mild anemia" in joined_surface
+    assert "headache" in joined_spine
+    assert "anemia" in joined_spine
+    assert "waiting" not in joined_spine
+    assert "gp" not in joined_spine
     assert "headache" in joined_axis_material
     assert "while waiting for a gp appointment" in [item.lower() for item in payload["constraints"]]
     assert "while waiting for a gp appointment" in [
@@ -712,6 +719,47 @@ def test_plan_axes_uses_retrieval_projection_not_raw_context(local_corpus_fixtur
     assert "waiting a gp appointment" not in axis_queries
     assert "headache" in axis_queries
     assert "anemia" in axis_queries
+
+
+def test_frame_problem_builds_clean_retrieval_spine_for_mechanism_prompt(local_corpus_fixture):
+    payload = local_corpus_reasoning.frame_local_corpus_problem(
+        query="can eating cold foods trigger atrial fibrillation in certain individuals and what are the mechanisms",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    spine_surface = {term.lower() for term in payload["retrieval_spine_surface"]}
+    spine_canonical = {term.lower() for term in payload["retrieval_spine_canonical"]}
+    joined_spine = " ".join(payload["retrieval_spine_surface"]).lower()
+
+    assert payload["primary_task_type"] == "mechanism_explanation"
+    assert any("atrial fibrillation" in term for term in spine_surface)
+    assert any("cold foods" in term or "cold food" in term for term in spine_surface)
+    assert any("trigger" == term or term.startswith("trigger ") or term.endswith(" trigger") for term in spine_surface)
+    assert any("mechanism" in term for term in spine_surface | spine_canonical)
+    assert "certain individuals what are" not in joined_spine
+    assert "fibrillation certain individuals what" not in joined_spine
+    assert "what are" not in joined_spine
+
+
+def test_plan_axes_prefers_retrieval_spine_for_mechanism_prompt(local_corpus_fixture):
+    problem_frame = local_corpus_reasoning.frame_local_corpus_problem(
+        query="can eating cold foods trigger atrial fibrillation in certain individuals and what are the mechanisms",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    payload = local_corpus_reasoning.plan_local_corpus_axes(
+        problem_frame=problem_frame,
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    axis_queries = " ".join(axis["query"] for axis in payload["axes"]).lower()
+    assert "atrial fibrillation" in axis_queries
+    assert "cold foods" in axis_queries or "cold food" in axis_queries
+    assert "trigger" in axis_queries
+    assert "certain individuals what are" not in axis_queries
+    assert "fibrillation certain individuals what" not in axis_queries
 
 
 def test_collect_axis_evidence_groups_results_by_axis(local_corpus_fixture):
