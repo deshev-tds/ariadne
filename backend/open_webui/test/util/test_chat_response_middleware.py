@@ -281,6 +281,192 @@ def test_tool_narration_system_prompt_mentions_phase_changes():
     assert "preserve the user's substantive topic terms" in prompt
 
 
+def test_build_default_selector_guidance_adds_local_corpus_prefer_and_term_rules():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "prefer"},
+        "features": {},
+    }
+    tools = {
+        "local_corpus_frame_problem": {},
+        "local_corpus_plan_axes": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(metadata, tools, [])
+
+    assert "preserve the user's substantive topic terms" in guidance
+    assert "Do not preserve conversational scaffolding" in guidance
+    assert "prefer local corpus tools first" in guidance
+    assert "Do not stay loyal to the local lane out of inertia" in guidance
+    assert "prior-work sources" not in guidance
+
+
+def test_build_default_selector_guidance_adds_local_corpus_auto_shelf_check_rule():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "auto"},
+        "features": {"focused_search": True},
+    }
+    tools = {
+        "local_corpus_list_domains": {},
+        "local_corpus_frame_problem": {},
+        "web_research_strong": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(metadata, tools, [])
+
+    assert "preserve the user's substantive topic terms" in guidance
+    assert "single local_corpus_list_domains call" in guidance
+    assert "before going to web search or model-only answering" in guidance
+    assert "Do not drill down further just to confirm an empty, weak, or merely nominal shelf" in guidance
+    assert "prefer local corpus tools first" not in guidance
+
+
+def test_selector_prior_work_signal_stays_none_for_short_fresh_question():
+    messages = [{"role": "user", "content": "And why?"}]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_NONE
+
+
+def test_selector_prior_work_signal_stays_none_for_incomplete_generic_question():
+    messages = [{"role": "user", "content": "What broad causes should I think about?"}]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_NONE
+
+
+def test_selector_prior_work_signal_is_weak_for_explicit_hint_with_recent_context():
+    messages = [
+        {"role": "user", "content": "We were discussing the issue."},
+        {"role": "assistant", "content": "I have the context."},
+        {"role": "user", "content": "Check my notes before answering."},
+    ]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_WEAK
+
+
+def test_selector_prior_work_signal_is_strong_for_artifact_reference():
+    messages = [
+        {
+            "role": "user",
+            "content": "Use /c/e288f767-8dd3-4980-ab01-ae8eb107b07f before answering.",
+        }
+    ]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_STRONG
+
+
+def test_selector_prior_work_signal_is_strong_for_explicit_hint_after_prior_work_tool_use():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "search_chats",
+                        "arguments": "{\"query\":\"atrial fibrillation\"}",
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "[]"},
+        {"role": "user", "content": "Check my notes before answering."},
+    ]
+
+    signal = middleware._selector_prior_work_signal(messages)
+
+    assert signal == middleware.DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_STRONG
+
+
+def test_build_default_selector_guidance_adds_prior_work_fallback_only_when_strong_signal_and_primary_lanes_off():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "off"},
+        "features": {"web_search": False, "focused_search": False},
+    }
+    tools = {
+        "query_knowledge_files": {},
+        "notes_lookup": {},
+        "search_chats": {},
+    }
+    messages = [
+        {
+            "role": "user",
+            "content": "Use /c/e288f767-8dd3-4980-ab01-ae8eb107b07f before answering.",
+        }
+    ]
+
+    guidance = middleware._build_default_selector_guidance(metadata, tools, messages)
+
+    assert "before answering from model knowledge alone" in guidance
+    assert "knowledge files, notes, prior chats" in guidance
+    assert "Treat them as prior work or leads" in guidance
+
+
+def test_build_default_selector_guidance_skips_prior_work_on_structural_gate_alone():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "off"},
+        "features": {"web_search": False, "focused_search": False},
+    }
+    tools = {
+        "query_knowledge_files": {},
+        "notes_lookup": {},
+        "search_chats": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(
+        metadata,
+        tools,
+        [{"role": "user", "content": "What broad causes should I think about?"}],
+    )
+
+    assert "before answering from model knowledge alone" not in guidance
+    assert "knowledge files, notes, prior chats" not in guidance
+
+
+def test_build_default_selector_guidance_skips_prior_work_when_web_is_enabled():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "off"},
+        "features": {"web_search": True, "focused_search": False},
+    }
+    tools = {
+        "query_knowledge_files": {},
+        "notes_lookup": {},
+        "search_chats": {},
+        "search_web": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(
+        metadata,
+        tools,
+        [
+            {
+                "role": "user",
+                "content": "Use /c/e288f767-8dd3-4980-ab01-ae8eb107b07f before answering.",
+            }
+        ],
+    )
+
+    assert "before answering from model knowledge alone" not in guidance
+    assert "knowledge files, notes, prior chats" not in guidance
+    assert "preserve the user's substantive topic terms" in guidance
+
+
+def test_build_default_selector_guidance_is_default_only():
+    metadata = {
+        "params": {"function_calling": "native", "local_corpus_mode": "prefer"},
+        "features": {},
+    }
+    tools = {"local_corpus_frame_problem": {}}
+
+    assert middleware._build_default_selector_guidance(metadata, tools, []) == ""
 def test_should_enable_shared_tool_narration_for_local_corpus_prefer():
     request = _build_request(
         enable_local_corpus=True, local_corpus_root="/tmp/local-corpus"

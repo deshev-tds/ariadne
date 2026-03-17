@@ -51,6 +51,10 @@ The important divergences are not cosmetic.
 - Ledger continuity now uses explicit chat-scoped mode selection: `vibe` by default, `agentic` only when enabled in the UI toggle.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
 - A native focused-web tool (`web_research_strong`, with `search_strong_sources` kept as an alias) was added for local-first strong-source search, with broader fallback only when evidence from locally-listed strong domains is weak.
+- A domain-first local corpus path was added for proprietary or bought literature, with selection-layer markdown, per-book evidence retrieval, and table-aware follow-up tools instead of flattening everything into one generic knowledge pile.
+- The `v2` local-corpus reasoning lane now uses deterministic retrieval projection so user-facing framing text does not quietly pollute axis queries and slow or misroute retrieval.
+- The `default` function-calling selector now has its own runtime discipline layer, so local-corpus preference, retrieval term hygiene, and prior-work fallback do not depend entirely on native tool-calling behavior.
+- In `default` function calling, `local_corpus_mode=auto` now performs a single local shelf-inspection step first (`local_corpus_list_domains`) before jumping to web or model-only answering, and only continues locally when the returned usable domains show a real thematic fit.
 - Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
 - Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
@@ -582,7 +586,7 @@ There is also a chat-scoped operating control:
 That control exists because users do not always want the same thing.
 
 - `off`: answer from weights and other enabled lanes; do not inject local corpus tools
-- `auto`: let routing decide
+- `auto`: let routing decide, but in `default` function calling first inspect the currently usable local domains once before abandoning the local lane
 - `prefer`: bias toward local corpus when the question is compatible
 
 By default, the fork will auto-enable the tool family when a compatible `literature_corpus/` directory exists at the repo root.
