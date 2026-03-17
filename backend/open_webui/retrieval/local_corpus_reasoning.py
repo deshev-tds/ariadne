@@ -102,6 +102,69 @@ _GENERIC_CONTEXT_TERMS = {
     "want",
     "meeting",
 }
+_QUERY_SPINE_GLUE_TERMS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "by",
+    "can",
+    "could",
+    "did",
+    "do",
+    "does",
+    "for",
+    "from",
+    "how",
+    "if",
+    "in",
+    "into",
+    "is",
+    "may",
+    "of",
+    "on",
+    "or",
+    "the",
+    "their",
+    "these",
+    "this",
+    "those",
+    "to",
+    "what",
+    "when",
+    "whether",
+    "which",
+    "who",
+    "why",
+    "with",
+}
+_QUERY_SPINE_HUMAN_REFERENCE_TERMS = {
+    "certain",
+    "individual",
+    "individuals",
+    "people",
+    "person",
+    "persons",
+    "someone",
+    "somebody",
+}
+_RELATION_OR_MECHANISM_CORE_STEMS = {
+    "associat",
+    "cause",
+    "contribut",
+    "explain",
+    "induc",
+    "link",
+    "mechanism",
+    "mediat",
+    "modulat",
+    "pathway",
+    "precipit",
+    "provok",
+    "relation",
+    "trigger",
+    "underly",
+}
 _SELECTOR_TERMS_BY_DOMAIN = {
     "medicine": {
         "adult",
@@ -387,6 +450,201 @@ def _canonicalize_span(value: str) -> str:
     return " ".join(stems[:4]).strip()
 
 
+def _spine_tokens(value: str) -> list[str]:
+    tokens = _span_tokens(value)
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        stem = _stem_like(token)
+        if (
+            (token in corpus.SALIENT_QUERY_STOP_TERMS and stem not in _RELATION_OR_MECHANISM_CORE_STEMS)
+            or token in _GENERIC_CONTEXT_TERMS
+            or token in _QUERY_SPINE_GLUE_TERMS
+            or token in _QUERY_SPINE_HUMAN_REFERENCE_TERMS
+        ):
+            continue
+        if token not in seen:
+            seen.add(token)
+            filtered.append(token)
+    return filtered
+
+
+def _surface_spine_phrase(value: str, *, limit: int = 3) -> str:
+    tokens = _spine_tokens(value)
+    if not tokens:
+        return ""
+    return " ".join(tokens[:limit]).strip()
+
+
+def _build_retrieval_spine(
+    *,
+    query: str,
+    candidates: list[dict[str, Any]],
+    salient_phrases: list[str],
+    specific_terms: list[str],
+    measurements: list[str],
+) -> dict[str, list[str] | int]:
+    surface_meta: dict[str, dict[str, float | int]] = {}
+    canonical_meta: dict[str, dict[str, float | int]] = {}
+    source_count = 0
+
+    def register_surface(term: str, *, weight: float, source_priority: int) -> None:
+        nonlocal source_count
+        normalized = corpus._normalize_text(term)
+        if not normalized:
+            return
+        source_count += 1
+        current = surface_meta.get(normalized)
+        if not current or (weight, source_priority, -len(normalized)) > (
+            current["weight"],
+            current["source_priority"],
+            -len(normalized),
+        ):
+            surface_meta[normalized] = {
+                "weight": weight,
+                "source_priority": source_priority,
+            }
+
+        canonical = _canonicalize_span(normalized)
+        if not canonical:
+            return
+        current_canonical = canonical_meta.get(canonical)
+        if not current_canonical or (weight, source_priority, -len(canonical)) > (
+            current_canonical["weight"],
+            current_canonical["source_priority"],
+            -len(canonical),
+        ):
+            canonical_meta[canonical] = {
+                "weight": weight,
+                "source_priority": source_priority,
+            }
+
+    quoted = corpus._quoted_phrases(query)
+    for phrase in quoted:
+        cleaned = _surface_spine_phrase(phrase, limit=4)
+        if cleaned:
+            register_surface(cleaned, weight=5.0, source_priority=5)
+
+    for phrase in specific_terms:
+        cleaned = _surface_spine_phrase(phrase, limit=4)
+        if cleaned:
+            register_surface(cleaned, weight=4.4, source_priority=4)
+
+    for phrase in salient_phrases:
+        cleaned = _surface_spine_phrase(phrase, limit=4)
+        if cleaned:
+            register_surface(cleaned, weight=3.8, source_priority=3)
+
+    for measurement in measurements:
+        cleaned = _surface_spine_phrase(measurement, limit=4)
+        if cleaned:
+            register_surface(cleaned, weight=3.4, source_priority=3)
+
+    normalized_query = corpus._phrase_ready_text(query)
+    if re.search(r"\bmechanis\w*\b", normalized_query):
+        register_surface("mechanism", weight=4.6, source_priority=4)
+    if re.search(r"\bpathway\w*\b", normalized_query):
+        register_surface("pathway", weight=4.5, source_priority=4)
+
+    cleaned_query_tokens = _spine_tokens(query)
+    for idx, token in enumerate(cleaned_query_tokens):
+        stem = _stem_like(token)
+        if stem not in _RELATION_OR_MECHANISM_CORE_STEMS:
+            continue
+        core_weight = 3.2
+        if stem in {"mechanism", "pathway"}:
+            core_weight = 3.9
+        elif stem in {"trigger", "cause", "induc", "provok"}:
+            core_weight = 3.5
+        register_surface(token, weight=core_weight, source_priority=2)
+        if idx >= 2:
+            register_surface(
+                " ".join(cleaned_query_tokens[idx - 2 : idx + 1]),
+                weight=core_weight - 0.1,
+                source_priority=2,
+            )
+        if idx + 3 <= len(cleaned_query_tokens):
+            register_surface(
+                " ".join(cleaned_query_tokens[idx : idx + 3]),
+                weight=core_weight - 0.1,
+                source_priority=2,
+            )
+
+    for candidate in candidates:
+        if candidate["content_signal_score"] < 2.75 and candidate["selector_signal_score"] < 1.2:
+            continue
+        cleaned = _surface_spine_phrase(candidate["value"], limit=4)
+        if not cleaned:
+            continue
+        register_surface(
+            cleaned,
+            weight=float(candidate["content_signal_score"]) + (0.6 * float(candidate["selector_signal_score"])),
+            source_priority=1,
+        )
+
+    retrieval_spine_surface = [
+        key
+        for key, _ in sorted(
+            surface_meta.items(),
+            key=lambda item: (-float(item[1]["weight"]), -int(item[1]["source_priority"]), len(item[0]), item[0]),
+        )[:6]
+    ]
+    retrieval_spine_canonical = [
+        key
+        for key, _ in sorted(
+            canonical_meta.items(),
+            key=lambda item: (-float(item[1]["weight"]), -int(item[1]["source_priority"]), len(item[0]), item[0]),
+        )[:6]
+    ]
+
+    required_surface_terms: list[str] = []
+    required_canonical_terms: list[str] = []
+    for token in cleaned_query_tokens:
+        stem = _stem_like(token)
+        if stem not in _RELATION_OR_MECHANISM_CORE_STEMS:
+            continue
+        if stem in {"mechanism", "pathway", "trigger", "cause", "induc", "provok"}:
+            if token not in required_surface_terms:
+                required_surface_terms.append(token)
+            canonical = _canonicalize_span(token)
+            if canonical and canonical not in required_canonical_terms:
+                required_canonical_terms.append(canonical)
+
+    def ensure_required_terms(target: list[str], required_terms: list[str]) -> list[str]:
+        terms = list(target)
+        for required in required_terms:
+            required_stem = _stem_like(required)
+            if any(required_stem == _stem_like(token) for token in terms):
+                continue
+            if len(terms) < 6:
+                terms.append(required)
+            elif terms:
+                terms[-1] = required
+        return terms[:6]
+
+    retrieval_spine_surface = ensure_required_terms(
+        retrieval_spine_surface, required_surface_terms
+    )
+    retrieval_spine_canonical = ensure_required_terms(
+        retrieval_spine_canonical, required_canonical_terms
+    )
+
+    if not retrieval_spine_surface:
+        retrieval_spine_surface = [
+            term for term in (_surface_spine_phrase(query, limit=4),) if term
+        ][:1]
+    if not retrieval_spine_canonical:
+        retrieval_spine_canonical = [
+            term for term in (_canonicalize_span(value) for value in retrieval_spine_surface) if term
+        ][:6]
+
+    return {
+        "retrieval_spine_surface": retrieval_spine_surface,
+        "retrieval_spine_canonical": retrieval_spine_canonical,
+        "spine_source_count": source_count,
+    }
+
+
 def _candidate_content_signal(
     value: str,
     *,
@@ -611,11 +869,21 @@ def _build_retrieval_projection(
             term for term in (_canonicalize_span(value) for value in retrieval_entities[:6]) if term
         ][:6]
 
+    spine = _build_retrieval_spine(
+        query=query,
+        candidates=candidates,
+        salient_phrases=salient_phrases,
+        specific_terms=specific_terms,
+        measurements=measurements,
+    )
+
     return {
         "retrieval_entities": retrieval_entities[:8],
         "retrieval_observations": retrieval_observations[:6],
         "retrieval_terms_surface": retrieval_terms_surface[:10],
         "retrieval_terms_canonical": retrieval_terms_canonical[:10],
+        "retrieval_spine_surface": spine["retrieval_spine_surface"][:6],
+        "retrieval_spine_canonical": spine["retrieval_spine_canonical"][:6],
         "answer_context": answer_context[:6],
         "control_constraints": constraints[:6],
         "promoted_selectors": promoted_selectors[:6],
@@ -624,6 +892,8 @@ def _build_retrieval_projection(
             "candidate_count": len(candidates),
             "retrieval_entity_count": len(retrieval_entities[:8]),
             "retrieval_term_count": len(retrieval_terms_surface[:10]),
+            "retrieval_spine_count": len(spine["retrieval_spine_surface"][:6]),
+            "spine_source_count": int(spine["spine_source_count"]),
             "promoted_selector_count": len(promoted_selectors[:6]),
         },
     }
@@ -868,6 +1138,8 @@ def frame_local_corpus_problem(
         "retrieval_observations": projection["retrieval_observations"],
         "retrieval_terms_surface": projection["retrieval_terms_surface"],
         "retrieval_terms_canonical": projection["retrieval_terms_canonical"],
+        "retrieval_spine_surface": projection["retrieval_spine_surface"],
+        "retrieval_spine_canonical": projection["retrieval_spine_canonical"],
         "answer_context": projection["answer_context"],
         "control_constraints": projection["control_constraints"],
         "normalization_applied": projection["normalization_applied"],
@@ -886,6 +1158,8 @@ def _axis_score(problem_frame: dict[str, Any], axis_config: dict[str, Any]) -> f
     combined = " ".join(
         [
             problem_frame.get("query", ""),
+            " ".join(problem_frame.get("retrieval_spine_surface") or []),
+            " ".join(problem_frame.get("retrieval_spine_canonical") or []),
             " ".join(problem_frame.get("retrieval_entities") or problem_frame.get("entities") or []),
             " ".join(
                 problem_frame.get("retrieval_observations") or problem_frame.get("observations") or []
@@ -910,12 +1184,18 @@ def _axis_score(problem_frame: dict[str, Any], axis_config: dict[str, Any]) -> f
 
 def _build_axis_query(problem_frame: dict[str, Any], axis_id: str, axis_config: dict[str, Any]) -> str:
     parts: list[str] = []
-    parts.extend(problem_frame.get("retrieval_terms_surface") or [])
-    parts.extend(problem_frame.get("retrieval_terms_canonical") or [])
-    parts.extend(problem_frame.get("retrieval_entities") or problem_frame.get("entities") or [])
-    parts.extend(
-        problem_frame.get("retrieval_observations") or problem_frame.get("observations") or []
-    )
+    spine_surface = list(problem_frame.get("retrieval_spine_surface") or [])
+    spine_canonical = list(problem_frame.get("retrieval_spine_canonical") or [])
+    if spine_surface or spine_canonical:
+        parts.extend(spine_surface)
+        parts.extend(spine_canonical)
+    else:
+        parts.extend(problem_frame.get("retrieval_terms_surface") or [])
+        parts.extend(problem_frame.get("retrieval_terms_canonical") or [])
+        parts.extend(problem_frame.get("retrieval_entities") or problem_frame.get("entities") or [])
+        parts.extend(
+            problem_frame.get("retrieval_observations") or problem_frame.get("observations") or []
+        )
     parts.extend((axis_config.get("literal_terms") or [])[:4])
     if problem_frame.get("risk_flags") and axis_id in {"dangerous_causes", "red_flags", "safety_risks"}:
         parts.extend(problem_frame.get("risk_flags") or [])
@@ -929,10 +1209,14 @@ def _build_axis_query(problem_frame: dict[str, Any], axis_id: str, axis_config: 
             seen.add(lowered)
             ordered_parts.append(normalized)
     if ordered_parts:
-        return " ".join(ordered_parts[:18]).strip()
+        return " ".join(ordered_parts[:14]).strip()
 
     fallback_parts = (
-        problem_frame.get("retrieval_entities")
+        problem_frame.get("retrieval_spine_surface")
+        or problem_frame.get("retrieval_spine_canonical")
+        or problem_frame.get("retrieval_terms_surface")
+        or problem_frame.get("retrieval_terms_canonical")
+        or problem_frame.get("retrieval_entities")
         or problem_frame.get("retrieval_observations")
         or problem_frame.get("entities")
         or []
