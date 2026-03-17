@@ -8,6 +8,8 @@ The thesis is simple: local LLM UX fails predictably when chat history is replay
 
 Upstream Open WebUI remains a strong base platform and UI for self-hosted LLM workflows. This fork keeps that base, but diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, deliberate literature handling, and generation inspection that is useful during real debugging rather than only during demos.
 
+This README should be read as documentation for the fork as a distinct project, not as an implicit description of upstream behavior. The architectural and runtime behavior described below has either drifted too far from upstream to be treated as canonical Open WebUI behavior, or introduces non-canonical ideas that exist only in this fork. If a lane, continuity model, corpus path, telemetry surface, or control surface is described here in detail, assume it is fork-owned until stated otherwise.
+
 In practice, the local stack behind this fork is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. A lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
 
 ## Quick Navigation
