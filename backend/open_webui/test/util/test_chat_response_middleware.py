@@ -356,6 +356,84 @@ def test_build_forced_default_selector_tool_call_skips_non_auto_or_missing_tool(
     )
 
 
+def test_should_upgrade_default_search_web_tool_call_after_local_corpus_history():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "auto"},
+    }
+    tools = {"search_web": {}, "web_research_strong": {}}
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "local_corpus_frame_problem",
+                        "arguments": "{\"query\":\"atrial fibrillation cold foods\"}",
+                    },
+                }
+            ],
+        }
+    ]
+
+    should_upgrade = middleware._should_upgrade_default_search_web_tool_call(
+        metadata,
+        tools,
+        messages,
+        {"name": "search_web", "parameters": {"query": "atrial fibrillation cold foods"}},
+    )
+
+    assert should_upgrade is True
+
+
+def test_should_upgrade_default_search_web_tool_call_skips_after_strong_web_history():
+    metadata = {
+        "params": {"function_calling": "default", "local_corpus_mode": "auto"},
+    }
+    tools = {"search_web": {}, "web_research_strong": {}}
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "local_corpus_frame_problem",
+                        "arguments": "{\"query\":\"atrial fibrillation cold foods\"}",
+                    },
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "web_research_strong",
+                        "arguments": "{\"query\":\"atrial fibrillation cold foods\"}",
+                    },
+                }
+            ],
+        },
+    ]
+
+    should_upgrade = middleware._should_upgrade_default_search_web_tool_call(
+        metadata,
+        tools,
+        messages,
+        {"name": "search_web", "parameters": {"query": "atrial fibrillation cold foods"}},
+    )
+
+    assert should_upgrade is False
+
+
 @pytest.mark.asyncio
 async def test_chat_completion_tools_handler_forces_local_domain_probe_before_selector(
     monkeypatch,
@@ -416,6 +494,120 @@ async def test_chat_completion_tools_handler_forces_local_domain_probe_before_se
     assert called["selector"] is False
     assert payload["sources"][0]["source"]["name"] == (
         "builtin:local_corpus_list_domains/local_corpus_list_domains"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_tools_handler_upgrades_search_web_to_focused_search_after_local_corpus(
+    monkeypatch,
+):
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    ENABLE_LOCAL_CORPUS_TOOLS=True,
+                    LOCAL_CORPUS_ROOT="/tmp/local-corpus",
+                    TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE="",
+                    TASK_MODEL="",
+                    TASK_MODEL_EXTERNAL="",
+                )
+            )
+        )
+    )
+    user = SimpleNamespace(id="user-1")
+    body = {
+        "model": "demo-model",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "local_corpus_frame_problem",
+                            "arguments": "{\"query\":\"atrial fibrillation cold foods\"}",
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{\"status\":\"ok\"}"},
+            {
+                "role": "user",
+                "content": "Can eating cold foods trigger atrial fibrillation in certain individuals?",
+            },
+        ],
+    }
+    extra_params = {
+        "__event_call__": None,
+        "__event_emitter__": None,
+        "__metadata__": {
+            "params": {"function_calling": "default", "local_corpus_mode": "auto"},
+            "features": {"web_search": True, "focused_search": True},
+        },
+    }
+    models = {"demo-model": {"id": "demo-model"}}
+    calls = {"strong": 0, "search": 0}
+
+    async def _fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "name": "search_web",
+                                "parameters": {
+                                    "query": "atrial fibrillation cold foods trigger mechanism"
+                                },
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+    async def _fake_strong_search(**_kwargs):
+        calls["strong"] += 1
+        return json.dumps({"phase": "completed", "items": []})
+
+    async def _fake_search_web(**_kwargs):
+        calls["search"] += 1
+        raise AssertionError("search_web should be upgraded to web_research_strong")
+
+    monkeypatch.setattr(
+        middleware, "generate_chat_completion", _fake_generate_chat_completion
+    )
+    monkeypatch.setattr(
+        middleware, "get_task_model_id", lambda *_args, **_kwargs: "demo-model"
+    )
+
+    tools = {
+        "web_research_strong": {
+            "tool_id": "builtin:web_research_strong",
+            "callable": _fake_strong_search,
+            "spec": {"parameters": {"properties": {"query": {"type": "string"}}}},
+            "type": "builtin",
+        },
+        "search_web": {
+            "tool_id": "builtin:search_web",
+            "callable": _fake_search_web,
+            "spec": {"parameters": {"properties": {"query": {"type": "string"}}}},
+            "type": "builtin",
+        },
+    }
+
+    _body, payload = await middleware.chat_completion_tools_handler(
+        request, body, extra_params, user, models, tools
+    )
+
+    assert calls["strong"] == 1
+    assert calls["search"] == 0
+    assert payload["sources"][0]["source"]["name"] == (
+        "builtin:web_research_strong/web_research_strong"
     )
 
 

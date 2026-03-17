@@ -71,6 +71,7 @@ The important divergences are not cosmetic.
 - The `v2` local-corpus reasoning lane now uses deterministic retrieval projection so user-facing framing text does not quietly pollute axis queries and slow or misroute retrieval.
 - The `default` function-calling selector now has its own runtime discipline layer, so local-corpus preference, retrieval term hygiene, and prior-work fallback do not depend entirely on native tool-calling behavior.
 - In `default` function calling, `local_corpus_mode=auto` now deterministically performs a single local shelf-inspection step first (`local_corpus_list_domains`) before any web or model-only fallback, and only continues locally when the returned usable domains show a real thematic fit.
+- In `default` function calling, once the local corpus lane has been used, the web evidence ladder is now enforced as `local corpus -> focused search -> broad web search`, so a raw `search_web` jump cannot skip `web_research_strong` when the focused lane is available.
 - Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
 - Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
 - An optional blocking deep-research lane was added through a Local Deep Research (LDR) sidecar, kept separate from normal web/focused search and returning downloadable report artifacts instead of dumping long web/report bodies into model context.

@@ -426,6 +426,42 @@ def _trim_context_edges(value: str) -> str:
     return " ".join(tokens[start:end]).strip()
 
 
+def _compact_projection_span(value: str) -> str:
+    tokens = _span_tokens(value)
+    if not tokens:
+        return ""
+
+    edge_terms = (
+        set(corpus.SALIENT_QUERY_STOP_TERMS)
+        | _GENERIC_CONTEXT_TERMS
+        | _QUERY_SPINE_GLUE_TERMS
+        | _QUERY_SPINE_HUMAN_REFERENCE_TERMS
+    )
+
+    start = 0
+    end = len(tokens)
+    while start < end and tokens[start] in edge_terms:
+        start += 1
+    while end > start and tokens[end - 1] in edge_terms:
+        end -= 1
+
+    compacted = tokens[start:end]
+    if not compacted:
+        return ""
+
+    compacted = [
+        token
+        for token in compacted
+        if token not in _QUERY_SPINE_GLUE_TERMS
+        and token not in _QUERY_SPINE_HUMAN_REFERENCE_TERMS
+    ]
+    if not compacted:
+        return ""
+
+    compacted = compacted[:5]
+    return corpus._normalize_text(" ".join(compacted))
+
+
 def _stem_like(token: str) -> str:
     token = token.lower().strip()
     for suffix in ("ing", "ers", "ies", "ied", "ed", "es", "s"):
@@ -795,6 +831,7 @@ def _build_retrieval_projection(
 
     for candidate in candidates:
         normalized = candidate["value"]
+        compacted = _compact_projection_span(normalized)
         content_score = candidate["content_signal_score"]
         selector_score = candidate["selector_signal_score"]
         qualifies_content = content_score >= 2.75
@@ -806,14 +843,18 @@ def _build_retrieval_projection(
                 promoted_selectors.append(normalized)
 
         if qualifies_content or qualifies_selector or candidate["is_measurement_like"]:
-            if normalized not in retrieval_entities and len(retrieval_entities) < 8:
-                retrieval_entities.append(normalized)
+            entity_value = compacted or (
+                normalized if candidate["is_measurement_like"] else ""
+            )
+            if entity_value and entity_value not in retrieval_entities and len(retrieval_entities) < 8:
+                retrieval_entities.append(entity_value)
             if (
                 (candidate["is_measurement_like"] or len(candidate["tokens"]) >= 2)
-                and normalized not in retrieval_observations
+                and entity_value
+                and entity_value not in retrieval_observations
                 and len(retrieval_observations) < 6
             ):
-                retrieval_observations.append(normalized)
+                retrieval_observations.append(entity_value)
 
             surface_weight = content_score + (0.75 * selector_score) + (0.2 * candidate["salience_weight"])
             current_surface = retrieval_term_surface_meta.get(normalized)
@@ -838,10 +879,11 @@ def _build_retrieval_projection(
 
     if not retrieval_entities:
         top_candidates = [
-            candidate["value"]
+            _compact_projection_span(candidate["value"])
             for candidate in candidates
             if candidate["content_signal_score"] > 0 or candidate["selector_signal_score"] > 0
-        ][:4]
+        ]
+        top_candidates = [value for value in top_candidates if value][:4]
         retrieval_entities.extend(top_candidates)
         for value in top_candidates:
             if value not in retrieval_observations and len(value.split()) >= 2:

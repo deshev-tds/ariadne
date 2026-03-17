@@ -349,6 +349,10 @@ def _tool_names_from_selector_tools(tools: dict[str, Any]) -> set[str]:
     return {str(name) for name in (tools or {}).keys()}
 
 
+def _canonical_tool_name(tool_name: str | None) -> str:
+    return TOOL_NAME_ALIASES.get(str(tool_name or ""), str(tool_name or ""))
+
+
 def _selector_has_any_tool(tools: dict[str, Any], tool_names: set[str] | tuple[str, ...]) -> bool:
     available = _tool_names_from_selector_tools(tools)
     return any(name in available for name in tool_names)
@@ -364,11 +368,29 @@ def _selector_message_has_prior_work_tool_calls(message: dict) -> bool:
     if message.get("role") != "assistant":
         return False
 
+    return bool(
+        _selector_message_tool_call_names(message) & DEFAULT_SELECTOR_PRIOR_WORK_TOOL_NAMES
+    )
+
+
+def _selector_message_tool_call_names(message: dict) -> set[str]:
+    if message.get("role") != "assistant":
+        return set()
+
+    names: set[str] = set()
     for tool_call in message.get("tool_calls", []) or []:
         function = tool_call.get("function", {}) or {}
-        if function.get("name") in DEFAULT_SELECTOR_PRIOR_WORK_TOOL_NAMES:
-            return True
-    return False
+        name = _canonical_tool_name(function.get("name"))
+        if name:
+            names.add(name)
+    return names
+
+
+def _selector_recent_tool_call_names(messages: list[dict], *, limit: int = 10) -> set[str]:
+    names: set[str] = set()
+    for message in _recent_selector_messages(messages, limit=limit):
+        names.update(_selector_message_tool_call_names(message))
+    return names
 
 
 def _selector_prompt_has_explicit_prior_work_hint(text: str) -> bool:
@@ -481,6 +503,48 @@ def _build_forced_default_selector_tool_call(
         return None
 
     return {"name": "local_corpus_list_domains", "parameters": {}}
+
+
+def _should_upgrade_default_search_web_tool_call(
+    metadata: dict,
+    tools: dict[str, Any],
+    messages: list[dict],
+    tool_call: dict[str, Any],
+    *,
+    executed_tool_names: set[str] | None = None,
+    pending_tool_names: set[str] | None = None,
+) -> bool:
+    params = metadata.get("params", {}) or {}
+    if params.get("function_calling") != "default":
+        return False
+
+    if _canonical_tool_name(tool_call.get("name")) != "search_web":
+        return False
+
+    if "web_research_strong" not in _tool_names_from_selector_tools(tools):
+        return False
+
+    executed_tool_names = {_canonical_tool_name(name) for name in (executed_tool_names or set())}
+    pending_tool_names = {_canonical_tool_name(name) for name in (pending_tool_names or set())}
+
+    if pending_tool_names & STRONG_WEB_TOOL_NAMES:
+        return False
+
+    recent_tool_names = _selector_recent_tool_call_names(messages)
+    has_local_corpus_history = bool(
+        (recent_tool_names | executed_tool_names) & DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES
+    )
+    has_strong_web_history = bool(
+        (recent_tool_names | executed_tool_names) & STRONG_WEB_TOOL_NAMES
+    )
+
+    return has_local_corpus_history and not has_strong_web_history
+
+
+def _upgrade_default_search_web_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
+    upgraded = dict(tool_call)
+    upgraded["name"] = "web_research_strong"
+    return upgraded
 from open_webui.env import (
     AGENTIC_ARTIFACTS_DIR,
     GLOBAL_LOG_LEVEL,
@@ -3566,6 +3630,7 @@ async def chat_completion_tools_handler(
 
     skip_files = False
     sources = []
+    executed_tool_names: set[str] = set()
     forced_tool_call = _build_forced_default_selector_tool_call(
         metadata, tools
     )
@@ -3706,10 +3771,12 @@ async def chat_completion_tools_handler(
                 }
             )
 
-            if (
-                tools[tool_function_name].get("metadata", {}).get("file_handler", False)
-            ):
-                skip_files = True
+        executed_tool_names.add(_canonical_tool_name(tool_function_name))
+
+        if (
+            tools[tool_function_name].get("metadata", {}).get("file_handler", False)
+        ):
+            skip_files = True
 
     if forced_tool_call:
         await tool_call_handler(forced_tool_call)
@@ -3764,11 +3831,38 @@ async def chat_completion_tools_handler(
             result = json.loads(content)
 
             # check if "tool_calls" in result
-            if result.get("tool_calls"):
-                for tool_call in result.get("tool_calls"):
+            selected_tool_calls = result.get("tool_calls") or [result]
+            selected_tool_names = [
+                _canonical_tool_name((tool_call or {}).get("name"))
+                for tool_call in selected_tool_calls
+            ]
+
+            for index, tool_call in enumerate(selected_tool_calls):
+                if _should_upgrade_default_search_web_tool_call(
+                    metadata,
+                    tools,
+                    body.get("messages", []),
+                    tool_call,
+                    executed_tool_names=executed_tool_names,
+                    pending_tool_names=set(selected_tool_names[index + 1 :]),
+                ):
+                    tool_call = _upgrade_default_search_web_tool_call(tool_call)
+
+                    rewrite_event = _append_tool_journey_event(
+                        metadata,
+                        {
+                            "phase": "tool_call_upgrade",
+                            "from_tool": "search_web",
+                            "to_tool": "web_research_strong",
+                            "reason": "local_corpus_then_focused_search_ladder",
+                        },
+                    )
+                    if rewrite_event and event_emitter:
+                        await event_emitter(
+                            {"type": "chat:tool:journey", "data": rewrite_event}
+                        )
+
                     await tool_call_handler(tool_call)
-            else:
-                await tool_call_handler(result)
 
         except Exception as e:
             log.debug(f"Error: {e}")

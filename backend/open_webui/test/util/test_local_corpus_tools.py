@@ -742,6 +742,27 @@ def test_frame_problem_builds_clean_retrieval_spine_for_mechanism_prompt(local_c
     assert "what are" not in joined_spine
 
 
+def test_frame_problem_compacts_entities_and_observations_for_mechanism_prompt(
+    local_corpus_fixture,
+):
+    payload = local_corpus_reasoning.frame_local_corpus_problem(
+        query="Can eating cold foods trigger atrial fibrillation in certain individuals? What are the proposed mechanisms?",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    joined_entities = " | ".join(payload["entities"]).lower()
+    joined_observations = " | ".join(payload["observations"]).lower()
+
+    assert "eating cold foods" in joined_entities
+    assert "atrial fibrillation" in joined_entities
+    assert "certain individuals what are" not in joined_entities
+    assert "fibrillation certain individuals what" not in joined_entities
+    assert "can eating cold foods" not in joined_entities
+    assert "certain individuals what are" not in joined_observations
+    assert "can eating cold foods" not in joined_observations
+
+
 def test_plan_axes_prefers_retrieval_spine_for_mechanism_prompt(local_corpus_fixture):
     problem_frame = local_corpus_reasoning.frame_local_corpus_problem(
         query="can eating cold foods trigger atrial fibrillation in certain individuals and what are the mechanisms",
