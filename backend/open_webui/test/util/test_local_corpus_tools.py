@@ -630,7 +630,51 @@ def test_frame_problem_returns_primary_and_secondary_task_types(local_corpus_fix
         "differential_orientation",
     }
     assert isinstance(payload["secondary_task_types"], list)
+    assert payload["normalization_applied"] is True
+    assert isinstance(payload["retrieval_terms_surface"], list)
+    assert isinstance(payload["retrieval_terms_canonical"], list)
     assert payload["coverage_is_scaffold_not_exhaustive"] is True
+
+
+def test_frame_problem_projects_noisy_query_into_cleaner_retrieval_terms(local_corpus_fixture):
+    payload = local_corpus_reasoning.frame_local_corpus_problem(
+        query="headache plus mild anemia while waiting for a GP appointment",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    joined_entities = " ".join(payload["retrieval_entities"]).lower()
+    joined_surface = " ".join(payload["retrieval_terms_surface"]).lower()
+    joined_axis_material = " ".join(
+        payload["retrieval_terms_surface"] + payload["retrieval_terms_canonical"]
+    ).lower()
+
+    assert payload["normalization_applied"] is True
+    assert "headache plus mild anemia" in joined_entities
+    assert "while waiting a gp" not in joined_entities
+    assert "waiting a gp appointment" not in joined_entities
+    assert "mild anemia" in joined_surface
+    assert "headache" in joined_axis_material
+    assert "while waiting for a gp appointment" in [item.lower() for item in payload["constraints"]]
+    assert "while waiting for a gp appointment" in [
+        item.lower() for item in payload["control_constraints"]
+    ]
+
+
+def test_frame_problem_promotes_selector_signal_from_constraint_like_text(local_corpus_fixture):
+    payload = local_corpus_reasoning.frame_local_corpus_problem(
+        query="headache plus mild anemia in a pregnant adult while waiting for a GP appointment",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    surface_terms = {term.lower() for term in payload["retrieval_terms_surface"]}
+    canonical_terms = {term.lower() for term in payload["retrieval_terms_canonical"]}
+    promoted = {term.lower() for term in payload["promoted_selectors"]}
+
+    assert "pregnant" in " ".join(sorted(surface_terms))
+    assert "pregnant" in " ".join(sorted(canonical_terms))
+    assert "pregnant" in promoted or any("pregnant" in item for item in promoted)
 
 
 def test_plan_axes_respects_backend_cap(local_corpus_fixture):
@@ -649,6 +693,25 @@ def test_plan_axes_respects_backend_cap(local_corpus_fixture):
     assert payload["axis_budget"] <= 6
     assert payload["coverage_is_scaffold_not_exhaustive"] is True
     assert len(payload["axes"]) == payload["axis_budget"]
+
+
+def test_plan_axes_uses_retrieval_projection_not_raw_context(local_corpus_fixture):
+    problem_frame = local_corpus_reasoning.frame_local_corpus_problem(
+        query="headache plus mild anemia while waiting for a GP appointment",
+        domain_hint="medicine",
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    payload = local_corpus_reasoning.plan_local_corpus_axes(
+        problem_frame=problem_frame,
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    axis_queries = " ".join(axis["query"] for axis in payload["axes"]).lower()
+    assert "while waiting a gp" not in axis_queries
+    assert "waiting a gp appointment" not in axis_queries
+    assert "headache" in axis_queries
+    assert "anemia" in axis_queries
 
 
 def test_collect_axis_evidence_groups_results_by_axis(local_corpus_fixture):
@@ -672,6 +735,19 @@ def test_collect_axis_evidence_groups_results_by_axis(local_corpus_fixture):
     assert payload["axis_count"] >= 1
     assert payload["axis_results"][0]["axis_id"]
     assert isinstance(payload["axis_results"][0]["shortlisted_books"], list)
+
+
+def test_frame_problem_generic_projection_works_for_non_medical_domain(local_corpus_fixture):
+    payload = local_corpus_reasoning.frame_local_corpus_problem(
+        query="organic chemistry reaction mechanism for a lab meeting tomorrow",
+        domain_hint="chemistry",
+        config_or_path=str(local_corpus_fixture),
+    )
+
+    axis_material = " ".join(payload["retrieval_terms_surface"]).lower()
+    assert payload["domain"] == "chemistry"
+    assert "organic chemistry" in axis_material or "reaction mechanism" in axis_material
+    assert "lab meeting tomorrow" not in " ".join(payload["retrieval_entities"]).lower()
 
 
 def test_assess_evidence_returns_cautious_state_for_missing_required_axes(local_corpus_fixture):
