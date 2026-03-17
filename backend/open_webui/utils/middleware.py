@@ -173,7 +173,12 @@ from open_webui.config import (
 LOCAL_CORPUS_PREFER_SYSTEM_PROMPT = (
     "This chat prefers the local corpus when it is compatible with the question. "
     "When local corpus tools are available, prefer grounded local evidence over unsupported "
-    "answering from model weights alone. If local corpus evidence is weak or unavailable, say so plainly."
+    "answering from model weights alone. Before your first local corpus tool call, write a brief "
+    "orientation preamble of 1 to 3 short sentences stating what you are about to check and how "
+    "you will approach it. Do not answer the substance yet, and do not present conclusions before "
+    "checking the local corpus. A light touch of warmth or humor is allowed only when the topic is "
+    "low-stakes and the user's tone clearly invites it. If local corpus evidence is weak or unavailable, "
+    "say so plainly."
 )
 from open_webui.env import (
     AGENTIC_ARTIFACTS_DIR,
