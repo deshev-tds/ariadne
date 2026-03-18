@@ -1222,6 +1222,11 @@ TERMINAL_SERVER_CONNECTIONS = PersistentConfig(
 
 WEBUI_URL = PersistentConfig("WEBUI_URL", "webui.url", os.environ.get("WEBUI_URL", ""))
 
+RUNTIME_CONTROL_SCRIPT_PATH = os.environ.get(
+    "RUNTIME_CONTROL_SCRIPT_PATH",
+    str(OPEN_WEBUI_DIR / "scripts" / "run_llama.sh"),
+)
+
 
 ENABLE_SIGNUP = PersistentConfig(
     "ENABLE_SIGNUP",

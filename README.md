@@ -394,6 +394,32 @@ The `/admin/telemetry` dashboard is intentionally small and operational rather t
 
 That makes it practical to answer questions like "did the bounded specialist actually handle this planner rewrite?", "which model recovered after fallback?", and "where is the latency going?" without having to inspect browser console output by hand.
 
+There is now a separate runtime control surface as well:
+
+- `Admin -> Runtime`
+
+That page is intentionally separate from telemetry. `/admin/runtime` is for operating the local `llama.cpp` launcher; `/admin/telemetry` is for observing what the running system actually did. The runtime page exposes a small allowlisted control plane over the local launcher script rather than a generic shell executor:
+
+- current runtime state, profile, PID, port, resolved context/batch parameters, and script path
+- explicit `dual` and `beast` launcher profiles
+- `Start`, `Restart`, `Stop`, and `Refresh` controls
+- bounded recent launcher logs
+- read-only compatibility warnings when OWUI's bounded-specialist / planner settings do not match the current runtime profile
+
+Those runtime compatibility checks are deliberately advisory rather than mutating. Ariadne does not auto-rewrite task-model or planner settings when the runtime topology changes; instead it surfaces split-brain risk explicitly so the operator can decide what to change.
+
+At the launcher level, `scripts/run_llama.sh` now has a more stable machine-facing contract as well:
+
+- `status --json` always returns JSON, even for stale PID or other broken-state cases
+- `profile dual` / `profile beast` start named profiles without silently switching a running runtime
+- `restart-profile dual` / `restart-profile beast` are the explicit switch path
+- `logs --lines N` returns a bounded recent-log slice for UI/API use
+
+For Ariadne's current local setup, the intended profile semantics are:
+
+- `dual`: router mode, `MODELS_MAX=2`, `parallel=1`, `CTX=131072`
+- `beast`: router mode, `MODELS_MAX=1`, `parallel=1`
+
 For machine-local inspection without the browser, there is also a small helper script:
 
 - `scripts/watch_runtime_telemetry.sh`
