@@ -1121,6 +1121,14 @@ Ariadne is not the only place where these operating lessons show up.
 
 They belong to the same practical ecosystem and reflect many of the same learned constraints.
 
+## Project Note
+
+Ariadne is a personal project built to make a local AI workbench behave the way I want one to behave: with control, inspectability, and clear operational boundaries - and eventually as a local AI assistant I can "trust".
+
+It is not really designed for mass adoption (yet).
+
+If others find it useful, that would be quite nice. If you want to use it or fork it - go ahead! Just treat it as a real working system with opinions, not necessarily as a product with a support promise.
+
 ## Upstream Attribution
 
 Ariadne is built on Open WebUI.
