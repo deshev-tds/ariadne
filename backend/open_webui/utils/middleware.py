@@ -153,6 +153,7 @@ from open_webui.utils.prompt_telemetry import (
     get_prompt_telemetry,
     is_prompt_telemetry_enabled,
 )
+from open_webui.utils.runtime_telemetry import runtime_telemetry
 from open_webui.utils.response import normalize_usage
 from open_webui.utils.mcp.client import MCPClient
 from open_webui.utils.deep_research import (
@@ -2417,9 +2418,30 @@ def _append_tool_journey_event(
     metadata: dict, payload: dict[str, Any]
 ) -> Optional[dict[str, Any]]:
     params = metadata.get("params", {}) if isinstance(metadata, dict) else {}
-    if not isinstance(params, dict) or not _is_debug_flag_enabled(
+    debug_enabled = isinstance(params, dict) and _is_debug_flag_enabled(
         params.get("debug_tool_journey")
-    ):
+    )
+    tap_enabled = runtime_telemetry.is_enabled()
+
+    if not debug_enabled and not tap_enabled:
+        return None
+
+    event = {
+        "ts": int(time.time()),
+        **payload,
+    }
+
+    if tap_enabled:
+        runtime_telemetry.record(
+            kind="tool_journey",
+            payload=event,
+            chat_id=metadata.get("chat_id"),
+            message_id=metadata.get("message_id"),
+            user_id=metadata.get("user_id"),
+            model_id=(payload or {}).get("model_id") or metadata.get("model_id"),
+        )
+
+    if not debug_enabled:
         return None
 
     telemetry = metadata.setdefault(
@@ -2442,13 +2464,9 @@ def _append_tool_journey_event(
         telemetry["capped"] = True
         return None
 
-    event = {
-        "ts": int(time.time()),
-        "index": len(events),
-        **payload,
-    }
-    events.append(event)
-    return event
+    debug_event = {**event, "index": len(events)}
+    events.append(debug_event)
+    return debug_event
 
 
 async def _emit_tool_journey_event(
@@ -6402,6 +6420,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         memory_telemetry["chat_id"] = chat_id
         memory_telemetry["message_id"] = metadata.get("message_id")
         metadata["memory_telemetry"] = memory_telemetry
+        if runtime_telemetry.is_enabled():
+            runtime_telemetry.record(
+                kind="memory",
+                payload=memory_telemetry,
+                chat_id=chat_id,
+                message_id=metadata.get("message_id"),
+                user_id=metadata.get("user_id"),
+                model_id=model.get("id") if isinstance(model, dict) else None,
+            )
         if event_emitter:
             try:
                 await event_emitter(

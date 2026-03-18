@@ -317,3 +317,80 @@ export const getModelOverview = async (token: string = '', modelId: string, days
 
 	return res;
 };
+
+export const getRuntimeTelemetry = async (token: string = '', limit: number = 120) => {
+	let error = null;
+
+	const searchParams = new URLSearchParams();
+	if (limit) searchParams.append('limit', limit.toString());
+
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/analytics/runtime/telemetry?${searchParams.toString()}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				authorization: `Bearer ${token}`
+			}
+		}
+	)
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+const postRuntimeTelemetryAction = async (
+	token: string = '',
+	action: 'start' | 'stop' | 'clear'
+) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/analytics/runtime/telemetry/${action}`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const startRuntimeTelemetry = async (token: string = '') => {
+	return postRuntimeTelemetryAction(token, 'start');
+};
+
+export const stopRuntimeTelemetry = async (token: string = '') => {
+	return postRuntimeTelemetryAction(token, 'stop');
+};
+
+export const clearRuntimeTelemetry = async (token: string = '') => {
+	return postRuntimeTelemetryAction(token, 'clear');
+};

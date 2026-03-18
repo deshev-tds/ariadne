@@ -351,7 +351,6 @@ That same bias also explains the current fallback semantics:
 
 The result is a layered memory system that is much less likely to fail silently. This is not even close to a "perfect memory", but it's a good start still.
 
-
 ### Runtime Semantics and Memory Telemetry
 
 Ariadne also exposes the context system in its own runtime terms instead of hiding it behind a pile of internal budget math.
@@ -379,6 +378,18 @@ That design matters for a local-first system. Without it, the architecture may b
 - did the system fall back to raw branch evidence?
 
 This debug path is intentionally request-scoped. It is meant to help diagnose a specific turn, not to leave verbose memory logging enabled all the time and quietly fill production disks with telemetry.
+
+There is now a second, operator-facing path for this data as well. Admins can enable an in-memory runtime telemetry tap from `Admin -> Telemetry` (or `Admin -> Analytics -> Runtime Telemetry`) and inspect recent tool-journey, prompt, memory, and model-activity events without opening browser devtools or persisting verbose traces into chat history by default. The tap is explicitly transient:
+
+- it lives in a bounded in-memory ring buffer
+- it can be started, stopped, and cleared independently of user requests
+- it exists to inspect live routing and execution behavior, not to become another permanent log sink
+
+For machine-local inspection without the browser, there is also a small helper script:
+
+- `scripts/watch_runtime_telemetry.sh`
+
+It speaks to the same admin analytics API used by the UI and can `start`, `stop`, `clear`, or continuously `watch` the live snapshot.
 
 ### Tool Journey Telemetry (On-Demand)
 
@@ -458,7 +469,7 @@ What got rewritten into OWUI-native behavior instead of staying in the old Simon
 - explicit continuity capture/injection in `ledger.py`
 - request-scoped memory telemetry and chat-lifecycle integration in middleware
 
-What did *not* stay as a separate Simon runtime:
+What did _not_ stay as a separate Simon runtime:
 
 - the old pipe model and valve surface
 - the standalone Simon engine/gatekeeper/context-builder/persistence/retrieval orchestration layer
@@ -959,7 +970,7 @@ Ariadne adds token explorer support so you can inspect token/logit alternatives 
 
 The explorer itself is fully implemented in Ariadne. The constraint is not the UI path; the constraint is backend capability.
 
-Current `llama.cpp` does not surface usable token telemetry for streamed native/tool-call responses, so Token Explorer is unavailable on that path. Upstream's tool-calling and streamed-tool-delta work makes the reason explicit: the server reparses partial model output into semantic `tool_calls` deltas instead of exposing a stable per-token stream there, and it explicitly rejects `logprobs` when `tools` and `stream` are enabled together. If you need to work with token telemetry and streaming responses, simply choose function_calling=default. 
+Current `llama.cpp` does not surface usable token telemetry for streamed native/tool-call responses, so Token Explorer is unavailable on that path. Upstream's tool-calling and streamed-tool-delta work makes the reason explicit: the server reparses partial model output into semantic `tool_calls` deltas instead of exposing a stable per-token stream there, and it explicitly rejects `logprobs` when `tools` and `stream` are enabled together. If you need to work with token telemetry and streaming responses, simply choose function_calling=default.
 
 It also supports manually creating a new response branch from a selected token alternative instead of treating the sampled continuation as sacred.
 
