@@ -97,10 +97,10 @@
 				<hr class=" border-gray-100/30 dark:border-gray-850/30 my-2" />
 
 				<div class=" mb-2 font-medium flex items-center">
-					<div class=" text-xs mr-1">{$i18n.t('Task Model')}</div>
+					<div class=" text-xs mr-1">{$i18n.t('Task Model (Bounded Specialist)')}</div>
 					<Tooltip
 						content={$i18n.t(
-							'A task model is used when performing tasks such as generating titles for chats and web search queries'
+							'A bounded specialist slot used for allowlisted transforms such as titles, tags, follow-ups, and query rewriting. This V1 abstraction is intentionally narrow.'
 						)}
 					>
 						<svg
@@ -206,6 +206,12 @@
 							{/each}
 						</select>
 					</div>
+				</div>
+
+				<div class="mb-3 text-xs text-gray-500 dark:text-gray-400">
+					{$i18n.t(
+						'The Task Model remains backward compatible, but in V1 it is treated as a bounded specialist slot instead of a second general assistant.'
+					)}
 				</div>
 
 				<div class="mb-2.5 flex w-full items-center justify-between">

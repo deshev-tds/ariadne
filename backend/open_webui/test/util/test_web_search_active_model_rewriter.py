@@ -10,9 +10,15 @@ from open_webui.retrieval.web.planner import (
 )
 
 
-def _make_request(*, enable_planner: bool) -> SimpleNamespace:
+def _make_request(
+    *,
+    enable_planner: bool,
+    enable_task_model_planner: bool = False,
+    task_model: str = "",
+) -> SimpleNamespace:
     config = SimpleNamespace(
         ENABLE_WEB_SEARCH_PLANNER=enable_planner,
+        ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER=enable_task_model_planner,
         WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE=4,
         WEB_SEARCH_PLANNER_MODE="hybrid_rewriter",
         WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES=6,
@@ -21,9 +27,26 @@ def _make_request(*, enable_planner: bool) -> SimpleNamespace:
         WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS=384,
         WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE=0.0,
         QUERY_GENERATION_PROMPT_TEMPLATE='{"queries":["{{prompt}}"]}',
+        TASK_MODEL=task_model,
+        TASK_MODEL_EXTERNAL="",
     )
     app_state = SimpleNamespace(
-        MODELS={"active-model": {"id": "active-model"}},
+        MODELS={
+            "active-model": {
+                "id": "active-model",
+                "connection_type": "local",
+            },
+            **(
+                {
+                    task_model: {
+                        "id": task_model,
+                        "connection_type": "local",
+                    }
+                }
+                if task_model
+                else {}
+            ),
+        },
         config=config,
     )
     return SimpleNamespace(
@@ -305,6 +328,370 @@ async def test_chat_web_search_handler_uses_active_model_query_generation_fallba
     )
     monkeypatch.setattr(middleware, "process_web_search", fake_process_web_search)
     monkeypatch.setattr(middleware, "generate_queries", fail_generate_queries)
+
+    output = await middleware.chat_web_search_handler(
+        request, form_data, extra_params, user
+    )
+
+    assert output["files"][0]["queries"] == ["q1", "q2"]
+    assert any(
+        event.get("data", {}).get("action") == "web_search_queries_generated"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_bounded_specialist_web_search_rewriter_uses_task_model_first(monkeypatch):
+    request = _make_request(
+        enable_planner=True,
+        enable_task_model_planner=True,
+        task_model="specialist-model",
+    )
+    user = SimpleNamespace(id="u1")
+    context = "EKS 1.30 aws-vpc-cni 1.16.4 failed to assign an IP address to container"
+    user_message = "is this a known issue and what is the current fix?"
+    plan = build_web_search_plan(user_message, conversation_context=context)
+    plan.preserve_tokens = []
+
+    calls = []
+
+    async def fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        calls.append(form_data.get("model"))
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "queries": [
+                                    {
+                                        "kind": "exact",
+                                        "query": "EKS aws-vpc-cni known issue current fix",
+                                    }
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(middleware, "generate_chat_completion", fake_generate_chat_completion)
+
+    queries, meta = await middleware._run_bounded_specialist_web_search_rewriter(
+        request,
+        user=user,
+        active_model_id="active-model",
+        user_message=user_message,
+        conversation_context=context,
+        plan=plan,
+        max_queries=4,
+        timeout_ms=3000,
+        max_repair_attempts=1,
+        max_completion_tokens=256,
+        temperature=0.0,
+        chat_id="chat-1",
+    )
+
+    assert len(queries) == 1
+    assert calls == ["specialist-model"]
+    assert meta["selected_model"] == "specialist-model"
+    assert meta["selected_via"] == "task_model"
+    assert meta["route_source"] == "bounded_specialist_v1"
+    assert meta["fallback_used"] is False
+    assert meta["reason"] == "planner_query_rewriter"
+
+
+@pytest.mark.asyncio
+async def test_bounded_specialist_web_search_rewriter_falls_back_to_active_model(monkeypatch):
+    request = _make_request(
+        enable_planner=True,
+        enable_task_model_planner=True,
+        task_model="specialist-model",
+    )
+    user = SimpleNamespace(id="u1")
+    context = "EKS 1.30 aws-vpc-cni 1.16.4 failed to assign an IP address to container"
+    user_message = "is this a known issue and what is the current fix?"
+    plan = build_web_search_plan(user_message, conversation_context=context)
+    plan.preserve_tokens = []
+
+    calls = []
+
+    async def fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        model = form_data.get("model")
+        calls.append(model)
+        if model == "specialist-model":
+            return {"choices": [{"message": {"content": "not-json"}}]}
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "queries": [
+                                    {
+                                        "kind": "exact",
+                                        "query": "EKS aws-vpc-cni known issue current fix",
+                                    }
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(middleware, "generate_chat_completion", fake_generate_chat_completion)
+
+    queries, meta = await middleware._run_bounded_specialist_web_search_rewriter(
+        request,
+        user=user,
+        active_model_id="active-model",
+        user_message=user_message,
+        conversation_context=context,
+        plan=plan,
+        max_queries=4,
+        timeout_ms=3000,
+        max_repair_attempts=1,
+        max_completion_tokens=256,
+        temperature=0.0,
+        chat_id="chat-1",
+    )
+
+    assert len(queries) == 1
+    assert calls == ["specialist-model", "specialist-model", "active-model"]
+    assert meta["selected_model"] == "active-model"
+    assert meta["selected_via"] == "active_model"
+    assert meta["route_source"] == "bounded_specialist_v1"
+    assert meta["fallback_used"] is True
+    assert meta["error_class"] == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_bounded_specialist_web_search_rewriter_emits_model_activity_timeline(
+    monkeypatch,
+):
+    request = _make_request(
+        enable_planner=True,
+        enable_task_model_planner=True,
+        task_model="specialist-model",
+    )
+    user = SimpleNamespace(id="u1")
+    context = "EKS 1.30 aws-vpc-cni 1.16.4 failed to assign an IP address to container"
+    user_message = "is this a known issue and what is the current fix?"
+    plan = build_web_search_plan(user_message, conversation_context=context)
+    plan.preserve_tokens = []
+    metadata = {
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "params": {"debug_tool_journey": True},
+    }
+    emitted_events = []
+
+    async def event_emitter(event):
+        emitted_events.append(event)
+
+    async def fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        model = form_data.get("model")
+        if model == "specialist-model":
+            return {"choices": [{"message": {"content": "not-json"}}]}
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "queries": [
+                                    {
+                                        "kind": "exact",
+                                        "query": "EKS aws-vpc-cni known issue current fix",
+                                    }
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(middleware, "generate_chat_completion", fake_generate_chat_completion)
+
+    queries, meta = await middleware._run_bounded_specialist_web_search_rewriter(
+        request,
+        user=user,
+        active_model_id="active-model",
+        user_message=user_message,
+        conversation_context=context,
+        plan=plan,
+        max_queries=4,
+        timeout_ms=3000,
+        max_repair_attempts=1,
+        max_completion_tokens=256,
+        temperature=0.0,
+        chat_id="chat-1",
+        metadata=metadata,
+        event_emitter=event_emitter,
+    )
+
+    assert len(queries) == 1
+    assert meta["selected_model"] == "active-model"
+    model_events = [
+        event["data"]
+        for event in emitted_events
+        if event.get("type") == "chat:tool:journey"
+        and event.get("data", {}).get("kind") == "model_activity"
+    ]
+
+    assert [event["phase"] for event in model_events] == [
+        "model_task_start",
+        "model_task_done",
+        "model_task_start",
+        "model_task_done",
+    ]
+    assert model_events[0]["model_id"] == "specialist-model"
+    assert model_events[0]["active_model_id"] == "active-model"
+    assert model_events[0]["actor"] == "bounded_specialist"
+    assert model_events[1]["status"] == "error"
+    assert model_events[1]["error_class"] == "ValueError"
+    assert model_events[2]["model_id"] == "active-model"
+    assert model_events[2]["fallback_used"] is True
+    assert model_events[3]["status"] == "ok"
+    assert isinstance(model_events[3]["duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_bounded_specialist_query_generation_emits_model_activity_events(
+    monkeypatch,
+):
+    request = _make_request(
+        enable_planner=False,
+        enable_task_model_planner=True,
+        task_model="specialist-model",
+    )
+    user = SimpleNamespace(id="u1")
+    messages = [{"role": "user", "content": "best query for aws cni issue"}]
+    metadata = {
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "params": {"debug_tool_journey": True},
+    }
+    emitted_events = []
+
+    async def event_emitter(event):
+        emitted_events.append(event)
+
+    async def fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        assert form_data.get("model") == "specialist-model"
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"queries":["aws cni known issue github","aws cni current fix docs"]}'
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(middleware, "generate_chat_completion", fake_generate_chat_completion)
+
+    queries, meta = await middleware._run_bounded_specialist_web_query_generation(
+        request,
+        user=user,
+        active_model_id="active-model",
+        messages=messages,
+        chat_id="chat-1",
+        timeout_ms=3000,
+        max_completion_tokens=128,
+        metadata=metadata,
+        event_emitter=event_emitter,
+    )
+
+    assert queries == ["aws cni known issue github", "aws cni current fix docs"]
+    assert meta["selected_model"] == "specialist-model"
+    model_events = [
+        event["data"]
+        for event in emitted_events
+        if event.get("type") == "chat:tool:journey"
+        and event.get("data", {}).get("kind") == "model_activity"
+    ]
+
+    assert len(model_events) == 2
+    assert model_events[0]["phase"] == "model_task_start"
+    assert model_events[0]["task_kind"] == "web_search_query_generation"
+    assert model_events[0]["model_id"] == "specialist-model"
+    assert model_events[0]["active_model_id"] == "active-model"
+    assert model_events[1]["phase"] == "model_task_done"
+    assert model_events[1]["status"] == "ok"
+    assert isinstance(model_events[1]["duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_chat_web_search_handler_uses_bounded_specialist_query_generation_when_enabled(
+    monkeypatch,
+):
+    request = _make_request(
+        enable_planner=False,
+        enable_task_model_planner=True,
+        task_model="specialist-model",
+    )
+    user = SimpleNamespace(id="u1")
+
+    form_data = {
+        "model": "active-model",
+        "messages": [{"role": "user", "content": "difference between throttled and deprecated"}],
+    }
+    events = []
+
+    async def event_emitter(event):
+        events.append(event)
+
+    extra_params = {
+        "__event_emitter__": event_emitter,
+        "__chat_id__": "chat-1",
+    }
+
+    async def fake_run_bounded_generation(*_args, **_kwargs):
+        return (
+            ["q1", "q2"],
+            {
+                "selected_model": "specialist-model",
+                "selected_via": "task_model",
+                "route_source": "bounded_specialist_v1",
+                "fallback_used": False,
+            },
+        )
+
+    async def fail_active_generation(*_args, **_kwargs):
+        raise AssertionError("active-model query generation should not run when specialist routing is enabled")
+
+    async def fake_process_web_search(_request, search_form, user=None):
+        assert search_form.queries == ["q1", "q2"]
+        return {
+            "queries": search_form.queries,
+            "docs": [{"content": "stub doc"}],
+            "filenames": ["https://example.com/doc"],
+            "items": [],
+        }
+
+    monkeypatch.setattr(
+        middleware,
+        "_run_bounded_specialist_web_query_generation",
+        fake_run_bounded_generation,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_run_active_model_web_query_generation",
+        fail_active_generation,
+    )
+    monkeypatch.setattr(middleware, "process_web_search", fake_process_web_search)
 
     output = await middleware.chat_web_search_handler(
         request, form_data, extra_params, user

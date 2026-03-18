@@ -319,6 +319,11 @@ class WebSearchPlan(BaseModel):
     allowed_domains_ranked: list[str] = Field(default_factory=list)
     planned_queries: list[PlannedQuery] = Field(default_factory=list)
     rewriter_model_used: Optional[str] = None
+    rewriter_selected_via: Optional[str] = None
+    rewriter_route_source: Optional[str] = None
+    rewriter_duration_ms: Optional[int] = None
+    rewriter_reason: Optional[str] = None
+    rewriter_error_class: Optional[str] = None
     rewriter_fallback_used: bool = False
     rewriter_retry_count: int = 0
     fallback_reason: Optional[str] = None

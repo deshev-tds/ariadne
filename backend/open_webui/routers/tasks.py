@@ -22,7 +22,10 @@ from open_webui.constants import TASKS
 
 from open_webui.routers.pipelines import process_pipeline_inlet_filter
 
-from open_webui.utils.task import get_task_model_id
+from open_webui.utils.task import (
+    get_bounded_specialist_model_selection,
+    get_task_model_id,
+)
 
 from open_webui.config import (
     DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE,
@@ -39,6 +42,30 @@ from open_webui.config import (
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _build_bounded_specialist_metadata(
+    request: Request,
+    *,
+    task: str,
+    task_body: dict,
+    chat_id: Optional[str],
+    selection: dict,
+) -> dict:
+    return {
+        **(request.state.metadata if hasattr(request.state, "metadata") else {}),
+        "task": task,
+        "task_body": task_body,
+        "chat_id": chat_id,
+        "bounded_specialist": {
+            "task_kind": selection.get("task_kind"),
+            "route_source": selection.get("route_source"),
+            "selected_model": selection.get("model_id"),
+            "selected_via": selection.get("selected_via"),
+            "fallback_used": False,
+            "reason": selection.get("reason"),
+        },
+    }
 
 
 ##################################
@@ -200,14 +227,14 @@ async def generate_title(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
-    task_model_id = get_task_model_id(
+    selection = get_bounded_specialist_model_selection(
         model_id,
         request.app.state.config.TASK_MODEL,
         request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
+        task_kind=str(TASKS.TITLE_GENERATION),
     )
+    task_model_id = selection["model_id"]
 
     log.debug(
         f"generating chat title using model {task_model_id} for user {user.email} "
@@ -236,10 +263,13 @@ async def generate_title(
             }
         ),
         "metadata": {
-            **(request.state.metadata if hasattr(request.state, "metadata") else {}),
-            "task": str(TASKS.TITLE_GENERATION),
-            "task_body": form_data,
-            "chat_id": form_data.get("chat_id", None),
+            **_build_bounded_specialist_metadata(
+                request,
+                task=str(TASKS.TITLE_GENERATION),
+                task_body=form_data,
+                chat_id=form_data.get("chat_id", None),
+                selection=selection,
+            ),
         },
     }
 
@@ -284,14 +314,14 @@ async def generate_follow_ups(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
-    task_model_id = get_task_model_id(
+    selection = get_bounded_specialist_model_selection(
         model_id,
         request.app.state.config.TASK_MODEL,
         request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
+        task_kind=str(TASKS.FOLLOW_UP_GENERATION),
     )
+    task_model_id = selection["model_id"]
 
     log.debug(
         f"generating chat title using model {task_model_id} for user {user.email} "
@@ -309,10 +339,13 @@ async def generate_follow_ups(
         "messages": [{"role": "user", "content": content}],
         "stream": False,
         "metadata": {
-            **(request.state.metadata if hasattr(request.state, "metadata") else {}),
-            "task": str(TASKS.FOLLOW_UP_GENERATION),
-            "task_body": form_data,
-            "chat_id": form_data.get("chat_id", None),
+            **_build_bounded_specialist_metadata(
+                request,
+                task=str(TASKS.FOLLOW_UP_GENERATION),
+                task_body=form_data,
+                chat_id=form_data.get("chat_id", None),
+                selection=selection,
+            ),
         },
     }
 
@@ -357,14 +390,14 @@ async def generate_chat_tags(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
-    task_model_id = get_task_model_id(
+    selection = get_bounded_specialist_model_selection(
         model_id,
         request.app.state.config.TASK_MODEL,
         request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
+        task_kind=str(TASKS.TAGS_GENERATION),
     )
+    task_model_id = selection["model_id"]
 
     log.debug(
         f"generating chat tags using model {task_model_id} for user {user.email} "
@@ -382,10 +415,13 @@ async def generate_chat_tags(
         "messages": [{"role": "user", "content": content}],
         "stream": False,
         "metadata": {
-            **(request.state.metadata if hasattr(request.state, "metadata") else {}),
-            "task": str(TASKS.TAGS_GENERATION),
-            "task_body": form_data,
-            "chat_id": form_data.get("chat_id", None),
+            **_build_bounded_specialist_metadata(
+                request,
+                task=str(TASKS.TAGS_GENERATION),
+                task_body=form_data,
+                chat_id=form_data.get("chat_id", None),
+                selection=selection,
+            ),
         },
     }
 
@@ -508,14 +544,14 @@ async def generate_queries(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
-    task_model_id = get_task_model_id(
+    selection = get_bounded_specialist_model_selection(
         model_id,
         request.app.state.config.TASK_MODEL,
         request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
+        task_kind=str(TASKS.QUERY_GENERATION),
     )
+    task_model_id = selection["model_id"]
 
     log.debug(
         f"generating {type} queries using model {task_model_id} for user {user.email}"
@@ -533,10 +569,13 @@ async def generate_queries(
         "messages": [{"role": "user", "content": content}],
         "stream": False,
         "metadata": {
-            **(request.state.metadata if hasattr(request.state, "metadata") else {}),
-            "task": str(TASKS.QUERY_GENERATION),
-            "task_body": form_data,
-            "chat_id": form_data.get("chat_id", None),
+            **_build_bounded_specialist_metadata(
+                request,
+                task=str(TASKS.QUERY_GENERATION),
+                task_body=form_data,
+                chat_id=form_data.get("chat_id", None),
+                selection=selection,
+            ),
         },
     }
 
@@ -593,14 +632,14 @@ async def generate_autocompletion(
             detail="Model not found",
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
-    task_model_id = get_task_model_id(
+    selection = get_bounded_specialist_model_selection(
         model_id,
         request.app.state.config.TASK_MODEL,
         request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
+        task_kind=str(TASKS.AUTOCOMPLETE_GENERATION),
     )
+    task_model_id = selection["model_id"]
 
     log.debug(
         f"generating autocompletion using model {task_model_id} for user {user.email}"
@@ -618,10 +657,13 @@ async def generate_autocompletion(
         "messages": [{"role": "user", "content": content}],
         "stream": False,
         "metadata": {
-            **(request.state.metadata if hasattr(request.state, "metadata") else {}),
-            "task": str(TASKS.AUTOCOMPLETE_GENERATION),
-            "task_body": form_data,
-            "chat_id": form_data.get("chat_id", None),
+            **_build_bounded_specialist_metadata(
+                request,
+                task=str(TASKS.AUTOCOMPLETE_GENERATION),
+                task_body=form_data,
+                chat_id=form_data.get("chat_id", None),
+                selection=selection,
+            ),
         },
     }
 

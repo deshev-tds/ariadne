@@ -964,6 +964,108 @@ async def test_chat_completion_tools_handler_injects_default_selector_guidance(
     assert "Current runtime timestamp:" in selector_prompt
 
 
+@pytest.mark.asyncio
+async def test_chat_completion_tools_handler_emits_model_activity_telemetry(
+    monkeypatch,
+):
+    emitted_events = []
+
+    async def fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"tool_calls": []}),
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        middleware, "generate_chat_completion", fake_generate_chat_completion
+    )
+
+    async def _noop_event_call(_payload):
+        return None
+
+    async def _event_emitter(payload):
+        emitted_events.append(payload)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE="",
+                    TASK_MODEL="specialist-model",
+                    TASK_MODEL_EXTERNAL="",
+                )
+            )
+        )
+    )
+    metadata = {
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "params": {
+            "function_calling": "default",
+            "local_corpus_mode": "prefer",
+            "debug_tool_journey": True,
+        },
+        "features": {"web_search": False, "focused_search": False},
+    }
+    body = {
+        "model": "main-model",
+        "messages": [{"role": "user", "content": "Headache plus mild anemia"}],
+    }
+    tools = {
+        "local_corpus_frame_problem": {
+            "spec": {
+                "name": "local_corpus_frame_problem",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        }
+    }
+
+    result_body, flags = await middleware.chat_completion_tools_handler(
+        request,
+        body,
+        {
+            "__event_call__": _noop_event_call,
+            "__event_emitter__": _event_emitter,
+            "__metadata__": metadata,
+        },
+        SimpleNamespace(id="user-1"),
+        {
+            "main-model": {"id": "main-model", "connection_type": "local"},
+            "specialist-model": {
+                "id": "specialist-model",
+                "connection_type": "local",
+            },
+        },
+        tools,
+    )
+
+    assert result_body is body
+    assert flags == {"sources": [], "toolJourneyTelemetry": metadata["tool_journey_telemetry"]}
+
+    model_events = [
+        event["data"]
+        for event in emitted_events
+        if event.get("type") == "chat:tool:journey"
+        and event.get("data", {}).get("kind") == "model_activity"
+    ]
+    assert len(model_events) == 2
+    assert model_events[0]["phase"] == "model_task_start"
+    assert model_events[0]["task_kind"] == "function_calling"
+    assert model_events[0]["model_id"] == "specialist-model"
+    assert model_events[0]["active_model_id"] == "main-model"
+    assert model_events[0]["actor"] == "bounded_specialist"
+    assert model_events[1]["phase"] == "model_task_done"
+    assert model_events[1]["status"] == "ok"
+    assert isinstance(model_events[1]["duration_ms"], int)
+
+
 def test_append_tool_journey_event_is_on_demand():
     metadata = {"chat_id": "chat-1", "message_id": "msg-1", "params": {}}
     assert (

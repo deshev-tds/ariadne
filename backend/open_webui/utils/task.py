@@ -8,6 +8,7 @@ import uuid
 
 from open_webui.utils.misc import get_last_user_message, get_messages_content
 
+from open_webui.constants import TASKS
 from open_webui.config import DEFAULT_RAG_TEMPLATE
 
 log = logging.getLogger(__name__)
@@ -15,6 +16,33 @@ log = logging.getLogger(__name__)
 RUNTIME_TIMESTAMP_MARKER = "Current runtime timestamp:"
 RUNTIME_TIME_AUTHORITY_MARKER = (
     "Treat this runtime timestamp as authoritative current time for this conversation."
+)
+
+# V1 transitional abstraction:
+# `Task Model` acts as a single bounded specialist slot rather than a generic
+# secondary assistant. Only explicit allowlisted task kinds should route here.
+BOUNDED_SPECIALIST_ROUTE_SOURCE = "bounded_specialist_v1"
+BOUNDED_SPECIALIST_TASK_KIND_CONTEXT_MAINTENANCE = "context_maintenance"
+BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING = "function_calling"
+BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_REWRITER = (
+    "web_search_query_rewriter"
+)
+BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_GENERATION = (
+    "web_search_query_generation"
+)
+
+BOUNDED_SPECIALIST_TASK_KINDS = frozenset(
+    {
+        str(TASKS.TITLE_GENERATION),
+        str(TASKS.FOLLOW_UP_GENERATION),
+        str(TASKS.TAGS_GENERATION),
+        str(TASKS.QUERY_GENERATION),
+        str(TASKS.AUTOCOMPLETE_GENERATION),
+        BOUNDED_SPECIALIST_TASK_KIND_CONTEXT_MAINTENANCE,
+        BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
+        BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_REWRITER,
+        BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_GENERATION,
+    }
 )
 
 
@@ -32,6 +60,73 @@ def get_task_model_id(
             task_model_id = task_model_external
 
     return task_model_id
+
+
+def get_bounded_specialist_model_selection(
+    default_model_id: str,
+    task_model: str,
+    task_model_external: str,
+    models,
+    *,
+    task_kind: str,
+) -> dict[str, Any]:
+    """Resolve the V1 bounded specialist slot for explicit allowlisted task kinds.
+
+    This keeps the public `TASK_MODEL` settings intact while constraining new
+    behavior behind a narrow, inspectable abstraction that is easy to replace in V2.
+    """
+
+    normalized_task_kind = str(task_kind or "").strip()
+    selection = {
+        "task_kind": normalized_task_kind,
+        "route_source": BOUNDED_SPECIALIST_ROUTE_SOURCE,
+        "allowed": normalized_task_kind in BOUNDED_SPECIALIST_TASK_KINDS,
+        "model_id": default_model_id,
+        "selected_via": "active_model",
+        "used_bounded_specialist": False,
+        "reason": "task_kind_not_allowlisted",
+    }
+
+    if not selection["allowed"]:
+        return selection
+
+    selection["reason"] = "no_bounded_specialist_configured"
+
+    if default_model_id not in models:
+        selection["reason"] = "active_model_not_found"
+        return selection
+
+    if models[default_model_id].get("connection_type") == "local":
+        if task_model and task_model in models:
+            selection["model_id"] = task_model
+            selection["selected_via"] = "task_model"
+            selection["used_bounded_specialist"] = True
+            selection["reason"] = "bounded_specialist_selected"
+    else:
+        if task_model_external and task_model_external in models:
+            selection["model_id"] = task_model_external
+            selection["selected_via"] = "task_model_external"
+            selection["used_bounded_specialist"] = True
+            selection["reason"] = "bounded_specialist_selected"
+
+    return selection
+
+
+def get_bounded_specialist_model_id(
+    default_model_id: str,
+    task_model: str,
+    task_model_external: str,
+    models,
+    *,
+    task_kind: str,
+) -> str:
+    return get_bounded_specialist_model_selection(
+        default_model_id,
+        task_model,
+        task_model_external,
+        models,
+        task_kind=task_kind,
+    )["model_id"]
 
 
 def get_runtime_timestamp_iso() -> str:

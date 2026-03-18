@@ -569,6 +569,7 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES": request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES,
             "WEB_SEARCH_BRAVE_MIN_INTERVAL_MS": request.app.state.config.WEB_SEARCH_BRAVE_MIN_INTERVAL_MS,
             "ENABLE_WEB_SEARCH_PLANNER": request.app.state.config.ENABLE_WEB_SEARCH_PLANNER,
+            "ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER": request.app.state.config.ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER,
             "WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES,
             "WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES,
             "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE,
@@ -668,6 +669,7 @@ class WebConfig(BaseModel):
     WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES: Optional[int] = None
     WEB_SEARCH_BRAVE_MIN_INTERVAL_MS: Optional[int] = None
     ENABLE_WEB_SEARCH_PLANNER: Optional[bool] = None
+    ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER: Optional[bool] = None
     WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES: Optional[int] = None
     WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES: Optional[int] = None
     WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE: Optional[int] = None
@@ -1279,6 +1281,11 @@ async def update_rag_config(
             if form_data.web.ENABLE_WEB_SEARCH_PLANNER is not None
             else request.app.state.config.ENABLE_WEB_SEARCH_PLANNER
         )
+        request.app.state.config.ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER = (
+            form_data.web.ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER
+            if form_data.web.ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER is not None
+            else request.app.state.config.ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER
+        )
         request.app.state.config.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES = (
             form_data.web.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES
             if form_data.web.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES is not None
@@ -1600,6 +1607,7 @@ async def update_rag_config(
             "WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES": request.app.state.config.WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES,
             "WEB_SEARCH_BRAVE_MIN_INTERVAL_MS": request.app.state.config.WEB_SEARCH_BRAVE_MIN_INTERVAL_MS,
             "ENABLE_WEB_SEARCH_PLANNER": request.app.state.config.ENABLE_WEB_SEARCH_PLANNER,
+            "ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER": request.app.state.config.ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER,
             "WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES,
             "WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES,
             "WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE": request.app.state.config.WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE,

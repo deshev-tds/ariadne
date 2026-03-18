@@ -23,7 +23,10 @@ from open_webui.utils.misc import (
     get_content_from_message,
     get_message_list,
 )
-from open_webui.utils.task import get_task_model_id
+from open_webui.utils.task import (
+    BOUNDED_SPECIALIST_TASK_KIND_CONTEXT_MAINTENANCE,
+    get_bounded_specialist_model_selection,
+)
 
 log = logging.getLogger(__name__)
 
@@ -897,12 +900,14 @@ async def generate_history_summary(
     if model_id not in models:
         return None
 
-    task_model_id = get_task_model_id(
+    selection = get_bounded_specialist_model_selection(
         model_id,
         request.app.state.config.TASK_MODEL,
         request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
+        task_kind=BOUNDED_SPECIALIST_TASK_KIND_CONTEXT_MAINTENANCE,
     )
+    task_model_id = selection["model_id"]
 
     payload = {
         "model": task_model_id,
@@ -921,6 +926,14 @@ async def generate_history_summary(
             **(request.state.metadata if hasattr(request.state, "metadata") else {}),
             "task": "context_maintenance",
             "chat_id": chat_id,
+            "bounded_specialist": {
+                "task_kind": selection.get("task_kind"),
+                "route_source": selection.get("route_source"),
+                "selected_model": selection.get("model_id"),
+                "selected_via": selection.get("selected_via"),
+                "fallback_used": False,
+                "reason": selection.get("reason"),
+            },
         },
     }
 

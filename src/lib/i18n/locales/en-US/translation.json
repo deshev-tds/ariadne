@@ -2143,5 +2143,9 @@
 	"Your usage stats have been successfully synced.": "",
 	"YouTube": "",
 	"Youtube Language": "",
-	"Youtube Proxy URL": ""
+	"Youtube Proxy URL": "",
+	"Task Model (Bounded Specialist)": "",
+	"A bounded specialist slot used for allowlisted transforms such as titles, tags, follow-ups, and query rewriting. This V1 abstraction is intentionally narrow.": "",
+	"Use Task Model For Planner": "",
+	"When enabled, planner query rewriting and planner-side query generation use the bounded Task Model specialist slot first, then fall back to the active model on failure.": ""
 }

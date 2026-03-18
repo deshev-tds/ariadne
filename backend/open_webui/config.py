@@ -3515,6 +3515,12 @@ ENABLE_WEB_SEARCH_PLANNER = PersistentConfig(
     os.getenv("ENABLE_WEB_SEARCH_PLANNER", "True").lower() == "true",
 )
 
+ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER = PersistentConfig(
+    "ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER",
+    "rag.web.search.planner.use_task_model",
+    os.getenv("ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER", "False").lower() == "true",
+)
+
 WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES = PersistentConfig(
     "WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES",
     "rag.web.search.planner.min_total_queries",

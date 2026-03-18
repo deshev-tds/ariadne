@@ -1064,6 +1064,21 @@
 						</div>
 
 						{#if webConfig.ENABLE_WEB_SEARCH_PLANNER}
+							<div class="mb-2.5 flex w-full justify-between">
+								<div class="self-center text-xs font-medium">
+									{$i18n.t('Use Task Model For Planner')}
+								</div>
+								<div class="flex items-center relative">
+									<Switch bind:state={webConfig.ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER} />
+								</div>
+							</div>
+
+							<div class="mb-2.5 text-xs text-gray-500 dark:text-gray-400">
+								{$i18n.t(
+									'When enabled, planner query rewriting and planner-side query generation use the bounded Task Model specialist slot first, then fall back to the active model on failure.'
+								)}
+							</div>
+
 							<div class="mb-2.5 flex w-full flex-col">
 								<div class="flex gap-2">
 									<div class="w-full">

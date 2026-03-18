@@ -146,6 +146,7 @@ The key concepts are:
 
 - Web retrieval is planned, strong-source aware, and bounded.
 - Request-scoped memory and tool telemetry make continuity and tool-path failures inspectable without permanent log bloat.
+- The inherited `Task Model` surface is now treated internally as a narrow transitional `bounded specialist` slot for allowlisted transforms rather than as a second general chat brain.
 - Local-corpus routing discipline now exists in both `native` and `default` tool-calling paths.
 
 **Specialized Evidence Lanes**
@@ -157,6 +158,34 @@ The key concepts are:
 
 - Kokoro adds a practical local TTS path. Despite being "old" by today's standards, I believe it still remains one of the richest and lightest text-to-speech options.
 - Token explorer support and manual response branching make compatible local generation less of a black box. It is worth mentioning that the current `llama.cpp` does not surface that telemetry for streamed native/tool-call responses - rely on function_calling=default whenever required.
+
+### Transitional Bounded Specialist Slot (V1)
+
+The old public `Task Model` settings now carry a narrower internal meaning in Ariadne than they used to.
+
+For V1, Ariadne keeps the upstream-style `TASK_MODEL` / `TASK_MODEL_EXTERNAL` config surface intact, but treats it internally as one bounded specialist slot. The point is pragmatic: get the latency and cost win for stable transformation work without pretending a second full router/specialist registry already exists.
+
+That bounded slot is allowlisted and deliberately narrow. It can be used for things like:
+
+- title generation
+- tags generation
+- follow-up generation
+- autocomplete
+- query generation
+- context-maintenance summary work
+- function-calling helper selection
+- web planner query rewriting and planner-side query generation when explicitly enabled
+
+It is not used for the final user-facing answer path. The active chat model remains responsible for normal answer synthesis, broad reasoning, and ambiguity-heavy turns.
+
+Routing in this V1 is deterministic rather than model-routed:
+
+- only explicit task kinds may use the bounded specialist slot
+- the slot is resolved from the existing local/external `Task Model` settings
+- if no bounded specialist is configured, behavior falls back cleanly to the active model
+- if specialist execution fails, returns invalid output, or cannot satisfy the contract, Ariadne escalates back to the active model
+
+This is an intentionally transitional abstraction. The code marks it as such so later migration to a real router/specialist registry can stay mechanical instead of philosophical.
 
 The rest of this README explains the rationale and constraints behind those choices.
 
@@ -364,6 +393,18 @@ That trace captures concrete lifecycle facts such as:
 - per-call duration
 - compact result summaries
 
+When bounded-specialist routing is active, the same debug surface also records explicit `model_activity` events. Those events make it visible which model actually did the work for bounded subtasks and what role it played:
+
+- `task_kind` and `operation`
+- the active chat model versus the actual model invoked
+- whether the actor was the bounded specialist or the active model
+- selection path (`task_model`, `task_model_external`, or direct active-model use)
+- fallback usage
+- per-step duration
+- error class on failure
+
+That matters because "planner ran" is not the same thing as "which model rewrote the query, which one recovered after failure, and how long each step took".
+
 For strong-source retrieval specifically, the summary includes useful decision signals such as local-phase execution status, Brave fallback usage, fallback reason, and quality/coverage indicators.
 
 This is also emitted in real time as `chat:tool:journey` events, so an in-progress run can be inspected live.
@@ -451,7 +492,7 @@ In practice, this means the web path here is more structured than a simple flat 
 
 - multiple planner modes exist instead of one hardcoded query flow
 - a source registry provides machine-readable hints about where different kinds of queries should go
-- the active model can be used as a query rewriter when that helps, but the system still keeps explicit fallback paths
+- the planner can either use the active model directly or use the bounded specialist slot first for query rewriting / planner-side query generation, with explicit fallback back to the active model
 - planner telemetry tracks retries, fallback usage, executed queries, and stopping conditions instead of treating the whole thing as opaque middleware
 
 The important behavioral shift is this:
@@ -468,6 +509,18 @@ At a high level, the current web path behaves more like this:
 3. target sources with planner hints instead of treating all sources as equivalent
 4. stop once the evidence quality or coverage is good enough, instead of continuing mechanically
 5. surface planner status and fallback information so the path is inspectable
+
+The planner-side specialist behavior is intentionally opt-in. Admins can keep the old behavior or explicitly enable bounded-specialist planner routing while still using the existing task-model slots:
+
+- `Admin Settings -> Interface -> Task Model (Bounded Specialist)` chooses the small local/external specialist model
+- `Admin Settings -> Web Search -> Use Task Model For Planner` lets the planner try that bounded specialist first
+
+If enabled, the planner uses the bounded specialist slot for:
+
+- query rewriting in `hybrid_rewriter` / `model_only`
+- planner-side query generation when the planner falls back to generated search phrases
+
+If the specialist path fails, planner execution does not stall or go opaque. It falls back to the active model and records that fallback in planner status payloads and on-demand tool-journey telemetry.
 
 ### Strong-Source Search Trigger (Hybrid Local-First + Broader Fallback)
 

@@ -108,8 +108,12 @@ from open_webui.utils.ledger import (
     run_background_ledger_capture,
 )
 from open_webui.utils.task import (
+    BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
+    BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_GENERATION,
+    BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_REWRITER,
     RUNTIME_TIMESTAMP_MARKER,
     append_runtime_temporal_grounding,
+    get_bounded_specialist_model_selection,
     get_task_model_id,
     query_generation_template,
     rag_template,
@@ -2447,6 +2451,71 @@ def _append_tool_journey_event(
     return event
 
 
+async def _emit_tool_journey_event(
+    metadata: Optional[dict[str, Any]],
+    event_emitter,
+    payload: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return None
+
+    event = _append_tool_journey_event(metadata, payload)
+    if event and event_emitter:
+        await event_emitter({"type": "chat:tool:journey", "data": event})
+    return event
+
+
+def _resolve_model_activity_actor(
+    *, selected_via: Optional[str], fallback_used: bool
+) -> str:
+    if not fallback_used and selected_via in {"task_model", "task_model_external"}:
+        return "bounded_specialist"
+    return "active_model"
+
+
+def _build_model_activity_event(
+    *,
+    phase: str,
+    task_kind: str,
+    operation: str,
+    model_id: Optional[str],
+    active_model_id: Optional[str],
+    selected_via: Optional[str],
+    route_source: Optional[str],
+    reason: Optional[str],
+    fallback_used: bool = False,
+    duration_ms: Optional[int] = None,
+    retry_count: Optional[int] = None,
+    error_class: Optional[str] = None,
+    status: Optional[str] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "phase": phase,
+        "kind": "model_activity",
+        "task_kind": task_kind,
+        "operation": operation,
+        "actor": _resolve_model_activity_actor(
+            selected_via=selected_via,
+            fallback_used=fallback_used,
+        ),
+        "model_id": model_id,
+        "active_model_id": active_model_id,
+        "selected_via": selected_via,
+        "route_source": route_source,
+        "fallback_used": bool(fallback_used),
+        "reason": reason,
+    }
+    if duration_ms is not None:
+        payload["duration_ms"] = int(duration_ms)
+    if retry_count is not None:
+        payload["retry_count"] = int(retry_count)
+    if error_class:
+        payload["error_class"] = error_class
+    if status:
+        payload["status"] = status
+    return payload
+
+
 def _is_empty_search_notes_result(tool_result: Any) -> bool:
     parsed: Any = tool_result
     if isinstance(tool_result, str):
@@ -3576,7 +3645,7 @@ async def chat_completion_tools_handler(
             content = response["choices"][0]["message"]["content"]
         return content
 
-    def get_tools_function_calling_payload(messages, task_model_id, content):
+    def get_tools_function_calling_payload(messages, task_model_id, content, selection):
         user_message = get_last_user_message(messages)
 
         if user_message and messages and messages[-1]["role"] == "user":
@@ -3602,7 +3671,14 @@ async def chat_completion_tools_handler(
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
-            "metadata": {"task": str(TASKS.FUNCTION_CALLING)},
+            "metadata": {
+                "task": str(TASKS.FUNCTION_CALLING),
+                "bounded_specialist": _build_bounded_specialist_telemetry(
+                    selection,
+                    selected_model=task_model_id,
+                    reason="tool_selection",
+                ),
+            },
         }
 
     event_caller = extra_params["__event_call__"]
@@ -3621,12 +3697,14 @@ async def chat_completion_tools_handler(
             "started_at": int(time.time()),
         }
 
-    task_model_id = get_task_model_id(
+    bounded_specialist_selection = get_bounded_specialist_model_selection(
         body["model"],
         request.app.state.config.TASK_MODEL,
         request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
+        task_kind=BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
     )
+    task_model_id = bounded_specialist_selection["model_id"]
 
     skip_files = False
     sources = []
@@ -3811,9 +3889,33 @@ async def chat_completion_tools_handler(
         template, tools_specs
     )
     payload = get_tools_function_calling_payload(
-        body["messages"], task_model_id, tools_function_calling_prompt
+        body["messages"],
+        task_model_id,
+        tools_function_calling_prompt,
+        bounded_specialist_selection,
     )
 
+    selector_started_at = time.monotonic()
+    await _emit_tool_journey_event(
+        metadata,
+        event_emitter,
+        _build_model_activity_event(
+            phase="model_task_start",
+            task_kind=BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
+            operation="tool_selection",
+            model_id=task_model_id,
+            active_model_id=body.get("model"),
+            selected_via=bounded_specialist_selection.get(
+                "selected_via", "active_model"
+            ),
+            route_source=bounded_specialist_selection.get(
+                "route_source", "active_model"
+            ),
+            reason="tool_selection",
+        ),
+    )
+
+    selector_error_class = None
     try:
         response = await generate_chat_completion(request, form_data=payload, user=user)
         log.debug(f"{response=}")
@@ -3821,6 +3923,26 @@ async def chat_completion_tools_handler(
         log.debug(f"{content=}")
 
         if not content:
+            await _emit_tool_journey_event(
+                metadata,
+                event_emitter,
+                _build_model_activity_event(
+                    phase="model_task_done",
+                    task_kind=BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
+                    operation="tool_selection",
+                    model_id=task_model_id,
+                    active_model_id=body.get("model"),
+                    selected_via=bounded_specialist_selection.get(
+                        "selected_via", "active_model"
+                    ),
+                    route_source=bounded_specialist_selection.get(
+                        "route_source", "active_model"
+                    ),
+                    reason="tool_selection",
+                    duration_ms=int((time.monotonic() - selector_started_at) * 1000),
+                    status="empty",
+                ),
+            )
             return body, {}
 
         try:
@@ -3867,11 +3989,79 @@ async def chat_completion_tools_handler(
         except Exception as e:
             log.debug(f"Error: {e}")
             content = None
+            selector_error_class = e.__class__.__name__
     except Exception as e:
         log.debug(f"Error: {e}")
         content = None
+        selector_error_class = e.__class__.__name__
+        await _emit_tool_journey_event(
+            metadata,
+            event_emitter,
+            _build_model_activity_event(
+                phase="model_task_done",
+                task_kind=BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
+                operation="tool_selection",
+                model_id=task_model_id,
+                active_model_id=body.get("model"),
+                selected_via=bounded_specialist_selection.get(
+                    "selected_via", "active_model"
+                ),
+                route_source=bounded_specialist_selection.get(
+                    "route_source", "active_model"
+                ),
+                reason="tool_selection",
+                duration_ms=int((time.monotonic() - selector_started_at) * 1000),
+                error_class=e.__class__.__name__,
+                status="error",
+            ),
+        )
+        selector_error_class = None
 
     log.debug(f"tool_contexts: {sources}")
+
+    if content is not None:
+        await _emit_tool_journey_event(
+            metadata,
+            event_emitter,
+            _build_model_activity_event(
+                phase="model_task_done",
+                task_kind=BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
+                operation="tool_selection",
+                model_id=task_model_id,
+                active_model_id=body.get("model"),
+                selected_via=bounded_specialist_selection.get(
+                    "selected_via", "active_model"
+                ),
+                route_source=bounded_specialist_selection.get(
+                    "route_source", "active_model"
+                ),
+                reason="tool_selection",
+                duration_ms=int((time.monotonic() - selector_started_at) * 1000),
+                status="ok",
+            ),
+        )
+    elif selector_error_class:
+        await _emit_tool_journey_event(
+            metadata,
+            event_emitter,
+            _build_model_activity_event(
+                phase="model_task_done",
+                task_kind=BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
+                operation="tool_selection",
+                model_id=task_model_id,
+                active_model_id=body.get("model"),
+                selected_via=bounded_specialist_selection.get(
+                    "selected_via", "active_model"
+                ),
+                route_source=bounded_specialist_selection.get(
+                    "route_source", "active_model"
+                ),
+                reason="tool_selection",
+                duration_ms=int((time.monotonic() - selector_started_at) * 1000),
+                error_class=selector_error_class,
+                status="error",
+            ),
+        )
 
     if skip_files and "files" in body.get("metadata", {}):
         del body["metadata"]["files"]
@@ -4023,6 +4213,32 @@ def _build_web_search_conversation_context(
     return context
 
 
+def _build_bounded_specialist_telemetry(
+    selection: dict[str, Any],
+    *,
+    selected_model: str,
+    reason: str,
+    fallback_used: bool = False,
+    duration_ms: Optional[int] = None,
+    error_class: Optional[str] = None,
+) -> dict[str, Any]:
+    telemetry = {
+        "task_kind": selection.get("task_kind"),
+        "route_source": selection.get("route_source"),
+        "selected_model": selected_model,
+        "selected_via": (
+            "active_model" if fallback_used else selection.get("selected_via")
+        ),
+        "fallback_used": fallback_used,
+        "reason": reason,
+    }
+    if duration_ms is not None:
+        telemetry["duration_ms"] = int(duration_ms)
+    if error_class:
+        telemetry["error_class"] = error_class
+    return telemetry
+
+
 async def _run_active_model_web_query_generation(
     request: Request,
     *,
@@ -4032,6 +4248,15 @@ async def _run_active_model_web_query_generation(
     chat_id: Optional[str],
     timeout_ms: int,
     max_completion_tokens: int,
+    metadata: Optional[dict[str, Any]] = None,
+    event_emitter=None,
+    active_chat_model_id: Optional[str] = None,
+    task_kind: str = BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_GENERATION,
+    operation: str = "planner_query_generation",
+    selected_via: str = "active_model",
+    route_source: str = "active_model",
+    reason: str = "active_model_query_generation",
+    fallback_used: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     models = _resolve_models_for_task(request)
     if active_model_id not in models:
@@ -4039,6 +4264,23 @@ async def _run_active_model_web_query_generation(
             f"Active model not found for query generation: {active_model_id}"
         )
 
+    started_at = time.monotonic()
+    resolved_active_chat_model_id = active_chat_model_id or active_model_id
+    await _emit_tool_journey_event(
+        metadata,
+        event_emitter,
+        _build_model_activity_event(
+            phase="model_task_start",
+            task_kind=task_kind,
+            operation=operation,
+            model_id=active_model_id,
+            active_model_id=resolved_active_chat_model_id,
+            selected_via=selected_via,
+            route_source=route_source,
+            reason=reason,
+            fallback_used=fallback_used,
+        ),
+    )
     template = (
         (request.app.state.config.QUERY_GENERATION_PROMPT_TEMPLATE or "").strip()
         or DEFAULT_QUERY_GENERATION_PROMPT_TEMPLATE
@@ -4086,17 +4328,146 @@ async def _run_active_model_web_query_generation(
             if not queries:
                 raise ValueError("No web search queries generated by active model")
 
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            await _emit_tool_journey_event(
+                metadata,
+                event_emitter,
+                _build_model_activity_event(
+                    phase="model_task_done",
+                    task_kind=task_kind,
+                    operation=operation,
+                    model_id=active_model_id,
+                    active_model_id=resolved_active_chat_model_id,
+                    selected_via=selected_via,
+                    route_source=route_source,
+                    reason=reason,
+                    fallback_used=fallback_used,
+                    duration_ms=duration_ms,
+                    retry_count=retry_count,
+                    status="ok",
+                ),
+            )
             return queries, {
                 "model_used": active_model_id,
+                "selected_model": active_model_id,
+                "selected_via": selected_via,
+                "route_source": route_source,
+                "fallback_used": fallback_used,
+                "reason": reason,
                 "retry_count": retry_count,
                 "raw_output": raw_output,
+                "duration_ms": duration_ms,
             }
         except Exception as e:
             last_error = e
 
     if last_error:
+        await _emit_tool_journey_event(
+            metadata,
+            event_emitter,
+            _build_model_activity_event(
+                phase="model_task_done",
+                task_kind=task_kind,
+                operation=operation,
+                model_id=active_model_id,
+                active_model_id=resolved_active_chat_model_id,
+                selected_via=selected_via,
+                route_source=route_source,
+                reason=reason,
+                fallback_used=fallback_used,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                retry_count=1,
+                error_class=last_error.__class__.__name__,
+                status="error",
+            ),
+        )
         raise last_error
     raise ValueError("Active model query generation failed without specific error")
+
+
+async def _run_bounded_specialist_web_query_generation(
+    request: Request,
+    *,
+    user: Any,
+    active_model_id: str,
+    messages: list[dict],
+    chat_id: Optional[str],
+    timeout_ms: int,
+    max_completion_tokens: int,
+    metadata: Optional[dict[str, Any]] = None,
+    event_emitter=None,
+) -> tuple[list[str], dict[str, Any]]:
+    models = _resolve_models_for_task(request)
+    selection = get_bounded_specialist_model_selection(
+        active_model_id,
+        request.app.state.config.TASK_MODEL,
+        request.app.state.config.TASK_MODEL_EXTERNAL,
+        models,
+        task_kind=BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_GENERATION,
+    )
+    selected_model_id = selection["model_id"]
+    started_at = time.monotonic()
+
+    try:
+        queries, meta = await _run_active_model_web_query_generation(
+            request,
+            user=user,
+            active_model_id=selected_model_id,
+            messages=messages,
+            chat_id=chat_id,
+            timeout_ms=timeout_ms,
+            max_completion_tokens=max_completion_tokens,
+            metadata=metadata,
+            event_emitter=event_emitter,
+            active_chat_model_id=active_model_id,
+            task_kind=BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_GENERATION,
+            operation="planner_query_generation",
+            selected_via=selection.get("selected_via", "active_model"),
+            route_source=selection.get("route_source", "active_model"),
+            reason="planner_query_generation",
+        )
+        meta.update(
+            _build_bounded_specialist_telemetry(
+                selection,
+                selected_model=selected_model_id,
+                reason="planner_query_generation",
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
+        )
+        return queries, meta
+    except Exception as e:
+        if selected_model_id == active_model_id:
+            raise
+
+        queries, meta = await _run_active_model_web_query_generation(
+            request,
+            user=user,
+            active_model_id=active_model_id,
+            messages=messages,
+            chat_id=chat_id,
+            timeout_ms=timeout_ms,
+            max_completion_tokens=max_completion_tokens,
+            metadata=metadata,
+            event_emitter=event_emitter,
+            active_chat_model_id=active_model_id,
+            task_kind=BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_GENERATION,
+            operation="planner_query_generation",
+            selected_via="active_model",
+            route_source=selection.get("route_source", "active_model"),
+            reason="planner_query_generation",
+            fallback_used=True,
+        )
+        meta.update(
+            _build_bounded_specialist_telemetry(
+                selection,
+                selected_model=active_model_id,
+                reason="planner_query_generation",
+                fallback_used=True,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                error_class=e.__class__.__name__,
+            )
+        )
+        return queries, meta
 
 
 async def _run_web_search_rewriter(
@@ -4113,11 +4484,37 @@ async def _run_web_search_rewriter(
     max_completion_tokens: int,
     temperature: float,
     chat_id: Optional[str],
+    metadata: Optional[dict[str, Any]] = None,
+    event_emitter=None,
+    active_chat_model_id: Optional[str] = None,
+    task_kind: str = BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_REWRITER,
+    operation: str = "planner_query_rewriter",
+    selected_via: str = "active_model",
+    route_source: str = "active_model",
+    reason: str = "active_model_query_rewriter",
+    fallback_used: bool = False,
 ) -> tuple[list, dict[str, Any]]:
     models = _resolve_models_for_task(request)
     if active_model_id not in models:
         raise ValueError(f"Active model not found for rewriter: {active_model_id}")
 
+    started_at = time.monotonic()
+    resolved_active_chat_model_id = active_chat_model_id or active_model_id
+    await _emit_tool_journey_event(
+        metadata,
+        event_emitter,
+        _build_model_activity_event(
+            phase="model_task_start",
+            task_kind=task_kind,
+            operation=operation,
+            model_id=active_model_id,
+            active_model_id=resolved_active_chat_model_id,
+            selected_via=selected_via,
+            route_source=route_source,
+            reason=reason,
+            fallback_used=fallback_used,
+        ),
+    )
     prompt = build_rewriter_prompt(
         user_message=user_message,
         plan=plan,
@@ -4189,18 +4586,161 @@ async def _run_web_search_rewriter(
                 max_queries=max_queries,
                 max_repair_attempts=max_repair_attempts,
             )
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            await _emit_tool_journey_event(
+                metadata,
+                event_emitter,
+                _build_model_activity_event(
+                    phase="model_task_done",
+                    task_kind=task_kind,
+                    operation=operation,
+                    model_id=active_model_id,
+                    active_model_id=resolved_active_chat_model_id,
+                    selected_via=selected_via,
+                    route_source=route_source,
+                    reason=reason,
+                    fallback_used=fallback_used,
+                    duration_ms=duration_ms,
+                    retry_count=retry_count,
+                    status="ok",
+                ),
+            )
             return validated_queries, {
                 "model_used": active_model_id,
-                "fallback_used": False,
+                "selected_model": active_model_id,
+                "selected_via": selected_via,
+                "route_source": route_source,
+                "fallback_used": fallback_used,
+                "reason": reason,
                 "retry_count": retry_count,
                 "raw_output": raw_output,
+                "duration_ms": duration_ms,
             }
         except Exception as e:
             last_error = e
 
     if last_error:
+        await _emit_tool_journey_event(
+            metadata,
+            event_emitter,
+            _build_model_activity_event(
+                phase="model_task_done",
+                task_kind=task_kind,
+                operation=operation,
+                model_id=active_model_id,
+                active_model_id=resolved_active_chat_model_id,
+                selected_via=selected_via,
+                route_source=route_source,
+                reason=reason,
+                fallback_used=fallback_used,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                retry_count=1,
+                error_class=last_error.__class__.__name__,
+                status="error",
+            ),
+        )
         raise last_error
     raise ValueError("Rewriter failed without specific error")
+
+
+async def _run_bounded_specialist_web_search_rewriter(
+    request: Request,
+    *,
+    user: Any,
+    active_model_id: str,
+    user_message: str,
+    conversation_context: Optional[str],
+    plan,
+    max_queries: int,
+    timeout_ms: int,
+    max_repair_attempts: int,
+    max_completion_tokens: int,
+    temperature: float,
+    chat_id: Optional[str],
+    metadata: Optional[dict[str, Any]] = None,
+    event_emitter=None,
+) -> tuple[list, dict[str, Any]]:
+    models = _resolve_models_for_task(request)
+    selection = get_bounded_specialist_model_selection(
+        active_model_id,
+        request.app.state.config.TASK_MODEL,
+        request.app.state.config.TASK_MODEL_EXTERNAL,
+        models,
+        task_kind=BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_REWRITER,
+    )
+    selected_model_id = selection["model_id"]
+    started_at = time.monotonic()
+
+    try:
+        queries, meta = await _run_web_search_rewriter(
+            request,
+            user=user,
+            active_model_id=selected_model_id,
+            user_message=user_message,
+            conversation_context=conversation_context,
+            plan=plan,
+            max_queries=max_queries,
+            timeout_ms=timeout_ms,
+            max_repair_attempts=max_repair_attempts,
+            max_completion_tokens=max_completion_tokens,
+            temperature=temperature,
+            chat_id=chat_id,
+            metadata=metadata,
+            event_emitter=event_emitter,
+            active_chat_model_id=active_model_id,
+            task_kind=BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_REWRITER,
+            operation="planner_query_rewriter",
+            selected_via=selection.get("selected_via", "active_model"),
+            route_source=selection.get("route_source", "active_model"),
+            reason="planner_query_rewriter",
+        )
+        meta.update(
+            _build_bounded_specialist_telemetry(
+                selection,
+                selected_model=selected_model_id,
+                reason="planner_query_rewriter",
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
+        )
+        return queries, meta
+    except Exception as e:
+        if selected_model_id == active_model_id:
+            raise
+
+        queries, meta = await _run_web_search_rewriter(
+            request,
+            user=user,
+            active_model_id=active_model_id,
+            user_message=user_message,
+            conversation_context=conversation_context,
+            plan=plan,
+            max_queries=max_queries,
+            timeout_ms=timeout_ms,
+            max_repair_attempts=max_repair_attempts,
+            max_completion_tokens=max_completion_tokens,
+            temperature=temperature,
+            chat_id=chat_id,
+            metadata=metadata,
+            event_emitter=event_emitter,
+            active_chat_model_id=active_model_id,
+            task_kind=BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_REWRITER,
+            operation="planner_query_rewriter",
+            selected_via="active_model",
+            route_source=selection.get("route_source", "active_model"),
+            reason="planner_query_rewriter",
+            fallback_used=True,
+        )
+        meta.update(
+            _build_bounded_specialist_telemetry(
+                selection,
+                selected_model=active_model_id,
+                reason="planner_query_rewriter",
+                fallback_used=True,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                error_class=e.__class__.__name__,
+            )
+        )
+        return queries, meta
 
 
 def _estimate_tokens_from_text(text: str) -> int:
@@ -4636,6 +5176,7 @@ async def chat_web_search_handler(
     request: Request, form_data: dict, extra_params: dict, user
 ):
     event_emitter = extra_params["__event_emitter__"]
+    metadata = extra_params.get("__metadata__")
     await event_emitter(
         {
             "type": "status",
@@ -4680,14 +5221,14 @@ async def chat_web_search_handler(
 
             if planner_mode in {"hybrid_rewriter", "model_only"}:
                 try:
-                    rewriter_queries, rewriter_meta = await _run_web_search_rewriter(
-                        request,
-                        user=user,
-                        active_model_id=form_data["model"],
-                        user_message=user_message,
-                        conversation_context=conversation_context,
-                        plan=plan,
-                        max_queries=max(
+                    rewriter_kwargs = {
+                        "request": request,
+                        "user": user,
+                        "active_model_id": form_data["model"],
+                        "user_message": user_message,
+                        "conversation_context": conversation_context,
+                        "plan": plan,
+                        "max_queries": max(
                             1,
                             int(
                                 getattr(
@@ -4698,7 +5239,7 @@ async def chat_web_search_handler(
                                 or 6
                             ),
                         ),
-                        timeout_ms=max(
+                        "timeout_ms": max(
                             500,
                             int(
                                 getattr(
@@ -4709,7 +5250,7 @@ async def chat_web_search_handler(
                                 or 3500
                             ),
                         ),
-                        max_repair_attempts=max(
+                        "max_repair_attempts": max(
                             0,
                             int(
                                 getattr(
@@ -4720,7 +5261,7 @@ async def chat_web_search_handler(
                                 or 1
                             ),
                         ),
-                        max_completion_tokens=max(
+                        "max_completion_tokens": max(
                             64,
                             int(
                                 getattr(
@@ -4731,7 +5272,7 @@ async def chat_web_search_handler(
                                 or 384
                             ),
                         ),
-                        temperature=float(
+                        "temperature": float(
                             getattr(
                                 request.app.state.config,
                                 "WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE",
@@ -4739,8 +5280,24 @@ async def chat_web_search_handler(
                             )
                             or 0.0
                         ),
-                        chat_id=extra_params.get("__chat_id__"),
-                    )
+                        "chat_id": extra_params.get("__chat_id__"),
+                        "metadata": metadata,
+                        "event_emitter": event_emitter,
+                    }
+                    if getattr(
+                        request.app.state.config,
+                        "ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER",
+                        False,
+                    ):
+                        rewriter_queries, rewriter_meta = (
+                            await _run_bounded_specialist_web_search_rewriter(
+                                **rewriter_kwargs
+                            )
+                        )
+                    else:
+                        rewriter_queries, rewriter_meta = await _run_web_search_rewriter(
+                            **rewriter_kwargs
+                        )
                     planned_queries = build_planned_queries_from_rewriter(
                         plan,
                         rewriter_queries,
@@ -4753,6 +5310,11 @@ async def chat_web_search_handler(
                     plan.rewriter_retry_count = int(
                         rewriter_meta.get("retry_count", 0) or 0
                     )
+                    plan.rewriter_selected_via = rewriter_meta.get("selected_via")
+                    plan.rewriter_route_source = rewriter_meta.get("route_source")
+                    plan.rewriter_duration_ms = rewriter_meta.get("duration_ms")
+                    plan.rewriter_reason = rewriter_meta.get("reason")
+                    plan.rewriter_error_class = rewriter_meta.get("error_class")
                     rewriter_raw_output = rewriter_meta.get("raw_output")
                 except Exception as e:
                     plan.mode = "rules_only"
@@ -4780,6 +5342,11 @@ async def chat_web_search_handler(
                             "community_requested": plan.community_requested,
                             "selected_domains": plan.selected_domains,
                             "rewriter_model_used": plan.rewriter_model_used,
+                            "rewriter_selected_via": plan.rewriter_selected_via,
+                            "rewriter_route_source": plan.rewriter_route_source,
+                            "rewriter_duration_ms": plan.rewriter_duration_ms,
+                            "rewriter_reason": plan.rewriter_reason,
+                            "rewriter_error_class": plan.rewriter_error_class,
                             "rewriter_fallback_used": plan.rewriter_fallback_used,
                             "rewriter_retry_count": plan.rewriter_retry_count,
                             "fallback_reason": plan.fallback_reason,
@@ -4800,13 +5367,13 @@ async def chat_web_search_handler(
 
     if not queries:
         try:
-            queries, _ = await _run_active_model_web_query_generation(
-                request,
-                user=user,
-                active_model_id=form_data["model"],
-                messages=messages,
-                chat_id=extra_params.get("__chat_id__"),
-                timeout_ms=max(
+            query_generation_kwargs = {
+                "request": request,
+                "user": user,
+                "active_model_id": form_data["model"],
+                "messages": messages,
+                "chat_id": extra_params.get("__chat_id__"),
+                "timeout_ms": max(
                     500,
                     int(
                         getattr(
@@ -4817,7 +5384,7 @@ async def chat_web_search_handler(
                         or 3500
                     ),
                 ),
-                max_completion_tokens=max(
+                "max_completion_tokens": max(
                     64,
                     int(
                         getattr(
@@ -4828,7 +5395,24 @@ async def chat_web_search_handler(
                         or 384
                     ),
                 ),
-            )
+                "metadata": metadata,
+                "event_emitter": event_emitter,
+            }
+            if getattr(
+                request.app.state.config,
+                "ENABLE_TASK_MODEL_WEB_SEARCH_PLANNER",
+                False,
+            ):
+                queries, _ = await _run_bounded_specialist_web_query_generation(
+                    **query_generation_kwargs
+                )
+            else:
+                queries, _ = await _run_active_model_web_query_generation(
+                    **query_generation_kwargs,
+                    active_chat_model_id=form_data["model"],
+                    task_kind=BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_GENERATION,
+                    operation="planner_query_generation",
+                )
         except Exception as e:
             log.exception(e)
             queries = [user_message]
@@ -5878,12 +6462,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     else:
         models = request.app.state.MODELS
 
-    task_model_id = get_task_model_id(
+    bounded_specialist_selection = get_bounded_specialist_model_selection(
         form_data["model"],
         request.app.state.config.TASK_MODEL,
         request.app.state.config.TASK_MODEL_EXTERNAL,
         models,
+        task_kind=BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
     )
+    task_model_id = bounded_specialist_selection["model_id"]
 
     events = []
     sources = []
