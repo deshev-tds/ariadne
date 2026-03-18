@@ -82,7 +82,7 @@ class RuntimeLogsResponse(BaseModel):
 
 
 def _script_path(request: Request) -> Path:
-    configured = getattr(request.app.state.config, "RUNTIME_CONTROL_SCRIPT_PATH", "") or ""
+    configured = getattr(request.app.state, "RUNTIME_CONTROL_SCRIPT_PATH", "") or ""
     return Path(configured).expanduser()
 
 
