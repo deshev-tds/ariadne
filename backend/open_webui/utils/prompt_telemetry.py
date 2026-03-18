@@ -2,6 +2,8 @@ import copy
 import time
 from typing import Any, Optional
 
+from open_webui.utils.runtime_telemetry import runtime_telemetry
+
 
 PROMPT_TELEMETRY_VERSION = 1
 PROMPT_TELEMETRY_MAX_ENTRIES = 24
@@ -57,7 +59,10 @@ def append_prompt_telemetry(
     request_url: Optional[str],
     payload: dict,
 ) -> Optional[dict]:
-    if not is_prompt_telemetry_enabled(metadata):
+    debug_enabled = is_prompt_telemetry_enabled(metadata)
+    tap_enabled = runtime_telemetry.is_enabled()
+
+    if not debug_enabled and not tap_enabled:
         return None
 
     entry = {
@@ -70,6 +75,22 @@ def append_prompt_telemetry(
         "message_id": (metadata or {}).get("message_id"),
         "payload": _sanitize_prompt_payload(payload),
     }
+
+    if tap_enabled:
+        runtime_telemetry.record(
+            kind="prompt",
+            payload={
+                "entries": [entry],
+                "capped": False,
+            },
+            chat_id=entry.get("chat_id"),
+            message_id=entry.get("message_id"),
+            user_id=(metadata or {}).get("user_id"),
+            model_id=entry.get("model"),
+        )
+
+    if not debug_enabled:
+        return None
 
     result = None
     targets: list[dict] = []

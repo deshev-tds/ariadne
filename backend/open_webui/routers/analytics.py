@@ -1,9 +1,9 @@
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime, timedelta
 from collections import defaultdict
 import logging
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from open_webui.models.chat_messages import ChatMessages, ChatMessageModel
 from open_webui.models.chats import Chats
@@ -11,6 +11,7 @@ from open_webui.models.groups import Groups
 from open_webui.models.users import Users
 from open_webui.models.feedbacks import Feedbacks
 from open_webui.utils.auth import get_admin_user
+from open_webui.utils.runtime_telemetry import runtime_telemetry
 from open_webui.internal.db import get_session
 from sqlalchemy.orm import Session
 
@@ -46,6 +47,49 @@ class UserAnalyticsEntry(BaseModel):
 
 class UserAnalyticsResponse(BaseModel):
     users: list[UserAnalyticsEntry]
+
+
+class RuntimeTelemetryEvent(BaseModel):
+    seq: int
+    ts: int
+    kind: str
+    chat_id: Optional[str] = None
+    message_id: Optional[str] = None
+    user_id: Optional[str] = None
+    model_id: Optional[str] = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeTelemetryMessageSummary(BaseModel):
+    chat_id: str
+    message_id: str
+    user_id: Optional[str] = None
+    first_seen_at: int
+    last_seen_at: int
+    event_count: int
+    tool_event_count: int
+    model_activity_count: int
+    fallback_count: int
+    models: list[str] = Field(default_factory=list)
+    active_models: list[str] = Field(default_factory=list)
+    task_kinds: list[str] = Field(default_factory=list)
+    operations: list[str] = Field(default_factory=list)
+    memory: Optional[dict[str, Any]] = None
+    prompt_entry_count: int = 0
+
+
+class RuntimeTelemetrySnapshotResponse(BaseModel):
+    enabled: bool
+    started_at: Optional[int] = None
+    buffer_size: int
+    message_buffer_size: int
+    total_events: int
+    kind_counts: dict[str, int] = Field(default_factory=dict)
+    tool_journey_count: int
+    model_activity_count: int
+    fallback_count: int
+    recent_events: list[RuntimeTelemetryEvent] = Field(default_factory=list)
+    recent_messages: list[RuntimeTelemetryMessageSummary] = Field(default_factory=list)
 
 
 ####################
@@ -112,6 +156,39 @@ async def get_user_analytics(
         )
 
     return UserAnalyticsResponse(users=users)
+
+
+@router.get("/runtime/telemetry", response_model=RuntimeTelemetrySnapshotResponse)
+async def get_runtime_telemetry(
+    limit: int = Query(120, ge=1, le=400, description="Max recent events to return"),
+    user=Depends(get_admin_user),
+):
+    """Return the in-memory runtime telemetry snapshot for admin inspection."""
+    return RuntimeTelemetrySnapshotResponse(**runtime_telemetry.snapshot(limit=limit))
+
+
+@router.post("/runtime/telemetry/start", response_model=RuntimeTelemetrySnapshotResponse)
+async def start_runtime_telemetry(
+    user=Depends(get_admin_user),
+):
+    """Enable the in-memory runtime telemetry tap and reset its buffers."""
+    return RuntimeTelemetrySnapshotResponse(**runtime_telemetry.start())
+
+
+@router.post("/runtime/telemetry/stop", response_model=RuntimeTelemetrySnapshotResponse)
+async def stop_runtime_telemetry(
+    user=Depends(get_admin_user),
+):
+    """Disable the in-memory runtime telemetry tap."""
+    return RuntimeTelemetrySnapshotResponse(**runtime_telemetry.stop())
+
+
+@router.post("/runtime/telemetry/clear", response_model=RuntimeTelemetrySnapshotResponse)
+async def clear_runtime_telemetry(
+    user=Depends(get_admin_user),
+):
+    """Clear all buffered runtime telemetry events without changing enablement."""
+    return RuntimeTelemetrySnapshotResponse(**runtime_telemetry.clear())
 
 
 @router.get("/messages", response_model=list[ChatMessageModel])
