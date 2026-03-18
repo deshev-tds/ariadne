@@ -385,6 +385,15 @@ There is now a second, operator-facing path for this data as well. Admins can en
 - it can be started, stopped, and cleared independently of user requests
 - it exists to inspect live routing and execution behavior, not to become another permanent log sink
 
+The `/admin/telemetry` dashboard is intentionally small and operational rather than decorative. It gives you:
+
+- `Start`, `Stop`, `Clear`, and `Refresh` controls for the in-memory tap
+- high-level counters for total events, model-activity events, fallback count, and per-kind totals
+- a recent-messages table showing which chats/messages accumulated activity, which models were involved, and which task kinds ran
+- a recent-events table showing per-event timing, route metadata, model selection path, and fallback reason
+
+That makes it practical to answer questions like "did the bounded specialist actually handle this planner rewrite?", "which model recovered after fallback?", and "where is the latency going?" without having to inspect browser console output by hand.
+
 For machine-local inspection without the browser, there is also a small helper script:
 
 - `scripts/watch_runtime_telemetry.sh`
