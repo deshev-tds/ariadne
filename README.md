@@ -12,7 +12,7 @@ Built on Open WebUI, Ariadne diverges where local-first power-user workflows nee
 
 This README documents Ariadne as its own project, not as an annotated description of upstream behavior. If a lane, continuity model, corpus path, telemetry surface, or control surface is described here in detail, assume it belongs to Ariadne unless stated otherwise.
 
-In practice, the local stack behind Ariadne is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. A lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
+In practice, the local stack behind Ariadne is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. A lot of the design decisions here are not abstract product ideas, but are tied to the behavior and limits of this real local runtime.
 
 ## Quick Navigation
 
@@ -43,19 +43,19 @@ Reading paths:
 
 The priority set here is:
 
-- local-first behavior over backend-agnostic product smoothing
-- long-chat survivability over naive full-history replay
+- local-first behavior
+- long-chat survivability
 - memory with evidence and recall, not summary-only compression
 - fast-path UX by default, with bounded slow paths only when needed
-- lightweight local voice that still sounds good enough to use
-- token-level inspection and deliberate response branching for real debugging
-- honest control surfaces for `llama.cpp`-style local stacks instead of universal-magic toggles
+- lightweight local voice that sounds good
+- token-level inspection and deliberate response branching for real debugging and research
+- honest control surfaces for `llama.cpp`-style local stacks
 
 That is the frame for the rest of this document.
 
 ## Ariadne in One View
 
-There are four deliberate lanes in Ariadne. That separation is not product packaging. Trying to force all of them through one vague "chat with tools" path is how local stacks become slow, opaque, and prompt-heavy.
+There are four deliberate lanes in Ariadne. Trying to force all of them through one vague "chat with tools" path is how local stacks become slow, opaque, and prompt-heavy.
 
 ```text
 User request
@@ -68,15 +68,15 @@ User request
 
 ### Chat lane
 
-The normal fast path stays in chat. It uses server-side context maintenance, a bounded hot working set, structured state snapshots, and exact recall only when evidence is actually needed. When the backend exposes the necessary telemetry, this lane also supports token-level inspection and deliberate response branching, so local generation is less of a black box.
+The normal fast path stays in the chat. It uses server-side context maintenance, a bounded hot working set, structured state snapshots, and exact recall only when evidence is needed. When the backend exposes the necessary telemetry, this lane also supports token-level inspection and deliberate response branching, so local generation is less of a black box.
 
 ### Web retrieval lane
 
-This is the current-answer evidence path. It plans, targets, and bounds web retrieval for a chat turn, then stops once enough evidence exists. It is there to improve an answer, not to pour search results into context until the prompt is bloated.
+This is the current-answer evidence path. It plans, targets, and bounds web retrieval for a chat turn, then stops once enough evidence exists. It is there for the single purpose of improving an answer, mostly (paradoxically, I know) by avoiding pouring web text into context without a care in the world.
 
 ### Local corpus lane
 
-This is the on-disk evidence path for proprietary, bought, or locally curated literature. It is domain-first on purpose: first narrow the source set, then retrieve evidence inside that narrowed set. The selector layer and the evidence layer are separate because "find the right source" and "extract the right evidence from that source" are not the same job.
+This is the on-disk evidence path for any proprietary, bought, or locally curated literature. It is domain-first on purpose: first narrow the source set, then retrieve evidence inside that narrowed set. The selector layer and the evidence layer are separate because "find the right source" and "extract the right evidence from that source" are not the same job. Think a librarian that looks for a passage in a book - they first approach Section, then Row, then Shelf, then Book, then Paragraph. I do the same, only with proper corpus curation and rigid model harness.
 
 ### Deep research lane
 
@@ -89,18 +89,18 @@ Ariadne is narrow on purpose.
 The main idea is that local LLM UX falls apart in a few predictable places:
 
 - context windows fill up long before the conversation is actually "done"
-- summary alone is not memory
-- retrieval lanes get collapsed into one vague "use tools" gesture
-- local literature gets flattened into a generic blob that destroys source boundaries
-- local TTS often sounds either too synthetic or too heavyweight
+- automated model-created summary alone is not proper memory
+- retrieval lanes get collapsed into one vague "use tools and cross your fingers"
+- local literature (PDF books, for example) gets flattened into a generic blob that destroys source boundaries
+- local TTS often sounds either too synthetic or is too heavyweight
 - token-level generation is usually hidden, even when you need to inspect or steer it
 
 So Ariadne biases toward:
 
 - server-side context hygiene
-- bounded recall instead of blind replay
+- bounded recall
 - planned and bounded evidence gathering
-- domain-first literature handling instead of flattening
+- domain-first literature handling instead of flattening and RAG wizardries
 - lightweight but good local TTS
 - generation observability and deliberate branching
 
@@ -108,9 +108,9 @@ The point is a sharper local workflow with clearer operational contracts.
 
 ## What Changed from Upstream
 
-The important divergences are not cosmetic. They fall into a few deliberate clusters.
+The important divergences are at this point far from cosmetic. They fall into a few deliberate clusters.
 
-The labels in this section belong to Ariadne's runtime model, not generic Open WebUI vocabulary. Here, context maintenance, exact recall, and ledger continuity are treated as explicit backend-owned runtime layers with their own lifecycle and telemetry, rather than being left implicit inside a more general chat path.
+The labels in this section belong to Ariadne's runtime model, not generic Open WebUI (the giant on whose shoulders Ariadne sits) vocabulary. Here, context maintenance, exact recall, and ledger continuity are treated as explicit backend-owned runtime layers with their own lifecycle and telemetry, rather than being left implicit inside a more general chat path.
 
 ### Continuity Model at a Glance
 
@@ -153,8 +153,8 @@ The key concepts are:
 
 **Runtime Surfaces**
 
-- Kokoro adds a practical local TTS path.
-- Token explorer support and manual response branching make compatible local generation less of a black box. Current `llama.cpp` does not surface that telemetry for streamed native/tool-call responses - rely on function_calling=default whenever required. 
+- Kokoro adds a practical local TTS path. Despite being "old" by today's standards, I believe it still remains one of the richest and lightest text-to-speech options.
+- Token explorer support and manual response branching make compatible local generation less of a black box. It is worth mentioning that the current `llama.cpp` does not surface that telemetry for streamed native/tool-call responses - rely on function_calling=default whenever required.
 
 The rest of this README explains the rationale and constraints behind those choices.
 
@@ -165,26 +165,26 @@ This README makes narrow claims on purpose.
 It does not claim that local RAG is solved, that models obey tools reliably by default, or that one runtime can erase backend differences. What was validated in practice is narrower and more honest:
 
 - the lane split is useful on a real local OWUI instance
-- bounded hot context plus exact recall keeps long chats usable without pretending memory is free
-- focused search can gather bounded evidence without turning into a prompt-dumping ritual
-- a domain-first local corpus architecture works
+- bounded hot context plus exact recall keeps incredibly long chats usable without pretending memory is free (in 2026 it is anything but)
+- focused search can gather bounded evidence without turning into a prompt-dumping ritual and hoping that the model "will figure it out"
+- a domain-first local corpus architecture works better for all the cases where response quality is sought instead of vibes (e.g. in medicine, offensive security, legal compliance, etc.)
 - table-aware retrieval and page/section-grounded answers are viable without flattening a literature shelf
 - token-level inspection and manual branching are practical on compatible local runtimes
 
-The main validation corpus was medical literature. That was not a branding choice. It was an engineering choice joined to a real need: a domain with near-zero tolerance for citation sloppiness, bad ingest, and casual reasoning drift. If the system is going to flatten distinctions, misroute retrieval, or bluff its grounding, medicine is a fast place to find out.
+The main validation corpus was medical literature. It was an engineering choice joined to a real need: a domain with near-zero tolerance for citation sloppiness, bad ingest, and casual reasoning drift. If the system is going to flatten distinctions, misroute retrieval, or bluff its grounding, medicine was a fast place to find out.
 
 Architecture problems are expensive. Ranking problems, tool obedience, and query hygiene are irritating, but fixable. Ariadne is aimed at getting the expensive mistakes out of the way first.
 
 ## Context and Memory in Ariadne
 
-This section is about keeping long chats usable on local runtimes. It is not a license to replay everything until the model breaks, and it is not an excuse to run retrieval on every turn. The job is to maintain a bounded working set, recover older facts when needed, and keep that behavior inspectable.
+This section is about keeping long chats usable on local runtimes. It is not a license to replay everything until the model breaks, and it is not an excuse to run retrieval on every turn. My self-imposed job was to ship a system that maintains a bounded working set, recovers older facts when needed, and keeps that behavior inspectable.
 
 The terms in this section belong to Ariadne's runtime model. They describe layers implemented in this repo, not generic Open WebUI concepts.
 
 - `hot context`: the bounded request-time working set assembled by backend context maintenance against a live prompt cap derived from the active runtime
 - `structured state snapshot`: the canonical summary block produced during compaction and merged into the system message as durable earlier-turn state
 - `exact recall`: a bounded evidence-recovery step that runs only when the current turn appears to need older raw facts, currently through SQLite `FTS5` with `bm25(...)` ranking over persisted earlier turns
-- `ledger`: a separate Ariadne memory layer for durable task-state or style continuity, with explicit `vibe` and `agentic` modes
+- `ledger`: a separate Ariadne memory layer for durable task-state or style continuity, with explicit `vibe` (for more regular every-day chats) and `agentic` (when precision matters more) modes
 
 At request time, the memory path is now more like this:
 
@@ -208,15 +208,15 @@ Instead of replaying the entire branch forever, the server keeps:
 - a recent raw tail of messages
 - a rolling summary for the older middle
 
-This maintenance can happen inline when the request would overflow, and in the background after a turn when the history is approaching the configured budget.
+This context maintenance happens inline when the request would overflow, and in the background after a turn when the history is approaching the configured budget.
 
 The goal was straightforward: do not wait for the backend runner to guess what to trim semantically, and do not bluntly drop the oldest turns if the opening contract of the chat still matters.
 
-That compaction layer has since been tightened into a more explicit `hot context` model. Instead of treating the prompt budget as a vague maximum, the fork now derives a live prompt cap from the active `llama.cpp` runtime and budgets working memory against that real ceiling. In other words, the system no longer behaves like "fit as much as possible into whatever the model allows"; it behaves like "maintain a bounded hot working set that is small enough to stay usable on a real local runtime".
+That compaction layer has since been tightened into a more explicit `hot context` model. Instead of treating the prompt budget as a vague maximum, Ariadne now derives a live prompt cap from the active `llama.cpp` runtime and budgets working memory against that real ceiling.
 
 ### Stage 2: Structured State Snapshot
 
-The second change was not a new memory system. It was a better recap format.
+The second change was a better recap format.
 
 Instead of asking the model for a narrative summary, Ariadne asks for a structured state snapshot with sections such as:
 
@@ -247,7 +247,7 @@ Working memory still looks like this:
 
 But if that live state does not provide enough evidence, the server can now recover older raw facts from earlier turns and inject them back into the prompt as evidence.
 
-The method matters here. On the current SQLite-backed path, this is not a vague "memory search" claim. The fork maintains a lexical index over earlier chat messages and uses SQLite `FTS5` with `bm25(...)` ranking to recover bounded candidates from persisted branch history. Conceptually, it is closer to a server-side version of what a careful user could do with browser Find over an earlier conversation, except the backend can do it against older turns that are no longer in the live prompt window.
+The method matters here. On the current SQLite-backed path, this is not a vague "memory search" claim. Ariadne maintains a lexical index over earlier chat messages and uses SQLite `FTS5` with `bm25(...)` ranking to recover bounded candidates from persisted branch history. Conceptually, it is closer to a server-side version of what a careful user could do with browser Find over an earlier conversation, except the backend can do it against older turns that are no longer in the live prompt window.
 
 This recall layer is intentionally bounded and conservative. It is not an always-on retrieval ritual before every response.
 
@@ -276,7 +276,7 @@ Evidence from earlier conversation:
 
 That provenance matters. The model is being shown evidence, not a second-hand retelling.
 
-One subtle but important detail here is that the recall path now follows the real OWUI request lifecycle more closely. In the normal frontend flow, the newest user turn may exist in the in-flight request before it has been persisted back into chat history. Ariadne reconstructs request history accordingly: if the current user turn is not yet in the database, it loads persisted history up to its parent and appends the current in-flight user turn before running maintenance and recall. That keeps the cold-history path aligned with how the product actually behaves, not just how a simplified synthetic pipeline would behave.
+One subtle but important detail here is that the recall path now follows the original OWUI request lifecycle more closely. In the normal frontend flow, the newest user turn may exist in the in-flight request before it has been persisted back into chat history. Ariadne reconstructs request history accordingly: if the current user turn is not yet in the database, it loads persisted history up to its parent and appends the current in-flight user turn before running maintenance and recall. That keeps the cold-history path aligned with how the product actually behaves, not just how a simplified synthetic pipeline would behave.
 
 ### Simulated User Flows
 
@@ -318,7 +318,8 @@ That same bias also explains the current fallback semantics:
 - `branch_recent` should help when the user is vague
 - raw branch fallback should save explicit recall cases when indexing or lexical matching is not enough
 
-The result is not "perfect memory". The result is a layered memory system that is much less likely to fail silently.
+The result is a layered memory system that is much less likely to fail silently. This is not even close to a "perfect memory", but it's a good start still.
+
 
 ### Runtime Semantics and Memory Telemetry
 
@@ -374,12 +375,12 @@ Ariadne treats ledger mode as an explicit memory control instead of a backend he
 The ledger is not "memory" in the same sense as the structured state snapshot.
 
 - the snapshot is the compacted working-state representation of earlier turns
-- the ledger is a separate durable continuity layer backed by fork-owned extraction and injection rules
+- the ledger is a separate durable continuity layer backed by extraction and injection rules
 
 In code, the ledger captures different kinds of durable material depending on the selected mode.
 
-- `agentic` mode is for operational continuity: tooling choices, action mode, confirmation policy, evidence policy, side-effect policy, output contract, and durable decisions
 - `vibe` mode is for conversational continuity: tone profile and repeated refrains that should survive compaction without becoming a generic style heuristic
+- `agentic` mode is for operational continuity: tooling choices, action mode, confirmation policy, evidence policy, side-effect policy, output contract, and durable decisions
 
 The behavior is:
 
@@ -402,9 +403,9 @@ On the first turn after a mode switch, the selected mode can force a single ledg
 
 The old `simon-cognitive-engine` pipe stack is no longer part of Ariadne's supported runtime path.
 
-That pipe mattered historically. `Simon` was the first standalone inference layer behind a frontend and backend in this ecosystem: voice-first, but not voice-only, with bounded memory, explicit recall, lexical search, and a deliberate split between fast answers and slower evidence-heavy paths. A lot of the design pressure that shaped Ariadne was first worked through there.
+That pipe mattered historically. `Simon` was the first standalone inference layer behind a frontend and backend in this ecosystem: voice-first (but not voice-only), with bounded memory, explicit recall, lexical search, and a deliberate split between fast answers and slower evidence-heavy paths. A lot of the design pressure that shaped Ariadne was first worked through there.
 
-The reason to remove the pipe anyway was architectural, not emotional. Keeping Simon as a live embedded runtime would have pushed Ariadne further away from upstream Open WebUI, and it would have meant carrying Simon-specific plumbing, valves, and deployment assumptions everywhere Ariadne runs. The decision here was to keep the ideas, but re-implement the important runtime behavior natively in the OWUI request path.
+The reason to remove the pipe anyway was architectural. Keeping Simon as a live embedded runtime would have meant carrying Simon-specific plumbing, valves, and deployment assumptions everywhere Ariadne runs. The decision here was to keep the ideas, but re-implement the important runtime behavior natively in the OWUI request path.
 
 What got rewritten into OWUI-native behavior instead of staying in the old Simon pipe stack:
 
@@ -442,9 +443,9 @@ After `--apply`, restart backend workers to guarantee no stale DB-loaded functio
 
 ## Web Search and Retrieval Planning
 
-This section is about the search path for normal chat turns. It is not a report generator, and it is not a license to pour web text into context. The job is to fetch enough evidence, from the right places, and stop.
+This section is about the search path for normal chat turns. It is not a report generator, and it is not a license to pour raw web text into context. The job is to fetch enough evidence, from the right places, and stop.
 
-In practice, this means the web path here is more structured than a flat search integration:
+In practice, this means the web path here is more structured than a simple flat search integration:
 
 - multiple planner modes exist instead of one hardcoded query flow
 - a source registry provides machine-readable hints about where different kinds of queries should go
@@ -454,7 +455,7 @@ In practice, this means the web path here is more structured than a flat search 
 The important behavioral shift is this:
 
 - upstream-style web search is often thought of as "query provider -> collect results -> inject results"
-- Ariadne pushes it toward "plan -> target sources -> bound evidence -> stop when enough evidence exists"
+- Ariadne pushes it toward "plan -> target pre-curated trusted sources per domain (medicine, law, science, etc.) -> bound evidence -> stop when enough evidence exists"
 
 That matters more on local setups than it first appears. Prompt budget is finite, retrieval latency is visible, and low-quality web evidence is actively harmful when it crowds out the rest of the conversation. The planner/rewriter/source-registry work is there to make web retrieval less brute-force and less noisy.
 
@@ -468,7 +469,7 @@ At a high level, the current web path behaves more like this:
 
 ### Strong-Source Search Trigger (Hybrid Local-First + Broader Fallback)
 
-The web stack includes a first-class native tool for evidence-critical retrieval: `web_research_strong` (`search_strong_sources` remains as a backward-compatible alias).
+The web stack includes a first-class native tool for evidence-critical retrieval: `web_research_strong` (`search_strong_sources` remains as a backward-compatible alias). There is a story behind this name: a quantized model attending in a quantized KV cache began insisting that the `search_notes_strong` tool is the one that it needs to use for web searches, which was neither injected, nor implied. It took me a while to realize it was hallucinating a tool name based on token similarity between the name itself and the one of another tool - `notes_lookup`. Stochastic engineering at its finest.
 
 This is intentionally not a hard terminal guard. It is a native model-callable path with soft trigger semantics: when confidence is weak, the question is time-sensitive, or provenance quality matters, the model can call the strong-source flow directly.
 
