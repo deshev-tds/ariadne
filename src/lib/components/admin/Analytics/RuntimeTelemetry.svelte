@@ -63,6 +63,7 @@
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
 	const pollIntervalMs = 2000;
 	const eventLimit = 120;
+	$: telemetryEnabled = Boolean(telemetry?.enabled);
 
 	const formatTs = (value?: number | null) => {
 		if (!value) return '—';
@@ -205,14 +206,14 @@
 				</button>
 				<button
 					class="rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-black disabled:opacity-60 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
-					disabled={actionLoading}
+					disabled={actionLoading || telemetryEnabled}
 					on:click={() => runAction('start')}
 				>
 					{$i18n.t('Start')}
 				</button>
 				<button
 					class="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-60 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-					disabled={actionLoading}
+					disabled={actionLoading || !telemetryEnabled}
 					on:click={() => runAction('stop')}
 				>
 					{$i18n.t('Stop')}
