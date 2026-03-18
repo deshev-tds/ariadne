@@ -1222,10 +1222,26 @@ TERMINAL_SERVER_CONNECTIONS = PersistentConfig(
 
 WEBUI_URL = PersistentConfig("WEBUI_URL", "webui.url", os.environ.get("WEBUI_URL", ""))
 
-RUNTIME_CONTROL_SCRIPT_PATH = os.environ.get(
-    "RUNTIME_CONTROL_SCRIPT_PATH",
-    str(OPEN_WEBUI_DIR / "scripts" / "run_llama.sh"),
-)
+
+def resolve_runtime_control_script_path() -> str:
+    configured = os.environ.get("RUNTIME_CONTROL_SCRIPT_PATH", "").strip()
+    if configured:
+        return str(Path(configured).expanduser())
+
+    candidates = [
+        OPEN_WEBUI_DIR / "scripts" / "run_llama.sh",
+        Path.home() / "models" / "run_llama.sh",
+    ]
+
+    for candidate in candidates:
+        expanded = Path(candidate).expanduser()
+        if expanded.exists():
+            return str(expanded)
+
+    return str((OPEN_WEBUI_DIR / "scripts" / "run_llama.sh").expanduser())
+
+
+RUNTIME_CONTROL_SCRIPT_PATH = resolve_runtime_control_script_path()
 
 
 ENABLE_SIGNUP = PersistentConfig(

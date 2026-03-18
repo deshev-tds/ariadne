@@ -408,6 +408,14 @@ That page is intentionally separate from telemetry. `/admin/runtime` is for oper
 
 Those runtime compatibility checks are deliberately advisory rather than mutating. Ariadne does not auto-rewrite task-model or planner settings when the runtime topology changes; instead it surfaces split-brain risk explicitly so the operator can decide what to change.
 
+The launcher path itself is also resolved as part of startup rather than being left entirely to manual UI debugging. Ariadne checks, in order:
+
+- `RUNTIME_CONTROL_SCRIPT_PATH` from the environment, if set
+- a repo-local launcher at `scripts/run_llama.sh`, if present
+- a user-local launcher at `~/models/run_llama.sh`, if present
+
+If none of those exist, the runtime page still shows the resolved fallback path and returns a clear admin-visible error instead of failing silently.
+
 At the launcher level, `scripts/run_llama.sh` now has a more stable machine-facing contract as well:
 
 - `status --json` always returns JSON, even for stale PID or other broken-state cases
