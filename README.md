@@ -10,6 +10,8 @@ The thesis is simple: local LLM UX fails predictably when chat history is replay
 
 Built on Open WebUI, Ariadne diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, deliberate literature handling, and generation inspection that is useful during real debugging rather than only during demos.
 
+Ariadne started a while back as an Open WebUI fork, then diverged into its own local-first runtime with different priorities, constraints, and operating assumptions.
+
 This README documents Ariadne as its own project, not as an annotated description of upstream behavior. If a lane, continuity model, corpus path, telemetry surface, or control surface is described here in detail, assume it belongs to Ariadne unless stated otherwise.
 
 In practice, the local stack behind Ariadne is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. A lot of the design decisions here are not abstract product ideas, but are tied to the behavior and limits of this real local runtime.
