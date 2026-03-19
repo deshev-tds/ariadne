@@ -902,7 +902,8 @@ async def load_llamacpp_probe(
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             try:
                 async with session.get(
-                    f"{base_url}/metrics", params={"model": model_id}
+                    f"{base_url}/metrics",
+                    params={"model": model_id, "autoload": "false"},
                 ) as response:
                     if response.status == 200:
                         metrics = parse_prometheus_metrics(await response.text())
@@ -920,7 +921,8 @@ async def load_llamacpp_probe(
             if result["n_ctx"] is None:
                 try:
                     async with session.get(
-                        f"{base_url}/props", params={"model": model_id}
+                        f"{base_url}/props",
+                        params={"model": model_id, "autoload": "false"},
                     ) as response:
                         if response.status == 200:
                             props = await response.json()
@@ -932,7 +934,8 @@ async def load_llamacpp_probe(
 
             try:
                 async with session.get(
-                    f"{base_url}/slots", params={"model": model_id}
+                    f"{base_url}/slots",
+                    params={"model": model_id, "autoload": "false"},
                 ) as response:
                     if response.status == 200:
                         slots = await response.json()
