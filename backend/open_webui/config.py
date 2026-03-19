@@ -2231,12 +2231,14 @@ DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE = """Available Tools: {{TOOLS}}
 Your task is to choose and return the correct tool(s) from the list of available tools based on the query. Follow these guidelines:
 
 - Return only the JSON object, without any additional text or explanation.
-- For uncertain, time-sensitive, high-risk, or verification-heavy queries, prefer `web_research_strong` when available before generic web tools.
-- Use `search_web` for broad discovery and `fetch_url` only after selecting concrete URLs.
+- Use `search_web` as the default first-step discovery tool for open-world web research.
+- Use `web_research_strong` only as a second-pass hardening tool when the user explicitly asks for stronger/trusted verification, broad results look mixed or contradictory, or the final answer depends on important numeric/date/risk claims.
+- Use `fetch_url(mode="store")` for pages you intend to query with `query_web_evidence`, and use `fetch_url` only after selecting concrete URLs.
 - Optimize for minimum tool turns and minimum repeated loops.
 - Start with the smallest sufficient tool plan (usually one call), then stop as soon as evidence is adequate.
 - Do not repeat the same tool with near-identical parameters unless the previous result explicitly indicates insufficiency.
 - If a focused workflow returns a clear next step, follow that step exactly once before deciding whether another call is needed.
+- Do not run `search_web` and `web_research_strong` sequentially by default. Only escalate to `web_research_strong` when a hardening trigger exists.
 - Prefer quality over quantity: fewer high-signal calls are better than many exploratory calls.
 
 - If no tools match the query, return an empty array: 

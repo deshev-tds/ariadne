@@ -103,6 +103,12 @@ def _init_db(conn: sqlite3.Connection) -> bool:
         ON web_artifacts(chat_id, domain)
         """
     )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_web_artifacts_chat_message_fetched
+        ON web_artifacts(chat_id, message_id, fetched_at ASC, artifact_id ASC)
+        """
+    )
 
     fts_enabled = True
     try:
@@ -242,6 +248,18 @@ def _fts_query_terms(query: str) -> list[str]:
     return [token for token in re.findall(r"[\w-]{2,}", (query or "").lower()) if token]
 
 
+def _normalize_artifact_ids(values: Optional[list[str]]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        artifact_id = str(value or "").strip()
+        if not artifact_id or artifact_id in seen:
+            continue
+        seen.add(artifact_id)
+        normalized.append(artifact_id)
+    return normalized
+
+
 def _extract_window(content: str, terms: list[str], window_chars: int) -> tuple[int, int, str, int]:
     if not content:
         return 0, 0, "", 0
@@ -274,6 +292,9 @@ def _query_fts_rows(
     artifact_ids: list[str],
     limit: int,
 ) -> tuple[list[Any], bool]:
+    if not artifact_ids:
+        return [], True
+
     fts_enabled = True
     try:
         q_parts = []
@@ -319,7 +340,7 @@ def _query_fts_rows(
         placeholders = ",".join("?" for _ in artifact_ids)
         sql += f" AND artifact_id IN ({placeholders})"
         params.extend(artifact_ids)
-    sql += " ORDER BY fetched_at DESC"
+    sql += " ORDER BY fetched_at ASC, artifact_id ASC"
     rows = conn.execute(sql, params).fetchall()
 
     scored_rows: list[dict[str, Any]] = []
@@ -358,15 +379,90 @@ def _query_fts_rows(
     scored_rows.sort(
         key=lambda item: (
             -int(item.get("lexical_hits", 0) or 0),
-            -int(item.get("fetched_at", 0) or 0),
+            int(item.get("fetched_at", 0) or 0),
+            str(item.get("artifact_id", "") or ""),
         )
     )
     return scored_rows[:limit], fts_enabled
 
 
+def _load_scope_rows(
+    conn: sqlite3.Connection,
+    *,
+    chat_id: str,
+    message_id: Optional[str],
+    artifact_ids: list[str],
+) -> tuple[list[sqlite3.Row], list[str], str]:
+    scope_mode = "explicit" if artifact_ids else "implicit_current_message"
+    if artifact_ids:
+        placeholders = ",".join("?" for _ in artifact_ids)
+        rows = conn.execute(
+            f"""
+            SELECT artifact_id, url, domain, title, path, fetched_at, message_id
+            FROM web_artifacts
+            WHERE chat_id = ? AND artifact_id IN ({placeholders})
+            ORDER BY fetched_at ASC, artifact_id ASC
+            """,
+            [chat_id, *artifact_ids],
+        ).fetchall()
+        found_ids = {str(row["artifact_id"] or "") for row in rows}
+        missing = [artifact_id for artifact_id in artifact_ids if artifact_id not in found_ids]
+        return rows, missing, scope_mode
+
+    normalized_message_id = str(message_id or "").strip()
+    if not normalized_message_id:
+        return [], [], scope_mode
+
+    rows = conn.execute(
+        """
+        SELECT artifact_id, url, domain, title, path, fetched_at, message_id
+        FROM web_artifacts
+        WHERE chat_id = ? AND message_id = ?
+        ORDER BY fetched_at ASC, artifact_id ASC
+        """,
+        (chat_id, normalized_message_id),
+    ).fetchall()
+    return rows, [], scope_mode
+
+
+def _classify_evidence_strength(snippets: list[dict[str, Any]]) -> str:
+    if not snippets:
+        return "weak"
+
+    max_score = max(float(snippet.get("score", 0.0) or 0.0) for snippet in snippets)
+    unique_domains = {
+        str(snippet.get("domain") or "").strip().lower()
+        for snippet in snippets
+        if str(snippet.get("domain") or "").strip()
+    }
+
+    if len(snippets) >= 3 and len(unique_domains) >= 2 and max_score >= 0.55:
+        return "strong"
+    if len(snippets) >= 1 and max_score >= 0.35:
+        return "adequate"
+    return "weak"
+
+
+def _suggest_next_action(
+    *,
+    searched_artifact_count: int,
+    searched_domains: list[str],
+    snippets: list[dict[str, Any]],
+    evidence_strength: str,
+) -> str:
+    if searched_artifact_count <= 0:
+        return "fetch_more"
+    if evidence_strength in {"adequate", "strong"} and snippets:
+        return "answer_with_current_evidence"
+    if searched_artifact_count <= 1 or len(searched_domains) <= 1:
+        return "broaden_discovery"
+    return "refine_query"
+
+
 def query_web_evidence_store(
     *,
     chat_id: str,
+    message_id: Optional[str],
     query: str,
     artifact_ids: Optional[list[str]] = None,
     top_k: int = 6,
@@ -378,6 +474,7 @@ def query_web_evidence_store(
     normalized_chat_id = str(chat_id or "").strip()
     if not normalized_chat_id:
         raise ValueError("chat_id is required for evidence queries")
+    normalized_artifact_ids = _normalize_artifact_ids(artifact_ids)
 
     chat_dir = resolve_chat_artifacts_dir(normalized_chat_id)
     if chat_dir is None:
@@ -385,12 +482,20 @@ def query_web_evidence_store(
             "status": "not_found",
             "query": query,
             "chat_id": normalized_chat_id,
+            "message_id": str(message_id or ""),
+            "scope_mode": "explicit" if normalized_artifact_ids else "implicit_current_message",
+            "searched_artifact_count": 0,
+            "searched_artifact_ids": [],
+            "searched_domains": [],
+            "missing_artifact_ids": normalized_artifact_ids,
+            "evidence_strength": "weak",
+            "suggested_next_action": "fetch_more",
             "snippets": [],
             "narrow_count": 0,
             "wide_count": 0,
             "wide_pass_used": False,
             "fts_enabled": False,
-            "artifact_ids": artifact_ids or [],
+            "artifact_ids": [],
             "message": "No chat artifact directory found.",
         }
 
@@ -400,12 +505,20 @@ def query_web_evidence_store(
             "status": "not_found",
             "query": query,
             "chat_id": normalized_chat_id,
+            "message_id": str(message_id or ""),
+            "scope_mode": "explicit" if normalized_artifact_ids else "implicit_current_message",
+            "searched_artifact_count": 0,
+            "searched_artifact_ids": [],
+            "searched_domains": [],
+            "missing_artifact_ids": normalized_artifact_ids,
+            "evidence_strength": "weak",
+            "suggested_next_action": "fetch_more",
             "snippets": [],
             "narrow_count": 0,
             "wide_count": 0,
             "wide_pass_used": False,
             "fts_enabled": False,
-            "artifact_ids": artifact_ids or [],
+            "artifact_ids": [],
             "message": "No local web evidence index found.",
         }
 
@@ -416,10 +529,6 @@ def query_web_evidence_store(
     bounded_wide_window_chars = max(
         bounded_window_chars, min(4000, int(wide_window_chars or 640))
     )
-
-    normalized_artifact_ids = [
-        str(value).strip() for value in (artifact_ids or []) if str(value).strip()
-    ]
 
     def row_get(row: Any, key: str, default: Any = None) -> Any:
         if isinstance(row, sqlite3.Row):
@@ -471,11 +580,27 @@ def query_web_evidence_store(
 
     with _sqlite_conn(db_path) as conn:
         _init_db(conn)
+        scope_rows, missing_artifact_ids, scope_mode = _load_scope_rows(
+            conn,
+            chat_id=normalized_chat_id,
+            message_id=message_id,
+            artifact_ids=normalized_artifact_ids,
+        )
+        searched_artifact_ids = [
+            str(row["artifact_id"] or "") for row in scope_rows if str(row["artifact_id"] or "")
+        ]
+        searched_domains = sorted(
+            {
+                str(row["domain"] or "").strip().lower()
+                for row in scope_rows
+                if str(row["domain"] or "").strip()
+            }
+        )
         narrow_rows, fts_enabled = _query_fts_rows(
             conn,
             chat_id=normalized_chat_id,
             terms=terms,
-            artifact_ids=normalized_artifact_ids,
+            artifact_ids=searched_artifact_ids,
             limit=max(bounded_top_k * 2, bounded_top_k),
         )
 
@@ -492,19 +617,32 @@ def query_web_evidence_store(
                 conn,
                 chat_id=normalized_chat_id,
                 terms=terms,
-                artifact_ids=normalized_artifact_ids,
+                artifact_ids=searched_artifact_ids,
                 limit=max(bounded_wide_top_k * 2, bounded_wide_top_k),
             )
         wide = build_snippets(rows, limit=bounded_wide_top_k, window=bounded_wide_window_chars)
         wide_used = True
 
     snippets = wide if wide_used and wide else narrow
+    evidence_strength = _classify_evidence_strength(snippets)
+    suggested_next_action = _suggest_next_action(
+        searched_artifact_count=len(searched_artifact_ids),
+        searched_domains=searched_domains,
+        snippets=snippets,
+        evidence_strength=evidence_strength,
+    )
 
     return {
         "status": "ok",
         "query": query,
         "chat_id": normalized_chat_id,
-        "artifact_ids": normalized_artifact_ids,
+        "message_id": str(message_id or ""),
+        "scope_mode": scope_mode,
+        "artifact_ids": searched_artifact_ids,
+        "searched_artifact_count": len(searched_artifact_ids),
+        "searched_artifact_ids": searched_artifact_ids,
+        "searched_domains": searched_domains,
+        "missing_artifact_ids": missing_artifact_ids,
         "snippets": snippets,
         "narrow_count": len(narrow),
         "wide_count": len(wide),
@@ -514,4 +652,6 @@ def query_web_evidence_store(
         "window_chars": bounded_window_chars,
         "widen_if_weak": bool(widen_if_weak),
         "weak_narrow_evidence": bool(weak),
+        "evidence_strength": evidence_strength,
+        "suggested_next_action": suggested_next_action,
     }

@@ -78,6 +78,21 @@ def _normalize_runtime_event(kind: str, payload: Any) -> dict[str, Any]:
         result_summary = data.get("result_summary")
         if isinstance(result_summary, dict):
             event["result_summary"] = copy.deepcopy(result_summary)
+        for key in (
+            "research_discovery_lane",
+            "strong_hardening_triggered",
+            "strong_hardening_reason",
+            "strong_hardening_improved_bundle",
+            "evidence_empty_after_fetch",
+            "evidence_scope_mode",
+            "recent_artifact_count",
+            "broad_fallback_after_strong",
+            "source_diary_generation_started",
+            "source_diary_generation_done",
+            "source_diary_generation_failed",
+        ):
+            if key in data:
+                event[key] = copy.deepcopy(data.get(key))
         return event
 
     if kind == "memory":

@@ -177,11 +177,14 @@ async def search_web(
     """
     Search the public web for information. Best for current events, external references,
     or topics not covered in internal documents.
-    Use this for broad discovery, but keep calls concise:
+    Use this as the default first-step discovery tool for open-world web research.
+    Keep calls concise:
     - Prefer one high-quality query first.
     - Avoid repeated near-identical queries.
     - Stop once you have enough evidence to answer.
-    For verification-heavy or high-stakes topics, prefer `web_research_strong`.
+    - After broad discovery, use `web_research_strong` only when you need a single
+      hardening pass for stronger/trusted sourcing, contradiction checks, or
+      verification-sensitive numeric/date/risk claims.
 
     :param query: The search query to look up
     :param count: Number of results to return (default: 5)
@@ -288,14 +291,21 @@ async def web_research_strong(
     """
     WEB SOURCES ONLY.
     Run focused strong-source web research with local-first routing and broad fallback.
-    Use this when evidence is uncertain, time-sensitive, or high-risk, and you need
-    stronger provenance before answering.
+    Use this as a second-pass hardening tool after broad discovery, not as the default
+    first move for open-world topics.
+    Call it when:
+    - the user explicitly asks for strong / trusted / verification-oriented sourcing,
+    - broad discovery looks mixed, contradictory, or dominated by commentary,
+    - the answer will rely on important numeric, date, or risk-sensitive claims,
+    - broad discovery is still too narrow (for example one domain family only).
     Execute the minimum viable flow:
     - Keep tool turns low and avoid redundant retries.
     - Follow returned `next_action` instead of improvising extra loops.
+    - Do not automatically bounce back and forth between broad and focused search.
     - Stop searching when evidence is adequate.
     If payload returns `next_action=fetch_and_query_evidence`, store target pages via
-    `fetch_url(mode="store")` and then call `query_web_evidence` for compact snippets.
+    `fetch_url(mode="store")` and then call `query_web_evidence` for compact snippets
+    from the current assistant turn's stored pages.
 
     :param query: User question or search objective
     :param mode: list_categories | list_domains | search (default: search)
@@ -731,6 +741,10 @@ async def fetch_url(
     - store: stores normalized content as per-chat artifact + local FTS index, and
       returns pointer metadata only (no raw page dump)
 
+    For research turns, prefer `mode="store"` when you expect to call
+    `query_web_evidence` next. Stored pages become available to
+    `query_web_evidence` for the same `(chat_id, message_id)` assistant turn.
+
     :param url: The URL to fetch content from
     :param mode: content | store
     :param title: Optional page title override for stored artifacts
@@ -769,6 +783,11 @@ async def fetch_url(
                 title=inferred_title,
             )
             pointer["mode"] = "store"
+            pointer["available_to"] = "query_web_evidence"
+            pointer["evidence_query_scope"] = {
+                "chat_id": chat_id,
+                "message_id": message_id,
+            }
             return json.dumps(pointer, ensure_ascii=False)
 
         if selected_mode != "content":
@@ -806,10 +825,14 @@ async def query_web_evidence(
     """
     WEB SOURCES ONLY.
     Query per-chat locally stored web artifacts using lexical retrieval (FTS5).
-    Returns compact evidence windows with provenance, not full raw pages.
+    Returns compact evidence windows plus diagnostics, not full raw pages.
+    If `artifact_ids` is omitted, this searches stored web artifacts from the current
+    assistant turn only, defined as the exact `(chat_id, message_id)` pair.
+    Weak or empty evidence means lexical match was weak or the artifact set was
+    insufficient; it does not automatically mean no relevant pages were fetched.
 
     :param query: Evidence query to match against stored web artifacts
-    :param artifact_ids: Optional subset of artifact IDs to search
+    :param artifact_ids: Optional exact subset of artifact IDs to search
     :param top_k: Number of snippets for narrow pass (default: 6)
     :param window_chars: Snippet window chars for narrow pass (default: 320)
     :param widen_if_weak: Run second wider pass if narrow evidence is weak
@@ -821,6 +844,7 @@ async def query_web_evidence(
         return json.dumps({"error": "Request context not available"})
 
     chat_id = str((__metadata__ or {}).get("chat_id") or "").strip()
+    message_id = str((__metadata__ or {}).get("message_id") or "").strip()
     if not chat_id:
         return json.dumps(
             {
@@ -835,6 +859,7 @@ async def query_web_evidence(
         payload = await asyncio.to_thread(
             query_web_evidence_store,
             chat_id=chat_id,
+            message_id=message_id,
             query=query,
             artifact_ids=artifact_ids,
             top_k=top_k,

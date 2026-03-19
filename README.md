@@ -175,6 +175,7 @@ That bounded slot is allowlisted and deliberately narrow. It can be used for thi
 - context-maintenance summary work
 - function-calling helper selection
 - web planner query rewriting and planner-side query generation when explicitly enabled
+- background source diary generation for completed research turns
 
 It is not used for the final user-facing answer path. The active chat model remains responsible for normal answer synthesis, broad reasoning, and ambiguity-heavy turns.
 
@@ -522,13 +523,14 @@ The important behavioral shift is this:
 
 That matters more on local setups than it first appears. Prompt budget is finite, retrieval latency is visible, and low-quality web evidence is actively harmful when it crowds out the rest of the conversation. The planner/rewriter/source-registry work is there to make web retrieval less brute-force and less noisy.
 
-At a high level, the current web path behaves more like this:
+At a high level, the current web path now behaves more like this:
 
-1. choose a planning mode
-2. optionally rewrite or refine the search queries using the active model
-3. target sources with planner hints instead of treating all sources as equivalent
-4. stop once the evidence quality or coverage is good enough, instead of continuing mechanically
-5. surface planner status and fallback information so the path is inspectable
+1. use `search_web` as the default discovery lane for open-world topics
+2. fetch concrete pages in `store` mode when they are likely to be queried as evidence
+3. run `query_web_evidence` over the exact current turn's stored artifacts when compact evidence is needed
+4. escalate to `web_research_strong` only as a hardening pass when discovery quality, provenance, contradiction, or risk sensitivity requires it
+5. stop once the evidence quality or coverage is good enough, instead of continuing mechanically
+6. surface planner status, evidence diagnostics, and fallback information so the path is inspectable
 
 The planner-side specialist behavior is intentionally opt-in. Admins can keep the old behavior or explicitly enable bounded-specialist planner routing while still using the existing task-model slots:
 
@@ -546,7 +548,11 @@ If the specialist path fails, planner execution does not stall or go opaque. It 
 
 The web stack includes a first-class native tool for evidence-critical retrieval: `web_research_strong` (`search_strong_sources` remains as a backward-compatible alias). There is a story behind this name: a quantized model attending in a quantized KV cache began insisting that the `search_notes_strong` tool is the one that it needs to use for web searches, which was neither injected, nor implied. It took me a while to realize it was hallucinating a tool name based on token similarity between the name itself and the one of another tool - `notes_lookup`. Stochastic engineering at its finest.
 
-This is intentionally not a hard terminal guard. It is a native model-callable path with soft trigger semantics: when confidence is weak, the question is time-sensitive, or provenance quality matters, the model can call the strong-source flow directly.
+This is intentionally not a hard terminal guard, and it is no longer treated as the default discovery move for native research. `web_research_strong` is now a conditional hardening lane:
+
+- broad `search_web` discovery comes first for open-world topics
+- `web_research_strong` is used after that when the user explicitly asks for stronger sourcing, the broad bundle is contradictory or too commentary-heavy, the answer depends on important numeric/date/risk claims, or the source set is too narrow
+- the two lanes should not run mechanically in sequence on every turn
 
 The tool now supports a stateful contract:
 
@@ -562,7 +568,7 @@ Domain selection is explicit and constrained:
 - domains are validated against the registry-derived allowlist
 - invalid/empty selections return a correction payload, and search is not executed
 
-In short: focused search is now an inspectable interaction protocol, not a one-shot black box.
+In short: focused search is now an inspectable hardening protocol, not a mandatory first hop for every web-research turn.
 
 ### Tool Naming Matters
 
@@ -614,6 +620,29 @@ Default citation policy is stricter:
 Middleware citation extraction for this tool now prefers `citation_items` and falls back to `items` only if needed.
 
 Numeric score remains available for diagnostics, but is no longer a default public confidence ornament.
+
+### Exact-Turn Web Evidence
+
+`fetch_url(mode="store")` and `query_web_evidence` now have a stricter contract.
+
+- `store` mode writes per-chat artifacts and returns pointer metadata only
+- if `query_web_evidence` is called without explicit `artifact_ids`, it searches only the stored web artifacts from the exact current `(chat_id, message_id)` turn
+- there is no chat-wide "recent-ish" fallback
+- empty evidence is diagnostic, not silent; the payload now reports scope mode, searched artifacts/domains, evidence strength, and a suggested next action
+
+That makes the `fetch -> evidence query` handoff much less ghostly. If the model gets empty evidence now, it has a precise reason instead of a vague absence.
+
+### Background Source Diary
+
+Ariadne also writes a bounded background source diary for completed research turns when a task model is configured.
+
+- it runs after the visible assistant response is already done
+- it never blocks the user-facing turn
+- it uses exact-turn inputs only: user question, final answer, tool sequence, fetched URLs/domains, evidence diagnostics, and cited source links when available
+- it writes one markdown file per assistant message under the chat artifacts directory:
+  - `source_diary/<message_id>.md`
+
+The diary is not a live self-improvement mechanism. It exists so real successful sources discovered during native research can be reviewed later and manually promoted into the curated strong-source corpus if they prove repeatedly useful.
 
 ### Engine and Fallback Policy
 

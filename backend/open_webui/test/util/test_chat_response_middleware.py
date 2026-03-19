@@ -356,7 +356,7 @@ def test_build_forced_default_selector_tool_call_skips_non_auto_or_missing_tool(
     )
 
 
-def test_should_upgrade_default_search_web_tool_call_after_local_corpus_history():
+def test_should_not_upgrade_default_search_web_tool_call_after_local_corpus_history():
     metadata = {
         "params": {"function_calling": "default", "local_corpus_mode": "auto"},
     }
@@ -385,10 +385,10 @@ def test_should_upgrade_default_search_web_tool_call_after_local_corpus_history(
         {"name": "search_web", "parameters": {"query": "atrial fibrillation cold foods"}},
     )
 
-    assert should_upgrade is True
+    assert should_upgrade is False
 
 
-def test_should_upgrade_default_search_web_tool_call_skips_after_strong_web_history():
+def test_should_not_upgrade_default_search_web_tool_call_after_strong_web_history():
     metadata = {
         "params": {"function_calling": "default", "local_corpus_mode": "auto"},
     }
@@ -498,7 +498,7 @@ async def test_chat_completion_tools_handler_forces_local_domain_probe_before_se
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_tools_handler_upgrades_search_web_to_focused_search_after_local_corpus(
+async def test_chat_completion_tools_handler_keeps_search_web_as_broad_discovery_after_local_corpus(
     monkeypatch,
 ):
     request = SimpleNamespace(
@@ -576,7 +576,15 @@ async def test_chat_completion_tools_handler_upgrades_search_web_to_focused_sear
 
     async def _fake_search_web(**_kwargs):
         calls["search"] += 1
-        raise AssertionError("search_web should be upgraded to web_research_strong")
+        return json.dumps(
+            [
+                {
+                    "title": "Example Result",
+                    "link": "https://example.test/result",
+                    "snippet": "broad discovery result",
+                }
+            ]
+        )
 
     monkeypatch.setattr(
         middleware, "generate_chat_completion", _fake_generate_chat_completion
@@ -604,11 +612,9 @@ async def test_chat_completion_tools_handler_upgrades_search_web_to_focused_sear
         request, body, extra_params, user, models, tools
     )
 
-    assert calls["strong"] == 1
-    assert calls["search"] == 0
-    assert payload["sources"][0]["source"]["name"] == (
-        "builtin:web_research_strong/web_research_strong"
-    )
+    assert calls["strong"] == 0
+    assert calls["search"] == 1
+    assert payload["sources"][0]["source"]["name"] == "builtin:search_web/search_web"
 
 
 def test_selector_prior_work_signal_stays_none_for_short_fresh_question():
@@ -1358,11 +1364,11 @@ def test_is_empty_search_notes_result_rejects_non_empty_payloads():
     assert middleware._is_empty_search_notes_result("not-json") is False
 
 
-def test_build_search_notes_loop_breaker_result_has_strong_source_hint():
+def test_build_search_notes_loop_breaker_result_has_broad_search_hint():
     payload = json.loads(middleware._build_search_notes_loop_breaker_result(2))
     assert payload["tool"] == "notes_lookup"
     assert payload["empty_streak"] == 2
-    assert payload["next_tool"] == "web_research_strong"
+    assert payload["next_tool"] == "search_web"
     assert "searches user notes only" in payload["message"]
 
 
@@ -1373,7 +1379,7 @@ def test_build_search_notes_loop_breaker_result_keeps_tool_alias_when_passed():
         )
     )
     assert payload["tool"] == "search_notes"
-    assert payload["next_tool"] == "web_research_strong"
+    assert payload["next_tool"] == "search_web"
 
 
 def test_build_search_notes_loop_breaker_result_without_web_tool():
@@ -1390,3 +1396,134 @@ def test_tool_name_alias_maps_notes_research_strong():
         middleware.TOOL_NAME_ALIASES.get("notes_research_strong")
         == "web_research_strong"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_background_source_diary_generation_writes_markdown(
+    monkeypatch, tmp_path
+):
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                MODELS={
+                    "main-model": {"id": "main-model", "connection_type": "local"},
+                    "specialist-model": {
+                        "id": "specialist-model",
+                        "connection_type": "local",
+                    },
+                },
+                config=SimpleNamespace(
+                    TASK_MODEL="specialist-model",
+                    TASK_MODEL_EXTERNAL="",
+                ),
+            )
+        ),
+        state=SimpleNamespace(metadata={}),
+    )
+    emitted_events = []
+
+    async def _event_emitter(event):
+        emitted_events.append(event)
+
+    async def _fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        assert form_data["model"] == "specialist-model"
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "## Metadata\n\n- ok\n\n## User Question\n\nQ\n\n"
+                            "## Final Answer Synopsis\n\nA\n\n## Discovery Path\n\n"
+                            "- search_web\n\n## Helpful Sources\n\n- Reuters\n\n"
+                            "## Weak Or Unhelpful Sources\n\n- none\n\n"
+                            "## Candidate Domains For Manual Curation\n\n- reuters.com\n"
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        middleware, "generate_chat_completion", _fake_generate_chat_completion
+    )
+    monkeypatch.setattr(
+        middleware, "_resolve_chat_artifacts_dir", lambda _chat_id: tmp_path
+    )
+
+    result = await middleware.run_background_source_diary_generation(
+        request=request,
+        user=SimpleNamespace(id="user-1"),
+        active_model_id="main-model",
+        chat_id="chat-1",
+        message_id="msg-1",
+        context={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "stored_artifact_ids": ["wp_1"],
+        },
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "user_prompt": "why has nobody seized the strait",
+            "params": {"debug_tool_journey": True},
+        },
+        event_emitter=_event_emitter,
+    )
+
+    diary_path = tmp_path / "source_diary" / "msg-1.md"
+    assert result["status"] == "written"
+    assert diary_path.exists()
+    assert "## Metadata" in diary_path.read_text(encoding="utf-8")
+
+    phases = [
+        event["data"]["phase"]
+        for event in emitted_events
+        if event.get("type") == "chat:tool:journey"
+    ]
+    assert phases == [
+        "source_diary_generation_started",
+        "source_diary_generation_done",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_background_source_diary_generation_skips_without_specialist(
+    monkeypatch, tmp_path
+):
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                MODELS={
+                    "main-model": {"id": "main-model", "connection_type": "local"},
+                },
+                config=SimpleNamespace(
+                    TASK_MODEL="",
+                    TASK_MODEL_EXTERNAL="",
+                ),
+            )
+        ),
+        state=SimpleNamespace(metadata={}),
+    )
+
+    result = await middleware.run_background_source_diary_generation(
+        request=request,
+        user=SimpleNamespace(id="user-1"),
+        active_model_id="main-model",
+        chat_id="chat-1",
+        message_id="msg-1",
+        context={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "stored_artifact_ids": ["wp_1"],
+        },
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+        },
+        event_emitter=None,
+    )
+
+    assert result["status"] == "skipped"
+    assert not (tmp_path / "source_diary" / "msg-1.md").exists()

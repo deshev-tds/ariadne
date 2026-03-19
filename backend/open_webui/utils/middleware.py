@@ -84,6 +84,8 @@ from open_webui.retrieval.web.planner import (
     build_base_planned_queries,
     build_rewriter_prompt,
     build_web_search_plan,
+    load_normalized_source_registry,
+    normalize_domain,
     parse_rewriter_output,
     validate_or_repair_rewriter_queries,
 )
@@ -109,6 +111,7 @@ from open_webui.utils.ledger import (
 )
 from open_webui.utils.task import (
     BOUNDED_SPECIALIST_TASK_KIND_FUNCTION_CALLING,
+    BOUNDED_SPECIALIST_TASK_KIND_SOURCE_DIARY_GENERATION,
     BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_GENERATION,
     BOUNDED_SPECIALIST_TASK_KIND_WEB_SEARCH_QUERY_REWRITER,
     RUNTIME_TIMESTAMP_MARKER,
@@ -519,31 +522,10 @@ def _should_upgrade_default_search_web_tool_call(
     executed_tool_names: set[str] | None = None,
     pending_tool_names: set[str] | None = None,
 ) -> bool:
-    params = metadata.get("params", {}) or {}
-    if params.get("function_calling") != "default":
-        return False
-
-    if _canonical_tool_name(tool_call.get("name")) != "search_web":
-        return False
-
-    if "web_research_strong" not in _tool_names_from_selector_tools(tools):
-        return False
-
-    executed_tool_names = {_canonical_tool_name(name) for name in (executed_tool_names or set())}
-    pending_tool_names = {_canonical_tool_name(name) for name in (pending_tool_names or set())}
-
-    if pending_tool_names & STRONG_WEB_TOOL_NAMES:
-        return False
-
-    recent_tool_names = _selector_recent_tool_call_names(messages)
-    has_local_corpus_history = bool(
-        (recent_tool_names | executed_tool_names) & DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES
-    )
-    has_strong_web_history = bool(
-        (recent_tool_names | executed_tool_names) & STRONG_WEB_TOOL_NAMES
-    )
-
-    return has_local_corpus_history and not has_strong_web_history
+    # Ariadne no longer auto-upgrades broad discovery into focused strong search.
+    # Search discipline should come from tool contracts and explicit hardening
+    # triggers, not from a silent selector rewrite.
+    return False
 
 
 def _upgrade_default_search_web_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -2179,6 +2161,30 @@ def get_citation_source_from_tool_result(
 
         elif tool_name == "fetch_url":
             url = tool_params.get("url", "")
+            if isinstance(tool_result, dict) and tool_result.get("mode") == "store":
+                stored_url = tool_result.get("url") or url
+                stored_name = tool_result.get("title") or stored_url or "fetch_url"
+                return [
+                    {
+                        "source": {
+                            "name": stored_name,
+                            "id": stored_url or "fetch_url",
+                        },
+                        "document": [
+                            f"Stored web page artifact for {stored_name}".strip()
+                        ],
+                        "metadata": [
+                            {
+                                "source": stored_url,
+                                "name": stored_name,
+                                "url": stored_url,
+                                "artifact_id": tool_result.get("artifact_id"),
+                                "domain": tool_result.get("domain"),
+                            }
+                        ],
+                    }
+                ]
+
             content = tool_result if isinstance(tool_result, str) else str(tool_result)
             snippet = content[:500] + ("..." if len(content) > 500 else "")
 
@@ -2298,13 +2304,301 @@ def _truncate_telemetry_value(value: Any, max_chars: int = TOOL_JOURNEY_PREVIEW_
     return f"{text[:max_chars]}...[truncated]"
 
 
-def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
-    parsed: Any = tool_result
-    if isinstance(tool_result, str):
+def _parse_json_if_possible(value: Any) -> Any:
+    if isinstance(value, str):
         try:
-            parsed = json.loads(tool_result)
+            return json.loads(value)
         except Exception:
-            parsed = tool_result
+            return value
+    return value
+
+
+def _normalize_research_domain(value: Any) -> str:
+    normalized = normalize_domain(str(value or "").strip())
+    return normalized if normalized else ""
+
+
+def _get_curated_domain_family_map() -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for source in load_normalized_source_registry():
+        domain = _normalize_research_domain(getattr(source, "domain", ""))
+        if not domain:
+            continue
+        family = str(getattr(source, "family", "") or "").strip()
+        if domain not in mapping:
+            mapping[domain] = family
+    return mapping
+
+
+def _extract_domains_from_search_results(results: list[Any]) -> list[str]:
+    domains: list[str] = []
+    seen: set[str] = set()
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+        candidate = item.get("link") or item.get("url") or item.get("source")
+        domain = _normalize_research_domain(urlsplit(str(candidate or "")).netloc or candidate)
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        domains.append(domain)
+    return domains
+
+
+def _research_turn_state(metadata: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return None
+    return metadata.setdefault(
+        "research_turn_state",
+        {
+            "tool_calls": [],
+            "stored_artifacts": [],
+            "search_domains": [],
+            "search_curated_domains": [],
+            "search_domain_families": [],
+            "research_discovery_lane": None,
+            "strong_hardening_triggered": False,
+            "strong_hardening_reason": None,
+            "strong_hardening_improved_bundle": None,
+            "broad_fallback_after_strong": False,
+            "evidence_empty_after_fetch": False,
+            "evidence_scope_mode": None,
+            "recent_artifact_count": 0,
+            "evidence_queries": [],
+        },
+    )
+
+
+def _looks_numeric_or_risk_sensitive(text: str) -> bool:
+    normalized = str(text or "").lower()
+    if not normalized:
+        return False
+    if re.search(r"\b\d+(?:[.,]\d+)?\b", normalized):
+        return True
+    risk_markers = (
+        "risk",
+        "chance",
+        "odds",
+        "probability",
+        "cost",
+        "price",
+        "casualt",
+        "losses",
+        "timeline",
+        "date",
+        "dates",
+        "sanction",
+        "exposure",
+        "medical",
+        "legal",
+        "financial",
+    )
+    return any(marker in normalized for marker in risk_markers)
+
+
+def _infer_strong_hardening_reason(
+    metadata: Optional[dict[str, Any]], state: dict[str, Any]
+) -> str:
+    prompt = str((metadata or {}).get("user_prompt") or "").lower()
+    explicit_terms = (
+        "strong signals",
+        "trusted sources",
+        "trusted source",
+        "authoritative",
+        "verify",
+        "verification",
+        "fact-check",
+        "fact check",
+        "expert review",
+        "expert analysis",
+    )
+    if any(term in prompt for term in explicit_terms):
+        return "explicit_verification_request"
+    if state.get("evidence_empty_after_fetch"):
+        return "weak_evidence_after_fetch"
+    if _looks_numeric_or_risk_sensitive(prompt):
+        return "numeric_date_or_risk_sensitive_claims"
+    if state.get("search_domains") and not state.get("search_curated_domains"):
+        return "no_curated_trusted_domains_after_broad_discovery"
+    if len(state.get("search_domain_families") or []) <= 1 and state.get("search_domains"):
+        return "single_domain_family_after_broad_discovery"
+    return "model_selected_hardening"
+
+
+def _build_research_tool_trace_entry(
+    tool_name: str, tool_params: dict[str, Any], parsed_result: Any
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {"tool": tool_name}
+    if "query" in tool_params:
+        entry["query"] = str(tool_params.get("query") or "")
+    if "url" in tool_params:
+        entry["url"] = str(tool_params.get("url") or "")
+    if "mode" in tool_params:
+        entry["mode"] = str(tool_params.get("mode") or "")
+
+    if tool_name == "search_web" and isinstance(parsed_result, list):
+        entry["result_count"] = len(parsed_result)
+        entry["domains"] = _extract_domains_from_search_results(parsed_result)
+    elif tool_name in STRONG_WEB_TOOL_NAMES and isinstance(parsed_result, dict):
+        entry["phase"] = parsed_result.get("phase")
+        entry["next_action"] = parsed_result.get("next_action")
+        entry["citation_count"] = len(parsed_result.get("citation_items") or [])
+        entry["final_trusted_domains"] = parsed_result.get("final_trusted_domains")
+        entry["fallback_reason"] = parsed_result.get("fallback_reason")
+    elif tool_name == "fetch_url" and isinstance(parsed_result, dict):
+        entry["status"] = parsed_result.get("status")
+        entry["artifact_id"] = parsed_result.get("artifact_id")
+        entry["domain"] = parsed_result.get("domain")
+    elif tool_name == "query_web_evidence" and isinstance(parsed_result, dict):
+        entry["status"] = parsed_result.get("status")
+        entry["scope_mode"] = parsed_result.get("scope_mode")
+        entry["evidence_strength"] = parsed_result.get("evidence_strength")
+        entry["suggested_next_action"] = parsed_result.get("suggested_next_action")
+        entry["snippets"] = len(parsed_result.get("snippets") or [])
+        entry["searched_artifact_count"] = parsed_result.get("searched_artifact_count")
+    return entry
+
+
+def _update_research_turn_state(
+    metadata: Optional[dict[str, Any]],
+    *,
+    tool_name: str,
+    tool_params: dict[str, Any],
+    tool_result: Any,
+) -> list[dict[str, Any]]:
+    canonical_name = TOOL_NAME_ALIASES.get(tool_name, tool_name)
+    if canonical_name not in {"search_web", "web_research_strong", "fetch_url", "query_web_evidence"}:
+        return []
+
+    state = _research_turn_state(metadata)
+    if state is None:
+        return []
+
+    parsed = _parse_json_if_possible(tool_result)
+    state["tool_calls"].append(_build_research_tool_trace_entry(canonical_name, tool_params, parsed))
+
+    events: list[dict[str, Any]] = []
+    curated_map = _get_curated_domain_family_map()
+
+    if canonical_name == "search_web" and isinstance(parsed, list):
+        domains = _extract_domains_from_search_results(parsed)
+        state["search_domains"] = domains
+        state["search_curated_domains"] = [domain for domain in domains if domain in curated_map]
+        state["search_domain_families"] = sorted(
+            {
+                curated_map.get(domain, "")
+                for domain in state["search_curated_domains"]
+                if curated_map.get(domain, "")
+            }
+        )
+        if not state.get("research_discovery_lane"):
+            state["research_discovery_lane"] = "search_web"
+            events.append(
+                {
+                    "phase": "research_discovery_lane_selected",
+                    "research_discovery_lane": "search_web",
+                }
+            )
+        if state.get("strong_hardening_triggered") and not state.get("broad_fallback_after_strong"):
+            state["broad_fallback_after_strong"] = True
+            events.append(
+                {
+                    "phase": "research_broad_fallback_after_strong",
+                    "research_discovery_lane": state.get("research_discovery_lane"),
+                    "broad_fallback_after_strong": True,
+                }
+            )
+
+    elif canonical_name == "web_research_strong" and isinstance(parsed, dict):
+        if not state.get("research_discovery_lane"):
+            state["research_discovery_lane"] = "web_research_strong"
+            events.append(
+                {
+                    "phase": "research_discovery_lane_selected",
+                    "research_discovery_lane": "web_research_strong",
+                }
+            )
+        reason = _infer_strong_hardening_reason(metadata, state)
+        improved = bool(
+            (parsed.get("final_trusted_domains") or 0)
+            or (parsed.get("citation_items") or [])
+            or (parsed.get("coverage_complete") or False)
+        )
+        state["strong_hardening_triggered"] = True
+        state["strong_hardening_reason"] = reason
+        state["strong_hardening_improved_bundle"] = improved
+        events.append(
+            {
+                "phase": "research_hardening_triggered",
+                "research_discovery_lane": state.get("research_discovery_lane"),
+                "strong_hardening_triggered": True,
+                "strong_hardening_reason": reason,
+            }
+        )
+        events.append(
+            {
+                "phase": "research_hardening_evaluated",
+                "research_discovery_lane": state.get("research_discovery_lane"),
+                "strong_hardening_improved_bundle": improved,
+            }
+        )
+
+    elif canonical_name == "fetch_url" and isinstance(parsed, dict):
+        if parsed.get("mode") == "store" and parsed.get("artifact_id"):
+            artifact_id = str(parsed.get("artifact_id") or "").strip()
+            known_ids = {
+                str(item.get("artifact_id") or "")
+                for item in state.get("stored_artifacts") or []
+            }
+            if artifact_id and artifact_id not in known_ids:
+                state.setdefault("stored_artifacts", []).append(
+                    {
+                        "artifact_id": artifact_id,
+                        "url": parsed.get("url"),
+                        "domain": parsed.get("domain"),
+                        "title": parsed.get("title"),
+                    }
+                )
+                state["recent_artifact_count"] = len(state.get("stored_artifacts") or [])
+
+    elif canonical_name == "query_web_evidence" and isinstance(parsed, dict):
+        snippets = parsed.get("snippets") or []
+        artifact_count = int(parsed.get("searched_artifact_count") or 0)
+        state["evidence_scope_mode"] = parsed.get("scope_mode")
+        state["recent_artifact_count"] = artifact_count
+        state["evidence_empty_after_fetch"] = bool(
+            state.get("stored_artifacts") and len(snippets) == 0
+        )
+        state.setdefault("evidence_queries", []).append(
+            {
+                "query": parsed.get("query"),
+                "scope_mode": parsed.get("scope_mode"),
+                "searched_artifact_count": artifact_count,
+                "searched_artifact_ids": parsed.get("searched_artifact_ids") or [],
+                "searched_domains": parsed.get("searched_domains") or [],
+                "missing_artifact_ids": parsed.get("missing_artifact_ids") or [],
+                "evidence_strength": parsed.get("evidence_strength"),
+                "suggested_next_action": parsed.get("suggested_next_action"),
+                "snippets": len(snippets),
+            }
+        )
+        events.append(
+            {
+                "phase": "research_evidence_diagnostics",
+                "research_discovery_lane": state.get("research_discovery_lane"),
+                "strong_hardening_triggered": bool(state.get("strong_hardening_triggered")),
+                "strong_hardening_reason": state.get("strong_hardening_reason"),
+                "evidence_empty_after_fetch": bool(state.get("evidence_empty_after_fetch")),
+                "evidence_scope_mode": parsed.get("scope_mode"),
+                "recent_artifact_count": artifact_count,
+            }
+        )
+
+    return events
+
+
+def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
+    parsed: Any = _parse_json_if_possible(tool_result)
 
     if tool_name in STRONG_WEB_TOOL_NAMES and isinstance(parsed, dict):
         return {
@@ -2332,6 +2626,10 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
             "wide_count": parsed.get("wide_count"),
             "wide_pass_used": bool(parsed.get("wide_pass_used", False)),
             "weak_narrow_evidence": bool(parsed.get("weak_narrow_evidence", False)),
+            "scope_mode": parsed.get("scope_mode"),
+            "searched_artifact_count": parsed.get("searched_artifact_count"),
+            "evidence_strength": parsed.get("evidence_strength"),
+            "suggested_next_action": parsed.get("suggested_next_action"),
         }
 
     if tool_name == "local_corpus_retrieve_evidence" and isinstance(parsed, dict):
@@ -2400,9 +2698,20 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
         }
 
     if tool_name == "search_web" and isinstance(parsed, list):
-        return {"items": len(parsed)}
+        return {
+            "items": len(parsed),
+            "domains": len(_extract_domains_from_search_results(parsed)),
+        }
 
     if tool_name == "fetch_url":
+        if isinstance(parsed, dict):
+            return {
+                "status": parsed.get("status"),
+                "mode": parsed.get("mode"),
+                "artifact_id": parsed.get("artifact_id"),
+                "domain": parsed.get("domain"),
+                "content_chars": parsed.get("content_chars"),
+            }
         content = parsed if isinstance(parsed, str) else str(parsed or "")
         return {"content_chars": len(content)}
 
@@ -2564,10 +2873,10 @@ def _is_empty_search_notes_result(tool_result: Any) -> bool:
 
 
 def _preferred_web_tool_for_loop_breaker(tools: dict[str, Any]) -> Optional[str]:
-    if "web_research_strong" in tools:
-        return "web_research_strong"
     if "search_web" in tools:
         return "search_web"
+    if "web_research_strong" in tools:
+        return "web_research_strong"
     return None
 
 
@@ -2575,7 +2884,7 @@ def _build_search_notes_loop_breaker_result(
     streak: int,
     blocked: bool = False,
     tool_name: str = "notes_lookup",
-    next_tool: Optional[str] = "web_research_strong",
+    next_tool: Optional[str] = "search_web",
 ) -> str:
     if next_tool:
         hint = (
@@ -3815,6 +4124,14 @@ async def chat_completion_tools_handler(
                 {"type": "chat:tool:journey", "data": completion_event}
             )
 
+        for research_event in _update_research_turn_state(
+            metadata,
+            tool_name=tool_function_name,
+            tool_params=tool_function_params,
+            tool_result=tool_result,
+        ):
+            await _emit_tool_journey_event(metadata, event_emitter, research_event)
+
         if event_emitter:
             await terminal_event_handler(
                 tool_function_name,
@@ -4002,7 +4319,7 @@ async def chat_completion_tools_handler(
                             {"type": "chat:tool:journey", "data": rewrite_event}
                         )
 
-                    await tool_call_handler(tool_call)
+                await tool_call_handler(tool_call)
 
         except Exception as e:
             log.debug(f"Error: {e}")
@@ -7191,6 +7508,307 @@ async def get_system_oauth_token(request, user):
     return oauth_token
 
 
+SOURCE_DIARY_SYSTEM_PROMPT = """You write exact-turn research source diaries in markdown.
+
+Rules:
+- Write markdown only.
+- Stay bounded to the supplied turn packet. Do not reconstruct earlier turns.
+- Do not invent sources, URLs, claims, or citations.
+- Keep the synopsis compact and factual.
+- If something is missing, say so briefly instead of guessing.
+
+Required sections:
+## Metadata
+## User Question
+## Final Answer Synopsis
+## Discovery Path
+## Helpful Sources
+## Weak Or Unhelpful Sources
+## Candidate Domains For Manual Curation
+"""
+
+
+def _truncate_source_diary_text(value: Any, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}\n...[truncated]"
+
+
+def _extract_tool_source_entries(sources: list[Any]) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for source in sources or []:
+        if not isinstance(source, dict):
+            continue
+        metadata_entries = source.get("metadata") or []
+        for item in metadata_entries:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or item.get("source") or "").strip()
+            name = str(item.get("name") or item.get("source") or url).strip()
+            if not url:
+                continue
+            key = (url, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append({"url": url, "name": name})
+    return entries
+
+
+def _build_source_diary_context(
+    *,
+    metadata: dict[str, Any],
+    message: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    state = metadata.get("research_turn_state") or {}
+    tool_calls = state.get("tool_calls") or []
+    if not tool_calls:
+        return None
+
+    web_tool_used = any(
+        str((entry or {}).get("tool") or "")
+        in {"search_web", "web_research_strong", "fetch_url", "query_web_evidence"}
+        for entry in tool_calls
+    )
+    if not web_tool_used:
+        return None
+
+    assistant_message = None
+    for candidate in reversed(messages):
+        if candidate.get("role") == "assistant":
+            assistant_message = candidate
+            break
+
+    assistant_text = ""
+    if assistant_message:
+        assistant_text = get_content_from_message(assistant_message) or ""
+        if not assistant_text and isinstance(assistant_message.get("content"), str):
+            assistant_text = assistant_message.get("content", "")
+
+    source_entries = _extract_tool_source_entries(metadata.get("tool_call_sources") or [])
+    stored_artifacts = state.get("stored_artifacts") or []
+    fetched_urls = [str(item.get("url") or "") for item in stored_artifacts if str(item.get("url") or "").strip()]
+    fetched_domains = sorted(
+        {
+            str(item.get("domain") or "").strip()
+            for item in stored_artifacts
+            if str(item.get("domain") or "").strip()
+        }
+    )
+
+    return {
+        "chat_id": metadata.get("chat_id"),
+        "message_id": metadata.get("message_id"),
+        "active_model": message.get("model") or metadata.get("model_id"),
+        "user_question": _truncate_source_diary_text(
+            metadata.get("user_prompt") or get_last_user_message(messages) or "",
+            6000,
+        ),
+        "final_answer_text": _truncate_source_diary_text(assistant_text, 12000),
+        "research_discovery_lane": state.get("research_discovery_lane"),
+        "strong_hardening_used": bool(state.get("strong_hardening_triggered")),
+        "strong_hardening_reason": state.get("strong_hardening_reason"),
+        "strong_hardening_improved_bundle": state.get("strong_hardening_improved_bundle"),
+        "broad_fallback_after_strong": bool(state.get("broad_fallback_after_strong")),
+        "tool_sequence": copy.deepcopy(tool_calls),
+        "fetched_urls": fetched_urls,
+        "fetched_domains": fetched_domains,
+        "stored_artifact_ids": [
+            str(item.get("artifact_id") or "")
+            for item in stored_artifacts
+            if str(item.get("artifact_id") or "").strip()
+        ],
+        "query_web_evidence_diagnostics": copy.deepcopy(state.get("evidence_queries") or []),
+        "citation_sources": source_entries,
+    }
+
+
+def _build_source_diary_prompt(context: dict[str, Any]) -> str:
+    packet = json.dumps(context, ensure_ascii=False, indent=2)
+    return (
+        "Write a markdown source diary for this completed research turn.\n"
+        "Focus on which sources materially helped, which ones did not, and which domains "
+        "look worth manual curation later.\n\n"
+        f"Turn packet:\n```json\n{packet}\n```"
+    )
+
+
+def _write_source_diary_markdown(
+    *,
+    chat_id: str,
+    message_id: str,
+    markdown: str,
+) -> str:
+    chat_dir = _resolve_chat_artifacts_dir(chat_id)
+    if chat_dir is None:
+        raise ValueError("Unable to resolve chat artifacts directory for source diary")
+
+    diary_dir = chat_dir / "source_diary"
+    diary_dir.mkdir(parents=True, exist_ok=True)
+    target_path = diary_dir / f"{message_id}.md"
+    temp_path = diary_dir / f".{message_id}.{uuid4().hex}.tmp"
+    temp_path.write_text(markdown, encoding="utf-8", errors="replace")
+    temp_path.replace(target_path)
+    return str(target_path)
+
+
+async def run_background_source_diary_generation(
+    *,
+    request: Request,
+    user,
+    active_model_id: str,
+    chat_id: str,
+    message_id: str,
+    context: dict[str, Any],
+    metadata: dict[str, Any],
+    event_emitter=None,
+) -> dict[str, Any]:
+    result = {
+        "status": "skipped",
+        "path": None,
+        "selected_model": None,
+        "selected_via": None,
+    }
+    if not chat_id or not message_id or str(chat_id).startswith("local:") or not context:
+        return result
+
+    models = _resolve_models_for_task(request)
+    selection = get_bounded_specialist_model_selection(
+        active_model_id,
+        request.app.state.config.TASK_MODEL,
+        request.app.state.config.TASK_MODEL_EXTERNAL,
+        models,
+        task_kind=BOUNDED_SPECIALIST_TASK_KIND_SOURCE_DIARY_GENERATION,
+    )
+    if not selection.get("used_bounded_specialist"):
+        return result
+
+    selected_model_id = selection["model_id"]
+    result["selected_model"] = selected_model_id
+    result["selected_via"] = selection.get("selected_via")
+    started_at = time.monotonic()
+
+    await _emit_tool_journey_event(
+        metadata,
+        event_emitter,
+        {
+            "phase": "source_diary_generation_started",
+            "task_kind": BOUNDED_SPECIALIST_TASK_KIND_SOURCE_DIARY_GENERATION,
+            "actor": "bounded_specialist",
+            "model_id": selected_model_id,
+            "active_model_id": active_model_id,
+            "selected_via": selection.get("selected_via"),
+            "route_source": selection.get("route_source"),
+            "reason": "background_source_diary",
+            "source_diary_generation_started": True,
+        },
+    )
+
+    last_error: Optional[Exception] = None
+    for _attempt in range(2):
+        try:
+            payload = {
+                "model": selected_model_id,
+                "messages": [
+                    {"role": "system", "content": SOURCE_DIARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": _build_source_diary_prompt(context)},
+                ],
+                "stream": False,
+                "temperature": 0.0,
+                "max_completion_tokens": 900,
+                "think": False,
+                "params": {
+                    "think": False,
+                    "custom_params": {
+                        "chat_template_kwargs": {
+                            "enable_thinking": False,
+                        }
+                    },
+                },
+                "metadata": {
+                    **(
+                        request.state.metadata
+                        if hasattr(request.state, "metadata")
+                        else {}
+                    ),
+                    "task": BOUNDED_SPECIALIST_TASK_KIND_SOURCE_DIARY_GENERATION,
+                    "chat_id": chat_id,
+                    "task_body": {
+                        "type": BOUNDED_SPECIALIST_TASK_KIND_SOURCE_DIARY_GENERATION,
+                        "message_id": message_id,
+                    },
+                    "bounded_specialist": _build_bounded_specialist_telemetry(
+                        selection,
+                        selected_model=selected_model_id,
+                        reason="background_source_diary",
+                    ),
+                },
+            }
+
+            response = await generate_chat_completion(
+                request,
+                form_data=payload,
+                user=user,
+                bypass_system_prompt=True,
+            )
+            markdown = (_extract_completion_message_content(response) or "").strip()
+            if not markdown:
+                raise ValueError("Empty source diary output")
+
+            path = _write_source_diary_markdown(
+                chat_id=chat_id,
+                message_id=message_id,
+                markdown=markdown,
+            )
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            await _emit_tool_journey_event(
+                metadata,
+                event_emitter,
+                {
+                    "phase": "source_diary_generation_done",
+                    "task_kind": BOUNDED_SPECIALIST_TASK_KIND_SOURCE_DIARY_GENERATION,
+                    "actor": "bounded_specialist",
+                    "model_id": selected_model_id,
+                    "active_model_id": active_model_id,
+                    "selected_via": selection.get("selected_via"),
+                    "route_source": selection.get("route_source"),
+                    "reason": "background_source_diary",
+                    "status": "ok",
+                    "duration_ms": duration_ms,
+                    "recent_artifact_count": len(context.get("stored_artifact_ids") or []),
+                    "source_diary_generation_done": True,
+                },
+            )
+            result["status"] = "written"
+            result["path"] = path
+            return result
+        except Exception as exc:
+            last_error = exc
+
+    await _emit_tool_journey_event(
+        metadata,
+        event_emitter,
+        {
+            "phase": "source_diary_generation_failed",
+            "task_kind": BOUNDED_SPECIALIST_TASK_KIND_SOURCE_DIARY_GENERATION,
+            "actor": "bounded_specialist",
+            "model_id": selected_model_id,
+            "active_model_id": active_model_id,
+            "selected_via": selection.get("selected_via"),
+            "route_source": selection.get("route_source"),
+            "reason": "background_source_diary",
+            "status": "error",
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error_class": last_error.__class__.__name__ if last_error else "UnknownError",
+            "source_diary_generation_failed": True,
+        },
+    )
+    return result
+
+
 async def background_tasks_handler(ctx):
     request = ctx["request"]
     form_data = ctx["form_data"]
@@ -7342,6 +7960,30 @@ async def background_tasks_handler(ctx):
                         event_emitter=event_emitter,
                     )
                 )
+
+            if (
+                not metadata.get("chat_id", "").startswith("local:")
+                and metadata.get("chat_id")
+                and metadata.get("message_id")
+            ):
+                diary_context = _build_source_diary_context(
+                    metadata=metadata,
+                    message=message,
+                    messages=messages,
+                )
+                if diary_context:
+                    asyncio.create_task(
+                        run_background_source_diary_generation(
+                            request=request,
+                            user=user,
+                            active_model_id=message["model"],
+                            chat_id=metadata["chat_id"],
+                            message_id=metadata["message_id"],
+                            context=diary_context,
+                            metadata=metadata,
+                            event_emitter=event_emitter,
+                        )
+                    )
 
             if not metadata.get("chat_id", "").startswith(
                 "local:"
@@ -8990,6 +9632,16 @@ async def streaming_chat_response_handler(response, ctx):
                                 }
                             )
 
+                        for research_event in _update_research_turn_state(
+                            metadata,
+                            tool_name=tool_function_name,
+                            tool_params=tool_function_params,
+                            tool_result=tool_result,
+                        ):
+                            await _emit_tool_journey_event(
+                                metadata, event_emitter, research_event
+                            )
+
                         # Extract citation sources from tool results
                         if (
                             citations_enabled
@@ -9101,6 +9753,9 @@ async def streaming_chat_response_handler(response, ctx):
                         # the RAG template across file and tool sources.
                         all_tool_call_sources.extend(tool_call_sources)
                         if all_tool_call_sources and user_message:
+                            metadata["tool_call_sources"] = copy.deepcopy(
+                                all_tool_call_sources
+                            )
                             # Restore pre-RAG message state before re-applying
                             # to prevent RAG template duplication.
                             original_user_message = (
