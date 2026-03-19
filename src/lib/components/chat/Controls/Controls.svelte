@@ -28,6 +28,31 @@
 	let showValves = getOpen('valves', false);
 	let showSystemPrompt = getOpen('systemPrompt');
 	let showAdvancedParams = getOpen('advancedParams');
+
+	const getWebEvidenceRetrievalModeOverride = () =>
+		(params?.custom_params?.web_evidence_retrieval_mode as string | undefined) ?? '';
+
+	const setWebEvidenceRetrievalModeOverride = (value: string) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		const customParams =
+			typeof nextParams.custom_params === 'object' && nextParams.custom_params !== null
+				? nextParams.custom_params
+				: {};
+
+		if (value) {
+			customParams.web_evidence_retrieval_mode = value;
+			nextParams.custom_params = customParams;
+		} else {
+			delete customParams.web_evidence_retrieval_mode;
+			if (Object.keys(customParams).length > 0) {
+				nextParams.custom_params = customParams;
+			} else {
+				delete nextParams.custom_params;
+			}
+		}
+
+		params = nextParams;
+	};
 </script>
 
 <div class=" dark:text-white">
@@ -121,19 +146,43 @@
 				<hr class="my-2 border-gray-50 dark:border-gray-700/10" />
 			{/if}
 
-				{#if $user?.role === 'admin' || ($user?.permissions.chat?.params ?? true)}
-					<Collapsible
-						title={$i18n.t('Advanced Params')}
-						bind:open={showAdvancedParams}
-						onChange={setOpen('advancedParams')}
-						buttonClassName="w-full"
-					>
-						<div class="text-sm mt-1.5" slot="content">
-							<div>
-								<AdvancedParams admin={$user?.role === 'admin'} custom={true} bind:params />
-							</div>
+			{#if $user?.role === 'admin' || ($user?.permissions.chat?.params ?? true)}
+				<div class="py-0.5 flex w-full justify-between">
+					<div class="self-center text-xs">{$i18n.t('Web Evidence Retrieval')}</div>
+					<div class="flex items-center relative">
+						<select
+							class="w-fit pr-8 rounded-sm px-2 py-1 text-xs bg-transparent outline-hidden text-right"
+							value={getWebEvidenceRetrievalModeOverride()}
+							on:change={(event) =>
+								setWebEvidenceRetrievalModeOverride(
+									(event.currentTarget as HTMLSelectElement).value
+								)}
+						>
+							<option value="">{$i18n.t('Use global default')}</option>
+							<option value="legacy_store_retrieval">
+								{$i18n.t('Legacy store retrieval')}
+							</option>
+							<option value="segmented_confidence_gated">
+								{$i18n.t('Segmented confidence-gated retrieval')}
+							</option>
+						</select>
+					</div>
+				</div>
+
+				<hr class="my-2 border-gray-50 dark:border-gray-700/10" />
+
+				<Collapsible
+					title={$i18n.t('Advanced Params')}
+					bind:open={showAdvancedParams}
+					onChange={setOpen('advancedParams')}
+					buttonClassName="w-full"
+				>
+					<div class="text-sm mt-1.5" slot="content">
+						<div>
+							<AdvancedParams admin={$user?.role === 'admin'} custom={true} bind:params />
 						</div>
-					</Collapsible>
+					</div>
+				</Collapsible>
 			{/if}
 		</div>
 	{/if}

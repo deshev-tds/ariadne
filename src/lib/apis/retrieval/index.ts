@@ -56,6 +56,7 @@ type RAGConfigForm = {
 	ENABLE_ONEDRIVE_INTEGRATION?: boolean;
 	chunk?: ChunkConfigForm;
 	content_extraction?: ContentExtractConfigForm;
+	web?: Record<string, unknown>;
 	web_loader_ssl_verification?: boolean;
 	youtube?: YoutubeConfigForm;
 };

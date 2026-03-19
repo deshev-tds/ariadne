@@ -76,6 +76,7 @@ def remove_open_webui_params(params: dict) -> dict:
         "stream_delta_chunk_size": int,
         "function_calling": str,
         "reasoning_tags": list,
+        "web_evidence_retrieval_mode": str,
         "system": str,
     }
 
@@ -104,6 +105,7 @@ def apply_model_params_to_body_openai(params: dict, form_data: dict) -> dict:
 
         # If there are custom parameters, we need to apply them first
         params = deep_update(params, custom_params)
+        params = remove_open_webui_params(params)
 
     mappings = {
         "temperature": float,
@@ -139,6 +141,7 @@ def apply_model_params_to_body_ollama(params: dict, form_data: dict) -> dict:
 
         # If there are custom parameters, we need to apply them first
         params = deep_update(params, custom_params)
+        params = remove_open_webui_params(params)
 
     # Convert OpenAI parameter names to Ollama parameter names if needed.
     name_differences = {

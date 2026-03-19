@@ -46,6 +46,16 @@
 	];
 	let webLoaderEngines = ['playwright', 'firecrawl', 'tavily', 'external'];
 	let plannerModes = ['rules_only', 'hybrid_rewriter', 'model_only'];
+	let evidenceRetrievalModes = [
+		{
+			value: 'legacy_store_retrieval',
+			label: 'Legacy store retrieval'
+		},
+		{
+			value: 'segmented_confidence_gated',
+			label: 'Segmented confidence-gated retrieval'
+		}
+	];
 
 	let webConfig = null;
 	let sourceRegistryRaw = '';
@@ -129,33 +139,33 @@
 			webConfig.PLAYWRIGHT_TIMEOUT = webConfig.PLAYWRIGHT_TIMEOUT.toString();
 		}
 
-			const plannerNumericFields = [
-				'WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES',
-				'WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES',
-				'WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE',
-				'WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE',
-				'WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS',
-				'WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE',
-				'WEB_SEARCH_PLANNER_PLATEAU_DELTA',
-				'WEB_SEARCH_PLANNER_PLATEAU_STREAK',
-				'WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES',
-				'WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS',
-				'WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS',
-				'WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS',
-				'WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE',
-				'WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS',
-				'WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES',
-				'WEB_SEARCH_BRAVE_MIN_INTERVAL_MS',
-				'WEB_SEARCH_EVIDENCE_MAX_TOKENS',
-				'WEB_SEARCH_EVIDENCE_CHUNK_TOKENS',
-				'WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE',
-				'WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS',
-				'WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS',
-				'WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE',
-				'WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS',
-				'WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS',
-				'WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS'
-			];
+		const plannerNumericFields = [
+			'WEB_SEARCH_PLANNER_MIN_TOTAL_QUERIES',
+			'WEB_SEARCH_PLANNER_MAX_TOTAL_QUERIES',
+			'WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE',
+			'WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE',
+			'WEB_SEARCH_PLANNER_PRIMARY_STOP_TRUSTED_DOMAINS',
+			'WEB_SEARCH_PLANNER_PLATEAU_FLOOR_SCORE',
+			'WEB_SEARCH_PLANNER_PLATEAU_DELTA',
+			'WEB_SEARCH_PLANNER_PLATEAU_STREAK',
+			'WEB_SEARCH_PLANNER_REWRITER_MAX_QUERIES',
+			'WEB_SEARCH_PLANNER_REWRITER_TIMEOUT_MS',
+			'WEB_SEARCH_PLANNER_REWRITER_MAX_REPAIR_ATTEMPTS',
+			'WEB_SEARCH_PLANNER_REWRITER_MAX_COMPLETION_TOKENS',
+			'WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE',
+			'WEB_SEARCH_LOCAL_MIN_PRIMARY_HITS',
+			'WEB_SEARCH_BRAVE_FALLBACK_MAX_QUERIES',
+			'WEB_SEARCH_BRAVE_MIN_INTERVAL_MS',
+			'WEB_SEARCH_EVIDENCE_MAX_TOKENS',
+			'WEB_SEARCH_EVIDENCE_CHUNK_TOKENS',
+			'WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE',
+			'WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS',
+			'WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS',
+			'WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE',
+			'WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS',
+			'WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS',
+			'WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS'
+		];
 		for (const field of plannerNumericFields) {
 			if (webConfig[field] !== '' && webConfig[field] !== null && webConfig[field] !== undefined) {
 				const parsedValue = Number(webConfig[field]);
@@ -186,6 +196,8 @@
 
 		if (res) {
 			webConfig = res.web;
+			webConfig.WEB_EVIDENCE_RETRIEVAL_MODE =
+				webConfig?.WEB_EVIDENCE_RETRIEVAL_MODE ?? 'legacy_store_retrieval';
 
 			// Convert array back to comma-separated string for display
 			if (Array.isArray(webConfig?.WEB_SEARCH_DOMAIN_FILTER_LIST)) {
@@ -201,8 +213,7 @@
 			}
 
 			if (Array.isArray(webConfig?.PLAYWRIGHT_REMOVE_SELECTORS)) {
-				webConfig.PLAYWRIGHT_REMOVE_SELECTORS =
-					webConfig.PLAYWRIGHT_REMOVE_SELECTORS.join(',');
+				webConfig.PLAYWRIGHT_REMOVE_SELECTORS = webConfig.PLAYWRIGHT_REMOVE_SELECTORS.join(',');
 			} else if (!webConfig.PLAYWRIGHT_REMOVE_SELECTORS) {
 				webConfig.PLAYWRIGHT_REMOVE_SELECTORS = '';
 			}
@@ -268,6 +279,22 @@
 									{:else}
 										<option value={engine}>{engine}</option>
 									{/if}
+								{/each}
+							</select>
+						</div>
+					</div>
+
+					<div class="  mb-2.5 flex w-full justify-between">
+						<div class=" self-center text-xs font-medium">
+							{$i18n.t('Web Evidence Retrieval')}
+						</div>
+						<div class="flex items-center relative">
+							<select
+								class="w-fit pr-8 rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
+								bind:value={webConfig.WEB_EVIDENCE_RETRIEVAL_MODE}
+							>
+								{#each evidenceRetrievalModes as option}
+									<option value={option.value}>{$i18n.t(option.label)}</option>
 								{/each}
 							</select>
 						</div>
@@ -1277,153 +1304,153 @@
 								/>
 							</div>
 
-								<div class="mb-2.5 flex w-full justify-between">
-									<div class="self-center text-xs font-medium">
-										{$i18n.t('Intent Coverage Guard')}
-									</div>
-									<div class="flex items-center relative">
-										<Switch bind:state={webConfig.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD} />
+							<div class="mb-2.5 flex w-full justify-between">
+								<div class="self-center text-xs font-medium">
+									{$i18n.t('Intent Coverage Guard')}
+								</div>
+								<div class="flex items-center relative">
+									<Switch bind:state={webConfig.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD} />
+								</div>
+							</div>
+
+							<div class="mb-2.5 flex w-full justify-between">
+								<div class="self-center text-xs font-medium">
+									{$i18n.t('Evidence Saturation Gate')}
+								</div>
+								<div class="flex items-center relative">
+									<Switch bind:state={webConfig.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION} />
+								</div>
+							</div>
+
+							{#if webConfig.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION}
+								<div class="mb-2.5 flex w-full flex-col">
+									<div class="flex gap-2">
+										<div class="w-full">
+											<div class="self-center text-xs font-medium mb-1">
+												{$i18n.t('Evidence Max Tokens')}
+											</div>
+											<input
+												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+												type="number"
+												min="256"
+												bind:value={webConfig.WEB_SEARCH_EVIDENCE_MAX_TOKENS}
+											/>
+										</div>
+										<div class="w-full">
+											<div class="self-center text-xs font-medium mb-1">
+												{$i18n.t('Evidence Chunk Tokens')}
+											</div>
+											<input
+												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+												type="number"
+												min="64"
+												bind:value={webConfig.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS}
+											/>
+										</div>
 									</div>
 								</div>
 
-								<div class="mb-2.5 flex w-full justify-between">
-									<div class="self-center text-xs font-medium">
-										{$i18n.t('Evidence Saturation Gate')}
-									</div>
-									<div class="flex items-center relative">
-										<Switch bind:state={webConfig.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION} />
+								<div class="mb-2.5 flex w-full flex-col">
+									<div class="flex gap-2">
+										<div class="w-full">
+											<div class="self-center text-xs font-medium mb-1">
+												{$i18n.t('Max Chunks Per Source')}
+											</div>
+											<input
+												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+												type="number"
+												min="1"
+												bind:value={webConfig.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE}
+											/>
+										</div>
+										<div class="w-full">
+											<div class="self-center text-xs font-medium mb-1">
+												{$i18n.t('Judge Every Chunks')}
+											</div>
+											<input
+												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+												type="number"
+												min="1"
+												bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS}
+											/>
+										</div>
 									</div>
 								</div>
 
-								{#if webConfig.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION}
-									<div class="mb-2.5 flex w-full flex-col">
-										<div class="flex gap-2">
-											<div class="w-full">
-												<div class="self-center text-xs font-medium mb-1">
-													{$i18n.t('Evidence Max Tokens')}
-												</div>
-												<input
-													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-													type="number"
-													min="256"
-													bind:value={webConfig.WEB_SEARCH_EVIDENCE_MAX_TOKENS}
-												/>
+								<div class="mb-2.5 flex w-full flex-col">
+									<div class="flex gap-2">
+										<div class="w-full">
+											<div class="self-center text-xs font-medium mb-1">
+												{$i18n.t('Judge Min Chunks')}
 											</div>
-											<div class="w-full">
-												<div class="self-center text-xs font-medium mb-1">
-													{$i18n.t('Evidence Chunk Tokens')}
-												</div>
-												<input
-													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-													type="number"
-													min="64"
-													bind:value={webConfig.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS}
-												/>
+											<input
+												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+												type="number"
+												min="1"
+												bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS}
+											/>
+										</div>
+										<div class="w-full">
+											<div class="self-center text-xs font-medium mb-1">
+												{$i18n.t('Judge Confidence')}
 											</div>
+											<input
+												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+												type="number"
+												step="0.01"
+												min="0"
+												max="1"
+												bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE}
+											/>
 										</div>
 									</div>
+								</div>
 
-									<div class="mb-2.5 flex w-full flex-col">
-										<div class="flex gap-2">
-											<div class="w-full">
-												<div class="self-center text-xs font-medium mb-1">
-													{$i18n.t('Max Chunks Per Source')}
-												</div>
-												<input
-													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-													type="number"
-													min="1"
-													bind:value={webConfig.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE}
-												/>
+								<div class="mb-2.5 flex w-full flex-col">
+									<div class="flex gap-2">
+										<div class="w-full">
+											<div class="self-center text-xs font-medium mb-1">
+												{$i18n.t('Judge Timeout (ms)')}
 											</div>
-											<div class="w-full">
-												<div class="self-center text-xs font-medium mb-1">
-													{$i18n.t('Judge Every Chunks')}
-												</div>
-												<input
-													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-													type="number"
-													min="1"
-													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_EVERY_CHUNKS}
-												/>
+											<input
+												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+												type="number"
+												min="100"
+												step="100"
+												bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS}
+											/>
+										</div>
+										<div class="w-full">
+											<div class="self-center text-xs font-medium mb-1">
+												{$i18n.t('Judge Max Tokens')}
 											</div>
+											<input
+												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+												type="number"
+												min="32"
+												bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS}
+											/>
 										</div>
 									</div>
-
-									<div class="mb-2.5 flex w-full flex-col">
-										<div class="flex gap-2">
-											<div class="w-full">
-												<div class="self-center text-xs font-medium mb-1">
-													{$i18n.t('Judge Min Chunks')}
-												</div>
-												<input
-													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-													type="number"
-													min="1"
-													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_MIN_CHUNKS}
-												/>
-											</div>
-											<div class="w-full">
-												<div class="self-center text-xs font-medium mb-1">
-													{$i18n.t('Judge Confidence')}
-												</div>
-												<input
-													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-													type="number"
-													step="0.01"
-													min="0"
-													max="1"
-													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE}
-												/>
-											</div>
-										</div>
-									</div>
-
-									<div class="mb-2.5 flex w-full flex-col">
-										<div class="flex gap-2">
-											<div class="w-full">
-												<div class="self-center text-xs font-medium mb-1">
-													{$i18n.t('Judge Timeout (ms)')}
-												</div>
-												<input
-													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-													type="number"
-													min="100"
-													step="100"
-													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS}
-												/>
-											</div>
-											<div class="w-full">
-												<div class="self-center text-xs font-medium mb-1">
-													{$i18n.t('Judge Max Tokens')}
-												</div>
-												<input
-													class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-													type="number"
-													min="32"
-													bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS}
-												/>
-											</div>
-										</div>
-									</div>
-
-									<div class="mb-2.5 flex w-full flex-col">
-										<div class="self-center text-xs font-medium mb-1">
-											{$i18n.t('Judge Max Input Chars')}
-										</div>
-										<input
-											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-											type="number"
-											min="512"
-											bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS}
-										/>
-									</div>
-								{/if}
+								</div>
 
 								<div class="mb-2.5 flex w-full flex-col">
 									<div class="self-center text-xs font-medium mb-1">
-										{$i18n.t('Source Registry (JSON)')}
+										{$i18n.t('Judge Max Input Chars')}
 									</div>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										type="number"
+										min="512"
+										bind:value={webConfig.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS}
+									/>
+								</div>
+							{/if}
+
+							<div class="mb-2.5 flex w-full flex-col">
+								<div class="self-center text-xs font-medium mb-1">
+									{$i18n.t('Source Registry (JSON)')}
+								</div>
 								{#if sourceRegistryValidation}
 									<div class="text-[11px] text-gray-500 dark:text-gray-400 mb-1">
 										{$i18n.t('Topics')}: {sourceRegistryValidation.topics} | {$i18n.t('Sources')}
@@ -1431,12 +1458,12 @@
 										{sourceRegistryValidation.schema}
 									</div>
 								{/if}
-									<textarea
-										class="w-full rounded-lg py-2 px-3 text-xs font-mono bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-										rows="14"
-										bind:value={sourceRegistryRaw}
-										placeholder={$i18n.t('Planner source registry JSON')}
-									></textarea>
+								<textarea
+									class="w-full rounded-lg py-2 px-3 text-xs font-mono bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									rows="14"
+									bind:value={sourceRegistryRaw}
+									placeholder={$i18n.t('Planner source registry JSON')}
+								></textarea>
 								<div class="flex gap-2 mt-2">
 									<button
 										type="button"
@@ -1600,14 +1627,14 @@
 
 								<div class="flex w-full">
 									<div class="flex-1">
-											<input
-												class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-												placeholder={$i18n.t(
-													'e.g. script,style,noscript,header,footer,nav,[role="navigation"]'
-												)}
-												bind:value={webConfig.PLAYWRIGHT_REMOVE_SELECTORS}
-												autocomplete="off"
-											/>
+										<input
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											placeholder={$i18n.t(
+												'e.g. script,style,noscript,header,footer,nav,[role="navigation"]'
+											)}
+											bind:value={webConfig.PLAYWRIGHT_REMOVE_SELECTORS}
+											autocomplete="off"
+										/>
 									</div>
 								</div>
 							</div>

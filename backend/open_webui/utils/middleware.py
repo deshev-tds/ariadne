@@ -2463,6 +2463,7 @@ def _build_research_tool_trace_entry(
         entry["status"] = parsed_result.get("status")
         entry["artifact_id"] = parsed_result.get("artifact_id")
         entry["domain"] = parsed_result.get("domain")
+        entry["retrieval_mode_effective"] = parsed_result.get("retrieval_mode_effective")
     elif tool_name == "query_web_evidence" and isinstance(parsed_result, dict):
         entry["status"] = parsed_result.get("status")
         entry["scope_mode"] = parsed_result.get("scope_mode")
@@ -2470,6 +2471,7 @@ def _build_research_tool_trace_entry(
         entry["suggested_next_action"] = parsed_result.get("suggested_next_action")
         entry["snippets"] = len(parsed_result.get("snippets") or [])
         entry["searched_artifact_count"] = parsed_result.get("searched_artifact_count")
+        entry["retrieval_mode_effective"] = parsed_result.get("retrieval_mode_effective")
     return entry
 
 
@@ -2637,6 +2639,10 @@ def _update_research_turn_state(
                 "evidence_empty_after_fetch": bool(state.get("evidence_empty_after_fetch")),
                 "evidence_scope_mode": parsed.get("scope_mode"),
                 "recent_artifact_count": artifact_count,
+                "retrieval_mode_effective": parsed.get("retrieval_mode_effective"),
+                "structured_index_used": bool(parsed.get("structured_index_used", False)),
+                "focus_retrieval_used": bool(parsed.get("focus_retrieval_used", False)),
+                "fallback_chunk_mode": bool(parsed.get("fallback_chunk_mode", False)),
             }
         )
         if (
@@ -2688,6 +2694,18 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
             "searched_artifact_count": parsed.get("searched_artifact_count"),
             "evidence_strength": parsed.get("evidence_strength"),
             "suggested_next_action": parsed.get("suggested_next_action"),
+            "retrieval_mode_effective": parsed.get("retrieval_mode_effective"),
+            "retrieval_mode_source": parsed.get("retrieval_mode_source"),
+            "structured_index_used": bool(parsed.get("structured_index_used", False)),
+            "focus_retrieval_used": bool(parsed.get("focus_retrieval_used", False)),
+            "fallback_chunk_mode": bool(parsed.get("fallback_chunk_mode", False)),
+            "coverage_before_merge": parsed.get("coverage_before_merge"),
+            "coverage_after_merge": parsed.get("coverage_after_merge"),
+            "focus_count": parsed.get("focus_count"),
+            "focus_admitted": parsed.get("focus_admitted"),
+            "focus_dropped_low_score": parsed.get("focus_dropped_low_score"),
+            "dedupe_cluster_count": parsed.get("dedupe_cluster_count"),
+            "snippets_dropped_overlap": parsed.get("snippets_dropped_overlap"),
         }
 
     if tool_name == "local_corpus_retrieve_evidence" and isinstance(parsed, dict):
@@ -2775,6 +2793,10 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
                 "binary_handling": parsed.get("binary_handling"),
                 "extraction_engine": parsed.get("extraction_engine"),
                 "retry_recommended": parsed.get("retry_recommended"),
+                "retrieval_mode_effective": parsed.get("retrieval_mode_effective"),
+                "retrieval_mode_source": parsed.get("retrieval_mode_source"),
+                "segmentation_mode": parsed.get("segmentation_mode"),
+                "structure_confidence": parsed.get("structure_confidence"),
             }
         content = parsed if isinstance(parsed, str) else str(parsed or "")
         return {"content_chars": len(content)}
@@ -6494,6 +6516,7 @@ def apply_params_to_form_data(form_data, model):
         "ledger_mode": str,
         "focused_search_mode": bool,
         "local_corpus_mode": str,
+        "web_evidence_retrieval_mode": str,
         "system": str,
     }
 
@@ -6514,6 +6537,10 @@ def apply_params_to_form_data(form_data, model):
 
         # If custom_params are provided, merge them into params
         params = deep_update(params, custom_params)
+
+    for key in list(params.keys()):
+        if key in open_webui_params:
+            del params[key]
 
     if model.get("owned_by") == "ollama":
         # OpenAI-only qualitative control, never forward to Ollama options.

@@ -3690,6 +3690,12 @@ WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS = PersistentConfig(
     int(os.getenv("WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS", "16000")),
 )
 
+WEB_EVIDENCE_RETRIEVAL_MODE = PersistentConfig(
+    "WEB_EVIDENCE_RETRIEVAL_MODE",
+    "rag.web.evidence.retrieval_mode",
+    os.getenv("WEB_EVIDENCE_RETRIEVAL_MODE", "legacy_store_retrieval"),
+)
+
 
 WEB_LOADER_ENGINE = PersistentConfig(
     "WEB_LOADER_ENGINE",

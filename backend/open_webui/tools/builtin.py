@@ -58,6 +58,7 @@ from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.utils.sanitize import sanitize_code
 from open_webui.utils.web_evidence_store import (
     query_web_evidence_store,
+    resolve_web_evidence_retrieval_mode,
     store_web_page,
 )
 
@@ -754,6 +755,11 @@ async def fetch_url(
         return json.dumps({"error": "Request context not available"})
 
     try:
+        config = getattr(getattr(getattr(__request__, "app", None), "state", None), "config", None)
+        retrieval_mode, retrieval_mode_source = resolve_web_evidence_retrieval_mode(
+            config_or_path=config,
+            metadata=__metadata__,
+        )
         content, docs, fetch_meta = await asyncio.to_thread(
             get_content_from_url, __request__, url
         )
@@ -761,6 +767,8 @@ async def fetch_url(
         fetch_meta = fetch_meta if isinstance(fetch_meta, dict) else {}
         if fetch_meta.get("status") in {"unsupported_binary", "document_extract_failed"}:
             fetch_meta["mode"] = selected_mode
+            fetch_meta["retrieval_mode_effective"] = retrieval_mode
+            fetch_meta["retrieval_mode_source"] = retrieval_mode_source
             return json.dumps(fetch_meta, ensure_ascii=False)
 
         content_source = str(fetch_meta.get("content_source") or "primary_loader")
@@ -803,6 +811,7 @@ async def fetch_url(
                 url=url,
                 content=content,
                 title=inferred_title,
+                retrieval_mode=retrieval_mode,
             )
             pointer["mode"] = "store"
             pointer["content_source"] = content_source
@@ -811,6 +820,8 @@ async def fetch_url(
             pointer["binary_handling"] = binary_handling
             pointer["extraction_engine"] = extraction_engine
             pointer["retry_recommended"] = False
+            pointer["retrieval_mode_effective"] = retrieval_mode
+            pointer["retrieval_mode_source"] = retrieval_mode_source
             pointer["available_to"] = "query_web_evidence"
             pointer["evidence_query_scope"] = {
                 "chat_id": chat_id,
@@ -884,6 +895,11 @@ async def query_web_evidence(
         )
 
     try:
+        config = getattr(getattr(getattr(__request__, "app", None), "state", None), "config", None)
+        retrieval_mode, retrieval_mode_source = resolve_web_evidence_retrieval_mode(
+            config_or_path=config,
+            metadata=__metadata__,
+        )
         payload = await asyncio.to_thread(
             query_web_evidence_store,
             chat_id=chat_id,
@@ -895,7 +911,13 @@ async def query_web_evidence(
             widen_if_weak=widen_if_weak,
             wide_top_k=wide_top_k,
             wide_window_chars=wide_window_chars,
+            retrieval_mode=retrieval_mode,
         )
+        if isinstance(payload, dict):
+            payload["retrieval_mode_effective"] = payload.get(
+                "retrieval_mode_effective", retrieval_mode
+            )
+            payload["retrieval_mode_source"] = retrieval_mode_source
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"query_web_evidence error: {e}")
