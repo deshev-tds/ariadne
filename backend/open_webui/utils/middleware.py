@@ -2274,12 +2274,20 @@ def get_citation_source_from_tool_result(
 TOOL_JOURNEY_EVENT_CAP = 120
 TOOL_JOURNEY_PREVIEW_CHARS = 280
 SEARCH_NOTES_EMPTY_STREAK_LIMIT = 2
+RESEARCH_WEAK_EVIDENCE_STREAK_LIMIT = 2
 STRONG_WEB_TOOL_NAMES = {
     "web_research_strong",
     "search_strong_sources",
     "notes_research_strong",
 }
 NOTES_LOOKUP_TOOL_NAMES = {"notes_lookup", "search_notes"}
+RESEARCH_LOOP_BREAKER_TOOL_NAMES = {
+    "search_web",
+    "web_research_strong",
+    "fetch_url",
+    "query_web_evidence",
+    *NOTES_LOOKUP_TOOL_NAMES,
+}
 TOOL_NAME_ALIASES = {
     "search_strong_sources": "web_research_strong",
     "search_notes": "notes_lookup",
@@ -2357,6 +2365,8 @@ def _research_turn_state(metadata: Optional[dict[str, Any]]) -> Optional[dict[st
             "search_curated_domains": [],
             "search_domain_families": [],
             "research_discovery_lane": None,
+            "broad_search_count": 0,
+            "strong_search_count": 0,
             "strong_hardening_triggered": False,
             "strong_hardening_reason": None,
             "strong_hardening_improved_bundle": None,
@@ -2364,6 +2374,10 @@ def _research_turn_state(metadata: Optional[dict[str, Any]]) -> Optional[dict[st
             "evidence_empty_after_fetch": False,
             "evidence_scope_mode": None,
             "recent_artifact_count": 0,
+            "empty_fetch_streak": 0,
+            "weak_evidence_streak": 0,
+            "research_loop_breaker_triggered": False,
+            "research_loop_breaker_reason": None,
             "evidence_queries": [],
         },
     )
@@ -2481,6 +2495,7 @@ def _update_research_turn_state(
     curated_map = _get_curated_domain_family_map()
 
     if canonical_name == "search_web" and isinstance(parsed, list):
+        state["broad_search_count"] = int(state.get("broad_search_count") or 0) + 1
         domains = _extract_domains_from_search_results(parsed)
         state["search_domains"] = domains
         state["search_curated_domains"] = [domain for domain in domains if domain in curated_map]
@@ -2510,6 +2525,7 @@ def _update_research_turn_state(
             )
 
     elif canonical_name == "web_research_strong" and isinstance(parsed, dict):
+        state["strong_search_count"] = int(state.get("strong_search_count") or 0) + 1
         if not state.get("research_discovery_lane"):
             state["research_discovery_lane"] = "web_research_strong"
             events.append(
@@ -2544,6 +2560,12 @@ def _update_research_turn_state(
         )
 
     elif canonical_name == "fetch_url" and isinstance(parsed, dict):
+        if parsed.get("mode") == "store":
+            content_chars = int(parsed.get("content_chars") or 0)
+            if content_chars <= 0:
+                state["empty_fetch_streak"] = int(state.get("empty_fetch_streak") or 0) + 1
+            else:
+                state["empty_fetch_streak"] = 0
         if parsed.get("mode") == "store" and parsed.get("artifact_id"):
             artifact_id = str(parsed.get("artifact_id") or "").strip()
             known_ids = {
@@ -2564,6 +2586,30 @@ def _update_research_turn_state(
     elif canonical_name == "query_web_evidence" and isinstance(parsed, dict):
         snippets = parsed.get("snippets") or []
         artifact_count = int(parsed.get("searched_artifact_count") or 0)
+        previous_query = (state.get("evidence_queries") or [])[-1] if state.get("evidence_queries") else None
+        weak_evidence = (
+            len(snippets) == 0
+            and parsed.get("evidence_strength") == "weak"
+            and parsed.get("suggested_next_action")
+            in {"refine_query", "broaden_discovery", "fetch_more"}
+        )
+        if weak_evidence:
+            previous_weak = bool(
+                previous_query
+                and previous_query.get("evidence_strength") == "weak"
+                and int(previous_query.get("snippets") or 0) == 0
+            )
+            previous_artifact_count = int(
+                (previous_query or {}).get("searched_artifact_count") or 0
+            )
+            if previous_weak and artifact_count <= previous_artifact_count:
+                state["weak_evidence_streak"] = int(
+                    state.get("weak_evidence_streak") or 0
+                ) + 1
+            else:
+                state["weak_evidence_streak"] = 1
+        else:
+            state["weak_evidence_streak"] = 0
         state["evidence_scope_mode"] = parsed.get("scope_mode")
         state["recent_artifact_count"] = artifact_count
         state["evidence_empty_after_fetch"] = bool(
@@ -2593,6 +2639,18 @@ def _update_research_turn_state(
                 "recent_artifact_count": artifact_count,
             }
         )
+        if (
+            not state.get("research_loop_breaker_triggered")
+            and int(state.get("weak_evidence_streak") or 0)
+            >= RESEARCH_WEAK_EVIDENCE_STREAK_LIMIT
+        ):
+            reason = (
+                "repeated_weak_evidence_with_empty_fetches"
+                if int(state.get("empty_fetch_streak") or 0) >= 2
+                else "repeated_weak_evidence"
+            )
+            state["research_loop_breaker_triggered"] = True
+            state["research_loop_breaker_reason"] = reason
 
     return events
 
@@ -2912,6 +2970,39 @@ def _build_search_notes_loop_breaker_result(
         "hint": hint,
         "next_tool": next_tool,
         "next_action": next_action,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _build_research_loop_breaker_result(
+    state: Optional[dict[str, Any]],
+    *,
+    blocked: bool = False,
+    tool_name: str = "query_web_evidence",
+) -> str:
+    research_state = state or {}
+    reason = str(research_state.get("research_loop_breaker_reason") or "repeated_weak_evidence")
+    weak_evidence_streak = int(research_state.get("weak_evidence_streak") or 0)
+    recent_artifact_count = int(research_state.get("recent_artifact_count") or 0)
+    if reason == "repeated_weak_evidence_with_empty_fetches":
+        message = (
+            "Repeated evidence retrieval stayed weak, and some fetched pages had no usable stored content."
+        )
+    else:
+        message = "Repeated evidence retrieval stayed weak across multiple attempts."
+
+    payload = {
+        "status": "loop_breaker_active" if blocked else "loop_breaker_triggered",
+        "tool": tool_name,
+        "reason": reason,
+        "weak_evidence_streak": weak_evidence_streak,
+        "recent_artifact_count": recent_artifact_count,
+        "message": message,
+        "hint": (
+            "Stop calling more research tools in this turn. Answer with the strongest current evidence, "
+            "and clearly mark any remaining uncertainty or missing verification."
+        ),
+        "next_action": "answer_with_current_evidence",
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -9306,6 +9397,7 @@ async def streaming_chat_response_handler(response, ctx):
                 user_message = get_last_user_message(form_data["messages"])
                 search_notes_empty_streak = 0
                 search_notes_guard_active = False
+                research_loop_guard_active = False
 
                 # Check if citations are enabled for this model
                 citations_enabled = (
@@ -9446,9 +9538,47 @@ async def streaming_chat_response_handler(response, ctx):
                         direct_tool = False
                         tool_execution_error = None
                         search_notes_blocked = False
+                        research_loop_blocked = False
                         next_web_tool = _preferred_web_tool_for_loop_breaker(tools)
+                        research_state = _research_turn_state(metadata) or {}
 
                         if (
+                            research_loop_guard_active
+                            and resolved_tool_function_name in RESEARCH_LOOP_BREAKER_TOOL_NAMES
+                        ):
+                            research_loop_blocked = True
+                            tool_result = _build_research_loop_breaker_result(
+                                research_state,
+                                blocked=True,
+                                tool_name=tool_function_name,
+                            )
+                            blocked_event = _append_tool_journey_event(
+                                metadata,
+                                {
+                                    "phase": "tool_loop_breaker_blocked",
+                                    "call_id": tool_call_id,
+                                    "tool": resolved_tool_function_name,
+                                    "loop_kind": "research_evidence",
+                                    "reason": research_state.get(
+                                        "research_loop_breaker_reason"
+                                    ),
+                                    "weak_evidence_streak": research_state.get(
+                                        "weak_evidence_streak"
+                                    ),
+                                    "recent_artifact_count": research_state.get(
+                                        "recent_artifact_count"
+                                    ),
+                                },
+                            )
+                            if blocked_event:
+                                await event_emitter(
+                                    {
+                                        "type": "chat:tool:journey",
+                                        "data": blocked_event,
+                                    }
+                                )
+
+                        elif (
                             resolved_tool_function_name in NOTES_LOOKUP_TOOL_NAMES
                             and search_notes_guard_active
                         ):
@@ -9477,7 +9607,7 @@ async def streaming_chat_response_handler(response, ctx):
                                     }
                                 )
 
-                        if search_notes_blocked:
+                        if research_loop_blocked or search_notes_blocked:
                             pass
                         elif resolved_tool_function_name in tools:
                             tool = tools[resolved_tool_function_name]
@@ -9600,6 +9730,54 @@ async def streaming_chat_response_handler(response, ctx):
                         elif resolved_tool_function_name not in NOTES_LOOKUP_TOOL_NAMES:
                             search_notes_empty_streak = 0
 
+                        for research_event in _update_research_turn_state(
+                            metadata,
+                            tool_name=tool_function_name,
+                            tool_params=tool_function_params,
+                            tool_result=tool_result,
+                        ):
+                            await _emit_tool_journey_event(
+                                metadata, event_emitter, research_event
+                            )
+
+                        research_state = _research_turn_state(metadata) or {}
+                        if (
+                            not research_loop_blocked
+                            and resolved_tool_function_name
+                            in RESEARCH_LOOP_BREAKER_TOOL_NAMES
+                            and research_state.get("research_loop_breaker_triggered")
+                        ):
+                            research_loop_guard_active = True
+                            tool_result = _build_research_loop_breaker_result(
+                                research_state,
+                                tool_name=tool_function_name,
+                            )
+                            breaker_event = _append_tool_journey_event(
+                                metadata,
+                                {
+                                    "phase": "tool_loop_breaker_triggered",
+                                    "call_id": tool_call_id,
+                                    "tool": resolved_tool_function_name,
+                                    "loop_kind": "research_evidence",
+                                    "reason": research_state.get(
+                                        "research_loop_breaker_reason"
+                                    ),
+                                    "weak_evidence_streak": research_state.get(
+                                        "weak_evidence_streak"
+                                    ),
+                                    "recent_artifact_count": research_state.get(
+                                        "recent_artifact_count"
+                                    ),
+                                },
+                            )
+                            if breaker_event:
+                                await event_emitter(
+                                    {
+                                        "type": "chat:tool:journey",
+                                        "data": breaker_event,
+                                    }
+                                )
+
                         await terminal_event_handler(
                             tool_function_name,
                             tool_function_params,
@@ -9631,16 +9809,6 @@ async def streaming_chat_response_handler(response, ctx):
                                     "type": "chat:tool:journey",
                                     "data": completion_event,
                                 }
-                            )
-
-                        for research_event in _update_research_turn_state(
-                            metadata,
-                            tool_name=tool_function_name,
-                            tool_params=tool_function_params,
-                            tool_result=tool_result,
-                        ):
-                            await _emit_tool_journey_event(
-                                metadata, event_emitter, research_event
                             )
 
                         # Extract citation sources from tool results

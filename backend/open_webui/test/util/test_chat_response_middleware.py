@@ -1391,6 +1391,188 @@ def test_build_search_notes_loop_breaker_result_without_web_tool():
     assert "Internet tools are not available" in payload["hint"]
 
 
+def test_build_research_loop_breaker_result_prefers_answering_with_uncertainty():
+    payload = json.loads(
+        middleware._build_research_loop_breaker_result(
+            {
+                "research_loop_breaker_reason": "repeated_weak_evidence",
+                "weak_evidence_streak": 2,
+                "recent_artifact_count": 3,
+            }
+        )
+    )
+    assert payload["reason"] == "repeated_weak_evidence"
+    assert payload["weak_evidence_streak"] == 2
+    assert payload["recent_artifact_count"] == 3
+    assert payload["next_action"] == "answer_with_current_evidence"
+    assert "remaining uncertainty" in payload["hint"]
+
+
+def test_build_research_loop_breaker_result_mentions_empty_fetches():
+    payload = json.loads(
+        middleware._build_research_loop_breaker_result(
+            {
+                "research_loop_breaker_reason": "repeated_weak_evidence_with_empty_fetches",
+                "weak_evidence_streak": 2,
+                "recent_artifact_count": 2,
+            },
+            blocked=True,
+            tool_name="search_web",
+        )
+    )
+    assert payload["status"] == "loop_breaker_active"
+    assert payload["tool"] == "search_web"
+    assert "no usable stored content" in payload["message"]
+
+
+def test_update_research_turn_state_triggers_breaker_on_stagnant_weak_evidence():
+    metadata = {"chat_id": "chat-1", "message_id": "msg-1"}
+
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="search_web",
+        tool_params={},
+        tool_result=[{"link": "https://example.com/a", "title": "A"}],
+    )
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="fetch_url",
+        tool_params={"mode": "store"},
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-1",
+            "domain": "example.com",
+            "content_chars": 1200,
+        },
+    )
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="query_web_evidence",
+        tool_params={},
+        tool_result={
+            "status": "ok",
+            "snippets": [],
+            "scope_mode": "implicit_current_message",
+            "searched_artifact_count": 1,
+            "evidence_strength": "weak",
+            "suggested_next_action": "refine_query",
+        },
+    )
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="query_web_evidence",
+        tool_params={},
+        tool_result={
+            "status": "ok",
+            "snippets": [],
+            "scope_mode": "implicit_current_message",
+            "searched_artifact_count": 1,
+            "evidence_strength": "weak",
+            "suggested_next_action": "refine_query",
+        },
+    )
+
+    state = middleware._research_turn_state(metadata)
+    assert state["weak_evidence_streak"] == 2
+    assert state["research_loop_breaker_triggered"] is True
+    assert state["research_loop_breaker_reason"] == "repeated_weak_evidence"
+
+
+def test_update_research_turn_state_does_not_trigger_breaker_when_artifact_scope_grows():
+    metadata = {"chat_id": "chat-1", "message_id": "msg-1"}
+
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="query_web_evidence",
+        tool_params={},
+        tool_result={
+            "status": "ok",
+            "snippets": [],
+            "scope_mode": "implicit_current_message",
+            "searched_artifact_count": 2,
+            "evidence_strength": "weak",
+            "suggested_next_action": "refine_query",
+        },
+    )
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="query_web_evidence",
+        tool_params={},
+        tool_result={
+            "status": "ok",
+            "snippets": [],
+            "scope_mode": "implicit_current_message",
+            "searched_artifact_count": 3,
+            "evidence_strength": "weak",
+            "suggested_next_action": "refine_query",
+        },
+    )
+
+    state = middleware._research_turn_state(metadata)
+    assert state["weak_evidence_streak"] == 1
+    assert state["research_loop_breaker_triggered"] is False
+
+
+def test_update_research_turn_state_marks_empty_fetches_in_breaker_reason():
+    metadata = {"chat_id": "chat-1", "message_id": "msg-1"}
+
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="fetch_url",
+        tool_params={"mode": "store"},
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-1",
+            "domain": "example.com",
+            "content_chars": 0,
+        },
+    )
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="fetch_url",
+        tool_params={"mode": "store"},
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-2",
+            "domain": "example.org",
+            "content_chars": 0,
+        },
+    )
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="query_web_evidence",
+        tool_params={},
+        tool_result={
+            "status": "ok",
+            "snippets": [],
+            "scope_mode": "implicit_current_message",
+            "searched_artifact_count": 2,
+            "evidence_strength": "weak",
+            "suggested_next_action": "refine_query",
+        },
+    )
+    middleware._update_research_turn_state(
+        metadata,
+        tool_name="query_web_evidence",
+        tool_params={},
+        tool_result={
+            "status": "ok",
+            "snippets": [],
+            "scope_mode": "implicit_current_message",
+            "searched_artifact_count": 2,
+            "evidence_strength": "weak",
+            "suggested_next_action": "refine_query",
+        },
+    )
+
+    state = middleware._research_turn_state(metadata)
+    assert state["empty_fetch_streak"] == 2
+    assert state["research_loop_breaker_reason"] == "repeated_weak_evidence_with_empty_fetches"
+
+
 def test_tool_name_alias_maps_notes_research_strong():
     assert (
         middleware.TOOL_NAME_ALIASES.get("notes_research_strong")
