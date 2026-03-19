@@ -1,7 +1,7 @@
 import logging
 import os
 import json
-from typing import Awaitable, Optional, Union
+from typing import Any, Awaitable, Optional, Union
 
 import requests
 import aiohttp
@@ -10,8 +10,10 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import time
 import re
+import mimetypes
+import tempfile
 
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, unquote
 from huggingface_hub import snapshot_download
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
@@ -33,6 +35,7 @@ from open_webui.utils.headers import include_user_info_headers
 from open_webui.utils.misc import get_message_list
 
 from open_webui.retrieval.web.utils import get_web_loader
+from open_webui.retrieval.loaders.main import Loader
 from open_webui.retrieval.loaders.youtube import YoutubeLoader
 
 
@@ -50,8 +53,6 @@ from open_webui.config import (
 
 log = logging.getLogger(__name__)
 
-
-from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.retrievers import BaseRetriever
@@ -81,6 +82,33 @@ _LOW_SIGNAL_FETCH_PATTERNS = (
     "before we continue to reuters",
 )
 
+_SUPPORTED_DOCUMENT_EXTENSIONS = {"pdf", "doc", "docx", "md"}
+_UNSUPPORTED_BINARY_EXTENSIONS = {
+    "ppt",
+    "pptx",
+    "xls",
+    "xlsx",
+    "csv",
+    "zip",
+    "epub",
+    "odt",
+    "ods",
+    "odp",
+    "rtf",
+    "msg",
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+    "gif",
+    "tiff",
+    "bmp",
+    "mp3",
+    "mp4",
+    "avi",
+    "mov",
+}
+
 
 def is_youtube_url(url: str) -> bool:
     youtube_regex = r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+$"
@@ -101,6 +129,202 @@ def get_loader(request, url: str):
             requests_per_second=request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             trust_env=request.app.state.config.WEB_SEARCH_TRUST_ENV,
         )
+
+
+def _get_timeout_value(request, default: float = 20.0) -> float:
+    timeout_value = default
+    configured_timeout = getattr(request.app.state.config, "WEB_LOADER_TIMEOUT", "")
+    try:
+        if configured_timeout:
+            timeout_value = float(configured_timeout)
+    except Exception:
+        pass
+    return timeout_value
+
+
+def _infer_url_extension(url: str) -> str:
+    path = unquote(urlparse(url).path or "")
+    _, ext = os.path.splitext(path)
+    return ext.lstrip(".").lower()
+
+
+def _classify_url_resource(url: str) -> tuple[str, Optional[str]]:
+    ext = _infer_url_extension(url)
+    if ext in _SUPPORTED_DOCUMENT_EXTENSIONS:
+        return "document_supported", ext
+    if ext in _UNSUPPORTED_BINARY_EXTENSIONS:
+        return "binary_unsupported", ext
+    return "html_like", ext or None
+
+
+def _build_document_loader(request) -> Loader:
+    return Loader(
+        engine=request.app.state.config.CONTENT_EXTRACTION_ENGINE,
+        DATALAB_MARKER_API_KEY=request.app.state.config.DATALAB_MARKER_API_KEY,
+        DATALAB_MARKER_API_BASE_URL=request.app.state.config.DATALAB_MARKER_API_BASE_URL,
+        DATALAB_MARKER_ADDITIONAL_CONFIG=request.app.state.config.DATALAB_MARKER_ADDITIONAL_CONFIG,
+        DATALAB_MARKER_SKIP_CACHE=request.app.state.config.DATALAB_MARKER_SKIP_CACHE,
+        DATALAB_MARKER_FORCE_OCR=request.app.state.config.DATALAB_MARKER_FORCE_OCR,
+        DATALAB_MARKER_PAGINATE=request.app.state.config.DATALAB_MARKER_PAGINATE,
+        DATALAB_MARKER_STRIP_EXISTING_OCR=request.app.state.config.DATALAB_MARKER_STRIP_EXISTING_OCR,
+        DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION=request.app.state.config.DATALAB_MARKER_DISABLE_IMAGE_EXTRACTION,
+        DATALAB_MARKER_FORMAT_LINES=request.app.state.config.DATALAB_MARKER_FORMAT_LINES,
+        DATALAB_MARKER_USE_LLM=request.app.state.config.DATALAB_MARKER_USE_LLM,
+        DATALAB_MARKER_OUTPUT_FORMAT=request.app.state.config.DATALAB_MARKER_OUTPUT_FORMAT,
+        EXTERNAL_DOCUMENT_LOADER_URL=request.app.state.config.EXTERNAL_DOCUMENT_LOADER_URL,
+        EXTERNAL_DOCUMENT_LOADER_API_KEY=request.app.state.config.EXTERNAL_DOCUMENT_LOADER_API_KEY,
+        TIKA_SERVER_URL=request.app.state.config.TIKA_SERVER_URL,
+        DOCLING_SERVER_URL=request.app.state.config.DOCLING_SERVER_URL,
+        DOCLING_API_KEY=request.app.state.config.DOCLING_API_KEY,
+        DOCLING_PARAMS=request.app.state.config.DOCLING_PARAMS,
+        PDF_EXTRACT_IMAGES=request.app.state.config.PDF_EXTRACT_IMAGES,
+        PDF_LOADER_MODE=request.app.state.config.PDF_LOADER_MODE,
+        DOCUMENT_INTELLIGENCE_ENDPOINT=request.app.state.config.DOCUMENT_INTELLIGENCE_ENDPOINT,
+        DOCUMENT_INTELLIGENCE_KEY=request.app.state.config.DOCUMENT_INTELLIGENCE_KEY,
+        DOCUMENT_INTELLIGENCE_MODEL=request.app.state.config.DOCUMENT_INTELLIGENCE_MODEL,
+        MISTRAL_OCR_API_BASE_URL=request.app.state.config.MISTRAL_OCR_API_BASE_URL,
+        MISTRAL_OCR_API_KEY=request.app.state.config.MISTRAL_OCR_API_KEY,
+        MINERU_API_MODE=request.app.state.config.MINERU_API_MODE,
+        MINERU_API_URL=request.app.state.config.MINERU_API_URL,
+        MINERU_API_KEY=request.app.state.config.MINERU_API_KEY,
+        MINERU_API_TIMEOUT=request.app.state.config.MINERU_API_TIMEOUT,
+        MINERU_PARAMS=request.app.state.config.MINERU_PARAMS,
+    )
+
+
+def _fetch_document_bytes(request, url: str) -> tuple[bytes, Optional[str]]:
+    verify_ssl = bool(request.app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION)
+    trust_env = bool(request.app.state.config.WEB_SEARCH_TRUST_ENV)
+    timeout_value = _get_timeout_value(request)
+
+    session = requests.Session()
+    session.trust_env = trust_env
+    session.headers.update(
+        {
+            **_BROWSER_FETCH_HEADERS,
+            "Accept": "application/pdf,text/markdown,text/plain,*/*;q=0.8",
+        }
+    )
+    response = session.get(
+        url,
+        timeout=timeout_value,
+        allow_redirects=True,
+        verify=verify_ssl,
+    )
+    response.raise_for_status()
+    content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip()
+    return response.content, (content_type or None)
+
+
+def _document_failure_payload(
+    status: str,
+    *,
+    url: str,
+    resource_kind: Optional[str],
+    content_type: Optional[str] = None,
+    extraction_engine: Optional[str] = None,
+    message: Optional[str] = None,
+    error_class: Optional[str] = None,
+) -> dict[str, Any]:
+    payload = {
+        "status": status,
+        "url": url,
+        "resource_kind": resource_kind,
+        "content_type": content_type,
+        "content_source": "document_extractor",
+        "binary_handling": (
+            "unsupported_binary"
+            if status == "unsupported_binary"
+            else "direct_document_extract"
+        ),
+        "extraction_engine": extraction_engine,
+        "retry_recommended": False,
+        "next_action": "choose_another_source",
+        "message": message,
+    }
+    if error_class:
+        payload["error_class"] = error_class
+    return payload
+
+
+def _extract_supported_document(
+    request, url: str, resource_kind: str
+) -> tuple[str, list[Document], dict[str, Any]]:
+    extraction_engine = getattr(
+        request.app.state.config, "CONTENT_EXTRACTION_ENGINE", ""
+    )
+    temp_path = None
+    guessed_content_type = ""
+    try:
+        content_bytes, content_type = _fetch_document_bytes(request, url)
+        guessed_content_type = content_type or mimetypes.guess_type(url)[0] or ""
+
+        with tempfile.NamedTemporaryFile(suffix=f".{resource_kind}", delete=False) as tmp:
+            tmp.write(content_bytes)
+            temp_path = tmp.name
+
+        docs = _build_document_loader(request).load(
+            filename=f"fetched_document.{resource_kind}",
+            file_content_type=guessed_content_type,
+            file_path=temp_path,
+        )
+        content = _normalize_extracted_text(
+            "\n\n".join([doc.page_content for doc in docs])
+        )
+        if not content:
+            return "", [], _document_failure_payload(
+                "document_extract_failed",
+                url=url,
+                resource_kind=resource_kind,
+                content_type=guessed_content_type or None,
+                extraction_engine=extraction_engine,
+                message="Document extraction returned no usable text.",
+            )
+
+        normalized_docs: list[Document] = []
+        for doc in docs:
+            metadata = doc.metadata if isinstance(doc.metadata, dict) else {}
+            normalized_docs.append(
+                Document(
+                    page_content=_normalize_extracted_text(doc.page_content),
+                    metadata={
+                        **metadata,
+                        "source": url,
+                        "content_source": "document_extractor",
+                        "loader_fallback": "document_extractor",
+                        "resource_kind": resource_kind,
+                        "content_type": guessed_content_type or None,
+                        "binary_handling": "direct_document_extract",
+                        "extraction_engine": extraction_engine,
+                    },
+                )
+            )
+
+        return content, normalized_docs, {
+            "status": "ok",
+            "resource_kind": resource_kind,
+            "content_type": guessed_content_type or None,
+            "content_source": "document_extractor",
+            "binary_handling": "direct_document_extract",
+            "extraction_engine": extraction_engine,
+        }
+    except Exception as exc:
+        log.exception("Document extraction failed for %s: %s", url, exc)
+        return "", [], _document_failure_payload(
+            "document_extract_failed",
+            url=url,
+            resource_kind=resource_kind,
+            content_type=guessed_content_type or None,
+            extraction_engine=extraction_engine,
+            message=f"Document extraction failed for this {resource_kind.upper()} resource.",
+            error_class=exc.__class__.__name__,
+        )
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def _normalize_extracted_text(text: str) -> str:
@@ -209,13 +433,7 @@ def _extract_structured_text_from_html(html: str, url: str) -> str:
 def _direct_fetch_html(request, url: str) -> Optional[str]:
     verify_ssl = bool(request.app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION)
     trust_env = bool(request.app.state.config.WEB_SEARCH_TRUST_ENV)
-    timeout_value = 20.0
-    configured_timeout = getattr(request.app.state.config, "WEB_LOADER_TIMEOUT", "")
-    try:
-        if configured_timeout:
-            timeout_value = float(configured_timeout)
-    except Exception:
-        pass
+    timeout_value = _get_timeout_value(request)
 
     session = requests.Session()
     session.trust_env = trust_env
@@ -230,13 +448,34 @@ def _direct_fetch_html(request, url: str) -> Optional[str]:
     return response.text
 
 
-def get_content_from_url(request, url: str) -> tuple[str, list[Document]]:
+def get_content_from_url(request, url: str) -> tuple[str, list[Document], dict[str, Any]]:
+    resource_mode, resource_kind = _classify_url_resource(url)
+
+    if resource_mode == "document_supported" and resource_kind:
+        return _extract_supported_document(request, url, resource_kind)
+
+    if resource_mode == "binary_unsupported":
+        return "", [], _document_failure_payload(
+            "unsupported_binary",
+            url=url,
+            resource_kind=resource_kind,
+            content_type=mimetypes.guess_type(url)[0],
+            message=(
+                f"Direct fetch/extraction is not supported for .{resource_kind} resources. "
+                "Choose another source."
+            ),
+        )
+
     loader = get_loader(request, url)
     docs = loader.load()
     content = _normalize_extracted_text("\n\n".join([doc.page_content for doc in docs]))
 
     if not _is_low_signal_content(content):
-        return content, docs
+        return content, docs, {
+            "status": "ok",
+            "resource_kind": "html",
+            "content_source": "primary_loader",
+        }
 
     try:
         html = _direct_fetch_html(request, url)
@@ -249,13 +488,26 @@ def get_content_from_url(request, url: str) -> tuple[str, list[Document]]:
                 metadata={
                     "source": url,
                     "loader_fallback": "direct_browser_fetch",
+                    "content_source": "direct_browser_fetch",
+                    "resource_kind": "html",
+                    "binary_handling": "html_fetch",
                 },
             )
-            return fallback_content, [fallback_doc]
+            return fallback_content, [fallback_doc], {
+                "status": "ok",
+                "resource_kind": "html",
+                "content_source": "direct_browser_fetch",
+                "binary_handling": "html_fetch",
+            }
     except Exception as exc:
         log.debug("Direct browser-like fallback fetch failed for %s: %s", url, exc)
 
-    return content, docs
+    return content, docs, {
+        "status": "ok",
+        "resource_kind": "html",
+        "content_source": "primary_loader",
+        "binary_handling": "html_fetch",
+    }
 
 
 CHUNK_HASH_KEY = "_chunk_hash"
@@ -1416,7 +1668,7 @@ async def get_sources_from_items(
                     }
 
         elif item.get("type") == "url":
-            content, docs = get_content_from_url(request, item.get("url"))
+            content, docs, _fetch_meta = get_content_from_url(request, item.get("url"))
             if docs:
                 query_result = {
                     "documents": [[content]],

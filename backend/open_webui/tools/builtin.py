@@ -754,14 +754,30 @@ async def fetch_url(
         return json.dumps({"error": "Request context not available"})
 
     try:
-        content, docs = await asyncio.to_thread(get_content_from_url, __request__, url)
+        content, docs, fetch_meta = await asyncio.to_thread(
+            get_content_from_url, __request__, url
+        )
         selected_mode = (mode or "content").strip().lower()
-        content_source = "primary_loader"
+        fetch_meta = fetch_meta if isinstance(fetch_meta, dict) else {}
+        if fetch_meta.get("status") in {"unsupported_binary", "document_extract_failed"}:
+            fetch_meta["mode"] = selected_mode
+            return json.dumps(fetch_meta, ensure_ascii=False)
+
+        content_source = str(fetch_meta.get("content_source") or "primary_loader")
+        resource_kind = fetch_meta.get("resource_kind")
+        content_type = fetch_meta.get("content_type")
+        binary_handling = fetch_meta.get("binary_handling")
+        extraction_engine = fetch_meta.get("extraction_engine")
         if docs:
             first_doc = docs[0]
             metadata = first_doc.metadata if hasattr(first_doc, "metadata") else {}
-            if isinstance(metadata, dict) and metadata.get("loader_fallback"):
-                content_source = str(metadata.get("loader_fallback"))
+            if isinstance(metadata, dict):
+                if metadata.get("loader_fallback"):
+                    content_source = str(metadata.get("loader_fallback"))
+                resource_kind = resource_kind or metadata.get("resource_kind")
+                content_type = content_type or metadata.get("content_type")
+                binary_handling = binary_handling or metadata.get("binary_handling")
+                extraction_engine = extraction_engine or metadata.get("extraction_engine")
 
         if selected_mode == "store":
             chat_id = str((__metadata__ or {}).get("chat_id") or "").strip()
@@ -790,6 +806,11 @@ async def fetch_url(
             )
             pointer["mode"] = "store"
             pointer["content_source"] = content_source
+            pointer["resource_kind"] = resource_kind
+            pointer["content_type"] = content_type
+            pointer["binary_handling"] = binary_handling
+            pointer["extraction_engine"] = extraction_engine
+            pointer["retry_recommended"] = False
             pointer["available_to"] = "query_web_evidence"
             pointer["evidence_query_scope"] = {
                 "chat_id": chat_id,

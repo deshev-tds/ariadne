@@ -117,7 +117,11 @@ async def test_fetch_url_store_mode_returns_pointer_metadata(monkeypatch):
     monkeypatch.setattr(
         builtin_tools,
         "get_content_from_url",
-        lambda _request, _url: ("A" * 1024, None),
+        lambda _request, _url: (
+            "A" * 1024,
+            None,
+            {"status": "ok", "resource_kind": "html", "content_source": "primary_loader"},
+        ),
     )
     monkeypatch.setattr(
         builtin_tools,
@@ -150,6 +154,7 @@ async def test_fetch_url_store_mode_returns_pointer_metadata(monkeypatch):
     assert payload["mode"] == "store"
     assert payload["artifact_id"] == "wp_abc"
     assert payload["content_source"] == "primary_loader"
+    assert payload["resource_kind"] == "html"
     assert payload["available_to"] == "query_web_evidence"
     assert payload["evidence_query_scope"]["chat_id"] == "chat-1"
     assert payload["evidence_query_scope"]["message_id"] == "msg-1"
@@ -161,7 +166,11 @@ async def test_fetch_url_store_mode_requires_chat_id(monkeypatch):
     monkeypatch.setattr(
         builtin_tools,
         "get_content_from_url",
-        lambda _request, _url: ("content", None),
+        lambda _request, _url: (
+            "content",
+            None,
+            {"status": "ok", "resource_kind": "html", "content_source": "primary_loader"},
+        ),
     )
 
     output = await builtin_tools.fetch_url(
@@ -174,6 +183,40 @@ async def test_fetch_url_store_mode_requires_chat_id(monkeypatch):
 
     assert "error" in payload
     assert payload["mode"] == "store"
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_returns_typed_result_for_unsupported_binary(monkeypatch):
+    monkeypatch.setattr(
+        builtin_tools,
+        "get_content_from_url",
+        lambda _request, _url: (
+            "",
+            [],
+            {
+                "status": "unsupported_binary",
+                "resource_kind": "xlsx",
+                "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "content_source": "document_extractor",
+                "binary_handling": "unsupported_binary",
+                "retry_recommended": False,
+                "next_action": "choose_another_source",
+                "message": "Direct fetch/extraction is not supported for .xlsx resources. Choose another source.",
+            },
+        ),
+    )
+
+    output = await builtin_tools.fetch_url(
+        url="https://example.org/file.xlsx",
+        mode="store",
+        __request__=SimpleNamespace(),
+        __metadata__={"chat_id": "chat-1", "message_id": "msg-1"},
+    )
+    payload = json.loads(output)
+
+    assert payload["status"] == "unsupported_binary"
+    assert payload["mode"] == "store"
+    assert payload["retry_recommended"] is False
 
 
 @pytest.mark.asyncio

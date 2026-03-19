@@ -41,13 +41,15 @@ def test_get_content_from_url_preserves_usable_primary_content(monkeypatch):
 
     monkeypatch.setattr(retrieval_utils, "_direct_fetch_html", _unexpected_fallback)
 
-    content, docs = retrieval_utils.get_content_from_url(
+    content, docs, fetch_meta = retrieval_utils.get_content_from_url(
         _request_stub(), "https://example.org/article"
     )
 
     assert "long primary article body" in content
     assert docs[0].metadata["source"] == "https://example.org/article"
     assert "loader_fallback" not in docs[0].metadata
+    assert fetch_meta["resource_kind"] == "html"
+    assert fetch_meta["content_source"] == "primary_loader"
 
 
 def test_get_content_from_url_falls_back_for_low_signal_primary_content(monkeypatch):
@@ -83,10 +85,70 @@ def test_get_content_from_url_falls_back_for_low_signal_primary_content(monkeypa
         """,
     )
 
-    content, docs = retrieval_utils.get_content_from_url(
+    content, docs, fetch_meta = retrieval_utils.get_content_from_url(
         _request_stub(), "https://example.org/reuters-like"
     )
 
     assert "First useful paragraph" in content
     assert "Second useful paragraph" in content
     assert docs[0].metadata["loader_fallback"] == "direct_browser_fetch"
+    assert fetch_meta["content_source"] == "direct_browser_fetch"
+
+
+def test_get_content_from_url_uses_document_path_for_pdf(monkeypatch):
+    class DocumentLoaderStub:
+        def load(self, filename, file_content_type, file_path):
+            assert filename.endswith(".pdf")
+            assert file_path.endswith(".pdf")
+            return [
+                Document(
+                    page_content="Useful PDF body with concrete facts and enough content.",
+                    metadata={"source": "temp.pdf"},
+                )
+            ]
+
+    monkeypatch.setattr(
+        retrieval_utils,
+        "_fetch_document_bytes",
+        lambda _request, _url: (b"%PDF-1.4 fake", "application/pdf"),
+    )
+    monkeypatch.setattr(
+        retrieval_utils, "_build_document_loader", lambda _request: DocumentLoaderStub()
+    )
+    monkeypatch.setattr(
+        retrieval_utils,
+        "get_loader",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Web loader path should not be used for PDFs")
+        ),
+    )
+
+    content, docs, fetch_meta = retrieval_utils.get_content_from_url(
+        _request_stub(), "https://example.org/file.pdf"
+    )
+
+    assert "Useful PDF body" in content
+    assert docs[0].metadata["resource_kind"] == "pdf"
+    assert docs[0].metadata["binary_handling"] == "direct_document_extract"
+    assert fetch_meta["resource_kind"] == "pdf"
+    assert fetch_meta["content_source"] == "document_extractor"
+
+
+def test_get_content_from_url_returns_typed_result_for_unsupported_binary(monkeypatch):
+    monkeypatch.setattr(
+        retrieval_utils,
+        "get_loader",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Unsupported binary should not hit web loader")
+        ),
+    )
+
+    content, docs, fetch_meta = retrieval_utils.get_content_from_url(
+        _request_stub(), "https://example.org/file.xlsx"
+    )
+
+    assert content == ""
+    assert docs == []
+    assert fetch_meta["status"] == "unsupported_binary"
+    assert fetch_meta["resource_kind"] == "xlsx"
+    assert fetch_meta["retry_recommended"] is False
