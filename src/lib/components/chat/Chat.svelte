@@ -117,6 +117,12 @@
 
 	export let chatIdProp = '';
 
+	type RuntimeAwareModel = Model & {
+		status?: {
+			value?: string;
+		};
+	};
+
 	let loading = true;
 
 	const eventTarget = new EventTarget();
@@ -162,6 +168,7 @@
 	let dragged = false;
 	let generationController = null;
 	let contextWindowPreview: ContextWindowPreview | null = null;
+	let contextWindowRuntimeState: 'ready' | 'loading' | 'hidden' = 'ready';
 	let contextWindowPreviewRequestId = 0;
 	let contextWindowPreviewTimer: ReturnType<typeof setTimeout> | null = null;
 	let contextWindowPreviewWatchKey = '';
@@ -322,9 +329,40 @@
 			['user', 'assistant', 'tool'].includes(message?.role ?? '')
 		);
 
+	const resolveContextWindowRuntimeState = (
+		modelIds: string[],
+		availableModels: RuntimeAwareModel[]
+	): 'ready' | 'loading' | 'hidden' => {
+		const selected = modelIds
+			.map((modelId) => availableModels.find((model) => model.id === modelId))
+			.filter(Boolean);
+
+		if (selected.length === 0) {
+			return 'hidden';
+		}
+
+		const statuses = selected
+			.map((model) => String(model?.status?.value ?? '').trim())
+			.filter((status) => status.length > 0);
+
+		if (statuses.length === 0) {
+			return 'ready';
+		}
+
+		if (statuses.some((status) => status === 'loading')) {
+			return 'loading';
+		}
+
+		if (statuses.every((status) => status === 'loaded')) {
+			return 'ready';
+		}
+
+		return 'hidden';
+	};
+
 	const loadContextWindowPreview = async (force = false) => {
 		const mainModelIds = selectedModelIds.filter((modelId) => modelId);
-		if (loading || mainModelIds.length === 0) {
+		if (loading || mainModelIds.length === 0 || contextWindowRuntimeState !== 'ready') {
 			contextWindowPreview = null;
 			return;
 		}
@@ -536,22 +574,37 @@
 		chatId: $chatId ?? null,
 		currentId: history?.currentId ?? null,
 		modelIds: selectedModelIds.filter((modelId) => modelId),
+		modelStatuses: selectedModelIds
+			.filter((modelId) => modelId)
+			.map((modelId) => {
+				const model = ($models as RuntimeAwareModel[]).find((entry) => entry.id === modelId);
+				return [modelId, model?.status?.value ?? null];
+			}),
 		files: getContextWindowPreviewFileSignature(files),
 		maintenance:
 			$settings?.contextMaintenance ?? $config?.features?.enable_context_maintenance ?? true,
 		system: params?.system ?? $settings?.system ?? ''
 	});
 
+	$: contextWindowRuntimeState = resolveContextWindowRuntimeState(
+		selectedModelIds.filter((modelId) => modelId),
+		$models as RuntimeAwareModel[]
+	);
+
 	$: if (
 		!loading &&
 		contextWindowPreviewDependencyKey !== contextWindowPreviewWatchKey &&
-		selectedModelIds.filter((modelId) => modelId).length > 0
+		selectedModelIds.filter((modelId) => modelId).length > 0 &&
+		contextWindowRuntimeState === 'ready'
 	) {
 		contextWindowPreviewWatchKey = contextWindowPreviewDependencyKey;
 		scheduleContextWindowPreviewRefresh();
 	}
 
-	$: if (selectedModelIds.filter((modelId) => modelId).length === 0) {
+	$: if (
+		selectedModelIds.filter((modelId) => modelId).length === 0 ||
+		contextWindowRuntimeState !== 'ready'
+	) {
 		contextWindowPreview = null;
 	}
 
@@ -3092,6 +3145,7 @@
 						}}
 						{history}
 						contextWindowPreview={contextWindowPreview}
+						contextWindowRuntimeState={contextWindowRuntimeState}
 						draftPrompt={prompt}
 						title={$chatTitle}
 						bind:selectedModels

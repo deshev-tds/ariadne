@@ -25,6 +25,7 @@
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
 	import ContextWindowIndicator from './ContextWindowIndicator.svelte';
 	import type { ContextWindowPreview } from '$lib/apis/chats';
+	import Spinner from '../common/Spinner.svelte';
 
 	import PencilSquare from '../icons/PencilSquare.svelte';
 	import Banner from '../common/Banner.svelte';
@@ -49,6 +50,7 @@
 	export let history;
 	export let selectedModels;
 	export let contextWindowPreview: ContextWindowPreview | null = null;
+	export let contextWindowRuntimeState: 'ready' | 'loading' | 'hidden' = 'ready';
 	export let draftPrompt = '';
 	export let showModelSelector = true;
 
@@ -116,7 +118,17 @@
 						{#if showModelSelector}
 							<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
 						{/if}
-						<ContextWindowIndicator preview={contextWindowPreview} draftPrompt={draftPrompt} />
+						{#if contextWindowRuntimeState === 'loading'}
+							<Tooltip content={$i18n.t('Model loading')}>
+								<div
+									class="ml-1.5 flex size-9 items-center justify-center rounded-xl text-gray-500 dark:text-gray-400"
+								>
+									<Spinner className="size-4" />
+								</div>
+							</Tooltip>
+						{:else if contextWindowRuntimeState === 'ready'}
+							<ContextWindowIndicator preview={contextWindowPreview} draftPrompt={draftPrompt} />
+						{/if}
 					</div>
 				</div>
 
