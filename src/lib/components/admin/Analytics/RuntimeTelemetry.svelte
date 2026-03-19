@@ -7,7 +7,6 @@
 		startRuntimeTelemetry,
 		stopRuntimeTelemetry
 	} from '$lib/apis/analytics';
-	import { getRuntimeStatus, type RuntimeStatus } from '$lib/apis/runtime';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 
 	const i18n = getContext('i18n');
@@ -56,12 +55,10 @@
 	};
 
 	let telemetry: RuntimeTelemetrySnapshot | null = null;
-	let runtimeStatus: RuntimeStatus | null = null;
 	let loading = true;
 	let actionLoading = false;
 	let autoRefresh = true;
 	let lastError = '';
-	let runtimeError = '';
 	let mounted = false;
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
 	const pollIntervalMs = 2000;
@@ -125,16 +122,6 @@
 		}
 	};
 
-	const loadRuntimeStatus = async () => {
-		try {
-			runtimeError = '';
-			runtimeStatus = await getRuntimeStatus(localStorage.token);
-		} catch (error) {
-			console.error('Runtime status load failed:', error);
-			runtimeError = `${error}`;
-		}
-	};
-
 	const runAction = async (action: 'start' | 'stop' | 'clear') => {
 		actionLoading = true;
 		try {
@@ -156,7 +143,7 @@
 
 	const refreshNow = async () => {
 		loading = true;
-		await Promise.all([loadTelemetry(), loadRuntimeStatus()]);
+		await loadTelemetry();
 	};
 
 	const syncPolling = (enabled: boolean) => {
@@ -167,7 +154,6 @@
 		if (enabled) {
 			pollHandle = setInterval(() => {
 				loadTelemetry();
-				loadRuntimeStatus();
 			}, pollIntervalMs);
 		}
 	};
@@ -178,7 +164,7 @@
 
 	onMount(async () => {
 		mounted = true;
-		await Promise.all([loadTelemetry(), loadRuntimeStatus()]);
+		await loadTelemetry();
 	});
 
 	onDestroy(() => {
@@ -190,38 +176,6 @@
 </script>
 
 <div class="flex flex-col gap-4">
-	{#if runtimeError || runtimeStatus?.compatibility?.profile_compatibility === 'warning' || runtimeStatus?.last_error}
-		<div
-			class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"
-		>
-			<div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-				<div>
-					<div class="font-medium">
-						{$i18n.t('Runtime profile: {{profile}} · state: {{state}}', {
-							profile: runtimeStatus?.profile ?? 'unknown',
-							state: runtimeStatus?.state ?? 'error'
-						})}
-					</div>
-					<div class="pt-1">
-						{runtimeError ||
-							runtimeStatus?.last_error ||
-							$i18n.t(
-								'OWUI specialist/task-model settings may not match the current runtime profile.'
-							)}
-					</div>
-					{#if runtimeStatus?.compatibility?.issues?.length}
-						<ul class="list-disc pl-5 pt-2">
-							{#each runtimeStatus.compatibility.issues as issue}
-								<li>{issue}</li>
-							{/each}
-						</ul>
-					{/if}
-				</div>
-				<a class="text-xs font-medium underline" href="/admin/runtime">{$i18n.t('Open Runtime')}</a>
-			</div>
-		</div>
-	{/if}
-
 	<div
 		class="flex flex-col gap-3 rounded-xl border border-gray-100 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
 	>

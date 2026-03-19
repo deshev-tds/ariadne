@@ -315,6 +315,3 @@ dist
 cypress/videos
 cypress/screenshots
 .vscode/settings.json
-# Local llama.cpp ops files
-scripts/run_llama.sh
-scripts/models.ini

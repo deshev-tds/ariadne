@@ -74,7 +74,6 @@ from open_webui.routers import (
     images,
     ollama,
     openai,
-    runtime,
     retrieval,
     pipelines,
     tasks,
@@ -483,7 +482,6 @@ from open_webui.config import (
     DEFAULT_LOCALE,
     OAUTH_PROVIDERS,
     WEBUI_URL,
-    RUNTIME_CONTROL_SCRIPT_PATH,
     RESPONSE_WATERMARK,
     ENABLE_CACHE_PROMPT,
     ENABLE_CHAT_RECALL,
@@ -1501,7 +1499,6 @@ app.state.speech_speaker_embeddings_dataset = None
 
 app.state.config.TASK_MODEL = TASK_MODEL
 app.state.config.TASK_MODEL_EXTERNAL = TASK_MODEL_EXTERNAL
-app.state.RUNTIME_CONTROL_SCRIPT_PATH = RUNTIME_CONTROL_SCRIPT_PATH
 
 
 app.state.config.ENABLE_SEARCH_QUERY_GENERATION = ENABLE_SEARCH_QUERY_GENERATION
@@ -1755,7 +1752,6 @@ app.include_router(
 )
 if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
-app.include_router(runtime.router, prefix="/api/v1/runtime", tags=["runtime"])
 app.include_router(utils.router, prefix="/api/v1/utils", tags=["utils"])
 app.include_router(terminals.router, prefix="/api/v1/terminals", tags=["terminals"])
 
