@@ -1,7 +1,5 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { toast } from 'svelte-sonner';
-
 	import {
 		WEBUI_NAME,
 		banners,
@@ -25,7 +23,8 @@
 	import Tooltip from '../common/Tooltip.svelte';
 	import Menu from '$lib/components/layout/Navbar/Menu.svelte';
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
-	import AdjustmentsHorizontal from '../icons/AdjustmentsHorizontal.svelte';
+	import ContextWindowIndicator from './ContextWindowIndicator.svelte';
+	import type { ContextWindowPreview } from '$lib/apis/chats';
 
 	import PencilSquare from '../icons/PencilSquare.svelte';
 	import Banner from '../common/Banner.svelte';
@@ -49,6 +48,8 @@
 	export let chat;
 	export let history;
 	export let selectedModels;
+	export let contextWindowPreview: ContextWindowPreview | null = null;
+	export let draftPrompt = '';
 	export let showModelSelector = true;
 
 	export let onSaveTempChat: () => {};
@@ -111,9 +112,12 @@
 			{$showSidebar ? 'ml-1' : ''}
 			"
 				>
-					{#if showModelSelector}
-						<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
-					{/if}
+					<div class="flex items-center">
+						{#if showModelSelector}
+							<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
+						{/if}
+						<ContextWindowIndicator preview={contextWindowPreview} draftPrompt={draftPrompt} />
+					</div>
 				</div>
 
 				<div class="self-start flex flex-none items-center text-gray-600 dark:text-gray-400">

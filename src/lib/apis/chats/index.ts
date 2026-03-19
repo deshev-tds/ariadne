@@ -1,6 +1,29 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { getTimeRange } from '$lib/utils';
 
+export type ContextWindowModelPreview = {
+	model_id: string;
+	model_name: string;
+	live_prompt_cap: number;
+	live_prompt_cap_source: string;
+	current_request_tokens: number;
+	soft_trigger_tokens?: number | null;
+	hard_trigger_tokens?: number | null;
+	summary_active: boolean;
+	compaction_version: number;
+	maintenance_enabled: boolean;
+	token_count_confidence: 'exact' | 'model_tokenizer' | 'fallback' | 'approximate' | string;
+	token_count_source: string;
+};
+
+export type ContextWindowPreview = ContextWindowModelPreview & {
+	limiting_model_id: string;
+	limiting_model_name: string;
+	active_main_model_ids: string[];
+	multi_model: boolean;
+	model_previews: ContextWindowModelPreview[];
+};
+
 export const createNewChat = async (token: string, chat: object, folderId: string | null) => {
 	let error = null;
 
@@ -624,6 +647,46 @@ export const getChatById = async (token: string, id: string) => {
 		.catch((err) => {
 			error = err.detail;
 
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getContextWindowPreview = async (
+	token: string,
+	body: {
+		chat_id?: string | null;
+		current_message_id?: string | null;
+		main_model_ids: string[];
+		messages?: unknown[];
+		files?: unknown[];
+		system_message?: string | null;
+		context_maintenance_enabled: boolean;
+	}
+): Promise<ContextWindowPreview> => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/preview/context-window`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			...(token && { authorization: `Bearer ${token}` })
+		},
+		body: JSON.stringify(body)
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err?.detail ?? err;
 			console.error(err);
 			return null;
 		});
