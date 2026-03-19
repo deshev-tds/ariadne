@@ -258,6 +258,58 @@ def test_query_web_evidence_store_segmented_mode_falls_back_to_chunk_for_unstruc
     assert any(snippet.get("chunked") for snippet in queried["snippets"])
 
 
+def test_segment_dedupe_preserves_focus_coverage_metadata():
+    overlapping = [
+        {
+            "artifact_id": "wp_focus",
+            "segment_id": "seg_warning",
+            "focus_clause": "boxed warning",
+            "start": 0,
+            "end": 180,
+            "score": 0.61,
+            "text": "WARNING: RISK OF THYROID C-CELL TUMORS",
+            "path": "",
+        },
+        {
+            "artifact_id": "wp_focus",
+            "segment_id": "seg_contra",
+            "focus_clause": "who should not use Mounjaro",
+            "start": 120,
+            "end": 280,
+            "score": 0.74,
+            "text": "Mounjaro is contraindicated in patients with medullary thyroid carcinoma.",
+            "path": "",
+        },
+        {
+            "artifact_id": "wp_focus",
+            "segment_id": "seg_dose",
+            "focus_clause": "starting dose and dose escalation schedule",
+            "start": 500,
+            "end": 700,
+            "score": 0.68,
+            "text": "The recommended starting dosage is 2.5 mg once weekly.",
+            "path": "",
+        },
+    ]
+
+    deduped, _meta = web_store._dedupe_segment_snippets(overlapping)
+    focus_targets = {
+        "boxed warning": {"seg_warning"},
+        "who should not use Mounjaro": {"seg_contra"},
+        "starting dose and dose escalation schedule": {"seg_dose"},
+    }
+    selected = web_store._select_final_segment_snippets(
+        deduped,
+        focus_targets=focus_targets,
+        limit=3,
+    )
+
+    assert len(deduped) == 2
+    assert any(set(snippet.get("covered_segment_ids") or []) >= {"seg_warning", "seg_contra"} for snippet in deduped)
+    assert web_store._count_focus_coverage(deduped, focus_targets=focus_targets) == 3
+    assert web_store._count_focus_coverage(selected, focus_targets=focus_targets) == 3
+
+
 @pytest.mark.asyncio
 async def test_fetch_url_store_mode_returns_pointer_metadata(monkeypatch):
     monkeypatch.setattr(

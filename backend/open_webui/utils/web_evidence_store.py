@@ -1326,6 +1326,24 @@ def _resolve_focus_targets(
     return targets
 
 
+def _snippet_segment_ids(snippet: dict[str, Any]) -> set[str]:
+    covered = snippet.get("covered_segment_ids")
+    if isinstance(covered, list):
+        values = {str(item or "") for item in covered if str(item or "")}
+        if values:
+            return values
+    segment_id = str(snippet.get("segment_id") or "")
+    return {segment_id} if segment_id else set()
+
+
+def _snippet_identity(snippet: dict[str, Any]) -> tuple[str, int, int]:
+    return (
+        str(snippet.get("artifact_id") or ""),
+        int(snippet.get("start", 0) or 0),
+        int(snippet.get("end", 0) or 0),
+    )
+
+
 def _count_focus_coverage(
     snippets: list[dict[str, Any]],
     *,
@@ -1334,11 +1352,9 @@ def _count_focus_coverage(
     if not snippets or not focus_targets:
         return 0
 
-    seen_segment_ids = {
-        str(snippet.get("segment_id") or "")
-        for snippet in snippets
-        if str(snippet.get("segment_id") or "")
-    }
+    seen_segment_ids: set[str] = set()
+    for snippet in snippets:
+        seen_segment_ids.update(_snippet_segment_ids(snippet))
     covered = 0
     for clause, target_ids in focus_targets.items():
         if clause and target_ids and seen_segment_ids.intersection(target_ids):
@@ -1349,24 +1365,57 @@ def _count_focus_coverage(
 def _merge_segment_cluster(
     cluster: list[dict[str, Any]], *, max_span_chars: int = SEGMENT_DEDUPE_MAX_SPAN_CHARS
 ) -> tuple[dict[str, Any], int]:
+    covered_segment_ids = sorted(
+        {
+            str(item.get("segment_id") or "")
+            for item in cluster
+            if str(item.get("segment_id") or "")
+        }
+    )
+    covered_focus_clauses = sorted(
+        {
+            str(item.get("focus_clause") or "")
+            for item in cluster
+            if str(item.get("focus_clause") or "")
+        }
+    )
     if len(cluster) <= 1:
-        return cluster[0], 0
+        single = dict(cluster[0])
+        if covered_segment_ids:
+            single["covered_segment_ids"] = covered_segment_ids
+        if covered_focus_clauses:
+            single["covered_focus_clauses"] = covered_focus_clauses
+        return single, 0
 
     best = max(cluster, key=lambda item: float(item.get("score", 0.0) or 0.0))
     start = min(int(item.get("start", 0) or 0) for item in cluster)
     end = max(int(item.get("end", 0) or 0) for item in cluster)
     if end - start > max_span_chars:
-        return best, len(cluster) - 1
+        kept = dict(best)
+        if covered_segment_ids:
+            kept["covered_segment_ids"] = covered_segment_ids
+        if covered_focus_clauses:
+            kept["covered_focus_clauses"] = covered_focus_clauses
+        return kept, len(cluster) - 1
 
     artifact_text = _read_artifact_text(str(best.get("path") or ""))
     if not artifact_text:
-        return best, len(cluster) - 1
+        kept = dict(best)
+        if covered_segment_ids:
+            kept["covered_segment_ids"] = covered_segment_ids
+        if covered_focus_clauses:
+            kept["covered_focus_clauses"] = covered_focus_clauses
+        return kept, len(cluster) - 1
 
     merged = dict(best)
     merged["start"] = start
     merged["end"] = end
     merged["text"] = artifact_text[start:end].strip()
     merged["score"] = max(float(item.get("score", 0.0) or 0.0) for item in cluster)
+    if covered_segment_ids:
+        merged["covered_segment_ids"] = covered_segment_ids
+    if covered_focus_clauses:
+        merged["covered_focus_clauses"] = covered_focus_clauses
     return merged, len(cluster) - 1
 
 
@@ -1435,6 +1484,54 @@ def _dedupe_segment_snippets(
         "dedupe_cluster_count": cluster_count,
         "snippets_dropped_overlap": dropped_overlap,
     }
+
+
+def _select_final_segment_snippets(
+    snippets: list[dict[str, Any]],
+    *,
+    focus_targets: dict[str, set[str]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not snippets:
+        return []
+
+    if not focus_targets:
+        return snippets[:limit]
+
+    selected: list[dict[str, Any]] = []
+    seen_identities: set[tuple[str, int, int]] = set()
+
+    for clause, target_ids in focus_targets.items():
+        if not clause or not target_ids:
+            continue
+        clause_candidates = [
+            snippet
+            for snippet in snippets
+            if _snippet_segment_ids(snippet).intersection(target_ids)
+        ]
+        if not clause_candidates:
+            continue
+        winner = max(clause_candidates, key=lambda item: float(item.get("score", 0.0) or 0.0))
+        identity = _snippet_identity(winner)
+        if identity in seen_identities:
+            continue
+        selected.append(winner)
+        seen_identities.add(identity)
+        if len(selected) >= limit:
+            return selected[:limit]
+
+    for snippet in snippets:
+        if len(selected) >= limit:
+            break
+        identity = _snippet_identity(snippet)
+        if identity in seen_identities:
+            continue
+        if float(snippet.get("score", 0.0) or 0.0) < FOCUS_FILL_SCORE_FLOOR:
+            continue
+        selected.append(snippet)
+        seen_identities.add(identity)
+
+    return selected[:limit] if selected else snippets[:limit]
 
 
 def _load_scope_rows(
@@ -1658,7 +1755,15 @@ def _query_web_evidence_store_segmented(
     merged_candidates = [*snippets, *focus_candidate_snippets]
     deduped_snippets, dedupe_meta = _dedupe_segment_snippets(merged_candidates)
     final_limit = min(12, max(top_k, len(focus_clauses) * 2 if focus_clauses else top_k))
-    final_snippets = deduped_snippets[:final_limit] if deduped_snippets else snippets[:final_limit]
+    final_snippets = (
+        _select_final_segment_snippets(
+            deduped_snippets,
+            focus_targets=focus_targets,
+            limit=final_limit,
+        )
+        if deduped_snippets
+        else snippets[:final_limit]
+    )
     coverage_after_merge = _count_focus_coverage(
         final_snippets,
         focus_targets=focus_targets,
