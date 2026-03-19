@@ -754,8 +754,14 @@ async def fetch_url(
         return json.dumps({"error": "Request context not available"})
 
     try:
-        content, _ = await asyncio.to_thread(get_content_from_url, __request__, url)
+        content, docs = await asyncio.to_thread(get_content_from_url, __request__, url)
         selected_mode = (mode or "content").strip().lower()
+        content_source = "primary_loader"
+        if docs:
+            first_doc = docs[0]
+            metadata = first_doc.metadata if hasattr(first_doc, "metadata") else {}
+            if isinstance(metadata, dict) and metadata.get("loader_fallback"):
+                content_source = str(metadata.get("loader_fallback"))
 
         if selected_mode == "store":
             chat_id = str((__metadata__ or {}).get("chat_id") or "").strip()
@@ -783,6 +789,7 @@ async def fetch_url(
                 title=inferred_title,
             )
             pointer["mode"] = "store"
+            pointer["content_source"] = content_source
             pointer["available_to"] = "query_web_evidence"
             pointer["evidence_query_scope"] = {
                 "chat_id": chat_id,

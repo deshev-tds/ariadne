@@ -50,6 +50,21 @@ from open_webui.utils.misc import is_string_allowed
 log = logging.getLogger(__name__)
 
 
+DEFAULT_BROWSER_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
+
 def resolve_hostname(hostname):
     # Get address information
     addr_info = socket.getaddrinfo(hostname, None)
@@ -569,7 +584,10 @@ class SafeWebBaseLoader(WebBaseLoader):
             for i in range(retries):
                 try:
                     kwargs: Dict = dict(
-                        headers=self.session.headers,
+                        headers={
+                            **DEFAULT_BROWSER_FETCH_HEADERS,
+                            **dict(self.session.headers),
+                        },
                         cookies=self.session.cookies.get_dict(),
                     )
                     if not self.session.verify:

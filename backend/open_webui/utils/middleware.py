@@ -2711,6 +2711,7 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
                 "artifact_id": parsed.get("artifact_id"),
                 "domain": parsed.get("domain"),
                 "content_chars": parsed.get("content_chars"),
+                "content_source": parsed.get("content_source"),
             }
         content = parsed if isinstance(parsed, str) else str(parsed or "")
         return {"content_chars": len(content)}

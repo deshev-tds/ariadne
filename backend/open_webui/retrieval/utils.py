@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 from typing import Awaitable, Optional, Union
 
 import requests
@@ -56,6 +57,31 @@ from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.retrievers import BaseRetriever
 
 
+_BROWSER_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
+_LOW_SIGNAL_FETCH_PATTERNS = (
+    "please enable js and disable any ad blocker",
+    "please enable javascript",
+    "enable javascript and cookies",
+    "access denied",
+    "verify you are human",
+    "checking if the site connection is secure",
+    "before we continue to reuters",
+)
+
+
 def is_youtube_url(url: str) -> bool:
     youtube_regex = r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+$"
     return re.match(youtube_regex, url) is not None
@@ -77,10 +103,158 @@ def get_loader(request, url: str):
         )
 
 
-def get_content_from_url(request, url: str) -> str:
+def _normalize_extracted_text(text: str) -> str:
+    normalized = str(text or "").replace("\xa0", " ")
+    lines = []
+    for line in normalized.splitlines():
+        compact = re.sub(r"\s+", " ", line).strip()
+        if compact:
+            lines.append(compact)
+    return "\n".join(lines)
+
+
+def _is_low_signal_content(text: str) -> bool:
+    normalized = _normalize_extracted_text(text)
+    if len(normalized) < 200:
+        return True
+
+    lowered = normalized.lower()
+    if any(pattern in lowered for pattern in _LOW_SIGNAL_FETCH_PATTERNS):
+        return True
+
+    return False
+
+
+def _merge_unique_blocks(blocks: list[str]) -> str:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for block in blocks:
+        normalized = _normalize_extracted_text(block)
+        if len(normalized) < 30 or normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(normalized)
+    return "\n\n".join(merged)
+
+
+def _extract_structured_text_from_html(html: str, url: str) -> str:
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "lxml")
+
+    for tag in soup(["script", "style", "noscript", "svg", "form", "button", "input"]):
+        tag.decompose()
+
+    roots = []
+    for selector in ("article", "main article", "main", '[role="main"]'):
+        roots.extend(soup.select(selector))
+    if not roots:
+        roots = [soup.body or soup]
+
+    paragraph_selectors = (
+        '[data-testid*="paragraph"]',
+        '[class*="paragraph"]',
+        "p",
+        "blockquote",
+        "li",
+    )
+
+    for root in roots:
+        blocks: list[str] = []
+
+        headline = root.find(["h1", "h2"])
+        if headline:
+            headline_text = _normalize_extracted_text(headline.get_text(" ", strip=True))
+            if headline_text:
+                blocks.append(headline_text)
+
+        for selector in paragraph_selectors:
+            for node in root.select(selector):
+                text = node.get_text(" ", strip=True)
+                blocks.append(text)
+
+        merged = _merge_unique_blocks(blocks)
+        if len(merged) >= 500 and not _is_low_signal_content(merged):
+            return merged
+
+    json_ld_blocks: list[str] = []
+    for script in soup.find_all("script", type="application/ld+json"):
+        raw = script.string or script.get_text(" ", strip=True)
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+
+        payloads = payload if isinstance(payload, list) else [payload]
+        for item in payloads:
+            if not isinstance(item, dict):
+                continue
+            article_body = item.get("articleBody") or item.get("description")
+            headline = item.get("headline")
+            if isinstance(headline, str):
+                json_ld_blocks.append(headline)
+            if isinstance(article_body, str):
+                json_ld_blocks.append(article_body)
+
+    merged_json_ld = _merge_unique_blocks(json_ld_blocks)
+    if len(merged_json_ld) >= 300 and not _is_low_signal_content(merged_json_ld):
+        return merged_json_ld
+
+    fallback = _merge_unique_blocks([soup.get_text("\n", strip=True)])
+    return fallback
+
+
+def _direct_fetch_html(request, url: str) -> Optional[str]:
+    verify_ssl = bool(request.app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION)
+    trust_env = bool(request.app.state.config.WEB_SEARCH_TRUST_ENV)
+    timeout_value = 20.0
+    configured_timeout = getattr(request.app.state.config, "WEB_LOADER_TIMEOUT", "")
+    try:
+        if configured_timeout:
+            timeout_value = float(configured_timeout)
+    except Exception:
+        pass
+
+    session = requests.Session()
+    session.trust_env = trust_env
+    session.headers.update(_BROWSER_FETCH_HEADERS)
+    response = session.get(
+        url,
+        timeout=timeout_value,
+        allow_redirects=True,
+        verify=verify_ssl,
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def get_content_from_url(request, url: str) -> tuple[str, list[Document]]:
     loader = get_loader(request, url)
     docs = loader.load()
-    content = " ".join([doc.page_content for doc in docs])
+    content = _normalize_extracted_text("\n\n".join([doc.page_content for doc in docs]))
+
+    if not _is_low_signal_content(content):
+        return content, docs
+
+    try:
+        html = _direct_fetch_html(request, url)
+        fallback_content = _normalize_extracted_text(
+            _extract_structured_text_from_html(html, url)
+        )
+        if not _is_low_signal_content(fallback_content):
+            fallback_doc = Document(
+                page_content=fallback_content,
+                metadata={
+                    "source": url,
+                    "loader_fallback": "direct_browser_fetch",
+                },
+            )
+            return fallback_content, [fallback_doc]
+    except Exception as exc:
+        log.debug("Direct browser-like fallback fetch failed for %s: %s", url, exc)
+
     return content, docs
 
 

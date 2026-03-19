@@ -149,6 +149,7 @@ async def test_fetch_url_store_mode_returns_pointer_metadata(monkeypatch):
     assert payload["status"] == "stored"
     assert payload["mode"] == "store"
     assert payload["artifact_id"] == "wp_abc"
+    assert payload["content_source"] == "primary_loader"
     assert payload["available_to"] == "query_web_evidence"
     assert payload["evidence_query_scope"]["chat_id"] == "chat-1"
     assert payload["evidence_query_scope"]["message_id"] == "msg-1"
