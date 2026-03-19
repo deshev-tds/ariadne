@@ -632,6 +632,68 @@ Numeric score remains available for diagnostics, but is no longer a default publ
 
 That makes the `fetch -> evidence query` handoff much less ghostly. If the model gets empty evidence now, it has a precise reason instead of a vague absence.
 
+### Toggleable Large-Document Evidence Retrieval
+
+The next web-retrieval problem was different in shape. Once exact-turn storage became reliable, another failure mode became more visible:
+
+- some sources are not ordinary articles, but very large single-page or single-file documents
+- examples include long `lex.bg` law pages, regulatory PDFs, drug labels, manuals, and specs
+- on those documents, plain one-shot lexical retrieval over a giant stored text blob can be fast, but quietly facet-incomplete
+- the expensive escape hatch, `fetch_url(mode="content")`, is often more reliable precisely because the model gets to read the whole thing - but that is also where prompt budget and latency start to get ugly
+
+The resulting design pressure was straightforward: improve the `store -> query_web_evidence` path for large structured documents without pretending the new path is infallible and without removing the old baseline that already works reasonably well in many chats.
+
+That is why Ariadne now has two explicit web-evidence retrieval modes for stored artifacts:
+
+- `legacy_store_retrieval`
+  - the current stable baseline
+  - exact-turn artifact scope
+  - current chunk-aware evidence snippets
+- `segmented_confidence_gated`
+  - the newer large-document path
+  - extractor-native structure first, weak structural hints second, plain chunk fallback last
+  - bounded segment retrieval with coverage rescue for compound questions when one-shot evidence is likely too one-sided
+
+The important thing here is not the name of the new mode, but the operating discipline behind it.
+
+It does **not** try to build a grand per-discipline scaffold for law, medicine, policy, or manuals. The retrieval unit changes by document shape, not by domain taxonomy. If a source yields useful structure, Ariadne indexes bounded segments with labels/path context and queries those. If the extracted structure looks weak or noisy, the system falls back inside the same mode to chunk-style retrieval instead of pretending a fake hierarchy exists.
+
+That confidence gate matters because parser optimism is expensive. Large-document retrieval is full of traps:
+
+- broken PDF line wraps
+- boilerplate-heavy HTML
+- heading-like text that is not really a heading
+- duplicated labels
+- OCR-ish garbage
+- inline legal references that look like section starts if you are careless
+
+So the segmented mode is deliberately not "structured always". It is "use structure when the extracted shape looks trustworthy; otherwise behave much closer to the older chunk-aware path".
+
+This is also why the feature is operator-toggleable instead of silently replacing the old behavior.
+
+- admins can set the global default in `Admin Settings -> Web Search`
+- individual chats can override it from chat controls
+- the default remains `legacy_store_retrieval` until the newer path proves itself broadly enough
+
+That toggle exists for two reasons:
+
+- practical A/B testing on real prompts and real local runtimes
+- fast operational fallback when the newer path misbehaves on an ugly document
+
+One detail is easy to miss but operationally important: this toggle affects only the stored-evidence path.
+
+- it applies to `fetch_url(mode="store") -> query_web_evidence`
+- it does **not** affect `fetch_url(mode="content")`
+
+So if a model chooses to read a fetched page directly into context, the retrieval-mode toggle is irrelevant for that turn. The new mode only matters when the model stores artifacts locally and later asks for bounded evidence over them.
+
+The motivating cases are concrete:
+
+- on a long `lex.bg` law page, the newer mode tries to retrieve bounded, locally meaningful segments instead of treating the entire law as one flat blob
+- on a document like the Mounjaro FDA label, it can recover the right warning / contraindications / dosage regions without forcing a full-document dump into prompt context
+
+And if that structure-aware path turns out not to be trustworthy for a particular source, the operator can flip the chat back to `legacy_store_retrieval` without disabling the whole web-evidence lane.
+
 ### Background Source Diary
 
 Ariadne also writes a bounded background source diary for completed research turns when a task model is configured.
