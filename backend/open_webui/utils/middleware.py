@@ -3021,6 +3021,25 @@ def is_opening_code_block(content):
     return len(backtick_segments) > 1 and len(backtick_segments) % 2 == 0
 
 
+def _finalize_completed_reasoning_details(content: Any) -> Any:
+    if not isinstance(content, str) or "<details" not in content:
+        return content
+
+    def _normalize_open_tag(match: re.Match[str]) -> str:
+        open_tag = match.group(0)
+        normalized = re.sub(r'done="false"', 'done="true"', open_tag)
+        if 'duration="' not in normalized:
+            normalized = normalized[:-1] + ' duration="0">'
+        return normalized
+
+    return re.sub(
+        r'<details\b(?=[^>]*\btype="reasoning")(?=[^>]*\bdone="false")[^>]*>',
+        _normalize_open_tag,
+        content,
+        flags=re.IGNORECASE,
+    )
+
+
 def serialize_output(output: list) -> str:
     """
     Convert OR-aligned output items to HTML for display.
@@ -8275,7 +8294,10 @@ async def non_streaming_chat_response_handler(response, ctx):
 
         choices = response_data.get("choices", [])
         if choices and choices[0].get("message", {}).get("content"):
-            content = response_data["choices"][0]["message"]["content"]
+            content = _finalize_completed_reasoning_details(
+                response_data["choices"][0]["message"]["content"]
+            )
+            response_data["choices"][0]["message"]["content"] = content
 
             if content:
                 if event_emitter:
@@ -8892,6 +8914,10 @@ async def streaming_chat_response_handler(response, ctx):
                                     # Merge any metadata (usage, done, etc.)
                                     if response_metadata:
                                         processed_data.update(response_metadata)
+                                    if response_metadata and response_metadata.get("done"):
+                                        processed_data["content"] = _finalize_completed_reasoning_details(
+                                            processed_data.get("content")
+                                        )
 
                                     await event_emitter(
                                         {
@@ -10273,7 +10299,9 @@ async def streaming_chat_response_handler(response, ctx):
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
                 data = {
                     "done": True,
-                    "content": serialize_output(output),
+                    "content": _finalize_completed_reasoning_details(
+                        serialize_output(output)
+                    ),
                     "output": output,
                     "title": title,
                     **(
@@ -10310,7 +10338,9 @@ async def streaming_chat_response_handler(response, ctx):
                         metadata["chat_id"],
                         metadata["message_id"],
                         {
-                            "content": serialize_output(output),
+                            "content": _finalize_completed_reasoning_details(
+                                serialize_output(output)
+                            ),
                             "output": output,
                             **({"usage": usage} if usage else {}),
                             **(
@@ -10409,7 +10439,9 @@ async def streaming_chat_response_handler(response, ctx):
                         metadata["chat_id"],
                         metadata["message_id"],
                         {
-                            "content": serialize_output(output),
+                            "content": _finalize_completed_reasoning_details(
+                                serialize_output(output)
+                            ),
                             "output": output,
                             "terminationCause": termination_cause,
                         },

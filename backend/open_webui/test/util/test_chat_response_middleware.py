@@ -1425,6 +1425,92 @@ def test_build_research_loop_breaker_result_mentions_empty_fetches():
     assert "no usable stored content" in payload["message"]
 
 
+def test_finalize_completed_reasoning_details_marks_done_and_duration():
+    content = (
+        '<details type="reasoning" done="false">\n'
+        "<summary>Thinking…</summary>\n"
+        "foo\n"
+        "</details>"
+    )
+
+    normalized = middleware._finalize_completed_reasoning_details(content)
+
+    assert 'done="true"' in normalized
+    assert 'duration="0"' in normalized
+    assert 'done="false"' not in normalized
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_chat_response_normalizes_final_reasoning_details(monkeypatch):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {},
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    result = await non_streaming_chat_response_handler(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '<details type="reasoning" done="false">\n'
+                            "<summary>Thinking…</summary>\n"
+                            "foo\n"
+                            "</details>\n\nAnswer."
+                        )
+                    }
+                }
+            ]
+        },
+        ctx,
+    )
+
+    persisted = saved_messages[0][2]["content"]
+    assert 'done="true"' in persisted
+    assert 'duration="0"' in persisted
+    assert 'done="false"' not in persisted
+    assert 'done="true"' in result["choices"][0]["message"]["content"]
+
+
 def test_update_research_turn_state_triggers_breaker_on_stagnant_weak_evidence():
     metadata = {"chat_id": "chat-1", "message_id": "msg-1"}
 
