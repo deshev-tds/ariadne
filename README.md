@@ -23,6 +23,7 @@ In practice, the local stack behind Ariadne is centered on `llama.cpp`, OpenAI-c
 - [What Changed from Upstream](#what-changed-from-upstream)
 - [What Was Actually Validated](#what-was-actually-validated)
 - [Context and Memory in Ariadne](#context-and-memory-in-ariadne)
+- [Context Window Indicator](#context-window-indicator)
 - [Web Search and Retrieval Planning](#web-search-and-retrieval-planning)
 - [Optional Local Corpus Lane](#optional-local-corpus-lane)
 - [Deep Research as a Separate Lane](#deep-research-as-a-separate-lane)
@@ -265,6 +266,37 @@ It is also worth being explicit about how that snapshot is produced. The snapsho
 That implementation is also designed to avoid "recap of a recap of a recap". The fork persists both the snapshot text and the exact raw message boundary it summarizes through, then reuses that stored snapshot directly while later turns stay in the raw tail. Refresh is triggered only when enough new raw growth has accumulated beyond that boundary, and the new snapshot is generated from raw history up to the new boundary, not by summarizing the previous snapshot text again.
 
 There is a deliberate contract behind that. The snapshot is for durable state only, not for transient literals, one-off canaries, or recoverable raw evidence. If a literal detail should survive only as evidence from raw history, it should be excluded from the snapshot and recovered later through exact recall.
+
+## Context Window Indicator
+
+Ariadne now exposes a small context-window indicator in the chat navbar for the active chat session.
+
+The point is not decoration. The indicator exists to make context maintenance visible before compaction happens:
+
+- how full the active session context currently is
+- where the likely maintenance band begins
+- which model is currently limiting the session when multiple main models are selected
+
+There are a few deliberate constraints behind this surface:
+
+- it is an aggregate session indicator, not one ring per selected model
+- it is only shown for models that are actually `loaded` at runtime
+- if a selected model is `loading`, the UI shows a loading state instead of a ring
+- if a selected model is `unloaded`, the ring is hidden rather than pretending config-only numbers are authoritative
+
+That last point matters on modern multi-model `llama.cpp` router setups. A config-level `--ctx-size` is useful as internal fallback metadata, but it is not the same thing as live runtime state. Ariadne therefore treats the navbar ring as a live-runtime control surface, not a static capability badge.
+
+For `llama.cpp` router deployments, runtime probing is also intentionally conservative:
+
+- model-specific `props`, `slots`, and `metrics` probes are sent with `autoload=false`
+- unloaded models are not awakened just because the UI wants telemetry
+- live ring data is therefore limited to models that are already loaded and ready
+
+The backend preview path uses the same maintenance packing rules as the real request path, but the UI is still intentionally honest about confidence:
+
+- the base preview comes from the backend
+- the draft overlay is approximate
+- low-confidence token counts are marked as degraded instead of being presented as precise
 
 ### Stage 3: Exact Recall
 
