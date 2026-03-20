@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from open_webui.retrieval.working_mode import normalize_working_mode
 import open_webui.utils.middleware as middleware
 from open_webui.utils.middleware import (
     apply_params_to_form_data,
@@ -234,6 +235,7 @@ def test_apply_params_strips_ledger_mode_from_openai_payload():
     form_data = {
         "params": {
             "ledger_mode": "agentic",
+            "working_mode": "science",
             "local_corpus_mode": "prefer",
             "temperature": 0.2,
         }
@@ -243,6 +245,7 @@ def test_apply_params_strips_ledger_mode_from_openai_payload():
     result = apply_params_to_form_data(form_data, model)
 
     assert "ledger_mode" not in result
+    assert "working_mode" not in result
     assert "local_corpus_mode" not in result
     assert result["temperature"] == 0.2
 
@@ -251,6 +254,7 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
     form_data = {
         "params": {
             "ledger_mode": "agentic",
+            "working_mode": "science",
             "local_corpus_mode": "prefer",
             "temperature": 0.2,
         }
@@ -261,7 +265,14 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
 
     assert result["options"].get("temperature") == 0.2
     assert "ledger_mode" not in result["options"]
+    assert "working_mode" not in result["options"]
     assert "local_corpus_mode" not in result["options"]
+
+
+def test_normalize_working_mode_infers_science_from_legacy_local_corpus_mode():
+    assert normalize_working_mode(None, local_corpus_mode="prefer") == "science"
+    assert normalize_working_mode("", local_corpus_mode="auto") == "science"
+    assert normalize_working_mode(None, local_corpus_mode="off") == "general"
 
 
 def test_local_corpus_prefer_system_prompt_encourages_brief_human_preamble():
@@ -302,6 +313,27 @@ def test_build_default_selector_guidance_adds_local_corpus_prefer_and_term_rules
     assert "prior-work sources" not in guidance
 
 
+def test_build_default_selector_guidance_skips_science_rules_for_offsec_mode():
+    metadata = {
+        "params": {
+            "function_calling": "default",
+            "working_mode": "offsec",
+            "local_corpus_mode": "prefer",
+        },
+        "features": {},
+    }
+    tools = {
+        "local_corpus_frame_problem": {},
+        "local_corpus_plan_axes": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(metadata, tools, [])
+
+    assert "preserve the user's substantive topic terms" in guidance
+    assert "prefer local corpus tools first" not in guidance
+    assert "Do not stay loyal to the local lane out of inertia" not in guidance
+
+
 def test_build_default_selector_guidance_adds_local_corpus_auto_shelf_check_rule():
     metadata = {
         "params": {"function_calling": "default", "local_corpus_mode": "auto"},
@@ -334,6 +366,24 @@ def test_build_forced_default_selector_tool_call_returns_local_domain_probe_for_
     forced = middleware._build_forced_default_selector_tool_call(metadata, tools)
 
     assert forced == {"name": "local_corpus_list_domains", "parameters": {}}
+
+
+def test_build_forced_default_selector_tool_call_skips_offsec_mode():
+    metadata = {
+        "params": {
+            "function_calling": "default",
+            "working_mode": "offsec",
+            "local_corpus_mode": "auto",
+        },
+    }
+    tools = {
+        "local_corpus_list_domains": {},
+        "web_research_strong": {},
+    }
+
+    forced = middleware._build_forced_default_selector_tool_call(metadata, tools)
+
+    assert forced is None
 
 
 def test_build_forced_default_selector_tool_call_skips_non_auto_or_missing_tool():

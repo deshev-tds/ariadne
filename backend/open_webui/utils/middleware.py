@@ -167,6 +167,7 @@ from open_webui.utils.deep_research import (
 )
 from open_webui.routers.files import upload_file_handler
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
+from open_webui.retrieval.working_mode import normalize_working_mode
 
 
 from open_webui.config import (
@@ -461,6 +462,7 @@ def _build_default_selector_guidance(
 
     features = metadata.get("features", {}) or {}
     local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
+    working_mode = _normalized_working_mode(params)
 
     clauses: list[str] = []
 
@@ -468,12 +470,14 @@ def _build_default_selector_guidance(
         clauses.append(DEFAULT_SELECTOR_TERM_PRESERVATION_GUIDANCE)
 
     if (
-        local_corpus_mode == "prefer"
+        working_mode == "science"
+        and local_corpus_mode == "prefer"
         and _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES)
     ):
         clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE)
     elif (
-        local_corpus_mode == "auto"
+        working_mode == "science"
+        and local_corpus_mode == "auto"
         and _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES)
     ):
         clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_AUTO_GUIDANCE)
@@ -505,6 +509,9 @@ def _build_forced_default_selector_tool_call(
     if params.get("function_calling") != "default":
         return None
 
+    if _normalized_working_mode(params) != "science":
+        return None
+
     if normalize_local_corpus_mode(params.get("local_corpus_mode")) != "auto":
         return None
 
@@ -533,6 +540,8 @@ def _upgrade_default_search_web_tool_call(tool_call: dict[str, Any]) -> dict[str
     upgraded = dict(tool_call)
     upgraded["name"] = "web_research_strong"
     return upgraded
+
+
 from open_webui.env import (
     AGENTIC_ARTIFACTS_DIR,
     GLOBAL_LOG_LEVEL,
@@ -558,6 +567,14 @@ logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 
 
+def _normalized_working_mode(params: Optional[dict[str, Any]]) -> str:
+    normalized_params = params or {}
+    return normalize_working_mode(
+        normalized_params.get("working_mode"),
+        local_corpus_mode=normalized_params.get("local_corpus_mode"),
+    )
+
+
 DEFAULT_REASONING_TAGS = [
     ("<think>", "</think>"),
     ("<thinking>", "</thinking>"),
@@ -578,8 +595,10 @@ def _should_enable_shared_tool_narration(
         return False
 
     local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
+    working_mode = _normalized_working_mode(params)
     local_corpus_enabled = (
-        local_corpus_mode == "prefer"
+        working_mode == "science"
+        and local_corpus_mode == "prefer"
         and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
         and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
     )
@@ -592,8 +611,10 @@ def _initialize_tool_narration_state(
 ) -> dict[str, Any]:
     params = metadata.get("params", {}) or {}
     local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
+    working_mode = _normalized_working_mode(params)
     local_corpus_prefer = (
-        local_corpus_mode == "prefer"
+        working_mode == "science"
+        and local_corpus_mode == "prefer"
         and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
         and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
     )
@@ -6527,6 +6548,7 @@ def apply_params_to_form_data(form_data, model):
         "function_calling": str,
         "reasoning_tags": list,
         "ledger_mode": str,
+        "working_mode": str,
         "focused_search_mode": bool,
         "local_corpus_mode": str,
         "web_evidence_retrieval_mode": str,
@@ -7160,8 +7182,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     local_corpus_mode = normalize_local_corpus_mode(
         metadata.get("params", {}).get("local_corpus_mode")
     )
+    working_mode = _normalized_working_mode(metadata.get("params", {}))
     if (
-        local_corpus_mode == "prefer"
+        working_mode == "science"
+        and local_corpus_mode == "prefer"
         and metadata.get("params", {}).get("function_calling") == "native"
         and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
         and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)

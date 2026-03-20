@@ -861,6 +861,28 @@ def test_builtin_local_corpus_tools_respect_off_chat_mode(local_corpus_fixture):
     assert "local_corpus_shortlist_books" not in tools
 
 
+def test_builtin_local_corpus_tools_respect_offsec_working_mode(local_corpus_fixture):
+    request = _request_for_corpus(local_corpus_fixture)
+    model = {"info": {"meta": {"capabilities": {}, "builtinTools": {"local_corpus": True}}}}
+
+    tools = tool_utils.get_builtin_tools(
+        request,
+        {
+            "__metadata__": {
+                "params": {
+                    "working_mode": "offsec",
+                    "local_corpus_mode": "prefer",
+                }
+            }
+        },
+        features={},
+        model=model,
+    )
+
+    assert "local_corpus_shortlist_books" not in tools
+    assert "local_corpus_frame_problem" not in tools
+
+
 def test_builtin_chat_tools_respect_old_chats_toggle(local_corpus_fixture):
     request = _request_for_corpus(local_corpus_fixture)
     model = {"info": {"meta": {"capabilities": {}, "builtinTools": {"chats": True}}}}

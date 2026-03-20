@@ -116,6 +116,7 @@ from open_webui.models.models import Models
 from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
+from open_webui.retrieval.working_mode import normalize_working_mode
 
 from open_webui.config import (
     # Ollama
@@ -1969,6 +1970,10 @@ async def chat_completion(
         local_corpus_mode = normalize_local_corpus_mode(
             form_data.get("params", {}).get("local_corpus_mode")
         )
+        working_mode = normalize_working_mode(
+            form_data.get("params", {}).get("working_mode"),
+            local_corpus_mode=local_corpus_mode,
+        )
 
         # Model Params
         if model_info_params.get("stream_response") is not None:
@@ -2000,6 +2005,7 @@ async def chat_completion(
                 "stream_delta_chunk_size": stream_delta_chunk_size,
                 "reasoning_tags": reasoning_tags,
                 "ledger_mode": ledger_mode,
+                "working_mode": working_mode,
                 "local_corpus_mode": local_corpus_mode,
                 "debug_memory_telemetry": bool(
                     form_data.get("params", {}).get("debug_memory_telemetry")
