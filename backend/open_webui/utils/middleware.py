@@ -773,6 +773,52 @@ def _build_agent_loop_termination_cause(
 
     return cause
 
+
+def _summarize_pending_tool_calls(
+    tool_calls: list[list[dict[str, Any]]] | None,
+) -> tuple[int, list[str]]:
+    pending_count = 0
+    pending_names: list[str] = []
+
+    for batch in tool_calls or []:
+        if not batch:
+            continue
+
+        for tool_call in batch:
+            pending_count += 1
+            name = str(tool_call.get("function", {}).get("name", "")).strip()
+            if name and name not in pending_names:
+                pending_names.append(name)
+
+    return pending_count, pending_names
+
+
+def _build_agent_loop_limit_termination_cause(
+    *,
+    kind: str,
+    phase: str,
+    retries: int,
+    limit: int,
+    pending_count: int = 0,
+    pending_names: list[str] | None = None,
+) -> dict[str, Any]:
+    detail: dict[str, Any] = {
+        "retries": retries,
+        "limit": limit,
+    }
+
+    if pending_count:
+        detail["pending_count"] = pending_count
+
+    if pending_names:
+        detail["pending_names"] = pending_names[:5]
+
+    return _build_agent_loop_termination_cause(
+        kind=kind,
+        phase=phase,
+        detail=detail,
+    )
+
 TOKEN_TELEMETRY_VERSION = 1
 TOKEN_TELEMETRY_PROVIDER = "openai_logprobs"
 TOKEN_TELEMETRY_TOP_K = 10
@@ -10172,6 +10218,29 @@ async def streaming_chat_response_handler(response, ctx):
                         )
                         break
 
+                pending_tool_call_count, pending_tool_names = (
+                    _summarize_pending_tool_calls(tool_calls)
+                )
+                if (
+                    pending_tool_call_count > 0
+                    and tool_call_retries >= CHAT_RESPONSE_MAX_TOOL_CALL_RETRIES
+                    and termination_cause is None
+                ):
+                    termination_cause = _build_agent_loop_limit_termination_cause(
+                        kind="tool_call_limit_reached",
+                        phase="tool_loop",
+                        retries=tool_call_retries,
+                        limit=CHAT_RESPONSE_MAX_TOOL_CALL_RETRIES,
+                        pending_count=pending_tool_call_count,
+                        pending_names=pending_tool_names,
+                    )
+                    log.warning(
+                        "Agent loop stopped after reaching tool-call retry limit: chat_id=%s message_id=%s cause=%s",
+                        metadata.get("chat_id"),
+                        metadata.get("message_id"),
+                        termination_cause,
+                    )
+
                 if DETECT_CODE_INTERPRETER:
                     MAX_RETRIES = 5
                     retries = 0
@@ -10397,6 +10466,25 @@ async def streaming_chat_response_handler(response, ctx):
                                 exc_info=True,
                             )
                             break
+
+                    if (
+                        output
+                        and output[-1].get("type") == "open_webui:code_interpreter"
+                        and retries >= MAX_RETRIES
+                        and termination_cause is None
+                    ):
+                        termination_cause = _build_agent_loop_limit_termination_cause(
+                            kind="code_interpreter_retry_limit_reached",
+                            phase="code_interpreter_continuation",
+                            retries=retries,
+                            limit=MAX_RETRIES,
+                        )
+                        log.warning(
+                            "Agent loop stopped after reaching code interpreter retry limit: chat_id=%s message_id=%s cause=%s",
+                            metadata.get("chat_id"),
+                            metadata.get("message_id"),
+                            termination_cause,
+                        )
 
                 # Mark all in-progress items as completed
                 for item in output:

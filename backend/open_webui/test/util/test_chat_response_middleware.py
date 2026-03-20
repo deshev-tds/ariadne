@@ -1158,6 +1158,42 @@ def test_build_agent_loop_termination_cause_includes_error_metadata():
     assert cause["error"] == "upstream timed out"
 
 
+def test_summarize_pending_tool_calls_returns_count_and_unique_names():
+    pending_count, pending_names = middleware._summarize_pending_tool_calls(
+        [
+            [
+                {"function": {"name": "run_command"}},
+                {"function": {"name": "get_process_status"}},
+            ],
+            [
+                {"function": {"name": "run_command"}},
+                {"function": {"name": ""}},
+            ],
+        ]
+    )
+
+    assert pending_count == 4
+    assert pending_names == ["run_command", "get_process_status"]
+
+
+def test_build_agent_loop_limit_termination_cause_includes_retry_metadata():
+    cause = middleware._build_agent_loop_limit_termination_cause(
+        kind="tool_call_limit_reached",
+        phase="tool_loop",
+        retries=30,
+        limit=30,
+        pending_count=2,
+        pending_names=["run_command", "get_process_status"],
+    )
+
+    assert cause["kind"] == "tool_call_limit_reached"
+    assert cause["phase"] == "tool_loop"
+    assert '"retries": 30' in cause["detail"]
+    assert '"limit": 30' in cause["detail"]
+    assert '"pending_count": 2' in cause["detail"]
+    assert '"pending_names": ["run_command", "get_process_status"]' in cause["detail"]
+
+
 @pytest.mark.asyncio
 async def test_non_streaming_chat_response_includes_tool_journey_telemetry(monkeypatch):
     saved_messages = []
