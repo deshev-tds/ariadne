@@ -1185,9 +1185,21 @@ async def preview_context_window(
     if isinstance(form_data.system_message, str) and form_data.system_message.strip():
         system_message = {"role": "system", "content": form_data.system_message.strip()}
 
+    models_map = dict(request.app.state.MODELS or {})
+    if any(model_id not in models_map for model_id in model_ids):
+        from open_webui.utils.models import get_all_models
+
+        merged_models = await get_all_models(request, user=user)
+        if merged_models:
+            models_map = {
+                model.get("id"): model
+                for model in merged_models
+                if isinstance(model, dict) and model.get("id")
+            }
+
     preview = await build_aggregate_context_window_preview(
         request,
-        models_map=request.app.state.MODELS,
+        models_map=models_map,
         main_model_ids=model_ids,
         system_message=system_message,
         history_messages=history_messages,
