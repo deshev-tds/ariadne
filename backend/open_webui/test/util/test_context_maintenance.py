@@ -581,6 +581,36 @@ def test_count_preview_messages_tokens_caches_rendered_prompt(monkeypatch):
     assert fake_encoding.calls == 1
 
 
+def test_count_preview_messages_tokens_degrades_openai_compatible_llamacpp_models(monkeypatch):
+    context_maintenance._PREVIEW_TOKEN_CACHE.clear()
+
+    class FakeEncoding:
+        def encode(self, text: str):
+            return list(range(max(1, len(text) // 8)))
+
+    monkeypatch.setattr(
+        context_maintenance,
+        "_get_tiktoken_encoding",
+        lambda _encoding_name: FakeEncoding(),
+    )
+
+    request = _make_request(TIKTOKEN_ENCODING_NAME="cl100k_base")
+    model = {
+        "id": "qwen-local-router",
+        "owned_by": "openai",
+        "status": {"args": ["/usr/local/bin/llama-server", "--ctx-size", "131072"]},
+    }
+
+    _, source, confidence = count_preview_messages_tokens(
+        request,
+        model,
+        [{"role": "user", "content": "local router should not claim exact tokenizer"}],
+    )
+
+    assert source == "tiktoken"
+    assert confidence == "fallback"
+
+
 @pytest.mark.asyncio
 async def test_build_context_window_model_preview_degrades_confidence_for_local_models():
     request = _make_request(TIKTOKEN_ENCODING_NAME="cl100k_base")

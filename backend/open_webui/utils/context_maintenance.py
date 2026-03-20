@@ -337,13 +337,23 @@ def resolve_preview_tokenizer(
     request,
     model: dict[str, Any],
 ) -> tuple[str | None, str, str]:
+    status = model.get("status")
+    status_args = list(status.get("args") or []) if isinstance(status, dict) else []
+    local_runtime_backed = bool(
+        status_args
+        and any(
+            marker in str(arg)
+            for arg in status_args
+            for marker in ("llama-server", "--ctx-size", "--parallel")
+        )
+    )
     encoding_name = str(
         getattr(request.app.state.config, "TIKTOKEN_ENCODING_NAME", "cl100k_base")
         or "cl100k_base"
     )
     encoding = _get_tiktoken_encoding(encoding_name)
     if encoding is not None:
-        if model.get("owned_by") == "openai":
+        if model.get("owned_by") == "openai" and not local_runtime_backed:
             return encoding_name, "tiktoken", "model_tokenizer"
         return encoding_name, "tiktoken", "fallback"
 
