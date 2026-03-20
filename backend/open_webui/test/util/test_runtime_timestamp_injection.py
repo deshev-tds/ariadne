@@ -29,3 +29,15 @@ def test_inject_runtime_timestamp_once_deduplicates_marker():
     updated = middleware._inject_runtime_timestamp_once(messages)
 
     assert updated == messages
+
+
+def test_inject_runtime_timestamp_once_skips_later_turns():
+    messages = [
+        {"role": "user", "content": "first turn"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second turn"},
+    ]
+
+    updated = middleware._inject_runtime_timestamp_once(messages)
+
+    assert updated == messages

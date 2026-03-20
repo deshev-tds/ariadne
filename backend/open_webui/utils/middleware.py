@@ -677,6 +677,18 @@ def _inject_runtime_timestamp_once(messages: list[dict]) -> list[dict]:
         if RUNTIME_TIMESTAMP_MARKER in system_content:
             return messages
 
+    # Keep the runtime timestamp stable by injecting it only on the very first
+    # real turn of a chat session. Later turns should not receive a fresh
+    # timestamp block, otherwise the system prefix changes every request and
+    # harms prompt-cache similarity.
+    history_messages = [
+        message
+        for message in messages or []
+        if str(message.get("role") or "").strip() != "system"
+    ]
+    if len(history_messages) > 1:
+        return messages
+
     return add_or_update_system_message(
         append_runtime_temporal_grounding(""),
         messages,
