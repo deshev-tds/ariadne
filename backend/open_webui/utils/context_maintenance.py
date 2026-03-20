@@ -1301,9 +1301,33 @@ def build_unmaintained_request_messages(
     return messages
 
 
+def resolve_context_window_runtime_model(
+    models_map: dict[str, dict[str, Any]],
+    model: dict[str, Any],
+) -> dict[str, Any]:
+    info = model.get("info") if isinstance(model.get("info"), dict) else {}
+    base_model_id = model.get("base_model_id") or info.get("base_model_id")
+    candidate_ids = [
+        str(base_model_id).strip()
+        for base_model_id in [
+            base_model_id,
+            str(base_model_id).split(":")[0] if base_model_id else None,
+        ]
+        if base_model_id
+    ]
+
+    for candidate_id in candidate_ids:
+        candidate = models_map.get(candidate_id)
+        if candidate:
+            return candidate
+
+    return model
+
+
 async def build_context_window_model_preview(
     request,
     *,
+    models_map: dict[str, dict[str, Any]],
     model: dict[str, Any],
     system_message: dict[str, Any] | None,
     history_messages: list[dict[str, Any]],
@@ -1312,9 +1336,14 @@ async def build_context_window_model_preview(
     summary_state: dict[str, Any] | None,
     maintenance_enabled: bool,
 ) -> dict[str, Any]:
-    probe = await load_llamacpp_probe(request, model)
+    runtime_model = resolve_context_window_runtime_model(models_map, model)
+    probe = await load_llamacpp_probe(request, runtime_model)
     budgets = resolve_history_budgets(
-        request, model=model, form_data=form_data, metadata=metadata, probe=probe
+        request,
+        model=runtime_model,
+        form_data=form_data,
+        metadata=metadata,
+        probe=probe,
     )
 
     if maintenance_enabled:
@@ -1338,12 +1367,12 @@ async def build_context_window_model_preview(
         compaction_version = 0
 
     current_request_tokens, token_count_source, token_count_confidence = (
-        count_preview_messages_tokens(request, model, request_messages)
+        count_preview_messages_tokens(request, runtime_model, request_messages)
     )
     system_request_tokens = 0
     if request_messages and request_messages[0].get("role") == "system":
         system_request_tokens, _, _ = count_preview_messages_tokens(
-            request, model, [request_messages[0]]
+            request, runtime_model, [request_messages[0]]
         )
 
     soft_trigger_tokens = None
@@ -1419,6 +1448,7 @@ async def build_aggregate_context_window_preview(
         previews.append(
             await build_context_window_model_preview(
                 request,
+                models_map=models_map,
                 model=model,
                 system_message=system_message,
                 history_messages=history_messages,

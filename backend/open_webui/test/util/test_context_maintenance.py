@@ -18,6 +18,7 @@ from open_webui.utils.context_maintenance import (
     normalize_summary_snapshot,
     parse_prometheus_metrics,
     render_preview_prompt,
+    resolve_context_window_runtime_model,
     resolve_effective_ctx_cap,
     resolve_history_budgets,
     resolve_live_prompt_cap,
@@ -90,6 +91,30 @@ def test_render_preview_prompt_includes_roles_and_content():
     assert "keep state" in rendered
     assert "<|user|>" in rendered
     assert "ship the ring" in rendered
+
+
+def test_resolve_context_window_runtime_model_uses_base_model_metadata():
+    base_model = {
+        "id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS",
+        "owned_by": "openai",
+        "urlIdx": 0,
+        "status": {"args": ["/usr/local/bin/llama-server", "--ctx-size", "131072"]},
+    }
+    preset_model = {
+        "id": "assistant-step-35-flash-ablitiratedi1-iq4xs",
+        "owned_by": "openai",
+        "info": {"base_model_id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS"},
+    }
+
+    resolved = resolve_context_window_runtime_model(
+        {
+            base_model["id"]: base_model,
+            preset_model["id"]: preset_model,
+        },
+        preset_model,
+    )
+
+    assert resolved is base_model
 
 
 def test_build_summary_prompt_requests_structured_state_snapshot():
@@ -623,6 +648,7 @@ async def test_build_context_window_model_preview_degrades_confidence_for_local_
 
     preview = await build_context_window_model_preview(
         request,
+        models_map={model["id"]: model},
         model=model,
         system_message={"role": "system", "content": "Be precise"},
         history_messages=[_message("m1", "user", "Long mixed кирилица and code payload")],
@@ -635,6 +661,44 @@ async def test_build_context_window_model_preview_degrades_confidence_for_local_
     assert preview["token_count_confidence"] == "fallback"
     assert preview["soft_trigger_tokens"] is not None
     assert preview["hard_trigger_tokens"] is not None
+
+
+@pytest.mark.asyncio
+async def test_build_context_window_model_preview_uses_base_model_runtime_cap():
+    request = _make_request(TIKTOKEN_ENCODING_NAME="cl100k_base")
+    base_model = {
+        "id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS",
+        "name": "Step Flash",
+        "owned_by": "openai",
+        "urlIdx": 0,
+        "status": {"args": ["/usr/local/bin/llama-server", "--ctx-size", "131072"]},
+        "openai": {"id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS"},
+    }
+    preset_model = {
+        "id": "assistant-step-35-flash-ablitiratedi1-iq4xs",
+        "name": "Assistant Step Flash",
+        "owned_by": "openai",
+        "info": {"base_model_id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS"},
+    }
+
+    preview = await build_context_window_model_preview(
+        request,
+        models_map={
+            base_model["id"]: base_model,
+            preset_model["id"]: preset_model,
+        },
+        model=preset_model,
+        system_message=None,
+        history_messages=[_message("m1", "user", "compact me carefully")],
+        form_data={"files": []},
+        metadata={},
+        summary_state={},
+        maintenance_enabled=True,
+    )
+
+    assert preview["model_id"] == preset_model["id"]
+    assert preview["model_name"] == preset_model["name"]
+    assert preview["live_prompt_cap"] == 131072
 
 
 @pytest.mark.asyncio
