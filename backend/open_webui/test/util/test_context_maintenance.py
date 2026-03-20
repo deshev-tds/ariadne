@@ -490,7 +490,80 @@ async def test_background_context_maintenance_closes_status_on_early_return(
 
 
 @pytest.mark.asyncio
-async def test_inline_maintenance_proactively_pretrims_when_near_live_cap(monkeypatch):
+async def test_background_context_maintenance_uses_raw_request_tokens_for_trigger(
+    monkeypatch,
+):
+    history = [
+        _message("u1", "user", "question"),
+        _message("a1", "assistant", "answer"),
+    ]
+
+    monkeypatch.setattr(
+        context_maintenance.Chats,
+        "get_messages_map_by_chat_id",
+        lambda _chat_id: {"u1": history[0], "a1": history[1]},
+    )
+    monkeypatch.setattr(
+        context_maintenance, "get_message_list", lambda *_args, **_kwargs: history
+    )
+    monkeypatch.setattr(
+        context_maintenance,
+        "inject_image_files_into_history",
+        lambda messages: messages,
+    )
+    monkeypatch.setattr(
+        context_maintenance, "get_chat_maintenance_state", lambda *_args, **_kwargs: {}
+    )
+
+    async def fake_pressure(*_args, **_kwargs):
+        return {
+            "probe": {"n_ctx": 8192},
+            "budgets": {
+                "anchor_budget_tokens": 256,
+                "hard_history_budget": 4096,
+                "hard_request_budget": 4096,
+                "soft_request_budget": 2048,
+            },
+            "raw_request_tokens": 7000,
+            "maintained_request_tokens": 1200,
+            "current_request_tokens": 7000,
+        }
+
+    monkeypatch.setattr(context_maintenance, "inspect_context_pressure", fake_pressure)
+
+    captured = {}
+
+    def fake_force(**kwargs):
+        captured["force"] = kwargs["current_request_tokens"]
+        return False
+
+    def fake_schedule(**kwargs):
+        captured["schedule"] = kwargs["current_request_tokens"]
+        return False
+
+    monkeypatch.setattr(
+        context_maintenance, "should_force_inline_maintenance", fake_force
+    )
+    monkeypatch.setattr(
+        context_maintenance, "should_schedule_maintenance", fake_schedule
+    )
+
+    request = _make_request()
+    await context_maintenance.run_background_context_maintenance(
+        request=request,
+        user=SimpleNamespace(id="u1"),
+        model={"id": "demo"},
+        chat_id="chat-1",
+        message_id="message-1",
+        event_emitter=None,
+    )
+
+    assert captured["force"] == 7000
+    assert captured["schedule"] == 7000
+
+
+@pytest.mark.asyncio
+async def test_inline_maintenance_keeps_raw_prompt_when_not_forced(monkeypatch):
     request = _make_request()
     model = {"id": "demo", "status": {"args": ["--ctx-size", "8192"]}}
     history = [
@@ -509,14 +582,17 @@ async def test_inline_maintenance_proactively_pretrims_when_near_live_cap(monkey
                 "anchor_budget_tokens": 128,
             },
             "maintenance_payload": {
-                "messages": [{"role": "user", "content": "oversized"}],
+                "raw_messages": [{"role": "user", "content": "raw"}],
+                "messages": [{"role": "user", "content": "silently-trimmed"}],
                 "used_summary_state": False,
                 "telemetry": {},
                 "anchor_messages": [],
                 "anchor_message_ids": [],
                 "tail_messages": history,
             },
-            "current_request_tokens": 7000,
+            "raw_request_tokens": 3000,
+            "maintained_request_tokens": 1200,
+            "current_request_tokens": 3000,
             "active_main_model_ids": ["demo"],
             "limiting_model_id": "demo",
             "limiting_model_name": "demo",
@@ -563,9 +639,98 @@ async def test_inline_maintenance_proactively_pretrims_when_near_live_cap(monkey
         summary_state={},
     )
 
+    assert messages[0]["content"] == "raw"
+    assert result["telemetry"]["raw_request_tokens"] == 3000
+    assert result["telemetry"]["maintained_request_tokens"] == 1200
+    assert result["telemetry"]["proactive_pretrim_triggered"] is False
+
+
+@pytest.mark.asyncio
+async def test_inline_maintenance_forces_compaction_from_raw_request_pressure(monkeypatch):
+    request = _make_request()
+    model = {"id": "demo", "status": {"args": ["--ctx-size", "8192"]}}
+    history = [
+        _message("u1", "user", "question"),
+        _message("a1", "assistant", "answer"),
+    ]
+
+    async def fake_pressure(*_args, **_kwargs):
+        return {
+            "probe": {"n_ctx": 8192},
+            "budgets": {
+                "live_prompt_cap": 8192,
+                "hard_history_budget": 4096,
+                "hard_request_budget": 4096,
+                "soft_request_budget": 2048,
+                "anchor_budget_tokens": 128,
+            },
+            "maintenance_payload": {
+                "raw_messages": [{"role": "user", "content": "raw-oversized"}],
+                "messages": [{"role": "user", "content": "pretrimmed"}],
+                "used_summary_state": False,
+                "telemetry": {},
+                "anchor_messages": [],
+                "anchor_message_ids": [],
+                "tail_messages": history,
+            },
+            "raw_request_tokens": 7000,
+            "maintained_request_tokens": 1200,
+            "current_request_tokens": 7000,
+            "active_main_model_ids": ["demo"],
+            "limiting_model_id": "demo",
+            "limiting_model_name": "demo",
+            "token_count_source": "tiktoken",
+            "token_count_confidence": "fallback",
+        }
+
+    monkeypatch.setattr(context_maintenance, "inspect_context_pressure", fake_pressure)
+    monkeypatch.setattr(
+        context_maintenance,
+        "should_force_inline_maintenance",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        context_maintenance,
+        "estimate_tokens_from_messages",
+        lambda *_args, **_kwargs: 1000,
+    )
+    monkeypatch.setattr(
+        context_maintenance,
+        "estimate_tokens_from_history_messages",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        context_maintenance, "select_tail_messages", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        context_maintenance, "resolve_summary_boundary", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        context_maintenance,
+        "trim_messages_to_budget",
+        lambda **_kwargs: ([{"role": "assistant", "content": "compacted"}], []),
+    )
+    monkeypatch.setattr(
+        context_maintenance,
+        "count_preview_messages_tokens",
+        lambda *_args, **_kwargs: (1000, "tiktoken", "fallback"),
+    )
+
+    messages, result = await context_maintenance.build_inline_maintained_messages(
+        request,
+        user=SimpleNamespace(id="u1"),
+        model=model,
+        form_data={"model": "demo"},
+        metadata={},
+        system_message=None,
+        history_messages=history,
+        summary_state={},
+    )
+
     assert messages[0]["content"] == "compacted"
     assert result["telemetry"]["proactive_pretrim_triggered"] is True
-    assert result["telemetry"]["proactive_pretrim_reason"] == "request_pressure_in_soft_zone"
+    assert result["telemetry"]["raw_request_tokens"] == 7000
+    assert result["telemetry"]["maintained_request_tokens"] == 1000
 
 
 @pytest.mark.asyncio

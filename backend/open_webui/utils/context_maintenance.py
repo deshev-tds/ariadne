@@ -798,6 +798,27 @@ def build_request_messages(
     return messages
 
 
+def split_context_maintenance_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    system_message: dict[str, Any] | None = None
+    history_messages: list[dict[str, Any]] = []
+
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+
+        role = message.get("role")
+        if role == "system" and system_message is None:
+            system_message = dict(message)
+            continue
+
+        if role in {"user", "assistant", "tool"}:
+            history_messages.append(dict(message))
+
+    return system_message, history_messages
+
+
 def trim_messages_to_budget(
     *,
     system_message: dict[str, Any] | None,
@@ -1334,6 +1355,13 @@ def build_context_maintenance_payload(
             tail_messages = history_messages[boundary_index + 1 :]
             used_summary_state = True
 
+    raw_request_messages = build_request_messages(
+        system_message=system_message,
+        anchor_messages=anchors,
+        summary_text=summary_text,
+        tail_messages=tail_messages,
+    )
+
     request_messages, trimmed_tail = trim_messages_to_budget(
         system_message=system_message,
         anchor_messages=anchors,
@@ -1347,13 +1375,17 @@ def build_context_maintenance_payload(
     )
     anchor_tokens = estimate_tokens_from_history_messages(anchors)
     summary_tokens = estimate_tokens_from_text(summary_text or "")
+    raw_tail_tokens = estimate_tokens_from_history_messages(tail_messages)
     tail_tokens = estimate_tokens_from_history_messages(trimmed_tail)
+    raw_request_tokens = estimate_tokens_from_messages(raw_request_messages)
     request_tokens = estimate_tokens_from_messages(request_messages)
 
     return {
         "messages": request_messages,
+        "raw_messages": raw_request_messages,
         "anchor_messages": anchors,
         "anchor_message_ids": anchor_ids,
+        "raw_tail_messages": list(tail_messages),
         "tail_messages": trimmed_tail,
         "summary_text": summary_text,
         "used_summary_state": used_summary_state,
@@ -1368,9 +1400,12 @@ def build_context_maintenance_payload(
             "system_tokens": system_tokens,
             "anchor_tokens": anchor_tokens,
             "summary_tokens": summary_tokens,
+            "raw_tail_tokens": raw_tail_tokens,
             "tail_tokens": tail_tokens,
+            "raw_request_tokens": raw_request_tokens,
             "request_tokens": request_tokens,
             "anchor_message_count": len(anchors),
+            "raw_tail_message_count": len(tail_messages),
             "tail_message_count": len(trimmed_tail),
             "summary_included": bool(summary_text),
             "compaction_version": compaction_version,
@@ -1466,27 +1501,38 @@ async def build_context_window_model_snapshot(
             summary_state=summary_state,
             budgets=budgets,
         )
-        request_messages = payload["messages"]
+        raw_request_messages = payload["raw_messages"]
+        maintained_request_messages = payload["messages"]
         summary_active = bool(payload.get("summary_text"))
         compaction_version = int(
             (payload.get("telemetry") or {}).get("compaction_version") or 0
         )
     else:
-        request_messages = build_unmaintained_request_messages(
+        raw_request_messages = build_unmaintained_request_messages(
             system_message=system_message,
             history_messages=history_messages,
         )
+        maintained_request_messages = raw_request_messages
         payload = None
         summary_active = False
         compaction_version = 0
 
-    current_request_tokens, token_count_source, token_count_confidence = (
-        count_preview_messages_tokens(request, runtime_model, request_messages)
+    raw_request_tokens, token_count_source, token_count_confidence = (
+        count_preview_messages_tokens(request, runtime_model, raw_request_messages)
     )
+    if raw_request_messages == maintained_request_messages:
+        maintained_request_tokens = raw_request_tokens
+    else:
+        maintained_request_tokens, _, _ = count_preview_messages_tokens(
+            request,
+            runtime_model,
+            maintained_request_messages,
+        )
+
     system_request_tokens = 0
-    if request_messages and request_messages[0].get("role") == "system":
+    if raw_request_messages and raw_request_messages[0].get("role") == "system":
         system_request_tokens, _, _ = count_preview_messages_tokens(
-            request, runtime_model, [request_messages[0]]
+            request, runtime_model, [raw_request_messages[0]]
         )
 
     soft_trigger_tokens = None
@@ -1506,7 +1552,7 @@ async def build_context_window_model_snapshot(
         "model_name": model.get("name") or model["id"],
         "live_prompt_cap": int(budgets["live_prompt_cap"]),
         "live_prompt_cap_source": budgets.get("live_prompt_cap_source") or "default",
-        "current_request_tokens": int(current_request_tokens),
+        "current_request_tokens": int(raw_request_tokens),
         "soft_trigger_tokens": soft_trigger_tokens,
         "hard_trigger_tokens": hard_trigger_tokens,
         "summary_active": summary_active,
@@ -1514,12 +1560,16 @@ async def build_context_window_model_snapshot(
         "maintenance_enabled": bool(maintenance_enabled),
         "token_count_confidence": token_count_confidence,
         "token_count_source": token_count_source,
+        "raw_request_tokens": int(raw_request_tokens),
+        "maintained_request_tokens": int(maintained_request_tokens),
         "system_request_tokens": int(system_request_tokens),
         "runtime_model": runtime_model,
         "runtime_model_id": str(runtime_model.get("id") or resolution["resolved_model_id"] or ""),
         "probe": probe,
         "budgets": budgets,
-        "request_messages": request_messages,
+        "raw_request_messages": raw_request_messages,
+        "maintained_request_messages": maintained_request_messages,
+        "request_messages": raw_request_messages,
         "maintenance_payload": payload,
         "resolution": resolution,
     }
@@ -1674,6 +1724,40 @@ async def inspect_context_pressure(
     )
 
 
+async def apply_context_maintenance_preflight(
+    request,
+    *,
+    user,
+    model: dict[str, Any],
+    form_data: dict[str, Any],
+    metadata: dict[str, Any],
+    messages: list[dict[str, Any]],
+    force_inline_compaction: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    system_message, history_messages = split_context_maintenance_messages(messages)
+    if not history_messages:
+        return list(messages or []), None
+
+    summary_state = None
+    chat_id = str(metadata.get("chat_id") or "").strip()
+    if chat_id and not chat_id.startswith("local:"):
+        summary_state = get_chat_maintenance_state(chat_id)
+
+    maintained_messages, maintenance_result = await build_inline_maintained_messages(
+        request,
+        user=user,
+        model=model,
+        form_data=form_data,
+        metadata=metadata,
+        system_message=system_message,
+        history_messages=history_messages,
+        summary_state=summary_state,
+        force_inline_compaction=force_inline_compaction,
+    )
+
+    return maintained_messages, maintenance_result
+
+
 async def build_inline_maintained_messages(
     request,
     *,
@@ -1707,9 +1791,17 @@ async def build_inline_maintained_messages(
             summary_state=summary_state,
             budgets=budgets,
         )
-        current_request_tokens, token_count_source, token_count_confidence = (
-            count_preview_messages_tokens(request, model, payload["messages"])
+        raw_request_tokens, token_count_source, token_count_confidence = (
+            count_preview_messages_tokens(request, model, payload["raw_messages"])
         )
+        if payload["raw_messages"] == payload["messages"]:
+            maintained_request_tokens = raw_request_tokens
+        else:
+            maintained_request_tokens, _, _ = count_preview_messages_tokens(
+                request,
+                model,
+                payload["messages"],
+            )
         active_main_model_ids = [str(model.get("id") or "")]
         limiting_model_id = str(model.get("id") or "")
         limiting_model_name = model.get("name") or limiting_model_id
@@ -1723,7 +1815,16 @@ async def build_inline_maintained_messages(
             summary_state=summary_state,
             budgets=budgets,
         )
-        current_request_tokens = int(pressure.get("current_request_tokens") or 0)
+        raw_request_tokens = int(
+            pressure.get("raw_request_tokens")
+            or pressure.get("current_request_tokens")
+            or 0
+        )
+        maintained_request_tokens = int(
+            pressure.get("maintained_request_tokens")
+            or pressure.get("current_request_tokens")
+            or 0
+        )
         active_main_model_ids = list(pressure.get("active_main_model_ids") or [])
         limiting_model_id = str(pressure.get("limiting_model_id") or pressure["model_id"])
         limiting_model_name = (
@@ -1746,13 +1847,13 @@ async def build_inline_maintained_messages(
         "telemetry": dict(payload.get("telemetry") or {}),
     }
 
-    preflight_request_tokens = current_request_tokens
+    preflight_request_tokens = raw_request_tokens
     preflight_threshold_tokens = max(
         PROACTIVE_INLINE_PRETRIM_MIN_TOKENS,
         int(
             budgets.get(
-                "soft_request_budget",
-                budgets.get("soft_history_budget", budgets.get("live_prompt_cap", 0)),
+                "hard_request_budget",
+                budgets.get("hard_history_budget", budgets.get("live_prompt_cap", 0)),
             )
             or 0
         ),
@@ -1770,7 +1871,9 @@ async def build_inline_maintained_messages(
             "limiting_model_name": limiting_model_name,
             "token_count_source": token_count_source,
             "token_count_confidence": token_count_confidence,
-            "request_tokens": current_request_tokens,
+            "raw_request_tokens": raw_request_tokens,
+            "maintained_request_tokens": maintained_request_tokens,
+            "request_tokens": raw_request_tokens,
             "request_token_count_source": token_count_source,
             "request_token_count_confidence": token_count_confidence,
         }
@@ -1780,14 +1883,11 @@ async def build_inline_maintained_messages(
         history_messages=history_messages,
         budgets=budgets,
         probe=probe,
-        current_request_tokens=current_request_tokens,
+        current_request_tokens=raw_request_tokens,
     )
-    if proactive_pretrim_triggered and not should_compact_inline:
-        should_compact_inline = True
-        result["telemetry"]["proactive_pretrim_reason"] = "request_pressure_in_soft_zone"
 
     if not should_compact_inline:
-        return payload["messages"], result
+        return payload["raw_messages"], result
 
     tail_budget = max(
         512,
@@ -1856,7 +1956,9 @@ async def build_inline_maintained_messages(
             "summary_refreshed": result["summary_refreshed"],
             "fallback_used": result["fallback_used"],
             "used_summary_state": result["used_summary_state"],
-            "request_tokens": final_request_tokens,
+            "request_tokens": raw_request_tokens,
+            "raw_request_tokens": raw_request_tokens,
+            "maintained_request_tokens": final_request_tokens,
             "request_token_count_source": final_token_source,
             "request_token_count_confidence": final_token_confidence,
             "tail_tokens": estimate_tokens_from_history_messages(trimmed_tail),
@@ -1949,15 +2051,28 @@ async def run_background_context_maintenance(
 
         probe = pressure["probe"]
         budgets = pressure["budgets"]
-        current_request_tokens = int(pressure.get("current_request_tokens") or 0)
+        raw_request_tokens = int(
+            pressure.get("raw_request_tokens")
+            or pressure.get("current_request_tokens")
+            or 0
+        )
+        force_maintenance = should_force_inline_maintenance(
+            history_messages=history_messages,
+            budgets=budgets,
+            probe=probe,
+            current_request_tokens=raw_request_tokens,
+        )
 
         if not should_schedule_maintenance(
             history_messages=history_messages,
             summary_state=state,
             budgets=budgets,
             probe=probe,
-            current_request_tokens=current_request_tokens,
-        ) or not is_summary_refresh_needed(history_messages, state):
+            current_request_tokens=raw_request_tokens,
+        ):
+            return
+
+        if not force_maintenance and not is_summary_refresh_needed(history_messages, state):
             return
 
         await emit_status("Context maintenance scheduled", done=False)

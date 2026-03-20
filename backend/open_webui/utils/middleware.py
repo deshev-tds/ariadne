@@ -94,6 +94,7 @@ from open_webui.retrieval.web.planner import (
 from open_webui.utils.sanitize import sanitize_code
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.context_maintenance import (
+    apply_context_maintenance_preflight,
     build_inline_maintained_messages,
     get_chat_maintenance_state,
     inject_image_files_into_history,
@@ -6709,6 +6710,39 @@ def _resolve_chat_recall_enabled(request, user) -> bool:
     return resolve_chat_recall_enabled(request, user)
 
 
+async def _emit_context_maintenance_result_status(
+    event_emitter,
+    maintenance_result: dict[str, Any] | None,
+) -> None:
+    if not event_emitter or not isinstance(maintenance_result, dict):
+        return
+
+    if maintenance_result.get("summary_refreshed"):
+        await event_emitter(
+            {
+                "type": "status",
+                "data": {
+                    "action": "context_maintenance",
+                    "description": "Condensing earlier turns...",
+                    "done": True,
+                },
+            }
+        )
+        return
+
+    if maintenance_result.get("fallback_used"):
+        await event_emitter(
+            {
+                "type": "status",
+                "data": {
+                    "action": "context_maintenance",
+                    "description": "Context maintenance failed; using recent context only",
+                    "done": True,
+                },
+            }
+        )
+
+
 def process_messages_with_output(messages: list[dict]) -> list[dict]:
     """
     Process messages with OR-aligned output items for LLM consumption.
@@ -6802,28 +6836,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 summary_state=get_chat_maintenance_state(chat_id) if chat_id else None,
             )
 
-            if event_emitter and maintenance_result.get("summary_refreshed"):
-                await event_emitter(
-                    {
-                        "type": "status",
-                        "data": {
-                            "action": "context_maintenance",
-                            "description": "Condensing earlier turns...",
-                            "done": True,
-                        },
-                    }
-                )
-            elif event_emitter and maintenance_result.get("fallback_used"):
-                await event_emitter(
-                    {
-                        "type": "status",
-                        "data": {
-                            "action": "context_maintenance",
-                            "description": "Context maintenance failed; using recent context only",
-                            "done": True,
-                        },
-                    }
-                )
+            await _emit_context_maintenance_result_status(
+                event_emitter,
+                maintenance_result,
+            )
             memory_telemetry["working_memory"] = maintenance_result.get("telemetry") or {}
 
     if chat_recall_enabled:
@@ -10066,6 +10082,23 @@ async def streaming_chat_response_handler(response, ctx):
                             "messages": continuation_messages,
                         }
 
+                        if _resolve_context_maintenance_enabled(request, user):
+                            (
+                                new_form_data["messages"],
+                                continuation_maintenance_result,
+                            ) = await apply_context_maintenance_preflight(
+                                request,
+                                user=user,
+                                model=model,
+                                form_data=new_form_data,
+                                metadata=metadata,
+                                messages=new_form_data["messages"],
+                            )
+                            await _emit_context_maintenance_result_status(
+                                event_emitter,
+                                continuation_maintenance_result,
+                            )
+
                         res = await generate_chat_completion(
                             request,
                             new_form_data,
@@ -10272,6 +10305,23 @@ async def streaming_chat_response_handler(response, ctx):
                                     *convert_output_to_messages(output, raw=True),
                                 ],
                             }
+
+                            if _resolve_context_maintenance_enabled(request, user):
+                                (
+                                    new_form_data["messages"],
+                                    ci_maintenance_result,
+                                ) = await apply_context_maintenance_preflight(
+                                    request,
+                                    user=user,
+                                    model=model,
+                                    form_data=new_form_data,
+                                    metadata=metadata,
+                                    messages=new_form_data["messages"],
+                                )
+                                await _emit_context_maintenance_result_status(
+                                    event_emitter,
+                                    ci_maintenance_result,
+                                )
 
                             res = await generate_chat_completion(
                                 request,
