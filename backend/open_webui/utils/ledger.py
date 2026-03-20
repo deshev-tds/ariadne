@@ -636,29 +636,26 @@ async def run_background_ledger_capture(
     return result
 
 
-async def maybe_apply_ledger(
+def resolve_ledger_preview(
     *,
     chat_id: str | None,
     raw_history_messages: list[dict[str, Any]] | None,
     messages: list[dict[str, Any]],
-    original_system_message: Optional[dict[str, Any]],
     working_memory_telemetry: Optional[dict[str, Any]] = None,
     metadata: Optional[dict[str, Any]] = None,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    telemetry = {
+) -> dict[str, Any]:
+    preview = {
         "kind_considered": "none",
-        "injected": False,
-        "injected_kind": "none",
+        "should_inject": False,
         "injection_reason": "disabled",
         "active_entry_count": 0,
         "new_revision_seen": False,
-        "capture_candidates": 0,
-        "commits": 0,
-        "supersedes": 0,
+        "block_text": "",
+        "block_token_estimate": 0,
     }
 
     if not is_fork_memory_available() or not chat_id or str(chat_id).startswith("local:"):
-        return messages, telemetry
+        return preview
 
     history_messages = raw_history_messages or messages
     latest_user = _latest_user_message(history_messages)
@@ -700,9 +697,11 @@ async def maybe_apply_ledger(
         )
         block_text = _build_vibe_ledger_block(active_entries) if should_inject else ""
 
-    telemetry["kind_considered"] = kind
-    telemetry["active_entry_count"] = len(active_entries)
-    telemetry["new_revision_seen"] = latest_revision > int(
+    preview["kind_considered"] = kind
+    preview["should_inject"] = bool(should_inject and block_text)
+    preview["injection_reason"] = reason
+    preview["active_entry_count"] = len(active_entries)
+    preview["new_revision_seen"] = latest_revision > int(
         getattr(
             injection_state,
             "last_agentic_revision_seen" if kind == "agentic" else "last_vibe_revision_seen",
@@ -710,17 +709,54 @@ async def maybe_apply_ledger(
         )
         or 0
     )
-    telemetry["injection_reason"] = reason
+    preview["block_text"] = block_text if should_inject else ""
+    preview["block_token_estimate"] = estimate_tokens_from_text(block_text or "")
+    return preview
 
-    if not should_inject or not block_text:
+
+async def maybe_apply_ledger(
+    *,
+    chat_id: str | None,
+    raw_history_messages: list[dict[str, Any]] | None,
+    messages: list[dict[str, Any]],
+    original_system_message: Optional[dict[str, Any]],
+    working_memory_telemetry: Optional[dict[str, Any]] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    working_memory = working_memory_telemetry or {}
+    telemetry = {
+        "kind_considered": "none",
+        "injected": False,
+        "injected_kind": "none",
+        "injection_reason": "disabled",
+        "active_entry_count": 0,
+        "new_revision_seen": False,
+        "capture_candidates": 0,
+        "commits": 0,
+        "supersedes": 0,
+    }
+
+    preview = resolve_ledger_preview(
+        chat_id=chat_id,
+        raw_history_messages=raw_history_messages,
+        messages=messages,
+        working_memory_telemetry=working_memory_telemetry,
+        metadata=metadata,
+    )
+    telemetry["kind_considered"] = str(preview.get("kind_considered") or "none")
+    telemetry["active_entry_count"] = int(preview.get("active_entry_count") or 0)
+    telemetry["new_revision_seen"] = bool(preview.get("new_revision_seen"))
+    telemetry["injection_reason"] = str(preview.get("injection_reason") or "disabled")
+
+    if not preview.get("should_inject") or not preview.get("block_text"):
+        kind = telemetry["kind_considered"]
         Ledgers.record_event(
             chat_id,
             "skip",
             ledger_kind=kind,
             payload={
-                "reason": reason,
-                "active_entry_count": len(active_entries),
-                "mode_switched": mode_switched,
+                "reason": telemetry["injection_reason"],
+                "active_entry_count": telemetry["active_entry_count"],
             },
         )
         Ledgers.mark_mode_seen(chat_id=chat_id, ledger_mode=kind)
@@ -728,9 +764,11 @@ async def maybe_apply_ledger(
 
     updated_messages = _inject_ledger_block(
         messages,
-        block_text=block_text,
+        block_text=str(preview.get("block_text") or ""),
         original_system_message=original_system_message,
     )
+    kind = telemetry["kind_considered"]
+    latest_revision = Ledgers.get_latest_revision(chat_id, kind)
     Ledgers.mark_injected(
         chat_id=chat_id,
         ledger_kind=kind,
@@ -742,9 +780,9 @@ async def maybe_apply_ledger(
         "inject",
         ledger_kind=kind,
         payload={
-            "reason": reason,
-            "active_entry_count": len(active_entries),
-            "estimated_tokens": estimate_tokens_from_text(block_text),
+            "reason": telemetry["injection_reason"],
+            "active_entry_count": telemetry["active_entry_count"],
+            "estimated_tokens": int(preview.get("block_token_estimate") or 0),
         },
     )
     telemetry["injected"] = True

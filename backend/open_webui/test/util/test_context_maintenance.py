@@ -5,6 +5,7 @@ import pytest
 import open_webui.utils.context_maintenance as context_maintenance
 from open_webui.utils.context_maintenance import (
     build_aggregate_context_window_preview,
+    build_history_exchanges,
     build_summary_message,
     build_summary_prompt,
     build_context_maintenance_payload,
@@ -17,11 +18,13 @@ from open_webui.utils.context_maintenance import (
     merge_system_message,
     normalize_summary_snapshot,
     parse_prometheus_metrics,
+    render_history_message_for_summary,
     render_preview_prompt,
     resolve_effective_ctx_cap,
     resolve_active_context_window_model_ids,
     resolve_history_budgets,
     resolve_live_prompt_cap,
+    split_history_into_head_middle_tail,
     should_force_inline_maintenance,
     should_schedule_maintenance,
 )
@@ -44,6 +47,38 @@ def _make_request(**overrides):
 
 def _message(message_id: str, role: str, content: str) -> dict:
     return {"id": message_id, "role": role, "content": content}
+
+
+def _assistant_output_message(message_id: str, *, text: str, reasoning: str, tool_output: str) -> dict:
+    return {
+        "id": message_id,
+        "role": "assistant",
+        "output": [
+            {
+                "type": "reasoning",
+                "id": f"{message_id}-r1",
+                "content": [{"type": "output_text", "text": reasoning}],
+            },
+            {
+                "type": "function_call",
+                "id": f"{message_id}-fc1",
+                "call_id": f"{message_id}-call1",
+                "name": "fetch_url",
+                "arguments": '{"url":"https://example.com"}',
+            },
+            {
+                "type": "function_call_output",
+                "id": f"{message_id}-fco1",
+                "call_id": f"{message_id}-call1",
+                "output": [{"type": "input_text", "text": tool_output}],
+            },
+            {
+                "type": "message",
+                "id": f"{message_id}-m1",
+                "content": [{"type": "output_text", "text": text}],
+            },
+        ],
+    }
 
 
 def test_parse_prometheus_metrics_extracts_kv_fields():
@@ -94,6 +129,60 @@ def test_render_preview_prompt_includes_roles_and_content():
     assert "keep state" in rendered
     assert "<|user|>" in rendered
     assert "ship the ring" in rendered
+
+
+def test_build_history_exchanges_groups_follow_up_messages_with_latest_user():
+    history = [
+        _message("u1", "user", "first"),
+        _message("a1", "assistant", "reply"),
+        _message("t1", "tool", "tool output"),
+        _message("u2", "user", "second"),
+        _message("a2", "assistant", "reply 2"),
+    ]
+
+    exchanges = build_history_exchanges(history)
+
+    assert exchanges == [
+        history[:3],
+        history[3:],
+    ]
+
+
+def test_split_history_into_head_middle_tail_uses_fixed_exchange_windows():
+    history = []
+    for idx in range(1, 10):
+        history.extend(
+            [
+                _message(f"u{idx}", "user", f"user-{idx}"),
+                _message(f"a{idx}", "assistant", f"assistant-{idx}"),
+            ]
+        )
+
+    exchanges = build_history_exchanges(history)
+    head, middle, tail = split_history_into_head_middle_tail(exchanges)
+
+    assert len(head) == 2
+    assert len(middle) == 1
+    assert len(tail) == 6
+    assert head[0][0]["id"] == "u1"
+    assert middle[0][0]["id"] == "u3"
+    assert tail[0][0]["id"] == "u4"
+
+
+def test_render_history_message_for_summary_caps_reasoning_and_tool_output():
+    message = _assistant_output_message(
+        "a1",
+        text="final " * 200,
+        reasoning="reason " * 200,
+        tool_output="tool-result " * 200,
+    )
+
+    rendered = render_history_message_for_summary(message)
+
+    assert "assistant reasoning (truncated):" in rendered
+    assert "fetch_url result (truncated):" in rendered
+    assert "final" in rendered
+    assert len(rendered) < 3000
 
 
 def test_resolve_runtime_model_reference_uses_base_model_metadata():
@@ -335,6 +424,8 @@ def test_build_context_payload_reuses_summary_state_without_cascade():
         "hard_history_budget": 128,
     }
     summary_state = {
+        "version": context_maintenance.CONTEXT_MAINTENANCE_VERSION,
+        "strategy": context_maintenance.CONTEXT_MAINTENANCE_STRATEGY,
         "summary_text": "summary over m1..m4",
         "summarized_through_message_id": "m4",
     }
@@ -351,6 +442,46 @@ def test_build_context_payload_reuses_summary_state_without_cascade():
     assert payload["tail_messages"] == [history[-1]]
     assert payload["telemetry"]["summary_included"] is True
     assert payload["telemetry"]["anchor_message_count"] >= 1
+
+
+def test_build_context_payload_accounts_for_ledger_preview(monkeypatch):
+    request = _make_request(TIKTOKEN_ENCODING_NAME="cl100k_base")
+    model = {"id": "demo", "owned_by": "openai"}
+    history = [
+        _message("u1", "user", "initial task"),
+        _message("a1", "assistant", "initial plan"),
+    ]
+
+    monkeypatch.setattr(
+        "open_webui.utils.ledger.resolve_ledger_preview",
+        lambda **_kwargs: {
+            "block_text": "Durable task state:\n- tooling: ripgrep",
+            "block_token_estimate": 123,
+            "should_inject": True,
+            "injection_reason": "post_compaction",
+            "active_entry_count": 1,
+            "kind_considered": "agentic",
+        },
+    )
+
+    payload = build_context_maintenance_payload(
+        request=request,
+        model=model,
+        form_data={"model": "demo"},
+        metadata={"chat_id": "chat-1"},
+        system_message={"role": "system", "content": "You are helpful"},
+        history_messages=history,
+        summary_state={},
+        budgets={
+            "anchor_budget_tokens": 128,
+            "hard_history_budget": 128,
+            "hard_request_budget": 128,
+        },
+    )
+
+    assert payload["telemetry"]["ledger_tokens"] == 123
+    assert payload["telemetry"]["ledger_injected"] is True
+    assert "Durable task state" in payload["raw_count_messages"][0]["content"]
 
 
 def test_summary_refresh_needs_meaningful_growth():
@@ -671,6 +802,10 @@ async def test_inline_maintenance_forces_compaction_from_raw_request_pressure(mo
                 "telemetry": {},
                 "anchor_messages": [],
                 "anchor_message_ids": [],
+                "head_exchanges": [[history[0], history[1]]],
+                "protected_tail_exchanges": [[history[0], history[1]]],
+                "summary_source_messages": [history[0]],
+                "ledger_preview": {},
                 "tail_messages": history,
             },
             "raw_request_tokens": 7000,
@@ -689,31 +824,22 @@ async def test_inline_maintenance_forces_compaction_from_raw_request_pressure(mo
         "should_force_inline_maintenance",
         lambda **_kwargs: True,
     )
+    async def fake_summary(*_args, **_kwargs):
+        return "Decisions and Conclusions:\n- compacted"
+
+    monkeypatch.setattr(context_maintenance, "generate_history_summary", fake_summary)
     monkeypatch.setattr(
         context_maintenance,
-        "estimate_tokens_from_messages",
-        lambda *_args, **_kwargs: 1000,
-    )
-    monkeypatch.setattr(
-        context_maintenance,
-        "estimate_tokens_from_history_messages",
-        lambda *_args, **_kwargs: 0,
-    )
-    monkeypatch.setattr(
-        context_maintenance, "select_tail_messages", lambda *_args, **_kwargs: []
-    )
-    monkeypatch.setattr(
-        context_maintenance, "resolve_summary_boundary", lambda *_args, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        context_maintenance,
-        "trim_messages_to_budget",
-        lambda **_kwargs: ([{"role": "assistant", "content": "compacted"}], []),
-    )
-    monkeypatch.setattr(
-        context_maintenance,
-        "count_preview_messages_tokens",
-        lambda *_args, **_kwargs: (1000, "tiktoken", "fallback"),
+        "fit_tail_exchanges_to_budget",
+        lambda **_kwargs: {
+            "request_messages": [{"role": "assistant", "content": "compacted"}],
+            "count_messages": [{"role": "assistant", "content": "compacted"}],
+            "kept_tail_exchanges": [],
+            "dropped_tail_exchanges": [],
+            "request_tokens": 1000,
+            "token_count_source": "tiktoken",
+            "token_count_confidence": "fallback",
+        },
     )
 
     messages, result = await context_maintenance.build_inline_maintained_messages(
@@ -753,13 +879,20 @@ async def test_inline_maintenance_force_flag_skips_pressure_gate(monkeypatch):
                 "anchor_budget_tokens": 128,
             },
             "maintenance_payload": {
+                "raw_messages": [{"role": "user", "content": "small"}],
                 "messages": [{"role": "user", "content": "small"}],
                 "used_summary_state": False,
                 "telemetry": {},
                 "anchor_messages": [],
                 "anchor_message_ids": [],
+                "head_exchanges": [[history[0], history[1]]],
+                "protected_tail_exchanges": [[history[0], history[1]]],
+                "summary_source_messages": [history[0]],
+                "ledger_preview": {},
                 "tail_messages": history,
             },
+            "raw_request_tokens": 1000,
+            "maintained_request_tokens": 1000,
             "current_request_tokens": 1000,
             "active_main_model_ids": ["demo"],
             "limiting_model_id": "demo",
@@ -774,26 +907,22 @@ async def test_inline_maintenance_force_flag_skips_pressure_gate(monkeypatch):
         "should_force_inline_maintenance",
         lambda **_kwargs: False,
     )
+    async def fake_summary(*_args, **_kwargs):
+        return "Decisions and Conclusions:\n- forced"
+
+    monkeypatch.setattr(context_maintenance, "generate_history_summary", fake_summary)
     monkeypatch.setattr(
         context_maintenance,
-        "estimate_tokens_from_messages",
-        lambda *_args, **_kwargs: 1000,
-    )
-    monkeypatch.setattr(
-        context_maintenance,
-        "estimate_tokens_from_history_messages",
-        lambda *_args, **_kwargs: 0,
-    )
-    monkeypatch.setattr(
-        context_maintenance, "select_tail_messages", lambda *_args, **_kwargs: []
-    )
-    monkeypatch.setattr(
-        context_maintenance, "resolve_summary_boundary", lambda *_args, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        context_maintenance,
-        "trim_messages_to_budget",
-        lambda **_kwargs: ([{"role": "assistant", "content": "forced"}], []),
+        "fit_tail_exchanges_to_budget",
+        lambda **_kwargs: {
+            "request_messages": [{"role": "assistant", "content": "forced"}],
+            "count_messages": [{"role": "assistant", "content": "forced"}],
+            "kept_tail_exchanges": [],
+            "dropped_tail_exchanges": [],
+            "request_tokens": 1000,
+            "token_count_source": "tiktoken",
+            "token_count_confidence": "fallback",
+        },
     )
 
     messages, result = await context_maintenance.build_inline_maintained_messages(

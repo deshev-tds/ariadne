@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import open_webui.utils.context_maintenance as context_maintenance_module
+import open_webui.utils.ledger as ledger_utils
 from open_webui.utils.context_maintenance import (
     inspect_context_pressure,
     is_summary_refresh_needed,
@@ -144,6 +146,7 @@ async def _evaluate_stage(
     models_map: dict[str, dict],
     active_model: dict[str, dict],
     main_model_ids: list[str],
+    chat_id: str,
     system_message: dict | None,
     history_messages: list[dict],
     files: list[dict] | None,
@@ -159,7 +162,7 @@ async def _evaluate_stage(
             "files": files or [],
         },
         metadata={
-            "chat_id": "local:manual-sim",
+            "chat_id": chat_id,
             "main_model_ids": main_model_ids,
             "files": files or [],
             "parent_message": history_messages[-1] if history_messages else None,
@@ -200,6 +203,8 @@ async def _evaluate_stage(
     )
     inline_compaction = forced
     refresh_needed = is_summary_refresh_needed(history_messages, summary_state or {})
+    payload = pressure.get("maintenance_payload") or {}
+    payload_telemetry = payload.get("telemetry") or {}
 
     return {
         "label": label,
@@ -217,6 +222,13 @@ async def _evaluate_stage(
         "limiting_model_id": pressure["limiting_model_id"],
         "token_count_source": pressure["token_count_source"],
         "token_count_confidence": pressure["token_count_confidence"],
+        "head_exchange_count": int(payload_telemetry.get("head_exchange_count") or 0),
+        "middle_exchange_count": int(payload_telemetry.get("middle_exchange_count") or 0),
+        "tail_exchange_count": int(payload_telemetry.get("tail_exchange_count") or 0),
+        "dropped_tail_exchange_count": int(
+            payload_telemetry.get("dropped_tail_exchange_count") or 0
+        ),
+        "ledger_tokens": int(payload_telemetry.get("ledger_tokens") or 0),
     }
 
 
@@ -234,6 +246,7 @@ async def run_manual_context_maintenance_scenario() -> list[dict]:
     request = _make_request(models_map)
     active_model = models_map["Qwen3.5-35B-A3B-Q8_0"]
     main_model_ids = [active_model["id"]]
+    chat_id = "manual-sim-chat"
     system_message = {
         "role": "system",
         "content": _repeat_block(
@@ -244,108 +257,153 @@ async def run_manual_context_maintenance_scenario() -> list[dict]:
 
     history: list[dict] = []
     timeline: list[dict] = []
+    original_ledger_preview = ledger_utils.resolve_ledger_preview
+    original_get_chat = context_maintenance_module.Chats.get_chat_by_id
 
-    history.append(
-        _user_message(
-            "u1",
-            _repeat_block(
-                "User asks for a long strategic comparison with many constraints",
-                280,
-            ),
-        )
-    )
-    history.append(
-        _assistant_output_message(
-            "a1",
-            model_id=active_model["id"],
-            reasoning_repeat=420,
-            tool_output_repeat=180,
-            answer_repeat=140,
-        )
-    )
-    timeline.append(
-        await _evaluate_stage(
-            request=request,
-            models_map=models_map,
-            active_model=active_model,
-            main_model_ids=main_model_ids,
-            system_message=system_message,
-            history_messages=history,
-            files=[],
-            summary_state={},
-            label="After first assistant turn",
-        )
-    )
+    ledger_utils.resolve_ledger_preview = lambda **_kwargs: {
+        "kind_considered": "agentic",
+        "should_inject": True,
+        "injection_reason": "post_compaction",
+        "active_entry_count": 2,
+        "new_revision_seen": True,
+        "block_text": (
+            "Internal continuity note.\n\nDurable task state:\n"
+            "- tooling: fetch_url\n"
+            "- confirmation_policy: ask before risky changes"
+        ),
+        "block_token_estimate": 96,
+    }
+    context_maintenance_module.Chats.get_chat_by_id = lambda _chat_id: None
 
-    history.append(
-        _user_message(
-            "u2",
-            _repeat_block(
-                "User follows up with a broader brief and attaches local documents plus web search",
-                260,
-            ),
-            files=_context_files(),
+    try:
+        history.append(
+            _user_message(
+                "u1",
+                _repeat_block(
+                    "User asks for a long strategic comparison with many constraints",
+                    280,
+                ),
+            )
         )
-    )
-    timeline.append(
-        await _evaluate_stage(
-            request=request,
-            models_map=models_map,
-            active_model=active_model,
-            main_model_ids=main_model_ids,
-            system_message=system_message,
-            history_messages=history,
-            files=_context_files(),
-            summary_state={},
-            label="Before second assistant turn, with files attached",
+        history.append(
+            _assistant_output_message(
+                "a1",
+                model_id=active_model["id"],
+                reasoning_repeat=420,
+                tool_output_repeat=180,
+                answer_repeat=140,
+            )
         )
-    )
+        timeline.append(
+            await _evaluate_stage(
+                request=request,
+                models_map=models_map,
+                active_model=active_model,
+                main_model_ids=main_model_ids,
+                chat_id=chat_id,
+                system_message=system_message,
+                history_messages=history,
+                files=[],
+                summary_state={},
+                label="After first assistant turn",
+            )
+        )
 
-    history.append(
-        _assistant_output_message(
-            "a2",
-            model_id=active_model["id"],
-            reasoning_repeat=1500,
-            tool_output_repeat=1100,
-            answer_repeat=420,
-        )
-    )
-    timeline.append(
-        await _evaluate_stage(
-            request=request,
-            models_map=models_map,
-            active_model=active_model,
-            main_model_ids=main_model_ids,
-            system_message=system_message,
-            history_messages=history,
-            files=_context_files(),
-            summary_state={},
-            label="Immediately after second assistant turn",
-        )
-    )
+        for idx in range(2, 8):
+            history.append(
+                _user_message(
+                    f"fu{idx}",
+                    _repeat_block(
+                        "User adds another bounded follow-up with extra constraints and checks",
+                        80,
+                    ),
+                )
+            )
+            history.append(
+                _assistant_output_message(
+                    f"fa{idx}",
+                    model_id=active_model["id"],
+                    reasoning_repeat=80,
+                    tool_output_repeat=40,
+                    answer_repeat=50,
+                )
+            )
 
-    history.append(
-        _user_message(
-            "u3",
-            _repeat_block(
-                "User asks for one more revision while keeping all source-grounded details alive",
-                180,
-            ),
+        history.append(
+            _user_message(
+                "u2",
+                _repeat_block(
+                    "User follows up with a broader brief and attaches local documents plus web search",
+                    260,
+                ),
+                files=_context_files(),
+            )
         )
-    )
-    timeline.append(
-        await _evaluate_stage(
-            request=request,
-            models_map=models_map,
-            active_model=active_model,
-            main_model_ids=main_model_ids,
-            system_message=system_message,
-            history_messages=history,
-            files=[],
-            summary_state={},
-            label="Before third assistant turn, no fresh files",
+        timeline.append(
+            await _evaluate_stage(
+                request=request,
+                models_map=models_map,
+                active_model=active_model,
+                main_model_ids=main_model_ids,
+                chat_id=chat_id,
+                system_message=system_message,
+                history_messages=history,
+                files=_context_files(),
+                summary_state={},
+                label="Before second assistant turn, with files attached",
+            )
         )
-    )
+
+        history.append(
+            _assistant_output_message(
+                "a2",
+                model_id=active_model["id"],
+                reasoning_repeat=1500,
+                tool_output_repeat=1100,
+                answer_repeat=420,
+            )
+        )
+        timeline.append(
+            await _evaluate_stage(
+                request=request,
+                models_map=models_map,
+                active_model=active_model,
+                main_model_ids=main_model_ids,
+                chat_id=chat_id,
+                system_message=system_message,
+                history_messages=history,
+                files=_context_files(),
+                summary_state={},
+                label="Immediately after second assistant turn",
+            )
+        )
+
+        history.append(
+            _user_message(
+                "u3",
+                _repeat_block(
+                    "User asks for one more revision while keeping all source-grounded details alive",
+                    180,
+                ),
+            )
+        )
+        timeline.append(
+            await _evaluate_stage(
+                request=request,
+                models_map=models_map,
+                active_model=active_model,
+                main_model_ids=main_model_ids,
+                chat_id=chat_id,
+                system_message=system_message,
+                history_messages=history,
+                files=[],
+                summary_state={},
+                label="Before third assistant turn, no fresh files",
+            )
+        )
+    finally:
+        ledger_utils.resolve_ledger_preview = original_ledger_preview
+        context_maintenance_module.Chats.get_chat_by_id = original_get_chat
 
     return timeline
 
@@ -363,8 +421,16 @@ def format_timeline(timeline: list[dict]) -> str:
         lines.append(
             "  reserve="
             f'{step["rag_reserve_tokens"]} '
+            f'| ledger={step["ledger_tokens"]} '
             f'| limiting_model={step["limiting_model_id"]} '
             f'| tokenizer={step["token_count_source"]}/{step["token_count_confidence"]}'
+        )
+        lines.append(
+            "  exchanges="
+            f'head={step["head_exchange_count"]} '
+            f'middle={step["middle_exchange_count"]} '
+            f'tail={step["tail_exchange_count"]} '
+            f'dropped_tail={step["dropped_tail_exchange_count"]}'
         )
         lines.append(
             "  trigger="

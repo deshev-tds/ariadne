@@ -38,12 +38,18 @@ from open_webui.utils.task import (
 
 log = logging.getLogger(__name__)
 
-CONTEXT_MAINTENANCE_VERSION = 1
-CONTEXT_MAINTENANCE_STRATEGY = "anchor_summary_tail"
+CONTEXT_MAINTENANCE_VERSION = 2
+CONTEXT_MAINTENANCE_STRATEGY = "exchange_summary_tail"
 DEFAULT_CONTEXT_CAP = 32768
 DEFAULT_SUMMARY_MAX_TOKENS = 1536
 DEFAULT_SUMMARY_MIN_REFRESH_TOKENS = 2048
 DEFAULT_SUMMARY_MIN_REFRESH_MESSAGES = 6
+DEFAULT_HEAD_EXCHANGE_COUNT = 2
+DEFAULT_TAIL_EXCHANGE_COUNT = 6
+SUMMARY_REASONING_PREVIEW_CHARS = 256
+SUMMARY_TOOL_ARGS_PREVIEW_CHARS = 256
+SUMMARY_TOOL_OUTPUT_PREVIEW_CHARS = 512
+SUMMARY_MESSAGE_PREVIEW_CHARS = 1200
 SOFT_PRESSURE_RATIO = 0.72
 HARD_PRESSURE_RATIO = 0.85
 _PROBE_TIMEOUT_SECONDS = 1.5
@@ -445,26 +451,7 @@ def history_message_to_llm_messages(message: dict[str, Any]) -> list[dict[str, A
 
 
 def flatten_history_message_content(message: dict[str, Any]) -> str:
-    if isinstance(message.get("output"), list):
-        rendered: list[str] = []
-        for item in convert_output_to_messages(message["output"], raw=True):
-            role = item.get("role", "assistant")
-            content = get_content_from_message(item) or ""
-            if item.get("tool_calls"):
-                names = ", ".join(
-                    call.get("function", {}).get("name", "")
-                    for call in item["tool_calls"]
-                    if isinstance(call, dict)
-                )
-                if names:
-                    content = f"{content}\nTool calls: {names}".strip()
-            if content:
-                rendered.append(f"{role}: {content}")
-        return "\n".join(rendered).strip()
-
-    content = get_content_from_message(message) or ""
-    role = message.get("role", "assistant")
-    return f"{role}: {content}".strip() if content else ""
+    return render_history_message_for_summary(message)
 
 
 def normalize_history_message(
@@ -476,6 +463,175 @@ def normalize_history_message(
     if not include_files:
         data.pop("files", None)
     return data
+
+
+def build_history_exchanges(
+    history_messages: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    exchanges: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+
+    for message in history_messages or []:
+        role = str(message.get("role") or "")
+        if role == "user" and current:
+            exchanges.append(current)
+            current = [message]
+            continue
+
+        current.append(message)
+
+    if current:
+        exchanges.append(current)
+
+    return exchanges
+
+
+def flatten_history_exchanges(
+    exchanges: list[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for exchange in exchanges or []:
+        messages.extend(exchange)
+    return messages
+
+
+def split_history_into_head_middle_tail(
+    exchanges: list[list[dict[str, Any]]],
+    *,
+    head_count: int = DEFAULT_HEAD_EXCHANGE_COUNT,
+    tail_count: int = DEFAULT_TAIL_EXCHANGE_COUNT,
+) -> tuple[list[list[dict[str, Any]]], list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
+    items = list(exchanges or [])
+    total = len(items)
+    if total <= 0:
+        return [], [], []
+
+    head_end = min(max(0, int(head_count)), total)
+    tail_start = max(head_end, total - max(0, int(tail_count)))
+
+    return (
+        items[:head_end],
+        items[head_end:tail_start],
+        items[tail_start:],
+    )
+
+
+def _bounded_preview(text: Any, max_chars: int) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    if len(value) <= int(max_chars):
+        return value
+    return value[: max(0, int(max_chars))].rstrip() + "..."
+
+
+def _extract_output_text(parts: list[dict[str, Any]]) -> str:
+    text = ""
+    for part in parts or []:
+        if part.get("type") in {"output_text", "input_text"} and part.get("text"):
+            text += str(part.get("text") or "")
+        elif "text" in part:
+            text += str(part.get("text") or "")
+    return text.strip()
+
+
+def render_history_message_for_summary(message: dict[str, Any]) -> str:
+    if not isinstance(message, dict):
+        return ""
+
+    if isinstance(message.get("output"), list):
+        rendered: list[str] = []
+        call_names: dict[str, str] = {}
+
+        for item in message["output"]:
+            item_type = item.get("type", "")
+
+            if item_type == "reasoning":
+                reasoning_text = _extract_output_text(
+                    item.get("summary", []) or item.get("content", [])
+                )
+                if reasoning_text:
+                    rendered.append(
+                        "assistant reasoning (truncated): "
+                        + _bounded_preview(
+                            reasoning_text, SUMMARY_REASONING_PREVIEW_CHARS
+                        )
+                    )
+                continue
+
+            if item_type == "function_call":
+                call_id = str(item.get("call_id") or "")
+                tool_name = str(item.get("name") or "tool")
+                call_names[call_id] = tool_name
+                arguments = item.get("arguments")
+                if not isinstance(arguments, str):
+                    try:
+                        arguments = json.dumps(arguments, ensure_ascii=False)
+                    except Exception:
+                        arguments = str(arguments or "")
+                rendered.append(
+                    f"assistant tool call {tool_name}: "
+                    + _bounded_preview(arguments, SUMMARY_TOOL_ARGS_PREVIEW_CHARS)
+                )
+                continue
+
+            if item_type == "function_call_output":
+                call_id = str(item.get("call_id") or "")
+                tool_name = call_names.get(call_id) or f"tool:{call_id or 'unknown'}"
+                result_text = _extract_output_text(item.get("output", []))
+                if result_text:
+                    rendered.append(
+                        f"{tool_name} result (truncated): "
+                        + _bounded_preview(
+                            result_text, SUMMARY_TOOL_OUTPUT_PREVIEW_CHARS
+                        )
+                    )
+                else:
+                    rendered.append(f"{tool_name} result: [empty or non-text output]")
+                continue
+
+            if item_type == "message":
+                text = _extract_output_text(item.get("content", []))
+                if text:
+                    rendered.append(
+                        "assistant: "
+                        + _bounded_preview(text, SUMMARY_MESSAGE_PREVIEW_CHARS)
+                    )
+                continue
+
+            if item_type == "open_webui:code_interpreter":
+                code = _bounded_preview(
+                    item.get("code") or "", SUMMARY_TOOL_ARGS_PREVIEW_CHARS
+                )
+                output = item.get("output") or ""
+                if isinstance(output, dict):
+                    output = output.get("stdout") or output.get("result") or ""
+                output_preview = _bounded_preview(
+                    output, SUMMARY_TOOL_OUTPUT_PREVIEW_CHARS
+                )
+                if code:
+                    rendered.append(f"code interpreter input (truncated): {code}")
+                if output_preview:
+                    rendered.append(
+                        f"code interpreter output (truncated): {output_preview}"
+                    )
+                continue
+
+        return "\n".join(rendered).strip()
+
+    content = get_content_from_message(message) or ""
+    role = str(message.get("role") or "assistant")
+    content = _bounded_preview(content, SUMMARY_MESSAGE_PREVIEW_CHARS)
+    return f"{role}: {content}".strip() if content else ""
+
+
+def render_middle_exchange_for_summary(exchange: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for message in exchange or []:
+        rendered = render_history_message_for_summary(message)
+        if rendered:
+            lines.append(rendered)
+    return "\n".join(lines).strip()
 
 
 def inject_image_files_into_history(
@@ -610,7 +766,7 @@ def merge_system_message(
 def build_summary_source_text(messages: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for message in messages or []:
-        text = flatten_history_message_content(message)
+        text = render_history_message_for_summary(message)
         if text:
             lines.append(text)
     return "\n".join(lines).strip()
@@ -637,7 +793,9 @@ def build_summary_prompt(
         "Open Questions and Unresolved Work:\n"
         "Stable Facts and Assumptions:\n"
         "Preserve durable information only.\n"
+        "When tools were called, preserve the important findings and conclusions, not the raw bulky output.\n"
         "Do not restate temporary retrieval excerpts unless they became lasting facts.\n"
+        "Treat truncated tool outputs and truncated reasoning as hints to extract the durable takeaway, not as text to preserve literally.\n"
         "If the conversation mentions transient markers, one-off secrets, canaries, "
         "or values that should be recoverable only from raw history, do not copy the "
         "value itself into the snapshot.\n"
@@ -780,12 +938,15 @@ def build_request_messages(
     anchor_messages: list[dict[str, Any]],
     summary_text: str | None,
     tail_messages: list[dict[str, Any]],
+    ledger_text: str | None = None,
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
-    merged_system_message = merge_system_message(
-        system_message,
-        [build_summary_message(summary_text)["content"]] if summary_text else [],
-    )
+    appended_blocks: list[str] = []
+    if ledger_text:
+        appended_blocks.append(str(ledger_text).strip())
+    if summary_text:
+        appended_blocks.append(build_summary_message(summary_text)["content"])
+    merged_system_message = merge_system_message(system_message, appended_blocks)
     if merged_system_message:
         messages.append(merged_system_message)
 
@@ -796,6 +957,84 @@ def build_request_messages(
         messages.extend(history_message_to_llm_messages(message))
 
     return messages
+
+
+def _count_request_messages_tokens(
+    request,
+    model: dict[str, Any] | None,
+    messages: list[dict[str, Any]],
+) -> tuple[int, str, str]:
+    if request is not None and model is not None:
+        return count_preview_messages_tokens(request, model, messages)
+    return estimate_tokens_from_messages(messages), "character_estimate", "approximate"
+
+
+def build_protected_prompt_from_exchanges(
+    *,
+    system_message: dict[str, Any] | None,
+    head_exchanges: list[list[dict[str, Any]]],
+    summary_text: str | None,
+    tail_exchanges: list[list[dict[str, Any]]],
+    ledger_text: str | None = None,
+) -> list[dict[str, Any]]:
+    return build_request_messages(
+        system_message=system_message,
+        anchor_messages=flatten_history_exchanges(head_exchanges),
+        summary_text=summary_text,
+        tail_messages=flatten_history_exchanges(tail_exchanges),
+        ledger_text=ledger_text,
+    )
+
+
+def fit_tail_exchanges_to_budget(
+    *,
+    request,
+    model: dict[str, Any] | None,
+    system_message: dict[str, Any] | None,
+    head_exchanges: list[list[dict[str, Any]]],
+    summary_text: str | None,
+    tail_exchanges: list[list[dict[str, Any]]],
+    hard_request_budget: int,
+    ledger_text: str | None = None,
+) -> dict[str, Any]:
+    kept_tail = list(tail_exchanges or [])
+    dropped_tail: list[list[dict[str, Any]]] = []
+    final_request_messages: list[dict[str, Any]] = []
+    final_count_messages: list[dict[str, Any]] = []
+    final_tokens = 0
+    token_count_source = "character_estimate"
+    token_count_confidence = "approximate"
+
+    while True:
+        final_request_messages = build_protected_prompt_from_exchanges(
+            system_message=system_message,
+            head_exchanges=head_exchanges,
+            summary_text=summary_text,
+            tail_exchanges=kept_tail,
+        )
+        final_count_messages = build_protected_prompt_from_exchanges(
+            system_message=system_message,
+            head_exchanges=head_exchanges,
+            summary_text=summary_text,
+            tail_exchanges=kept_tail,
+            ledger_text=ledger_text,
+        )
+        final_tokens, token_count_source, token_count_confidence = (
+            _count_request_messages_tokens(request, model, final_count_messages)
+        )
+        if final_tokens <= int(hard_request_budget) or not kept_tail:
+            break
+        dropped_tail.append(kept_tail.pop(0))
+
+    return {
+        "request_messages": final_request_messages,
+        "count_messages": final_count_messages,
+        "kept_tail_exchanges": kept_tail,
+        "dropped_tail_exchanges": dropped_tail,
+        "request_tokens": int(final_tokens),
+        "token_count_source": token_count_source,
+        "token_count_confidence": token_count_confidence,
+    }
 
 
 def split_context_maintenance_messages(
@@ -1323,20 +1562,42 @@ def _resolve_anchor_ids_from_messages(messages: list[dict[str, Any]]) -> list[st
     return [str(message.get("id")) for message in messages if message.get("id")]
 
 
+def _resolve_usable_summary_state(
+    summary_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    state = dict(summary_state or {})
+    if int(state.get("version") or 0) != CONTEXT_MAINTENANCE_VERSION:
+        return {}
+    if str(state.get("strategy") or "").strip() != CONTEXT_MAINTENANCE_STRATEGY:
+        return {}
+    return state
+
+
 def build_context_maintenance_payload(
     *,
+    request=None,
+    model: dict[str, Any] | None = None,
+    form_data: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
     system_message: dict[str, Any] | None,
     history_messages: list[dict[str, Any]],
     summary_state: dict[str, Any] | None,
     budgets: dict[str, int],
 ) -> dict[str, Any]:
-    anchors = select_anchor_messages(history_messages, budgets["anchor_budget_tokens"])
+    exchanges = build_history_exchanges(history_messages)
+    head_exchanges, middle_exchanges, protected_tail_exchanges = (
+        split_history_into_head_middle_tail(exchanges)
+    )
+    anchors = flatten_history_exchanges(head_exchanges)
     anchor_ids = _resolve_anchor_ids_from_messages(anchors)
+    middle_messages = flatten_history_exchanges(middle_exchanges)
+    protected_tail_messages = flatten_history_exchanges(protected_tail_exchanges)
     summary_text = None
-    tail_messages: list[dict[str, Any]] = list(history_messages[len(anchors) :])
+    tail_messages: list[dict[str, Any]] = list(protected_tail_messages)
+    raw_tail_messages: list[dict[str, Any]] = list(history_messages[len(anchors) :])
     used_summary_state = False
 
-    state = summary_state or {}
+    state = _resolve_usable_summary_state(summary_state)
     state_summary = str(state.get("summary_text") or "").strip()
     boundary_id = state.get("summarized_through_message_id")
     compaction_version = int(state.get("updated_at") or 0)
@@ -1352,43 +1613,100 @@ def build_context_maintenance_payload(
         )
         if boundary_index is not None and boundary_index >= len(anchors) - 1:
             summary_text = state_summary
-            tail_messages = history_messages[boundary_index + 1 :]
+            raw_tail_messages = history_messages[boundary_index + 1 :]
             used_summary_state = True
 
     raw_request_messages = build_request_messages(
         system_message=system_message,
         anchor_messages=anchors,
         summary_text=summary_text,
-        tail_messages=tail_messages,
+        tail_messages=raw_tail_messages,
     )
+    working_memory_preview = {
+        "summary_included": bool(summary_text),
+        "summary_refreshed": False,
+        "compaction_version": compaction_version,
+    }
+    ledger_preview = {
+        "block_text": "",
+        "block_token_estimate": 0,
+        "should_inject": False,
+        "injection_reason": "disabled",
+        "active_entry_count": 0,
+        "kind_considered": "none",
+    }
+    if request is not None and metadata:
+        try:
+            from open_webui.utils.ledger import resolve_ledger_preview
 
-    request_messages, trimmed_tail = trim_messages_to_budget(
+            ledger_preview = resolve_ledger_preview(
+                chat_id=str((metadata or {}).get("chat_id") or "").strip() or None,
+                raw_history_messages=history_messages,
+                messages=raw_request_messages,
+                working_memory_telemetry=working_memory_preview,
+                metadata=metadata,
+            )
+        except Exception:
+            log.debug("Failed to resolve ledger preview for context maintenance", exc_info=True)
+
+    ledger_text = str(ledger_preview.get("block_text") or "").strip()
+    raw_count_messages = build_request_messages(
         system_message=system_message,
         anchor_messages=anchors,
         summary_text=summary_text,
-        tail_messages=tail_messages,
-        hard_history_budget=budgets["hard_history_budget"],
+        tail_messages=raw_tail_messages,
+        ledger_text=ledger_text,
     )
+    raw_request_tokens, _, _ = _count_request_messages_tokens(
+        request,
+        model,
+        raw_count_messages,
+    )
+
+    fit_result = fit_tail_exchanges_to_budget(
+        request=request,
+        model=model,
+        system_message=system_message,
+        head_exchanges=head_exchanges,
+        summary_text=summary_text,
+        tail_exchanges=protected_tail_exchanges,
+        hard_request_budget=budgets.get(
+            "hard_request_budget", budgets.get("hard_history_budget", 1024)
+        ),
+        ledger_text=ledger_text,
+    )
+    request_messages = fit_result["request_messages"]
+    kept_tail_exchanges = fit_result["kept_tail_exchanges"]
+    trimmed_tail = flatten_history_exchanges(kept_tail_exchanges)
+    maintained_count_messages = fit_result["count_messages"]
+    request_tokens = int(fit_result["request_tokens"])
 
     system_tokens = (
         estimate_tokens_from_messages([system_message]) if system_message else 0
     )
     anchor_tokens = estimate_tokens_from_history_messages(anchors)
     summary_tokens = estimate_tokens_from_text(summary_text or "")
-    raw_tail_tokens = estimate_tokens_from_history_messages(tail_messages)
+    raw_tail_tokens = estimate_tokens_from_history_messages(raw_tail_messages)
     tail_tokens = estimate_tokens_from_history_messages(trimmed_tail)
-    raw_request_tokens = estimate_tokens_from_messages(raw_request_messages)
-    request_tokens = estimate_tokens_from_messages(request_messages)
 
     return {
         "messages": request_messages,
         "raw_messages": raw_request_messages,
+        "raw_count_messages": raw_count_messages,
+        "maintained_count_messages": maintained_count_messages,
         "anchor_messages": anchors,
         "anchor_message_ids": anchor_ids,
-        "raw_tail_messages": list(tail_messages),
+        "head_exchanges": head_exchanges,
+        "middle_exchanges": middle_exchanges,
+        "tail_exchanges": kept_tail_exchanges,
+        "protected_tail_exchanges": protected_tail_exchanges,
+        "middle_messages": middle_messages,
+        "raw_tail_messages": list(raw_tail_messages),
         "tail_messages": trimmed_tail,
         "summary_text": summary_text,
+        "summary_source_messages": middle_messages,
         "used_summary_state": used_summary_state,
+        "ledger_preview": ledger_preview,
         "telemetry": {
             "live_prompt_cap": budgets.get("live_prompt_cap"),
             "live_prompt_cap_source": budgets.get("live_prompt_cap_source"),
@@ -1405,10 +1723,17 @@ def build_context_maintenance_payload(
             "raw_request_tokens": raw_request_tokens,
             "request_tokens": request_tokens,
             "anchor_message_count": len(anchors),
-            "raw_tail_message_count": len(tail_messages),
+            "raw_tail_message_count": len(raw_tail_messages),
             "tail_message_count": len(trimmed_tail),
+            "head_exchange_count": len(head_exchanges),
+            "middle_exchange_count": len(middle_exchanges),
+            "protected_tail_exchange_count": len(protected_tail_exchanges),
+            "tail_exchange_count": len(kept_tail_exchanges),
+            "dropped_tail_exchange_count": len(fit_result["dropped_tail_exchanges"]),
             "summary_included": bool(summary_text),
             "compaction_version": compaction_version,
+            "ledger_tokens": int(ledger_preview.get("block_token_estimate") or 0),
+            "ledger_injected": bool(ledger_preview.get("should_inject")),
         },
     }
 
@@ -1496,6 +1821,10 @@ async def build_context_window_model_snapshot(
 
     if maintenance_enabled:
         payload = build_context_maintenance_payload(
+            request=request,
+            model=runtime_model,
+            form_data=form_data,
+            metadata=metadata,
             system_message=system_message,
             history_messages=history_messages,
             summary_state=summary_state,
@@ -1503,6 +1832,10 @@ async def build_context_window_model_snapshot(
         )
         raw_request_messages = payload["raw_messages"]
         maintained_request_messages = payload["messages"]
+        raw_count_messages = payload.get("raw_count_messages") or raw_request_messages
+        maintained_count_messages = (
+            payload.get("maintained_count_messages") or maintained_request_messages
+        )
         summary_active = bool(payload.get("summary_text"))
         compaction_version = int(
             (payload.get("telemetry") or {}).get("compaction_version") or 0
@@ -1513,26 +1846,28 @@ async def build_context_window_model_snapshot(
             history_messages=history_messages,
         )
         maintained_request_messages = raw_request_messages
+        raw_count_messages = raw_request_messages
+        maintained_count_messages = maintained_request_messages
         payload = None
         summary_active = False
         compaction_version = 0
 
     raw_request_tokens, token_count_source, token_count_confidence = (
-        count_preview_messages_tokens(request, runtime_model, raw_request_messages)
+        count_preview_messages_tokens(request, runtime_model, raw_count_messages)
     )
-    if raw_request_messages == maintained_request_messages:
+    if raw_count_messages == maintained_count_messages:
         maintained_request_tokens = raw_request_tokens
     else:
         maintained_request_tokens, _, _ = count_preview_messages_tokens(
             request,
             runtime_model,
-            maintained_request_messages,
+            maintained_count_messages,
         )
 
     system_request_tokens = 0
-    if raw_request_messages and raw_request_messages[0].get("role") == "system":
+    if raw_count_messages and raw_count_messages[0].get("role") == "system":
         system_request_tokens, _, _ = count_preview_messages_tokens(
-            request, runtime_model, [raw_request_messages[0]]
+            request, runtime_model, [raw_count_messages[0]]
         )
 
     soft_trigger_tokens = None
@@ -1786,21 +2121,31 @@ async def build_inline_maintained_messages(
             request, model=model, form_data=form_data, metadata=metadata, probe=probe
         )
         payload = build_context_maintenance_payload(
+            request=request,
+            model=model,
+            form_data=form_data,
+            metadata=metadata,
             system_message=system_message,
             history_messages=history_messages,
             summary_state=summary_state,
             budgets=budgets,
         )
         raw_request_tokens, token_count_source, token_count_confidence = (
-            count_preview_messages_tokens(request, model, payload["raw_messages"])
+            count_preview_messages_tokens(
+                request,
+                model,
+                payload.get("raw_count_messages") or payload["raw_messages"],
+            )
         )
-        if payload["raw_messages"] == payload["messages"]:
+        if (payload.get("raw_count_messages") or payload["raw_messages"]) == (
+            payload.get("maintained_count_messages") or payload["messages"]
+        ):
             maintained_request_tokens = raw_request_tokens
         else:
             maintained_request_tokens, _, _ = count_preview_messages_tokens(
                 request,
                 model,
-                payload["messages"],
+                payload.get("maintained_count_messages") or payload["messages"],
             )
         active_main_model_ids = [str(model.get("id") or "")]
         limiting_model_id = str(model.get("id") or "")
@@ -1810,6 +2155,10 @@ async def build_inline_maintained_messages(
         probe = pressure["probe"]
         budgets = pressure["budgets"]
         payload = pressure["maintenance_payload"] or build_context_maintenance_payload(
+            request=request,
+            model=pressure.get("runtime_model") or model,
+            form_data=form_data,
+            metadata=metadata,
             system_message=system_message,
             history_messages=history_messages,
             summary_state=summary_state,
@@ -1889,27 +2238,9 @@ async def build_inline_maintained_messages(
     if not should_compact_inline:
         return payload["raw_messages"], result
 
-    tail_budget = max(
-        512,
-        budgets["hard_history_budget"]
-        - estimate_tokens_from_messages([system_message] if system_message else [])
-        - estimate_tokens_from_history_messages(payload["anchor_messages"])
-        - DEFAULT_SUMMARY_MAX_TOKENS,
-    )
-    tail_messages = select_tail_messages(
-        history_messages,
-        anchor_count=len(payload["anchor_messages"]),
-        tail_budget_tokens=tail_budget,
-    )
-    boundary_index = resolve_summary_boundary(
-        history_messages,
-        anchor_count=len(payload["anchor_messages"]),
-        tail_count=len(tail_messages),
-    )
-
+    summary_source = list(payload.get("summary_source_messages") or [])
     summary_text = None
-    if boundary_index is not None:
-        summary_source = history_messages[: boundary_index + 1]
+    if summary_source:
         summary_text = await generate_history_summary(
             request,
             user=user,
@@ -1929,26 +2260,27 @@ async def build_inline_maintained_messages(
             save_chat_maintenance_state(metadata["chat_id"], state)
             result["summary_refreshed"] = True
 
-    request_messages, trimmed_tail = trim_messages_to_budget(
-        system_message=system_message,
-        anchor_messages=payload["anchor_messages"],
-        summary_text=summary_text,
-        tail_messages=tail_messages,
-        hard_history_budget=budgets["hard_history_budget"],
-    )
-
-    if not summary_text:
+    if summary_source and not summary_text:
         result["fallback_used"] = True
-        request_messages, trimmed_tail = trim_messages_to_budget(
-            system_message=system_message,
-            anchor_messages=payload["anchor_messages"],
-            summary_text=None,
-            tail_messages=history_messages[len(payload["anchor_messages"]) :],
-            hard_history_budget=budgets["hard_history_budget"],
-        )
 
-    final_request_tokens, final_token_source, final_token_confidence = (
-        count_preview_messages_tokens(request, runtime_model_for_telemetry, request_messages)
+    fit_result = fit_tail_exchanges_to_budget(
+        request=request,
+        model=runtime_model_for_telemetry,
+        system_message=system_message,
+        head_exchanges=payload.get("head_exchanges") or [],
+        summary_text=summary_text,
+        tail_exchanges=payload.get("protected_tail_exchanges") or [],
+        hard_request_budget=budgets["hard_request_budget"],
+        ledger_text=str(
+            ((payload.get("ledger_preview") or {}).get("block_text") or "")
+        ).strip(),
+    )
+    request_messages = fit_result["request_messages"]
+    trimmed_tail = flatten_history_exchanges(fit_result["kept_tail_exchanges"])
+    final_request_tokens = int(fit_result["request_tokens"])
+    final_token_source = str(fit_result["token_count_source"] or token_count_source)
+    final_token_confidence = str(
+        fit_result["token_count_confidence"] or token_count_confidence
     )
 
     result["telemetry"].update(
@@ -1963,6 +2295,8 @@ async def build_inline_maintained_messages(
             "request_token_count_confidence": final_token_confidence,
             "tail_tokens": estimate_tokens_from_history_messages(trimmed_tail),
             "tail_message_count": len(trimmed_tail),
+            "tail_exchange_count": len(fit_result["kept_tail_exchanges"]),
+            "dropped_tail_exchange_count": len(fit_result["dropped_tail_exchanges"]),
             "summary_tokens": estimate_tokens_from_text(summary_text or ""),
             "summary_included": bool(summary_text),
             "compaction_version": (
@@ -2051,6 +2385,16 @@ async def run_background_context_maintenance(
 
         probe = pressure["probe"]
         budgets = pressure["budgets"]
+        payload = pressure.get("maintenance_payload") or build_context_maintenance_payload(
+            request=request,
+            model=pressure.get("runtime_model") or model,
+            form_data={"model": model["id"], "files": files or []},
+            metadata={"chat_id": chat_id, "files": files or []},
+            system_message=system_message,
+            history_messages=history_messages,
+            summary_state=state,
+            budgets=budgets,
+        )
         raw_request_tokens = int(
             pressure.get("raw_request_tokens")
             or pressure.get("current_request_tokens")
@@ -2078,29 +2422,10 @@ async def run_background_context_maintenance(
         await emit_status("Context maintenance scheduled", done=False)
         await emit_status("Condensing earlier turns...", done=False)
 
-        anchors = select_anchor_messages(
-            history_messages, budgets["anchor_budget_tokens"]
-        )
-        tail_budget = max(
-            512,
-            budgets["hard_history_budget"]
-            - estimate_tokens_from_history_messages(anchors)
-            - DEFAULT_SUMMARY_MAX_TOKENS,
-        )
-        tail_messages = select_tail_messages(
-            history_messages,
-            anchor_count=len(anchors),
-            tail_budget_tokens=tail_budget,
-        )
-        boundary_index = resolve_summary_boundary(
-            history_messages,
-            anchor_count=len(anchors),
-            tail_count=len(tail_messages),
-        )
-        if boundary_index is None:
+        summary_source = list(payload.get("summary_source_messages") or [])
+        if not summary_source:
             return
 
-        summary_source = history_messages[: boundary_index + 1]
         summary_text = await generate_history_summary(
             request,
             user=user,
@@ -2129,7 +2454,7 @@ async def run_background_context_maintenance(
             _build_summary_state(
                 summary_text=summary_text,
                 summarized_through_message_id=str(summary_source[-1].get("id")),
-                anchor_message_ids=_resolve_anchor_ids_from_messages(anchors),
+                anchor_message_ids=payload["anchor_message_ids"],
                 source_message_count=len(summary_source),
             ),
         )
