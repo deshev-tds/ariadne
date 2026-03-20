@@ -18,11 +18,11 @@ from open_webui.utils.context_maintenance import (
     normalize_summary_snapshot,
     parse_prometheus_metrics,
     render_preview_prompt,
-    resolve_context_window_runtime_model,
     resolve_effective_ctx_cap,
     resolve_history_budgets,
     resolve_live_prompt_cap,
 )
+from open_webui.utils.model_resolution import resolve_runtime_model_reference
 
 
 def _make_request(**overrides):
@@ -93,7 +93,7 @@ def test_render_preview_prompt_includes_roles_and_content():
     assert "ship the ring" in rendered
 
 
-def test_resolve_context_window_runtime_model_uses_base_model_metadata():
+def test_resolve_runtime_model_reference_uses_base_model_metadata():
     base_model = {
         "id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS",
         "owned_by": "openai",
@@ -106,15 +106,36 @@ def test_resolve_context_window_runtime_model_uses_base_model_metadata():
         "info": {"base_model_id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS"},
     }
 
-    resolved = resolve_context_window_runtime_model(
+    resolution = resolve_runtime_model_reference(
         {
             base_model["id"]: base_model,
             preset_model["id"]: preset_model,
         },
-        preset_model,
+        model=preset_model,
     )
 
-    assert resolved is base_model
+    assert resolution["display_model"] is preset_model
+    assert resolution["runtime_model"] is base_model
+    assert resolution["resolved_model_id"] == base_model["id"]
+
+
+def test_resolve_runtime_model_reference_preserves_base_model_id_when_unresolved():
+    preset_model = {
+        "id": "assistant-step-35-flash-ablitiratedi1-iq4xs",
+        "owned_by": "openai",
+        "info": {"base_model_id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS"},
+    }
+
+    resolution = resolve_runtime_model_reference(
+        {
+            preset_model["id"]: preset_model,
+        },
+        model=preset_model,
+    )
+
+    assert resolution["runtime_model"] is preset_model
+    assert resolution["resolved_model_id"] == "Step-3.5-Flash-Ablitirated.i1-IQ4_XS"
+    assert resolution["base_model_resolved"] is False
 
 
 def test_build_summary_prompt_requests_structured_state_snapshot():

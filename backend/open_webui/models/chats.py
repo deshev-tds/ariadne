@@ -3,6 +3,7 @@ import json
 import shutil
 import time
 import uuid
+import copy
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +18,11 @@ from open_webui.models.simon_lex_index import (
     enqueue_message,
 )
 from open_webui.models.ledger import Ledgers
-from open_webui.utils.misc import sanitize_data_for_db, sanitize_text_for_db
+from open_webui.utils.misc import (
+    get_message_list,
+    sanitize_data_for_db,
+    sanitize_text_for_db,
+)
 from open_webui.env import AGENTIC_ARTIFACTS_DIR
 
 from pydantic import BaseModel, ConfigDict
@@ -215,6 +220,31 @@ class ChatListResponse(BaseModel):
     total: int
 
 
+def derive_chat_messages_from_history(chat_payload: dict) -> list[dict]:
+    if not isinstance(chat_payload, dict):
+        return []
+
+    history = chat_payload.get("history")
+    if not isinstance(history, dict):
+        return []
+
+    messages_map = history.get("messages")
+    current_id = history.get("currentId")
+    if not isinstance(messages_map, dict) or not current_id:
+        return []
+
+    return copy.deepcopy(get_message_list(messages_map, current_id))
+
+
+def normalize_chat_payload(chat_payload: dict) -> dict:
+    if not isinstance(chat_payload, dict):
+        return chat_payload
+
+    normalized = {**chat_payload}
+    normalized["messages"] = derive_chat_messages_from_history(chat_payload)
+    return normalized
+
+
 class ChatUsageStatsResponse(BaseModel):
     id: str  # chat id
 
@@ -327,17 +357,18 @@ class ChatTable:
         self, user_id: str, form_data: ChatForm, db: Optional[Session] = None
     ) -> Optional[ChatModel]:
         with get_db_context(db) as db:
+            normalized_chat = normalize_chat_payload(form_data.chat)
             id = str(uuid.uuid4())
             chat = ChatModel(
                 **{
                     "id": id,
                     "user_id": user_id,
                     "title": self._clean_null_bytes(
-                        form_data.chat["title"]
-                        if "title" in form_data.chat
+                        normalized_chat["title"]
+                        if "title" in normalized_chat
                         else "New Chat"
                     ),
-                    "chat": self._clean_null_bytes(form_data.chat),
+                    "chat": self._clean_null_bytes(normalized_chat),
                     "folder_id": form_data.folder_id,
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
@@ -351,7 +382,7 @@ class ChatTable:
 
             # Dual-write initial messages to chat_message table
             try:
-                history = form_data.chat.get("history", {})
+                history = normalized_chat.get("history", {})
                 messages = history.get("messages", {})
                 for message_id, message in messages.items():
                     if isinstance(message, dict) and message.get("role"):
@@ -372,15 +403,16 @@ class ChatTable:
     def _chat_import_form_to_chat_model(
         self, user_id: str, form_data: ChatImportForm
     ) -> ChatModel:
+        normalized_chat = normalize_chat_payload(form_data.chat)
         id = str(uuid.uuid4())
         chat = ChatModel(
             **{
                 "id": id,
                 "user_id": user_id,
                 "title": self._clean_null_bytes(
-                    form_data.chat["title"] if "title" in form_data.chat else "New Chat"
+                    normalized_chat["title"] if "title" in normalized_chat else "New Chat"
                 ),
-                "chat": self._clean_null_bytes(form_data.chat),
+                "chat": self._clean_null_bytes(normalized_chat),
                 "meta": form_data.meta,
                 "pinned": form_data.pinned,
                 "folder_id": form_data.folder_id,
@@ -413,7 +445,7 @@ class ChatTable:
             # Dual-write messages to chat_message table
             try:
                 for form_data, chat_obj in zip(chat_import_forms, chats):
-                    history = form_data.chat.get("history", {})
+                    history = normalize_chat_payload(form_data.chat).get("history", {})
                     messages = history.get("messages", {})
                     for message_id, message in messages.items():
                         if isinstance(message, dict) and message.get("role"):
@@ -437,10 +469,11 @@ class ChatTable:
         try:
             with get_db_context(db) as db:
                 chat_item = db.get(Chat, id)
-                chat_item.chat = self._clean_null_bytes(chat)
+                normalized_chat = normalize_chat_payload(chat)
+                chat_item.chat = self._clean_null_bytes(normalized_chat)
                 chat_item.title = (
-                    self._clean_null_bytes(chat["title"])
-                    if "title" in chat
+                    self._clean_null_bytes(normalized_chat["title"])
+                    if "title" in normalized_chat
                     else "New Chat"
                 )
 

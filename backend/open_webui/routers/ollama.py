@@ -57,6 +57,7 @@ from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_system_prompt_to_body,
 )
+from open_webui.utils.model_resolution import resolve_runtime_model_reference
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.config import (
     UPLOAD_DIR,
@@ -1319,13 +1320,17 @@ async def generate_chat_completion(
     model_info = Models.get_model_by_id(model_id)
 
     if model_info:
-        if model_info.base_model_id:
-            base_model_id = (
-                request.base_model_id
-                if hasattr(request, "base_model_id")
-                else model_info.base_model_id
-            )  # Use request's base_model_id if available
-            payload["model"] = base_model_id
+        resolution = resolve_runtime_model_reference(
+            request.app.state.MODELS,
+            model_id=model_id,
+            model=request.app.state.MODELS.get(model_id),
+            model_info=model_info,
+            base_model_id_override=(
+                request.base_model_id if hasattr(request, "base_model_id") else None
+            ),
+        )
+        if resolution["resolved_model_id"]:
+            payload["model"] = resolution["resolved_model_id"]
 
         params = model_info.params.model_dump()
 
@@ -1448,8 +1453,14 @@ async def generate_openai_completion(
     model_id = form_data.model
     model_info = Models.get_model_by_id(model_id)
     if model_info:
-        if model_info.base_model_id:
-            payload["model"] = model_info.base_model_id
+        resolution = resolve_runtime_model_reference(
+            request.app.state.MODELS,
+            model_id=model_id,
+            model=request.app.state.MODELS.get(model_id),
+            model_info=model_info,
+        )
+        if resolution["resolved_model_id"]:
+            payload["model"] = resolution["resolved_model_id"]
         params = model_info.params.model_dump()
 
         if params:
@@ -1532,8 +1543,14 @@ async def generate_openai_chat_completion(
     model_id = completion_form.model
     model_info = Models.get_model_by_id(model_id)
     if model_info:
-        if model_info.base_model_id:
-            payload["model"] = model_info.base_model_id
+        resolution = resolve_runtime_model_reference(
+            request.app.state.MODELS,
+            model_id=model_id,
+            model=request.app.state.MODELS.get(model_id),
+            model_info=model_info,
+        )
+        if resolution["resolved_model_id"]:
+            payload["model"] = resolution["resolved_model_id"]
 
         params = model_info.params.model_dump()
 

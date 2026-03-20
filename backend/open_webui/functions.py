@@ -49,6 +49,7 @@ from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_system_prompt_to_body,
 )
+from open_webui.utils.model_resolution import resolve_runtime_model_reference
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -276,8 +277,14 @@ async def generate_function_chat_completion(
     )
 
     if model_info:
-        if model_info.base_model_id:
-            form_data["model"] = model_info.base_model_id
+        resolution = resolve_runtime_model_reference(
+            models,
+            model_id=form_data["model"],
+            model=models.get(form_data["model"], None),
+            model_info=model_info,
+        )
+        if resolution["resolved_model_id"]:
+            form_data["model"] = resolution["resolved_model_id"]
 
         params = model_info.params.model_dump()
 

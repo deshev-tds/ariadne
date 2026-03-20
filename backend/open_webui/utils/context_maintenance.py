@@ -30,6 +30,7 @@ from open_webui.utils.misc import (
     get_content_from_message,
     get_message_list,
 )
+from open_webui.utils.model_resolution import resolve_runtime_model_reference
 from open_webui.utils.task import (
     BOUNDED_SPECIALIST_TASK_KIND_CONTEXT_MAINTENANCE,
     get_bounded_specialist_model_selection,
@@ -1301,29 +1302,6 @@ def build_unmaintained_request_messages(
     return messages
 
 
-def resolve_context_window_runtime_model(
-    models_map: dict[str, dict[str, Any]],
-    model: dict[str, Any],
-) -> dict[str, Any]:
-    info = model.get("info") if isinstance(model.get("info"), dict) else {}
-    base_model_id = model.get("base_model_id") or info.get("base_model_id")
-    candidate_ids = [
-        str(base_model_id).strip()
-        for base_model_id in [
-            base_model_id,
-            str(base_model_id).split(":")[0] if base_model_id else None,
-        ]
-        if base_model_id
-    ]
-
-    for candidate_id in candidate_ids:
-        candidate = models_map.get(candidate_id)
-        if candidate:
-            return candidate
-
-    return model
-
-
 async def build_context_window_model_preview(
     request,
     *,
@@ -1336,7 +1314,8 @@ async def build_context_window_model_preview(
     summary_state: dict[str, Any] | None,
     maintenance_enabled: bool,
 ) -> dict[str, Any]:
-    runtime_model = resolve_context_window_runtime_model(models_map, model)
+    resolution = resolve_runtime_model_reference(models_map, model=model)
+    runtime_model = resolution["runtime_model"] or model
     probe = await load_llamacpp_probe(request, runtime_model)
     budgets = resolve_history_budgets(
         request,

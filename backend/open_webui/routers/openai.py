@@ -49,6 +49,7 @@ from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_system_prompt_to_body,
 )
+from open_webui.utils.model_resolution import resolve_runtime_model_reference
 from open_webui.utils.misc import (
     cleanup_response,
     convert_logit_bias_input_to_json,
@@ -409,11 +410,13 @@ async def resolve_openai_connection_for_model(
         await get_all_models(request, user=user)
         openai_models = request.app.state.OPENAI_MODELS
 
-    resolved_model_id = model_id
-    if resolved_model_id not in openai_models:
-        model_info = Models.get_model_by_id(model_id)
-        if model_info and model_info.base_model_id:
-            resolved_model_id = model_info.base_model_id
+    model_info = Models.get_model_by_id(model_id)
+    resolution = resolve_runtime_model_reference(
+        openai_models,
+        model_id=model_id,
+        model_info=model_info,
+    )
+    resolved_model_id = resolution["resolved_model_id"] or model_id
 
     model = openai_models.get(resolved_model_id)
     if model is None:
@@ -1396,14 +1399,18 @@ async def generate_chat_completion(
 
     # Check model info and override the payload
     if model_info:
-        if model_info.base_model_id:
-            base_model_id = (
-                request.base_model_id
-                if hasattr(request, "base_model_id")
-                else model_info.base_model_id
-            )  # Use request's base_model_id if available
-            payload["model"] = base_model_id
-            model_id = base_model_id
+        resolution = resolve_runtime_model_reference(
+            request.app.state.MODELS,
+            model_id=model_id,
+            model=request.app.state.MODELS.get(model_id),
+            model_info=model_info,
+            base_model_id_override=(
+                request.base_model_id if hasattr(request, "base_model_id") else None
+            ),
+        )
+        if resolution["resolved_model_id"]:
+            payload["model"] = resolution["resolved_model_id"]
+            model_id = resolution["resolved_model_id"]
 
         params = model_info.params.model_dump()
 

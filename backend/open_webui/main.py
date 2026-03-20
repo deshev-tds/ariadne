@@ -579,6 +579,7 @@ from open_webui.utils.models import (
     check_model_access,
     get_filtered_models,
 )
+from open_webui.utils.model_resolution import resolve_runtime_model_reference
 from open_webui.utils.chat import (
     generate_chat_completion as chat_completion_handler,
     chat_completed as chat_completed_handler,
@@ -1925,8 +1926,12 @@ async def chat_completion(
 
         # Check base model existence for custom models
         if model_info and model_info.base_model_id:
-            base_model_id = model_info.base_model_id
-            if base_model_id not in request.app.state.MODELS:
+            resolution = resolve_runtime_model_reference(
+                request.app.state.MODELS,
+                model=model,
+                model_info=model_info,
+            )
+            if not resolution["base_model_resolved"]:
                 if ENABLE_CUSTOM_MODEL_FALLBACK:
                     default_models = (
                         request.app.state.config.DEFAULT_MODELS or ""
