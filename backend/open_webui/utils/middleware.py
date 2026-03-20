@@ -6952,44 +6952,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         except:
             pass
 
-    _messages_before_runtime_timestamp = form_data.get("messages", [])
-    _system_before_runtime_timestamp = get_system_message(_messages_before_runtime_timestamp)
-    _system_before_runtime_timestamp_content = (
-        get_content_from_message(_system_before_runtime_timestamp)
-        if _system_before_runtime_timestamp
-        else ""
-    )
-    _history_non_system_count = sum(
-        1
-        for message in _messages_before_runtime_timestamp
-        if str(message.get("role") or "").strip() != "system"
-    )
-
-    form_data["messages"] = _inject_runtime_timestamp_once(_messages_before_runtime_timestamp)
-
-    _system_after_runtime_timestamp = get_system_message(form_data.get("messages", []))
-    _system_after_runtime_timestamp_content = (
-        get_content_from_message(_system_after_runtime_timestamp)
-        if _system_after_runtime_timestamp
-        else ""
-    )
-    _runtime_timestamp_marker_before = (
-        RUNTIME_TIMESTAMP_MARKER in str(_system_before_runtime_timestamp_content or "")
-    )
-    _runtime_timestamp_marker_after = (
-        RUNTIME_TIMESTAMP_MARKER in str(_system_after_runtime_timestamp_content or "")
-    )
-    _runtime_timestamp_injected = (
-        not _runtime_timestamp_marker_before and _runtime_timestamp_marker_after
-    )
-    log.info(
-        "Runtime timestamp injection decision: chat_id=%s message_id=%s non_system_count=%s marker_before=%s marker_after=%s injected=%s",
-        metadata.get("chat_id"),
-        metadata.get("message_id"),
-        _history_non_system_count,
-        _runtime_timestamp_marker_before,
-        _runtime_timestamp_marker_after,
-        _runtime_timestamp_injected,
+    form_data["messages"] = _inject_runtime_timestamp_once(
+        form_data.get("messages", [])
     )
 
     form_data = await convert_url_images_to_base64(form_data)
