@@ -19,8 +19,11 @@ from open_webui.utils.context_maintenance import (
     parse_prometheus_metrics,
     render_preview_prompt,
     resolve_effective_ctx_cap,
+    resolve_active_context_window_model_ids,
     resolve_history_budgets,
     resolve_live_prompt_cap,
+    should_force_inline_maintenance,
+    should_schedule_maintenance,
 )
 from open_webui.utils.model_resolution import resolve_runtime_model_reference
 
@@ -268,7 +271,55 @@ def test_resolve_history_budgets_uses_rag_reserve_when_files_present():
     assert budgets["hot_context_target_tokens"] == budgets["hard_history_budget"]
     assert budgets["effective_ctx_cap"] == 32768
     assert budgets["rag_reserve_tokens"] == 12288
+    assert budgets["hard_request_budget"] == budgets["hard_history_budget"]
+    assert budgets["soft_request_budget"] == budgets["soft_history_budget"]
     assert budgets["hard_history_budget"] < 32768
+
+
+def test_resolve_active_context_window_model_ids_prefers_chat_models(monkeypatch):
+    monkeypatch.setattr(
+        context_maintenance.Chats,
+        "get_chat_by_id",
+        lambda _chat_id: SimpleNamespace(chat={"models": ["large", "small"]}),
+    )
+
+    model_ids = resolve_active_context_window_model_ids(
+        models_map={"small": {"id": "small"}, "large": {"id": "large"}},
+        current_model={"id": "large"},
+        form_data={},
+        metadata={"chat_id": "chat-1"},
+    )
+
+    assert model_ids == ["large", "small"]
+
+
+def test_should_schedule_maintenance_uses_current_request_tokens_when_provided():
+    history = [_message("m1", "user", "x" * 20000)]
+
+    assert (
+        should_schedule_maintenance(
+            history_messages=history,
+            summary_state={},
+            budgets={"soft_request_budget": 4096},
+            probe={},
+            current_request_tokens=1024,
+        )
+        is False
+    )
+
+
+def test_should_force_inline_maintenance_uses_current_request_tokens_when_provided():
+    history = [_message("m1", "user", "x" * 20000)]
+
+    assert (
+        should_force_inline_maintenance(
+            history_messages=history,
+            budgets={"hard_request_budget": 4096},
+            probe={},
+            current_request_tokens=1024,
+        )
+        is False
+    )
 
 
 def test_build_context_payload_reuses_summary_state_without_cascade():
@@ -354,18 +405,19 @@ async def test_background_context_maintenance_closes_status_on_early_return(
         lambda messages: messages,
     )
 
-    async def fake_probe(*_args, **_kwargs):
-        return {"n_ctx": 8192}
+    async def fake_pressure(*_args, **_kwargs):
+        return {
+            "probe": {"n_ctx": 8192},
+            "budgets": {
+                "anchor_budget_tokens": 256,
+                "hard_history_budget": 2048,
+                "hard_request_budget": 2048,
+                "soft_request_budget": 1024,
+            },
+            "current_request_tokens": 1400,
+        }
 
-    monkeypatch.setattr(context_maintenance, "load_llamacpp_probe", fake_probe)
-    monkeypatch.setattr(
-        context_maintenance,
-        "resolve_history_budgets",
-        lambda *_args, **_kwargs: {
-            "anchor_budget_tokens": 256,
-            "hard_history_budget": 2048,
-        },
-    )
+    monkeypatch.setattr(context_maintenance, "inspect_context_pressure", fake_pressure)
     monkeypatch.setattr(
         context_maintenance, "get_chat_maintenance_state", lambda *_args, **_kwargs: {}
     )
@@ -446,31 +498,33 @@ async def test_inline_maintenance_proactively_pretrims_when_near_live_cap(monkey
         _message("a1", "assistant", "answer"),
     ]
 
-    async def fake_probe(*_args, **_kwargs):
-        return {"n_ctx": 8192}
+    async def fake_pressure(*_args, **_kwargs):
+        return {
+            "probe": {"n_ctx": 8192},
+            "budgets": {
+                "live_prompt_cap": 8192,
+                "hard_history_budget": 4096,
+                "hard_request_budget": 4096,
+                "soft_request_budget": 2048,
+                "anchor_budget_tokens": 128,
+            },
+            "maintenance_payload": {
+                "messages": [{"role": "user", "content": "oversized"}],
+                "used_summary_state": False,
+                "telemetry": {},
+                "anchor_messages": [],
+                "anchor_message_ids": [],
+                "tail_messages": history,
+            },
+            "current_request_tokens": 7000,
+            "active_main_model_ids": ["demo"],
+            "limiting_model_id": "demo",
+            "limiting_model_name": "demo",
+            "token_count_source": "tiktoken",
+            "token_count_confidence": "fallback",
+        }
 
-    monkeypatch.setattr(context_maintenance, "load_llamacpp_probe", fake_probe)
-    monkeypatch.setattr(
-        context_maintenance,
-        "resolve_history_budgets",
-        lambda *_args, **_kwargs: {
-            "live_prompt_cap": 8192,
-            "hard_history_budget": 4096,
-            "anchor_budget_tokens": 128,
-        },
-    )
-    monkeypatch.setattr(
-        context_maintenance,
-        "build_context_maintenance_payload",
-        lambda **_kwargs: {
-            "messages": [{"role": "user", "content": "oversized"}],
-            "used_summary_state": False,
-            "telemetry": {},
-            "anchor_messages": [],
-            "anchor_message_ids": [],
-            "tail_messages": history,
-        },
-    )
+    monkeypatch.setattr(context_maintenance, "inspect_context_pressure", fake_pressure)
     monkeypatch.setattr(
         context_maintenance,
         "should_force_inline_maintenance",
@@ -511,10 +565,7 @@ async def test_inline_maintenance_proactively_pretrims_when_near_live_cap(monkey
 
     assert messages[0]["content"] == "compacted"
     assert result["telemetry"]["proactive_pretrim_triggered"] is True
-    assert (
-        result["telemetry"]["proactive_pretrim_reason"]
-        == "estimated_prompt_near_ctx_cap"
-    )
+    assert result["telemetry"]["proactive_pretrim_reason"] == "request_pressure_in_soft_zone"
 
 
 @pytest.mark.asyncio
@@ -526,31 +577,33 @@ async def test_inline_maintenance_force_flag_skips_pressure_gate(monkeypatch):
         _message("a1", "assistant", "answer"),
     ]
 
-    async def fake_probe(*_args, **_kwargs):
-        return {"n_ctx": 8192}
+    async def fake_pressure(*_args, **_kwargs):
+        return {
+            "probe": {"n_ctx": 8192},
+            "budgets": {
+                "live_prompt_cap": 8192,
+                "hard_history_budget": 4096,
+                "hard_request_budget": 4096,
+                "soft_request_budget": 2048,
+                "anchor_budget_tokens": 128,
+            },
+            "maintenance_payload": {
+                "messages": [{"role": "user", "content": "small"}],
+                "used_summary_state": False,
+                "telemetry": {},
+                "anchor_messages": [],
+                "anchor_message_ids": [],
+                "tail_messages": history,
+            },
+            "current_request_tokens": 1000,
+            "active_main_model_ids": ["demo"],
+            "limiting_model_id": "demo",
+            "limiting_model_name": "demo",
+            "token_count_source": "tiktoken",
+            "token_count_confidence": "fallback",
+        }
 
-    monkeypatch.setattr(context_maintenance, "load_llamacpp_probe", fake_probe)
-    monkeypatch.setattr(
-        context_maintenance,
-        "resolve_history_budgets",
-        lambda *_args, **_kwargs: {
-            "live_prompt_cap": 8192,
-            "hard_history_budget": 4096,
-            "anchor_budget_tokens": 128,
-        },
-    )
-    monkeypatch.setattr(
-        context_maintenance,
-        "build_context_maintenance_payload",
-        lambda **_kwargs: {
-            "messages": [{"role": "user", "content": "small"}],
-            "used_summary_state": False,
-            "telemetry": {},
-            "anchor_messages": [],
-            "anchor_message_ids": [],
-            "tail_messages": history,
-        },
-    )
+    monkeypatch.setattr(context_maintenance, "inspect_context_pressure", fake_pressure)
     monkeypatch.setattr(
         context_maintenance,
         "should_force_inline_maintenance",

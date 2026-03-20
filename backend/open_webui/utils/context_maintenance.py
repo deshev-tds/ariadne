@@ -47,7 +47,6 @@ DEFAULT_SUMMARY_MIN_REFRESH_MESSAGES = 6
 SOFT_PRESSURE_RATIO = 0.72
 HARD_PRESSURE_RATIO = 0.85
 _PROBE_TIMEOUT_SECONDS = 1.5
-PROACTIVE_INLINE_PRETRIM_RATIO = 0.78
 PROACTIVE_INLINE_PRETRIM_MIN_TOKENS = 4096
 SUMMARY_SNAPSHOT_SECTIONS = [
     (
@@ -158,6 +157,30 @@ def _cache_set(
     cache[key] = (time.time(), value) if with_timestamp else value
     while len(cache) > max_entries:
         cache.popitem(last=False)
+
+
+def _normalize_model_id_sequence(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        candidate = None
+        if isinstance(value, dict):
+            candidate = value.get("id")
+        else:
+            candidate = value
+
+        candidate = str(candidate or "").strip()
+        if not candidate or candidate in seen:
+            continue
+
+        seen.add(candidate)
+        normalized.append(candidate)
+
+    return normalized
 
 
 def parse_ctx_size_from_args(args: list[Any] | None) -> Optional[int]:
@@ -1073,10 +1096,62 @@ def resolve_history_budgets(
         "safety_reserve_tokens": safety_reserve,
         "rag_reserve_tokens": rag_reserve,
         "soft_margin_tokens": soft_margin,
+        "hard_request_budget": hard_history_budget,
+        "soft_request_budget": soft_history_budget,
         "hard_history_budget": hard_history_budget,
         "soft_history_budget": soft_history_budget,
         "anchor_budget_tokens": anchor_budget,
     }
+
+
+def resolve_active_context_window_model_ids(
+    *,
+    models_map: dict[str, dict[str, Any]],
+    current_model: dict[str, Any] | None,
+    form_data: dict[str, Any] | None,
+    metadata: dict[str, Any] | None,
+) -> list[str]:
+    candidate_ids: list[str] = []
+    parent_message = (
+        (metadata or {}).get("parent_message")
+        if isinstance((metadata or {}).get("parent_message"), dict)
+        else {}
+    )
+
+    for source in (
+        (form_data or {}).get("main_model_ids"),
+        (form_data or {}).get("models"),
+        (metadata or {}).get("main_model_ids"),
+        (metadata or {}).get("models"),
+        parent_message.get("models"),
+    ):
+        candidate_ids.extend(_normalize_model_id_sequence(source))
+
+    chat_id = str((metadata or {}).get("chat_id") or "").strip()
+    if chat_id and not chat_id.startswith("local:"):
+        chat = Chats.get_chat_by_id(chat_id)
+        chat_models = None
+        if chat and isinstance(chat.chat, dict):
+            chat_models = chat.chat.get("models")
+        candidate_ids.extend(_normalize_model_id_sequence(chat_models))
+
+    current_model_id = str((current_model or {}).get("id") or "").strip()
+    if current_model_id:
+        candidate_ids.append(current_model_id)
+
+    resolved_ids: list[str] = []
+    seen: set[str] = set()
+    for model_id in candidate_ids:
+        if not model_id or model_id in seen:
+            continue
+        if model_id == current_model_id or model_id in models_map:
+            seen.add(model_id)
+            resolved_ids.append(model_id)
+
+    if not resolved_ids and current_model_id:
+        return [current_model_id]
+
+    return resolved_ids
 
 
 def should_schedule_maintenance(
@@ -1085,16 +1160,24 @@ def should_schedule_maintenance(
     summary_state: dict[str, Any] | None,
     budgets: dict[str, int],
     probe: dict[str, Any] | None,
+    current_request_tokens: int | None = None,
 ) -> bool:
-    history_tokens = estimate_tokens_from_history_messages(history_messages)
+    request_tokens = (
+        int(current_request_tokens)
+        if current_request_tokens is not None
+        else estimate_tokens_from_history_messages(history_messages)
+    )
+    soft_request_budget = int(
+        budgets.get("soft_request_budget", budgets.get("soft_history_budget", 0)) or 0
+    )
     kv_ratio = (probe or {}).get("kv_cache_usage_ratio")
     if kv_ratio is not None and kv_ratio >= SOFT_PRESSURE_RATIO:
         return True
-    if history_tokens >= budgets["soft_history_budget"]:
+    if request_tokens >= soft_request_budget:
         return True
     if summary_state and is_summary_refresh_needed(history_messages, summary_state):
-        return history_tokens >= max(
-            budgets["soft_history_budget"] - DEFAULT_SUMMARY_MIN_REFRESH_TOKENS,
+        return request_tokens >= max(
+            soft_request_budget - DEFAULT_SUMMARY_MIN_REFRESH_TOKENS,
             1024,
         )
     return False
@@ -1105,12 +1188,20 @@ def should_force_inline_maintenance(
     history_messages: list[dict[str, Any]],
     budgets: dict[str, int],
     probe: dict[str, Any] | None,
+    current_request_tokens: int | None = None,
 ) -> bool:
-    history_tokens = estimate_tokens_from_history_messages(history_messages)
+    request_tokens = (
+        int(current_request_tokens)
+        if current_request_tokens is not None
+        else estimate_tokens_from_history_messages(history_messages)
+    )
+    hard_request_budget = int(
+        budgets.get("hard_request_budget", budgets.get("hard_history_budget", 0)) or 0
+    )
     kv_ratio = (probe or {}).get("kv_cache_usage_ratio")
     return bool(
         (kv_ratio is not None and kv_ratio >= HARD_PRESSURE_RATIO)
-        or history_tokens >= budgets["hard_history_budget"]
+        or request_tokens >= hard_request_budget
     )
 
 
@@ -1314,6 +1405,49 @@ async def build_context_window_model_preview(
     summary_state: dict[str, Any] | None,
     maintenance_enabled: bool,
 ) -> dict[str, Any]:
+    snapshot = await build_context_window_model_snapshot(
+        request,
+        models_map=models_map,
+        model=model,
+        system_message=system_message,
+        history_messages=history_messages,
+        form_data=form_data,
+        metadata=metadata,
+        summary_state=summary_state,
+        maintenance_enabled=maintenance_enabled,
+    )
+    return serialize_context_window_snapshot(snapshot)
+
+
+def serialize_context_window_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model_id": snapshot["model_id"],
+        "model_name": snapshot["model_name"],
+        "live_prompt_cap": snapshot["live_prompt_cap"],
+        "live_prompt_cap_source": snapshot["live_prompt_cap_source"],
+        "current_request_tokens": snapshot["current_request_tokens"],
+        "soft_trigger_tokens": snapshot.get("soft_trigger_tokens"),
+        "hard_trigger_tokens": snapshot.get("hard_trigger_tokens"),
+        "summary_active": snapshot["summary_active"],
+        "compaction_version": snapshot["compaction_version"],
+        "maintenance_enabled": snapshot["maintenance_enabled"],
+        "token_count_confidence": snapshot["token_count_confidence"],
+        "token_count_source": snapshot["token_count_source"],
+    }
+
+
+async def build_context_window_model_snapshot(
+    request,
+    *,
+    models_map: dict[str, dict[str, Any]],
+    model: dict[str, Any],
+    system_message: dict[str, Any] | None,
+    history_messages: list[dict[str, Any]],
+    form_data: dict[str, Any],
+    metadata: dict[str, Any],
+    summary_state: dict[str, Any] | None,
+    maintenance_enabled: bool,
+) -> dict[str, Any]:
     resolution = resolve_runtime_model_reference(models_map, model=model)
     runtime_model = resolution["runtime_model"] or model
     probe = await load_llamacpp_probe(request, runtime_model)
@@ -1342,6 +1476,7 @@ async def build_context_window_model_preview(
             system_message=system_message,
             history_messages=history_messages,
         )
+        payload = None
         summary_active = False
         compaction_version = 0
 
@@ -1359,11 +1494,11 @@ async def build_context_window_model_preview(
     if maintenance_enabled:
         soft_trigger_tokens = min(
             int(budgets["live_prompt_cap"]),
-            max(system_request_tokens, 0) + int(budgets["soft_history_budget"]),
+            int(budgets.get("soft_request_budget", budgets["soft_history_budget"])),
         )
         hard_trigger_tokens = min(
             int(budgets["live_prompt_cap"]),
-            max(system_request_tokens, 0) + int(budgets["hard_history_budget"]),
+            int(budgets.get("hard_request_budget", budgets["hard_history_budget"])),
         )
 
     return {
@@ -1379,6 +1514,14 @@ async def build_context_window_model_preview(
         "maintenance_enabled": bool(maintenance_enabled),
         "token_count_confidence": token_count_confidence,
         "token_count_source": token_count_source,
+        "system_request_tokens": int(system_request_tokens),
+        "runtime_model": runtime_model,
+        "runtime_model_id": str(runtime_model.get("id") or resolution["resolved_model_id"] or ""),
+        "probe": probe,
+        "budgets": budgets,
+        "request_messages": request_messages,
+        "maintenance_payload": payload,
+        "resolution": resolution,
     }
 
 
@@ -1418,14 +1561,58 @@ async def build_aggregate_context_window_preview(
     summary_state: dict[str, Any] | None,
     maintenance_enabled: bool,
 ) -> dict[str, Any] | None:
-    previews: list[dict[str, Any]] = []
+    snapshot = await build_aggregate_context_window_snapshot(
+        request,
+        models_map=models_map,
+        main_model_ids=main_model_ids,
+        fallback_model=None,
+        system_message=system_message,
+        history_messages=history_messages,
+        form_data=form_data,
+        metadata=metadata,
+        summary_state=summary_state,
+        maintenance_enabled=maintenance_enabled,
+    )
+    if not snapshot:
+        return None
 
-    for model_id in main_model_ids:
+    return {
+        **serialize_context_window_snapshot(snapshot),
+        "limiting_model_id": snapshot["model_id"],
+        "limiting_model_name": snapshot["model_name"],
+        "active_main_model_ids": snapshot["active_main_model_ids"],
+        "multi_model": bool(snapshot["multi_model"]),
+        "model_previews": [
+            serialize_context_window_snapshot(model_snapshot)
+            for model_snapshot in snapshot["model_snapshots"]
+        ],
+    }
+
+
+async def build_aggregate_context_window_snapshot(
+    request,
+    *,
+    models_map: dict[str, dict[str, Any]],
+    main_model_ids: list[str],
+    fallback_model: dict[str, Any] | None,
+    system_message: dict[str, Any] | None,
+    history_messages: list[dict[str, Any]],
+    form_data: dict[str, Any],
+    metadata: dict[str, Any],
+    summary_state: dict[str, Any] | None,
+    maintenance_enabled: bool,
+) -> dict[str, Any] | None:
+    model_snapshots: list[dict[str, Any]] = []
+    active_model_ids = _normalize_model_id_sequence(main_model_ids)
+
+    for model_id in active_model_ids:
         model = models_map.get(model_id)
+        if model is None and fallback_model and model_id == fallback_model.get("id"):
+            model = fallback_model
         if not model:
             continue
-        previews.append(
-            await build_context_window_model_preview(
+        model_snapshots.append(
+            await build_context_window_model_snapshot(
                 request,
                 models_map=models_map,
                 model=model,
@@ -1438,18 +1625,53 @@ async def build_aggregate_context_window_preview(
             )
         )
 
-    limiting_preview = select_limiting_context_window_preview(previews)
-    if not limiting_preview:
+    limiting_snapshot = select_limiting_context_window_preview(model_snapshots)
+    if not limiting_snapshot:
         return None
 
     return {
-        **limiting_preview,
-        "limiting_model_id": limiting_preview["model_id"],
-        "limiting_model_name": limiting_preview["model_name"],
-        "active_main_model_ids": [preview["model_id"] for preview in previews],
-        "multi_model": len(previews) > 1,
-        "model_previews": previews,
+        **limiting_snapshot,
+        "limiting_model_id": limiting_snapshot["model_id"],
+        "limiting_model_name": limiting_snapshot["model_name"],
+        "active_main_model_ids": [snapshot["model_id"] for snapshot in model_snapshots],
+        "multi_model": len(model_snapshots) > 1,
+        "model_snapshots": model_snapshots,
     }
+
+
+async def inspect_context_pressure(
+    request,
+    *,
+    model: dict[str, Any],
+    form_data: dict[str, Any],
+    metadata: dict[str, Any],
+    system_message: dict[str, Any] | None,
+    history_messages: list[dict[str, Any]],
+    summary_state: dict[str, Any] | None,
+    maintenance_enabled: bool = True,
+) -> dict[str, Any] | None:
+    models_map = getattr(request.app.state, "MODELS", None) or {}
+    main_model_ids = resolve_active_context_window_model_ids(
+        models_map=models_map,
+        current_model=model,
+        form_data=form_data,
+        metadata=metadata,
+    )
+    if not main_model_ids:
+        return None
+
+    return await build_aggregate_context_window_snapshot(
+        request,
+        models_map=models_map,
+        main_model_ids=main_model_ids,
+        fallback_model=model,
+        system_message=system_message,
+        history_messages=history_messages,
+        form_data=form_data,
+        metadata=metadata,
+        summary_state=summary_state,
+        maintenance_enabled=maintenance_enabled,
+    )
 
 
 async def build_inline_maintained_messages(
@@ -1464,17 +1686,57 @@ async def build_inline_maintained_messages(
     summary_state: dict[str, Any] | None,
     force_inline_compaction: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    probe = await load_llamacpp_probe(request, model)
-    budgets = resolve_history_budgets(
-        request, model=model, form_data=form_data, metadata=metadata, probe=probe
-    )
-
-    payload = build_context_maintenance_payload(
+    pressure = await inspect_context_pressure(
+        request,
+        model=model,
+        form_data=form_data,
+        metadata=metadata,
         system_message=system_message,
         history_messages=history_messages,
         summary_state=summary_state,
-        budgets=budgets,
+        maintenance_enabled=True,
     )
+    if not pressure:
+        probe = await load_llamacpp_probe(request, model)
+        budgets = resolve_history_budgets(
+            request, model=model, form_data=form_data, metadata=metadata, probe=probe
+        )
+        payload = build_context_maintenance_payload(
+            system_message=system_message,
+            history_messages=history_messages,
+            summary_state=summary_state,
+            budgets=budgets,
+        )
+        current_request_tokens, token_count_source, token_count_confidence = (
+            count_preview_messages_tokens(request, model, payload["messages"])
+        )
+        active_main_model_ids = [str(model.get("id") or "")]
+        limiting_model_id = str(model.get("id") or "")
+        limiting_model_name = model.get("name") or limiting_model_id
+        runtime_model_for_telemetry = model
+    else:
+        probe = pressure["probe"]
+        budgets = pressure["budgets"]
+        payload = pressure["maintenance_payload"] or build_context_maintenance_payload(
+            system_message=system_message,
+            history_messages=history_messages,
+            summary_state=summary_state,
+            budgets=budgets,
+        )
+        current_request_tokens = int(pressure.get("current_request_tokens") or 0)
+        active_main_model_ids = list(pressure.get("active_main_model_ids") or [])
+        limiting_model_id = str(pressure.get("limiting_model_id") or pressure["model_id"])
+        limiting_model_name = (
+            pressure.get("limiting_model_name")
+            or pressure.get("model_name")
+            or limiting_model_id
+        )
+        token_count_source = str(pressure.get("token_count_source") or "character_estimate")
+        token_count_confidence = str(
+            pressure.get("token_count_confidence") or "approximate"
+        )
+        runtime_model_for_telemetry = pressure.get("runtime_model") or model
+
     result = {
         "probe": probe,
         "budgets": budgets,
@@ -1484,18 +1746,15 @@ async def build_inline_maintained_messages(
         "telemetry": dict(payload.get("telemetry") or {}),
     }
 
-    preflight_request_tokens = estimate_tokens_from_messages(payload["messages"])
+    preflight_request_tokens = current_request_tokens
     preflight_threshold_tokens = max(
         PROACTIVE_INLINE_PRETRIM_MIN_TOKENS,
         int(
-            max(
-                int(
-                    budgets.get("live_prompt_cap", DEFAULT_CONTEXT_CAP)
-                    or DEFAULT_CONTEXT_CAP
-                ),
-                1,
+            budgets.get(
+                "soft_request_budget",
+                budgets.get("soft_history_budget", budgets.get("live_prompt_cap", 0)),
             )
-            * PROACTIVE_INLINE_PRETRIM_RATIO
+            or 0
         ),
     )
     proactive_pretrim_triggered = preflight_request_tokens >= preflight_threshold_tokens
@@ -1506,17 +1765,26 @@ async def build_inline_maintained_messages(
             "preflight_threshold_tokens": preflight_threshold_tokens,
             "proactive_pretrim_triggered": proactive_pretrim_triggered,
             "force_inline_compaction": bool(force_inline_compaction),
+            "active_main_model_ids": active_main_model_ids,
+            "limiting_model_id": limiting_model_id,
+            "limiting_model_name": limiting_model_name,
+            "token_count_source": token_count_source,
+            "token_count_confidence": token_count_confidence,
+            "request_tokens": current_request_tokens,
+            "request_token_count_source": token_count_source,
+            "request_token_count_confidence": token_count_confidence,
         }
     )
 
     should_compact_inline = force_inline_compaction or should_force_inline_maintenance(
-        history_messages=history_messages, budgets=budgets, probe=probe
+        history_messages=history_messages,
+        budgets=budgets,
+        probe=probe,
+        current_request_tokens=current_request_tokens,
     )
     if proactive_pretrim_triggered and not should_compact_inline:
         should_compact_inline = True
-        result["telemetry"][
-            "proactive_pretrim_reason"
-        ] = "estimated_prompt_near_ctx_cap"
+        result["telemetry"]["proactive_pretrim_reason"] = "request_pressure_in_soft_zone"
 
     if not should_compact_inline:
         return payload["messages"], result
@@ -1579,12 +1847,18 @@ async def build_inline_maintained_messages(
             hard_history_budget=budgets["hard_history_budget"],
         )
 
+    final_request_tokens, final_token_source, final_token_confidence = (
+        count_preview_messages_tokens(request, runtime_model_for_telemetry, request_messages)
+    )
+
     result["telemetry"].update(
         {
             "summary_refreshed": result["summary_refreshed"],
             "fallback_used": result["fallback_used"],
             "used_summary_state": result["used_summary_state"],
-            "request_tokens": estimate_tokens_from_messages(request_messages),
+            "request_tokens": final_request_tokens,
+            "request_token_count_source": final_token_source,
+            "request_token_count_confidence": final_token_confidence,
             "tail_tokens": estimate_tokens_from_history_messages(trimmed_tail),
             "tail_message_count": len(trimmed_tail),
             "summary_tokens": estimate_tokens_from_text(summary_text or ""),
@@ -1626,6 +1900,8 @@ async def run_background_context_maintenance(
     chat_id: str,
     message_id: str,
     event_emitter,
+    files: list[dict[str, Any]] | None = None,
+    system_message: dict[str, Any] | None = None,
 ) -> None:
     job_key = f"{chat_id}:{message_id}"
     async with _ACTIVE_MAINTENANCE_LOCK:
@@ -1657,21 +1933,30 @@ async def run_background_context_maintenance(
         if not history_messages:
             return
 
-        probe = await load_llamacpp_probe(request, model)
-        budgets = resolve_history_budgets(
+        state = get_chat_maintenance_state(chat_id)
+        pressure = await inspect_context_pressure(
             request,
             model=model,
-            form_data={"model": model["id"]},
-            metadata={"chat_id": chat_id},
-            probe=probe,
+            form_data={"model": model["id"], "files": files or []},
+            metadata={"chat_id": chat_id, "files": files or []},
+            system_message=system_message,
+            history_messages=history_messages,
+            summary_state=state,
+            maintenance_enabled=True,
         )
+        if not pressure:
+            return
 
-        state = get_chat_maintenance_state(chat_id)
+        probe = pressure["probe"]
+        budgets = pressure["budgets"]
+        current_request_tokens = int(pressure.get("current_request_tokens") or 0)
+
         if not should_schedule_maintenance(
             history_messages=history_messages,
             summary_state=state,
             budgets=budgets,
             probe=probe,
+            current_request_tokens=current_request_tokens,
         ) or not is_summary_refresh_needed(history_messages, state):
             return
 

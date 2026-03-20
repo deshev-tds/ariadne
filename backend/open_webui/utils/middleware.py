@@ -8087,6 +8087,15 @@ async def background_tasks_handler(ctx):
                             chat_id=metadata["chat_id"],
                             message_id=metadata["message_id"],
                             event_emitter=event_emitter,
+                            files=metadata.get("files") or [],
+                            system_message=(
+                                {
+                                    "role": "system",
+                                    "content": str(metadata.get("system_prompt") or "").strip(),
+                                }
+                                if str(metadata.get("system_prompt") or "").strip()
+                                else None
+                            ),
                         )
                     )
 
