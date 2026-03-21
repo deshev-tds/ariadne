@@ -106,6 +106,29 @@
 
 	const i18n = getContext('i18n');
 
+	type WorkingMode = 'general' | 'science' | 'offsec';
+	const WORKING_MODE_OPTIONS: {
+		value: WorkingMode;
+		label: string;
+		description: string;
+	}[] = [
+		{
+			value: 'general',
+			label: 'General',
+			description: 'Default chat behavior without a specialized harness.'
+		},
+		{
+			value: 'science',
+			label: 'Science',
+			description: 'Evidence-first retrieval for medicine and other science corpora.'
+		},
+		{
+			value: 'offsec',
+			label: 'Offsec',
+			description: 'Workflow-first consultation for terminal-centric offensive security work.'
+		}
+	];
+
 	export let onUpload: Function = (e) => {};
 	export let onChange: Function = () => {};
 
@@ -124,6 +147,8 @@
 	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
 	export let focusedSearchEnabled = false;
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
+	export let workingMode: WorkingMode = 'general';
+	export let setChatWorkingMode: (mode: WorkingMode) => void = () => {};
 	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
 
@@ -144,6 +169,7 @@
 	export let codeInterpreterEnabled = false;
 
 	let showTerminalMenu = false;
+	let showWorkingModeMenu = false;
 
 	export let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
 	export let onQueueSendNow: (id: string) => void = () => {};
@@ -182,6 +208,7 @@
 		imageGenerationEnabled,
 		webSearchEnabled,
 		codeInterpreterEnabled,
+		workingMode,
 		localCorpusMode
 	});
 
@@ -325,6 +352,12 @@
 
 		return text;
 	};
+
+	const getWorkingModeLabel = (mode: WorkingMode): string =>
+		WORKING_MODE_OPTIONS.find((option) => option.value === mode)?.label ?? 'General';
+
+	const getWorkingModeStatusText = (mode: WorkingMode): string =>
+		`${getWorkingModeLabel(mode)} mode is active for this chat`;
 
 	const replaceVariables = (variables: Record<string, any>) => {
 		console.log('Replacing variables:', variables);
@@ -1682,6 +1715,69 @@
 												<CommandLine className="size-4.5" strokeWidth="1.75" />
 											</button>
 										</Tooltip>
+										<Dropdown
+											bind:show={showWorkingModeMenu}
+											on:change={async (e) => {
+												if (e.detail === false) {
+													await tick();
+													document.getElementById('chat-input')?.focus();
+												}
+											}}
+										>
+											<Tooltip
+												content={getWorkingModeStatusText(workingMode)}
+												placement="top"
+											>
+												<button
+													type="button"
+													id="working-mode-button"
+													aria-label="Working mode"
+													class="rounded-full h-8 min-w-[4.5rem] px-2.5 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors text-[11px] font-semibold uppercase tracking-[0.08em] {workingMode === 'offsec'
+														? 'text-orange-700 bg-orange-100/80 hover:bg-orange-200/80 dark:text-orange-200 dark:bg-orange-700/20 dark:hover:bg-orange-700/30'
+														: workingMode === 'science'
+															? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
+															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+												>
+													{getWorkingModeLabel(workingMode)}
+												</button>
+											</Tooltip>
+
+											<div slot="content">
+												<DropdownMenu.Content
+													class="select-none w-full max-w-[260px] rounded-2xl p-1 border border-gray-100 dark:border-gray-800 z-50 bg-white dark:bg-gray-850 dark:text-white shadow-lg transition"
+													sideOffset={8}
+													side="top"
+													align="start"
+													transition={flyAndScale}
+												>
+													{#each WORKING_MODE_OPTIONS as option}
+														<DropdownMenu.Item
+															class="flex flex-col gap-0.5 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
+															on:click={async () => {
+																setChatWorkingMode(option.value);
+																showWorkingModeMenu = false;
+																await tick();
+																document.getElementById('chat-input')?.focus();
+															}}
+														>
+															<div class="flex items-center gap-2 text-sm font-medium">
+																<span>{option.label}</span>
+																{#if option.value === workingMode}
+																	<span
+																		class="text-[10px] uppercase tracking-[0.08em] text-gray-500 dark:text-gray-400"
+																	>
+																		Active
+																	</span>
+																{/if}
+															</div>
+															<div class="text-xs text-gray-500 dark:text-gray-400">
+																{option.description}
+															</div>
+														</DropdownMenu.Item>
+													{/each}
+												</DropdownMenu.Content>
+											</div>
+										</Dropdown>
 										<Tooltip
 											content={localCorpusMode === 'prefer'
 												? $i18n.t('Prefer local corpus mode is enabled for this chat')

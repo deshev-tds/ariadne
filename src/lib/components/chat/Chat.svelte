@@ -174,16 +174,24 @@
 	let prompt = '';
 	let chatFiles = [];
 	let files = [];
-	let params = {};
+	let params: Record<string, any> = {};
 	let chatThinkingEnabled = false;
 	let chatLedgerAgenticEnabled = false;
 	let chatFocusedSearchEnabled = false;
+	type WorkingMode = 'general' | 'science' | 'offsec';
+	const CHAT_WORKING_MODES: WorkingMode[] = ['general', 'science', 'offsec'];
+	let chatWorkingMode: WorkingMode = 'general';
 	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 
 	$: chatThinkingEnabled =
 		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
 	$: chatLedgerAgenticEnabled = (params?.ledger_mode ?? null) === 'agentic';
 	$: chatFocusedSearchEnabled = (params?.focused_search_mode ?? false) === true;
+	$: chatWorkingMode = CHAT_WORKING_MODES.includes(params?.working_mode ?? '')
+		? params.working_mode
+		: ['auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
+			? 'science'
+			: 'general';
 	$: chatLocalCorpusMode = ['off', 'auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
 		? params.local_corpus_mode
 		: 'auto';
@@ -240,6 +248,12 @@
 		} else {
 			delete nextParams.focused_search_mode;
 		}
+		params = nextParams;
+	};
+
+	const setChatWorkingMode = (mode: WorkingMode) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		nextParams.working_mode = mode;
 		params = nextParams;
 	};
 
@@ -320,6 +334,15 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						if (
+							typeof input.workingMode === 'string' &&
+							CHAT_WORKING_MODES.includes(input.workingMode)
+						) {
+							params = {
+								...(params ?? {}),
+								working_mode: input.workingMode
+							};
+						}
 						if (typeof input.localCorpusMode === 'string') {
 							params = {
 								...(params ?? {}),
@@ -812,6 +835,15 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						if (
+							typeof input.workingMode === 'string' &&
+							CHAT_WORKING_MODES.includes(input.workingMode)
+						) {
+							params = {
+								...(params ?? {}),
+								working_mode: input.workingMode
+							};
+						}
 						if (typeof input.localCorpusMode === 'string') {
 							params = {
 								...(params ?? {}),
@@ -2951,6 +2983,8 @@
 									{setChatLedgerAgenticEnabled}
 									focusedSearchEnabled={chatFocusedSearchEnabled}
 									{setChatFocusedSearchEnabled}
+									workingMode={chatWorkingMode}
+									{setChatWorkingMode}
 									localCorpusMode={chatLocalCorpusMode}
 									{setChatLocalCorpusMode}
 									bind:files
@@ -3029,6 +3063,8 @@
 									{setChatLedgerAgenticEnabled}
 									focusedSearchEnabled={chatFocusedSearchEnabled}
 									{setChatFocusedSearchEnabled}
+									workingMode={chatWorkingMode}
+									{setChatWorkingMode}
 									localCorpusMode={chatLocalCorpusMode}
 									{setChatLocalCorpusMode}
 									bind:messageInput
