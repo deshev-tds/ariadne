@@ -201,6 +201,70 @@ def _relative_source_path(source_path: str, root: Path) -> str:
     return Path(raw).as_posix()
 
 
+def _source_lookup_keys(*values: Any) -> list[str]:
+    keys: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        candidate = Path(raw)
+        variants = [
+            candidate.as_posix().lower(),
+            candidate.name.lower(),
+            candidate.stem.lower(),
+        ]
+        for variant in variants:
+            normalized = variant.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            keys.append(normalized)
+
+    return keys
+
+
+def _resolve_compiled_review_path(path_value: Any, root: Path) -> Optional[Path]:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return None
+
+    candidate = Path(raw)
+    if candidate.exists():
+        return candidate
+
+    normalized = raw.replace("\\", "/")
+    marker = "/_compiled_docling_review/"
+    if marker in normalized:
+        suffix = normalized.split(marker, 1)[1].strip("/")
+        rebased = root / "_compiled_docling_review" / Path(suffix)
+        return rebased
+
+    if not candidate.is_absolute():
+        rebased = root / candidate
+        return rebased
+
+    return candidate
+
+
+def _resolve_source_reference(source_path: Any, source_pdf: str, root: Path) -> str:
+    raw = str(source_path or "").strip()
+    if raw:
+        candidate = Path(raw)
+        if candidate.exists():
+            return str(candidate)
+
+    source_pdf_value = str(source_pdf or "").strip()
+    if source_pdf_value:
+        source_pdf_path = Path(source_pdf_value)
+        rebased = root / source_pdf_path
+        if rebased.exists():
+            return str(rebased)
+
+    return str(source_pdf or raw)
+
+
 def _read_markdown(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace").strip()
 
@@ -255,13 +319,16 @@ def load_offsec_registry(config_or_path: Any = None) -> OffsecRegistry:
         )
 
         review_items = review_summary.get("review_queue") or []
-        review_by_source: dict[str, dict[str, Any]] = {}
+        review_by_source: dict[str, list[dict[str, Any]]] = {}
         for item in review_items:
             if not isinstance(item, dict):
                 continue
-            source_key = _relative_source_path(item.get("source_path"), root)
-            if source_key:
-                review_by_source[source_key] = item
+            for source_key in _source_lookup_keys(
+                _relative_source_path(item.get("source_path"), root),
+                item.get("source_path"),
+                item.get("source_name"),
+            ):
+                review_by_source.setdefault(source_key, []).append(item)
 
         domains: dict[str, dict[str, Any]] = {}
         tasks: dict[str, dict[str, Any]] = {}
@@ -316,14 +383,24 @@ def load_offsec_registry(config_or_path: Any = None) -> OffsecRegistry:
                 continue
 
             source_pdf = str(item.get("source_pdf") or "").strip()
-            source_key = _relative_source_path(source_pdf, root)
-            review_item = review_by_source.get(source_key)
+            review_item = None
+            for source_key in _source_lookup_keys(
+                _relative_source_path(source_pdf, root),
+                source_pdf,
+            ):
+                matches = review_by_source.get(source_key) or []
+                if len(matches) == 1:
+                    review_item = matches[0]
+                    break
             if review_item is None:
                 missing_book_reviews.append(book_id)
                 continue
 
-            retrieval_path = Path(str(review_item.get("retrieval_markdown_path") or ""))
-            if not retrieval_path.exists():
+            retrieval_path = _resolve_compiled_review_path(
+                review_item.get("retrieval_markdown_path"),
+                root,
+            )
+            if retrieval_path is None or not retrieval_path.exists():
                 missing_book_retrieval.append(book_id)
                 continue
 
@@ -333,9 +410,18 @@ def load_offsec_registry(config_or_path: Any = None) -> OffsecRegistry:
                 item.get("title") or book_id,
                 "book",
             )
-            raw_path = Path(str(review_item.get("raw_markdown_path") or ""))
-            catalog_path = Path(str(review_item.get("catalog_path") or ""))
-            manifest_path = Path(str(review_item.get("manifest_path") or ""))
+            raw_path = _resolve_compiled_review_path(
+                review_item.get("raw_markdown_path"),
+                root,
+            )
+            catalog_path = _resolve_compiled_review_path(
+                review_item.get("catalog_path"),
+                root,
+            )
+            manifest_path = _resolve_compiled_review_path(
+                review_item.get("manifest_path"),
+                root,
+            )
 
             books_by_id[book_id] = OffsecBook(
                 book_id=book_id,
@@ -363,11 +449,23 @@ def load_offsec_registry(config_or_path: Any = None) -> OffsecRegistry:
                 ),
                 notes=tuple(_normalize_text(tag) for tag in item.get("notes") or []),
                 card=book_card,
-                source_path=str(review_item.get("source_path") or ""),
+                source_path=_resolve_source_reference(
+                    review_item.get("source_path"),
+                    source_pdf,
+                    root,
+                ),
                 retrieval_path=retrieval_path,
-                raw_path=raw_path if raw_path.exists() else None,
-                catalog_path=catalog_path if catalog_path.exists() else None,
-                manifest_path=manifest_path if manifest_path.exists() else None,
+                raw_path=raw_path if raw_path is not None and raw_path.exists() else None,
+                catalog_path=(
+                    catalog_path
+                    if catalog_path is not None and catalog_path.exists()
+                    else None
+                ),
+                manifest_path=(
+                    manifest_path
+                    if manifest_path is not None and manifest_path.exists()
+                    else None
+                ),
             )
 
         if missing_book_reviews:

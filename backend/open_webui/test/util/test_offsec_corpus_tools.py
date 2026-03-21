@@ -305,6 +305,47 @@ def test_load_offsec_registry_fails_clearly_when_book_mapping_is_missing(tmp_pat
         offsec_corpus.load_offsec_registry(str(corpus_root))
 
 
+def test_load_offsec_registry_rebases_foreign_review_paths(tmp_path):
+    corpus_root = _mini_offsec_corpus(tmp_path / "relocated-offsec")
+    review_path = corpus_root / "_compiled_docling_review" / "compiled-offsec-review.json"
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+
+    for item in review["review_queue"]:
+        source_name = Path(item["source_path"]).name
+        retrieval_suffix = item["retrieval_markdown_path"].split("/_compiled_docling_review/", 1)[1]
+        raw_suffix = item["raw_markdown_path"].split("/_compiled_docling_review/", 1)[1]
+        catalog_suffix = item["catalog_path"].split("/_compiled_docling_review/", 1)[1]
+        manifest_suffix = item["manifest_path"].split("/_compiled_docling_review/", 1)[1]
+
+        item["source_name"] = source_name
+        item["source_path"] = f"/Volumes/External/Books/Offsec/foreign-source/{source_name}"
+        item["retrieval_markdown_path"] = (
+            f"/Volumes/External/Books/Offsec/_compiled_docling_review/{retrieval_suffix}"
+        )
+        item["raw_markdown_path"] = (
+            f"/Volumes/External/Books/Offsec/_compiled_docling_review/{raw_suffix}"
+        )
+        item["catalog_path"] = (
+            f"/Volumes/External/Books/Offsec/_compiled_docling_review/{catalog_suffix}"
+        )
+        item["manifest_path"] = (
+            f"/Volumes/External/Books/Offsec/_compiled_docling_review/{manifest_suffix}"
+        )
+
+    review_path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    offsec_corpus.clear_offsec_corpus_caches()
+
+    registry = offsec_corpus.load_offsec_registry(str(corpus_root))
+
+    web_book = registry.books_by_id["web-application-pentesting"]
+    broad_book = registry.books_by_id["hacking-and-security-comprehensive-guide"]
+
+    assert str(web_book.retrieval_path).startswith(str(corpus_root))
+    assert str(broad_book.retrieval_path).startswith(str(corpus_root))
+    assert web_book.retrieval_path.exists()
+    assert broad_book.retrieval_path.exists()
+
+
 def test_consult_offsec_corpus_routes_website_assessment_to_task(offsec_corpus_fixture):
     payload = offsec_corpus.consult_offsec_corpus(
         objective="Assess a website and map the attack surface",
