@@ -5413,16 +5413,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         form_data["messages"],
                     )
 
-    local_corpus_mode = normalize_local_corpus_mode(
-        metadata.get("params", {}).get("local_corpus_mode")
-    )
-    working_mode = _normalized_working_mode(metadata.get("params", {}))
+    params = metadata.get("params", {}) or {}
+    local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
+    working_mode = _normalized_working_mode(params)
+    corpus_runtime = resolve_corpus_runtime(request.app.state.config, params)
     if (
         working_mode == "science"
         and local_corpus_mode == "prefer"
-        and metadata.get("params", {}).get("function_calling") == "native"
-        and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
-        and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
+        and params.get("function_calling") == "native"
+        and corpus_runtime.science_enabled
     ):
         current_system = get_system_message(form_data.get("messages", []))
         current_content = current_system.get("content", "") if current_system else ""
@@ -5436,19 +5435,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if (
         working_mode == "offsec"
         and local_corpus_mode != "off"
-        and metadata.get("params", {}).get("function_calling") == "native"
-        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_OFFSEC_TOOL_NAMES)
+        and params.get("function_calling") == "native"
+        and corpus_runtime.offsec_enabled
     ):
         current_system = get_system_message(form_data.get("messages", []))
         current_content = current_system.get("content", "") if current_system else ""
-        offsec_system_prompt = OFFSEC_CONSULT_SYSTEM_PROMPT
-        if _selector_has_any_tool(tools, DEFAULT_SELECTOR_TERMINAL_TOOL_NAMES):
-            offsec_system_prompt = (
-                f"{offsec_system_prompt} {DEFAULT_SELECTOR_OFFSEC_TERMINAL_GUIDANCE}"
-            )
-        if offsec_system_prompt not in str(current_content):
+        if OFFSEC_CONSULT_SYSTEM_PROMPT not in str(current_content):
             form_data["messages"] = add_or_update_system_message(
-                offsec_system_prompt,
+                OFFSEC_CONSULT_SYSTEM_PROMPT,
                 form_data["messages"],
                 append=True,
             )

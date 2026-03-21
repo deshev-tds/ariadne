@@ -26,12 +26,16 @@ def _build_request(
     if offsec_corpus_root:
         Path(offsec_corpus_root).mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(
+        state=SimpleNamespace(direct=False),
+        cookies={},
         app=SimpleNamespace(
             state=SimpleNamespace(
+                MODELS={},
                 config=SimpleNamespace(
                     ENABLE_LOCAL_CORPUS_TOOLS=enable_local_corpus,
                     LOCAL_CORPUS_ROOT=local_corpus_root,
                     OFFSEC_CORPUS_ROOT=offsec_corpus_root,
+                    ENABLE_CACHE_PROMPT=False,
                     TASK_MODEL="",
                     TASK_MODEL_EXTERNAL=False,
                 )
@@ -766,7 +770,292 @@ def test_build_tool_continuation_messages_uses_temporary_system_append():
     assert "phase guidance" not in form_messages[0]["content"]
     assert messages[-1]["role"] == "assistant"
 
+@pytest.mark.asyncio
+async def test_chat_completion_tools_handler_injects_default_selector_guidance(
+    monkeypatch,
+):
+    captured_payloads = []
 
+    async def fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        captured_payloads.append(
+            {
+                "form_data": form_data,
+                "bypass_system_prompt": bypass_system_prompt,
+                "user_id": getattr(user, "id", None),
+            }
+        )
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"tool_calls": []}),
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        middleware, "generate_chat_completion", fake_generate_chat_completion
+    )
+    monkeypatch.setattr(
+        middleware,
+        "get_task_model_id",
+        lambda *_args, **_kwargs: "task-model",
+    )
+
+    async def _noop_event_call(_payload):
+        return None
+
+    async def _noop_event_emitter(_payload):
+        return None
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE="",
+                    TASK_MODEL="",
+                    TASK_MODEL_EXTERNAL="",
+                )
+            )
+        )
+    )
+    metadata = {
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "params": {"function_calling": "default", "local_corpus_mode": "prefer"},
+        "features": {"web_search": False, "focused_search": False},
+    }
+    body = {
+        "model": "main-model",
+        "messages": [{"role": "user", "content": "Headache plus mild anemia"}],
+    }
+    tools = {
+        "local_corpus_frame_problem": {
+            "spec": {
+                "name": "local_corpus_frame_problem",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        },
+        "query_knowledge_files": {
+            "spec": {
+                "name": "query_knowledge_files",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        },
+    }
+
+    result_body, flags = await middleware.chat_completion_tools_handler(
+        request,
+        body,
+        {
+            "__event_call__": _noop_event_call,
+            "__event_emitter__": _noop_event_emitter,
+            "__metadata__": metadata,
+        },
+        SimpleNamespace(id="user-1"),
+        {"main-model": {"id": "main-model"}},
+        tools,
+    )
+
+    assert result_body is body
+    assert flags == {"sources": []}
+    assert len(captured_payloads) == 1
+    selector_prompt = captured_payloads[0]["form_data"]["messages"][0]["content"]
+    assert "preserve the user's substantive topic terms" in selector_prompt
+    assert "Do not preserve conversational scaffolding" in selector_prompt
+    assert "prefer local corpus tools first" in selector_prompt
+    assert "Do not stay loyal to the local lane out of inertia" in selector_prompt
+    assert "Current runtime timestamp:" in selector_prompt
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_tools_handler_emits_model_activity_telemetry(
+    monkeypatch,
+):
+    emitted_events = []
+
+    async def fake_generate_chat_completion(
+        _request, form_data=None, user=None, bypass_system_prompt=False, **_kwargs
+    ):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"tool_calls": []}),
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        middleware, "generate_chat_completion", fake_generate_chat_completion
+    )
+
+    async def _noop_event_call(_payload):
+        return None
+
+    async def _event_emitter(payload):
+        emitted_events.append(payload)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE="",
+                    TASK_MODEL="specialist-model",
+                    TASK_MODEL_EXTERNAL="",
+                )
+            )
+        )
+    )
+    metadata = {
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "params": {
+            "function_calling": "default",
+            "local_corpus_mode": "prefer",
+            "debug_tool_journey": True,
+        },
+        "features": {"web_search": False, "focused_search": False},
+    }
+    body = {
+        "model": "main-model",
+        "messages": [{"role": "user", "content": "Headache plus mild anemia"}],
+    }
+    tools = {
+        "local_corpus_frame_problem": {
+            "spec": {
+                "name": "local_corpus_frame_problem",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        }
+    }
+
+    result_body, flags = await middleware.chat_completion_tools_handler(
+        request,
+        body,
+        {
+            "__event_call__": _noop_event_call,
+            "__event_emitter__": _event_emitter,
+            "__metadata__": metadata,
+        },
+        SimpleNamespace(id="user-1"),
+        {
+            "main-model": {"id": "main-model", "connection_type": "local"},
+            "specialist-model": {
+                "id": "specialist-model",
+                "connection_type": "local",
+            },
+        },
+        tools,
+    )
+
+    assert result_body is body
+    assert flags == {"sources": [], "toolJourneyTelemetry": metadata["tool_journey_telemetry"]}
+
+    model_events = [
+        event["data"]
+        for event in emitted_events
+        if event.get("type") == "chat:tool:journey"
+        and event.get("data", {}).get("kind") == "model_activity"
+    ]
+    assert len(model_events) == 2
+    assert model_events[0]["phase"] == "model_task_start"
+    assert model_events[0]["task_kind"] == "function_calling"
+    assert model_events[0]["model_id"] == "specialist-model"
+    assert model_events[0]["active_model_id"] == "main-model"
+    assert model_events[0]["actor"] == "bounded_specialist"
+    assert model_events[1]["phase"] == "model_task_done"
+    assert model_events[1]["status"] == "ok"
+    assert isinstance(model_events[1]["duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_process_chat_payload_injects_offsec_native_prompt_without_tool_scope(
+    monkeypatch,
+):
+    request = _build_request(
+        enable_local_corpus=True,
+        offsec_corpus_root="/tmp/offsec-corpus",
+    )
+    user = SimpleNamespace(id="user-1")
+    metadata = {
+        "params": {
+            "function_calling": "native",
+            "working_mode": "offsec",
+            "local_corpus_mode": "prefer",
+        }
+    }
+    form_data = {
+        "model": "demo-model",
+        "messages": [{"role": "user", "content": "Assess this target."}],
+    }
+    model = {
+        "id": "demo-model",
+        "info": {
+            "meta": {
+                "capabilities": {
+                    "builtin_tools": False,
+                    "file_context": False,
+                }
+            }
+        },
+    }
+
+    monkeypatch.setattr(
+        middleware,
+        "apply_global_cache_prompt",
+        lambda form_data, _model, _enabled: form_data,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_recall_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_context_maintenance_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    async def _noop_ledger(**kwargs):
+        return kwargs["messages"], {}
+
+    monkeypatch.setattr(middleware, "maybe_apply_ledger", _noop_ledger)
+
+    async def _noop_pipeline(_request, current_form_data, _user, _models):
+        return current_form_data
+
+    async def _noop_filters(**kwargs):
+        return kwargs["form_data"], {}
+
+    monkeypatch.setattr(middleware, "process_pipeline_inlet_filter", _noop_pipeline)
+    monkeypatch.setattr(middleware, "get_sorted_filter_ids", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Functions.get_functions_by_ids",
+        lambda _ids: [],
+    )
+    monkeypatch.setattr(middleware, "process_filter_functions", _noop_filters)
+
+    updated_form_data, updated_metadata, events = await middleware.process_chat_payload(
+        request,
+        form_data,
+        user,
+        metadata,
+        model,
+    )
+
+    system_message = next(
+        (message for message in updated_form_data["messages"] if message.get("role") == "system"),
+        None,
+    )
+
+    assert system_message is not None
+    assert middleware.OFFSEC_CONSULT_SYSTEM_PROMPT in system_message["content"]
+    assert updated_metadata["system_prompt"] == system_message["content"]
+    assert events == []
 def test_append_tool_journey_event_is_on_demand():
     metadata = {"chat_id": "chat-1", "message_id": "msg-1", "params": {}}
     assert (
