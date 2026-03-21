@@ -401,7 +401,17 @@ def test_retrieve_offsec_evidence_returns_retrieval_snippets_only(offsec_corpus_
 
 def test_builtin_tools_expose_offsec_tools_only_in_offsec_mode(offsec_corpus_fixture):
     request = _request_for_offsec(offsec_corpus_fixture)
-    model = {"info": {"meta": {"capabilities": {}, "builtinTools": {"local_corpus": True}}}}
+    model = {
+        "info": {
+            "meta": {
+                "capabilities": {},
+                "builtinTools": {
+                    "local_corpus": True,
+                    "knowledge": True,
+                },
+            }
+        }
+    }
 
     tools = tool_utils.get_builtin_tools(
         request,
@@ -420,6 +430,9 @@ def test_builtin_tools_expose_offsec_tools_only_in_offsec_mode(offsec_corpus_fix
     assert "offsec_consult" in tools
     assert "offsec_retrieve_evidence" in tools
     assert "local_corpus_shortlist_books" not in tools
+    assert "list_knowledge_bases" not in tools
+    assert "search_knowledge_files" not in tools
+    assert "query_knowledge_files" not in tools
 
 
 @pytest.mark.asyncio

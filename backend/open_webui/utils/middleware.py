@@ -197,8 +197,10 @@ OFFSEC_CONSULT_SYSTEM_PROMPT = (
     "This chat is in Offsec mode. Use the Offsec corpus as a sparing consult layer for methodology, "
     "tool choice, examples, and tactical recall. When methodology, tool choice, or target framing is "
     "unclear, call offsec_consult before committing to a path. Re-consult sparingly when the target "
-    "picture materially changes during live work. When exact syntax, flags, or version-specific behavior "
-    "becomes the blocker, prefer official or project/GitHub docs before broad web search."
+    "picture materially changes during live work. Do not use generic knowledge-base, notes, or prior-chat "
+    "tools unless the user explicitly asks for prior work, saved notes, or a specific prior artifact. "
+    "When exact syntax, flags, or version-specific behavior becomes the blocker, prefer official or "
+    "project/GitHub docs before broad web search."
 )
 TOOL_NARRATION_SYSTEM_PROMPT = (
     "For compatible tool-heavy runs, you may give the user brief journey updates in the assistant text. "
