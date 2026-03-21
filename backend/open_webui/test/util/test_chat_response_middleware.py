@@ -1054,6 +1054,7 @@ async def test_process_chat_payload_injects_offsec_native_prompt_without_tool_sc
 
     assert system_message is not None
     assert middleware.OFFSEC_CONSULT_SYSTEM_PROMPT in system_message["content"]
+    assert "Do not use generic knowledge-base, notes, or prior-chat tools" in system_message["content"]
     assert updated_metadata["system_prompt"] == system_message["content"]
     assert events == []
 def test_append_tool_journey_event_is_on_demand():

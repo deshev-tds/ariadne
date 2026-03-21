@@ -439,6 +439,11 @@ def get_builtin_tools(
         builtin_tools = model.get("info", {}).get("meta", {}).get("builtinTools", {})
         return builtin_tools.get(category, True)
 
+    corpus_runtime = resolve_corpus_runtime(
+        request.app.state.config,
+        ((extra_params.get("__metadata__", {}) or {}).get("params", {}) or {}),
+    )
+
     # Time utilities - available for date calculations
     if is_builtin_tool_enabled("time"):
         builtin_functions.extend([get_current_timestamp, calculate_timestamp])
@@ -451,7 +456,7 @@ def get_builtin_tools(
     folder_knowledge = extra_params.get("__metadata__", {}).get("folder_knowledge")
     if folder_knowledge:
         model_knowledge = list(model_knowledge or []) + list(folder_knowledge)
-    if is_builtin_tool_enabled("knowledge"):
+    if is_builtin_tool_enabled("knowledge") and corpus_runtime.working_mode != "offsec":
         if model_knowledge:
             # Model has attached knowledge - only allow semantic search within it
             builtin_functions.append(query_knowledge_files)
@@ -502,11 +507,6 @@ def get_builtin_tools(
             builtin_functions.append(web_research_strong)
         if features.get("web_search") or features.get("focused_search"):
             builtin_functions.append(fetch_url)
-
-    corpus_runtime = resolve_corpus_runtime(
-        request.app.state.config,
-        ((extra_params.get("__metadata__", {}) or {}).get("params", {}) or {}),
-    )
 
     if is_builtin_tool_enabled("local_corpus") and corpus_runtime.science_enabled:
         builtin_functions.extend(
