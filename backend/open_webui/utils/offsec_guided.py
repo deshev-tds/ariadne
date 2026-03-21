@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import ast
 import copy
+import json
 import re
 import uuid
 from typing import Any
+
+from pydantic import BaseModel, Field
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
 
 GUIDED_STATE_KEY = "offsec_guided_state"
 GUIDED_RUN_COMMAND_BUDGET_DEFAULT = 8
@@ -46,6 +55,100 @@ OFFSEC_APPROVAL_TERMS = {
     "next step",
 }
 
+OffsecActionClass = Literal[
+    "passive_recon",
+    "light_probe",
+    "focused_validation",
+    "deep_scan",
+    "broad_fuzzing",
+    "exploitation",
+    "remediation",
+    "local_system_modification",
+]
+OffsecExecutionContext = Literal["remote_observer", "local_operator"]
+OffsecStepResultStatus = Literal[
+    "complete",
+    "blocked",
+    "needs_reorder",
+    "needs_replan",
+]
+OffsecObservationSourceType = Literal[
+    "terminal_result",
+    "terminal_artifact",
+    "corpus_evidence",
+    "docs_evidence",
+    "inference",
+]
+
+
+class GuidedAcceptanceCriterion(BaseModel):
+    id: str = Field(..., description="Stable criterion id within the step.")
+    text: str = Field(..., description="Short acceptance criterion text.")
+
+
+class GuidedPlanStep(BaseModel):
+    id: str = Field(..., description="Stable step id, for example step_1.")
+    title: str = Field(..., description="Short step title.")
+    purpose: str = Field(..., description="What this step is trying to achieve.")
+    primary_action_classes: list[OffsecActionClass] = Field(
+        ...,
+        description="One or two action classes for the step.",
+    )
+    suggested_tools: list[str] = Field(
+        default_factory=list,
+        description="Short list of preferred tool names.",
+    )
+    acceptance_criteria: list[GuidedAcceptanceCriterion] = Field(
+        ...,
+        description="Two to five acceptance criteria objects.",
+    )
+    forbidden_action_classes: list[OffsecActionClass] = Field(
+        ...,
+        description="Non-empty list of action classes that are out of scope for this step.",
+    )
+
+
+class GuidedObservation(BaseModel):
+    id: str = Field(..., description="Stable observation id within the step result.")
+    summary: str = Field(..., description="Telegraphic observation summary, max 200 chars.")
+    source_type: OffsecObservationSourceType = Field(
+        ...,
+        description="Where the observation came from.",
+    )
+    source_ref: dict[str, Any] = Field(
+        ...,
+        description="Structured provenance reference for the observation source.",
+    )
+    confidence: float = Field(..., description="Confidence score for the observation.")
+    implication: str = Field(..., description="Short implication for the plan or target picture.")
+
+
+class GuidedPlanUpdate(BaseModel):
+    type: Literal["reorder", "revise"] = Field(
+        ...,
+        description="reorder for partial reprioritization, revise for a full plan replacement.",
+    )
+    active_step_id: str | None = Field(
+        default=None,
+        description="Active step id after the update.",
+    )
+    ordered_step_ids: list[str] | None = Field(
+        default=None,
+        description="Required when type is reorder.",
+    )
+    phase: str | None = Field(
+        default=None,
+        description="Optional updated phase when revising the plan.",
+    )
+    assumptions: list[str] | None = Field(
+        default=None,
+        description="Optional updated assumptions when revising the plan.",
+    )
+    steps: list[GuidedPlanStep] | None = Field(
+        default=None,
+        description="Full replacement step list when type is revise.",
+    )
+
 OFFSEC_OPERATIONAL_VERBS = (
     "assess",
     "test",
@@ -85,6 +188,25 @@ def _normalize_lower(value: Any) -> str:
 
 def _copy_state(state: dict[str, Any] | None) -> dict[str, Any] | None:
     return copy.deepcopy(state) if isinstance(state, dict) else None
+
+
+def _normalize_mapping_candidate(value: Any) -> Any:
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        try:
+            return value.model_dump()
+        except Exception:
+            return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                return json.loads(stripped)
+            except Exception:
+                try:
+                    return ast.literal_eval(stripped)
+                except Exception:
+                    return value
+    return value
 
 
 def build_guided_run_id() -> str:
@@ -221,6 +343,7 @@ def _validate_acceptance_criteria(criteria: Any) -> tuple[list[dict[str, str]] |
     normalized: list[dict[str, str]] = []
     seen_ids: set[str] = set()
     for item in criteria:
+        item = _normalize_mapping_candidate(item)
         if not isinstance(item, dict):
             return None, "Each acceptance criterion must be an object."
         criterion_id = _normalize_text(item.get("id"))
@@ -255,11 +378,13 @@ def validate_plan_steps(
     seen_ids: set[str] = set()
 
     for step in steps:
+        step = _normalize_mapping_candidate(step)
         if not isinstance(step, dict):
             return None, "Each step must be an object."
-        step_id = _normalize_text(step.get("id"))
-        title = _normalize_text(step.get("title"))
-        purpose = _normalize_text(step.get("purpose"))
+        step_id = _normalize_text(step.get("id") or step.get("step_id"))
+        purpose = _normalize_text(step.get("purpose") or step.get("description"))
+        title = _normalize_text(step.get("title") or step.get("name") or purpose or step_id)
+        purpose = purpose or title
         if not step_id or not title or not purpose:
             return None, "Each step requires id, title, and purpose."
         if step_id in seen_ids:
@@ -414,6 +539,7 @@ def _validate_observations(observations: Any) -> tuple[list[dict[str, Any]] | No
     normalized: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for item in observations:
+        item = _normalize_mapping_candidate(item)
         if not isinstance(item, dict):
             return None, "Each observation must be an object."
         obs_id = _normalize_text(item.get("id"))
@@ -456,6 +582,7 @@ def _validate_observations(observations: Any) -> tuple[list[dict[str, Any]] | No
 
 
 def _normalize_plan_update(plan_update: Any) -> tuple[dict[str, Any] | None, str | None]:
+    plan_update = _normalize_mapping_candidate(plan_update)
     if plan_update in (None, "", {}):
         return {"type": "none"}, None
     if not isinstance(plan_update, dict):

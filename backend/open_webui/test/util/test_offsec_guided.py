@@ -1,9 +1,11 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import open_webui.tools.builtin as builtin_tools
+import open_webui.utils.tools as tool_utils
 from open_webui.utils.offsec_guided import (
     apply_continue_signal_to_state,
     apply_guided_step_result,
@@ -13,7 +15,11 @@ from open_webui.utils.offsec_guided import (
 
 
 def _guided_request():
+    Path("/tmp/offsec-guided-spec").mkdir(parents=True, exist_ok=True)
     config = SimpleNamespace(
+        ENABLE_LOCAL_CORPUS_TOOLS=True,
+        OFFSEC_CORPUS_ROOT="/tmp/offsec-guided-spec",
+        LOCAL_CORPUS_ROOT="",
         OFFSEC_GUIDED_STEP_RUN_COMMAND_BUDGET=8,
     )
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=config)))
@@ -175,3 +181,35 @@ def test_should_block_command_payload_rejects_chaining_and_background():
     assert should_block_command_payload("nmap -sV example.com && nikto -h https://example.com") is True
     assert should_block_command_payload("curl -I https://example.com &") is True
     assert should_block_command_payload("curl -I https://example.com | head") is False
+
+
+def test_builtin_offsec_guided_plan_schema_exposes_object_steps():
+    tools = tool_utils.get_builtin_tools(
+        _guided_request(),
+        {
+            "__metadata__": {
+                "params": {
+                    "working_mode": "offsec",
+                    "local_corpus_mode": "prefer",
+                }
+            }
+        },
+        features={},
+        model={"info": {"meta": {"capabilities": {}}}},
+    )
+
+    spec = tools["offsec_register_plan"]["spec"]
+    steps_schema = spec["parameters"]["properties"]["steps"]
+    step_item = steps_schema["items"]
+
+    assert steps_schema["type"] == "array"
+    assert step_item["type"] == "object"
+    assert set(step_item["required"]) >= {
+        "id",
+        "title",
+        "purpose",
+        "primary_action_classes",
+        "acceptance_criteria",
+        "forbidden_action_classes",
+    }
+    assert "suggested_tools" in step_item["properties"]

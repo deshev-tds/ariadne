@@ -194,7 +194,10 @@ OFFSEC_CONSULT_SYSTEM_PROMPT = (
 OFFSEC_GUIDED_ENTRY_SYSTEM_PROMPT = (
     "This Offsec terminal run is using the guided execution loop. Before terminal execution, call "
     "offsec_consult, then register a structured plan with offsec_register_plan. Do not execute "
-    "run_command before a plan exists. Plans must be bounded, stepwise, and operationally disciplined."
+    "run_command before a plan exists. Plans must be bounded, stepwise, and operationally disciplined. "
+    "For offsec_register_plan, steps must be an array of objects, not strings. Each step object requires: "
+    "id, title, purpose, primary_action_classes, suggested_tools, acceptance_criteria, and forbidden_action_classes. "
+    "Each acceptance_criteria item must be an object with id and text."
 )
 OFFSEC_GUIDED_ENTRY_CLARIFY_SYSTEM_PROMPT = (
     "The execution context is ambiguous for guided Offsec terminal work. Before planning or executing, "
