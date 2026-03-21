@@ -38,6 +38,11 @@ from open_webui.retrieval.offsec_corpus import (
     consult_offsec_corpus,
     retrieve_offsec_evidence,
 )
+from open_webui.utils.offsec_guided import (
+    GUIDED_RUN_COMMAND_BUDGET_DEFAULT,
+    apply_guided_step_result,
+    build_guided_plan_state,
+)
 from open_webui.routers.images import (
     image_generations,
     image_edits,
@@ -799,6 +804,146 @@ async def offsec_retrieve_evidence(
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"offsec_retrieve_evidence error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def offsec_register_plan(
+    objective: str,
+    phase: str,
+    execution_context: str,
+    bound_terminal_id: str,
+    assumptions: list,
+    active_step_id: str,
+    steps: list,
+    corpus_book_ids: Optional[list[str]] = None,
+    corpus_note: str = "",
+    __request__: Request = None,
+    __user__: dict = None,
+    __metadata__: dict = None,
+) -> str:
+    """
+    Register a structured guided Offsec plan for terminal work.
+    Use this only in Offsec guided terminal runs after offsec_consult or a true replan.
+
+    :param objective: Current operational objective
+    :param phase: Current named phase
+    :param execution_context: remote_observer or local_operator
+    :param bound_terminal_id: Terminal id this guided run is bound to
+    :param assumptions: Compact list of current assumptions
+    :param active_step_id: Step id to execute next
+    :param steps: Structured plan steps
+    :param corpus_book_ids: Optional Offsec book shortlist used during planning
+    :param corpus_note: Optional short note about corpus framing
+    """
+    try:
+        budget = GUIDED_RUN_COMMAND_BUDGET_DEFAULT
+        if __request__ is not None:
+            config = getattr(getattr(getattr(__request__, "app", None), "state", None), "config", None)
+            budget = int(
+                getattr(config, "OFFSEC_GUIDED_STEP_RUN_COMMAND_BUDGET", budget) or budget
+            )
+
+        prior_state = None
+        if isinstance(__metadata__, dict):
+            prior_state = __metadata__.get("offsec_guided_state_effective") or __metadata__.get(
+                "offsec_guided_state_pending"
+            )
+
+        state, error = build_guided_plan_state(
+            objective=objective,
+            phase=phase,
+            execution_context=execution_context,
+            bound_terminal_id=bound_terminal_id,
+            assumptions=assumptions,
+            active_step_id=active_step_id,
+            steps=steps,
+            corpus_book_ids=corpus_book_ids,
+            corpus_note=corpus_note,
+            prior_state=prior_state,
+            budget=budget,
+        )
+        if error:
+            return json.dumps({"error": error}, ensure_ascii=False)
+
+        payload = {
+            "phase": "planning",
+            "guided_state": state,
+            "active_step_id": state["active_step_id"],
+            "step_run_command_budget": state["step_run_command_budget"],
+            "waiting_for_confirmation": state["waiting_for_confirmation"],
+        }
+        if isinstance(__metadata__, dict):
+            __metadata__["offsec_guided_state_pending"] = state
+            __metadata__["offsec_guided_state_effective"] = state
+            __metadata__["offsec_guided_last_tool"] = "offsec_register_plan"
+            __metadata__["offsec_guided_pending_save"] = True
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"offsec_register_plan error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def offsec_register_step_result(
+    step_id: str,
+    status: str,
+    observations: list,
+    criteria_met_ids: list,
+    criteria_unmet_ids: list,
+    recommended_next_step_id: str = "",
+    plan_update: Optional[dict] = None,
+    __request__: Request = None,
+    __user__: dict = None,
+    __metadata__: dict = None,
+) -> str:
+    """
+    Register the result of the active guided Offsec step and pause for confirmation.
+
+    :param step_id: The active step id being closed out
+    :param status: complete | blocked | needs_reorder | needs_replan
+    :param observations: Structured observation records
+    :param criteria_met_ids: Acceptance criteria ids satisfied in this step
+    :param criteria_unmet_ids: Acceptance criteria ids still unmet in this step
+    :param recommended_next_step_id: Suggested next step after confirmation
+    :param plan_update: Optional reorder or revise payload
+    """
+    try:
+        state = None
+        if isinstance(__metadata__, dict):
+            state = __metadata__.get("offsec_guided_state_effective") or __metadata__.get(
+                "offsec_guided_state_pending"
+            )
+        if not isinstance(state, dict):
+            return json.dumps({"error": "No active guided Offsec state is available."}, ensure_ascii=False)
+
+        next_state, error = apply_guided_step_result(
+            state=state,
+            step_id=step_id,
+            status=status,
+            observations=observations,
+            criteria_met_ids=criteria_met_ids,
+            criteria_unmet_ids=criteria_unmet_ids,
+            recommended_next_step_id=recommended_next_step_id,
+            plan_update=plan_update,
+        )
+        if error:
+            return json.dumps({"error": error}, ensure_ascii=False)
+
+        payload = {
+            "phase": "evidence_check",
+            "guided_state": next_state,
+            "active_step_id": next_state["active_step_id"],
+            "recommended_next_step_id": next_state["recommended_next_step_id"],
+            "waiting_for_confirmation": next_state["waiting_for_confirmation"],
+            "latest_observation_ids": [item["id"] for item in next_state["latest_observations"]],
+        }
+        if isinstance(__metadata__, dict):
+            __metadata__["offsec_guided_state_pending"] = next_state
+            __metadata__["offsec_guided_state_effective"] = next_state
+            __metadata__["offsec_guided_last_tool"] = "offsec_register_step_result"
+            __metadata__["offsec_guided_pending_save"] = True
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"offsec_register_step_result error: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

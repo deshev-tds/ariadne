@@ -55,6 +55,8 @@ from open_webui.tools.builtin import (
     search_web,
     web_research_strong,
     offsec_consult,
+    offsec_register_plan,
+    offsec_register_step_result,
     offsec_retrieve_evidence,
     local_corpus_list_domains,
     local_corpus_list_disciplines,
@@ -545,6 +547,8 @@ def get_builtin_tools(
         builtin_functions.extend(
             [
                 offsec_consult,
+                offsec_register_plan,
+                offsec_register_step_result,
                 offsec_retrieve_evidence,
             ]
         )
