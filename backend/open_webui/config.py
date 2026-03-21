@@ -3578,7 +3578,7 @@ LOCAL_CORPUS_ROOT = PersistentConfig(
 OFFSEC_CORPUS_ROOT = PersistentConfig(
     "OFFSEC_CORPUS_ROOT",
     "rag.offsec.root",
-    os.getenv("OFFSEC_CORPUS_ROOT", "/Volumes/External/Books/Offsec"),
+    os.getenv("OFFSEC_CORPUS_ROOT", str(BASE_DIR / "offsec_corpus")),
 )
 
 WEB_SEARCH_EVIDENCE_MAX_TOKENS = PersistentConfig(
