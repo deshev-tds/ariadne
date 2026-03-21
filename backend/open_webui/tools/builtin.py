@@ -40,6 +40,11 @@ from open_webui.retrieval.offsec_corpus import (
 )
 from open_webui.utils.offsec_guided import (
     GUIDED_RUN_COMMAND_BUDGET_DEFAULT,
+    GuidedObservation,
+    GuidedPlanStep,
+    GuidedPlanUpdate,
+    OffsecExecutionContext,
+    OffsecStepResultStatus,
     apply_guided_step_result,
     build_guided_plan_state,
 )
@@ -810,11 +815,11 @@ async def offsec_retrieve_evidence(
 async def offsec_register_plan(
     objective: str,
     phase: str,
-    execution_context: str,
+    execution_context: OffsecExecutionContext,
     bound_terminal_id: str,
     assumptions: list,
     active_step_id: str,
-    steps: list,
+    steps: list[GuidedPlanStep],
     corpus_book_ids: Optional[list[str]] = None,
     corpus_note: str = "",
     __request__: Request = None,
@@ -863,7 +868,30 @@ async def offsec_register_plan(
             budget=budget,
         )
         if error:
-            return json.dumps({"error": error}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "error": error,
+                    "schema_hint": {
+                        "steps_must_be_objects": True,
+                        "step_example": {
+                            "id": "step_1",
+                            "title": "Light recon",
+                            "purpose": "Map the target before deeper validation.",
+                            "primary_action_classes": ["passive_recon", "light_probe"],
+                            "suggested_tools": ["run_command", "offsec_retrieve_evidence"],
+                            "acceptance_criteria": [
+                                {"id": "headers", "text": "Headers inspected"},
+                                {"id": "routes", "text": "One or more routes mapped"},
+                            ],
+                            "forbidden_action_classes": [
+                                "remediation",
+                                "local_system_modification",
+                            ],
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            )
 
         payload = {
             "phase": "planning",
@@ -885,12 +913,12 @@ async def offsec_register_plan(
 
 async def offsec_register_step_result(
     step_id: str,
-    status: str,
-    observations: list,
+    status: OffsecStepResultStatus,
+    observations: list[GuidedObservation],
     criteria_met_ids: list,
     criteria_unmet_ids: list,
     recommended_next_step_id: str = "",
-    plan_update: Optional[dict] = None,
+    plan_update: Optional[GuidedPlanUpdate] = None,
     __request__: Request = None,
     __user__: dict = None,
     __metadata__: dict = None,
@@ -926,7 +954,25 @@ async def offsec_register_step_result(
             plan_update=plan_update,
         )
         if error:
-            return json.dumps({"error": error}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "error": error,
+                    "schema_hint": {
+                        "observation_example": {
+                            "id": "obs_1",
+                            "summary": "Headers expose a likely app stack.",
+                            "source_type": "terminal_result",
+                            "source_ref": {
+                                "tool": "run_command",
+                                "command": "curl -I https://example.com",
+                            },
+                            "confidence": 0.8,
+                            "implication": "Continue with focused validation, not remediation.",
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            )
 
         payload = {
             "phase": "evidence_check",
