@@ -182,6 +182,68 @@ async def test_non_streaming_chat_response_persists_prompt_telemetry(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_non_streaming_chat_response_persists_offsec_guided_state(monkeypatch):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    guided_state = {
+        "guided_run_id": "offsec-guided-test",
+        "active_step_id": "step-1",
+        "step_run_command_budget": 8,
+    }
+    ctx = {
+        "request": SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {},
+            "offsec_guided_state_effective": guided_state,
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    await non_streaming_chat_response_handler(
+        {
+            "choices": [{"message": {"content": "ok"}}],
+        },
+        ctx,
+    )
+
+    assert saved_messages[0][2][middleware.GUIDED_STATE_KEY]["guided_run_id"] == "offsec-guided-test"
+
+
+@pytest.mark.asyncio
 async def test_background_tasks_handler_schedules_ledger_without_event_emitter(
     monkeypatch,
 ):
@@ -1057,6 +1119,302 @@ async def test_process_chat_payload_injects_offsec_native_prompt_without_tool_sc
     assert "Do not use generic knowledge-base, notes, or prior-chat tools" in system_message["content"]
     assert updated_metadata["system_prompt"] == system_message["content"]
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_process_chat_payload_injects_offsec_guided_entry_prompt_for_terminal_run(
+    monkeypatch,
+):
+    request = _build_request(
+        enable_local_corpus=True,
+        offsec_corpus_root="/tmp/offsec-guided-entry",
+    )
+    user = SimpleNamespace(id="user-1")
+    metadata = {
+        "params": {
+            "function_calling": "native",
+            "working_mode": "offsec",
+            "local_corpus_mode": "prefer",
+        }
+    }
+    form_data = {
+        "model": "demo-model",
+        "terminal_id": "term-1",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Assess https://example.com and proceed with a first pass.",
+            }
+        ],
+    }
+    model = {
+        "id": "demo-model",
+        "info": {
+            "meta": {
+                "capabilities": {
+                    "builtin_tools": True,
+                    "file_context": False,
+                }
+            }
+        },
+    }
+
+    monkeypatch.setattr(
+        middleware,
+        "apply_global_cache_prompt",
+        lambda form_data, _model, _enabled: form_data,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_recall_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_context_maintenance_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+
+    async def _noop_ledger(**kwargs):
+        return kwargs["messages"], {}
+
+    async def _noop_pipeline(_request, current_form_data, _user, _models):
+        return current_form_data
+
+    async def _noop_filters(**kwargs):
+        return kwargs["form_data"], {}
+
+    async def _terminal_tools(*_args, **_kwargs):
+        return {
+            "run_command": {"spec": {"parameters": {"properties": {"command": {}}}}},
+            "get_process_status": {"spec": {"parameters": {"properties": {"process_id": {}}}}},
+        }
+
+    monkeypatch.setattr(middleware, "maybe_apply_ledger", _noop_ledger)
+    monkeypatch.setattr(middleware, "process_pipeline_inlet_filter", _noop_pipeline)
+    monkeypatch.setattr(middleware, "get_sorted_filter_ids", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Functions.get_functions_by_ids",
+        lambda _ids: [],
+    )
+    monkeypatch.setattr(middleware, "process_filter_functions", _noop_filters)
+    monkeypatch.setattr(middleware, "get_terminal_tools", _terminal_tools)
+    monkeypatch.setattr(
+        middleware,
+        "get_builtin_tools",
+        lambda *_args, **_kwargs: {
+            "offsec_consult": {"spec": {"parameters": {"properties": {}}}},
+            "offsec_register_plan": {"spec": {"parameters": {"properties": {}}}},
+            "offsec_register_step_result": {"spec": {"parameters": {"properties": {}}}},
+            "offsec_retrieve_evidence": {"spec": {"parameters": {"properties": {}}}},
+        },
+    )
+
+    updated_form_data, updated_metadata, _events = await middleware.process_chat_payload(
+        request,
+        form_data,
+        user,
+        metadata,
+        model,
+    )
+
+    system_message = next(
+        (message for message in updated_form_data["messages"] if message.get("role") == "system"),
+        None,
+    )
+
+    assert system_message is not None
+    assert middleware.OFFSEC_GUIDED_ENTRY_SYSTEM_PROMPT in system_message["content"]
+    assert "default execution_context is remote_observer" in system_message["content"]
+    assert updated_metadata["offsec_guided_entry_expected"] is True
+    assert updated_metadata["offsec_guided_requires_clarification"] is False
+
+
+@pytest.mark.asyncio
+async def test_process_chat_payload_advances_guided_state_on_continue(
+    monkeypatch,
+):
+    request = _build_request(
+        enable_local_corpus=True,
+        offsec_corpus_root="/tmp/offsec-guided-continue",
+    )
+    user = SimpleNamespace(id="user-1")
+    metadata = {
+        "params": {
+            "function_calling": "native",
+            "working_mode": "offsec",
+            "local_corpus_mode": "prefer",
+        }
+    }
+    form_data = {
+        "model": "demo-model",
+        "terminal_id": "term-1",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "Plan registered.",
+                middleware.GUIDED_STATE_KEY: {
+                    "guided_run_id": "offsec-guided-test",
+                    "objective": "Assess https://example.com",
+                    "phase": "first_pass",
+                    "execution_context": "remote_observer",
+                    "bound_terminal_id": "term-1",
+                    "assumptions": [],
+                    "steps": [
+                        {
+                            "id": "step-1",
+                            "title": "Recon",
+                            "purpose": "Map the target.",
+                            "primary_action_classes": ["passive_recon"],
+                            "suggested_tools": ["run_command"],
+                            "acceptance_criteria": [
+                                {"id": "headers", "text": "Headers checked"},
+                                {"id": "routes", "text": "Routes sampled"},
+                            ],
+                            "forbidden_action_classes": [
+                                "remediation",
+                                "local_system_modification",
+                            ],
+                        },
+                        {
+                            "id": "step-2",
+                            "title": "Validation",
+                            "purpose": "Validate the best hypothesis.",
+                            "primary_action_classes": ["focused_validation"],
+                            "suggested_tools": ["run_command"],
+                            "acceptance_criteria": [
+                                {"id": "hypothesis", "text": "Hypothesis stated"},
+                                {"id": "signal", "text": "Signal gathered"},
+                            ],
+                            "forbidden_action_classes": [
+                                "remediation",
+                                "local_system_modification",
+                            ],
+                        },
+                    ],
+                    "active_step_id": "step-1",
+                    "completed_step_ids": ["step-1"],
+                    "recommended_next_step_id": "step-2",
+                    "latest_observations": [],
+                    "waiting_for_confirmation": True,
+                    "current_step_run_command_count": 7,
+                    "step_run_command_budget": 8,
+                    "remaining_step_run_command_budget": 1,
+                },
+            },
+            {"role": "user", "content": "continue"},
+        ],
+    }
+    model = {
+        "id": "demo-model",
+        "info": {
+            "meta": {
+                "capabilities": {
+                    "builtin_tools": False,
+                    "file_context": False,
+                }
+            }
+        },
+    }
+
+    monkeypatch.setattr(
+        middleware,
+        "apply_global_cache_prompt",
+        lambda form_data, _model, _enabled: form_data,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_recall_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_context_maintenance_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+
+    async def _noop_ledger(**kwargs):
+        return kwargs["messages"], {}
+
+    async def _noop_pipeline(_request, current_form_data, _user, _models):
+        return current_form_data
+
+    async def _noop_filters(**kwargs):
+        return kwargs["form_data"], {}
+
+    monkeypatch.setattr(middleware, "maybe_apply_ledger", _noop_ledger)
+    monkeypatch.setattr(middleware, "process_pipeline_inlet_filter", _noop_pipeline)
+    monkeypatch.setattr(middleware, "get_sorted_filter_ids", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Functions.get_functions_by_ids",
+        lambda _ids: [],
+    )
+    monkeypatch.setattr(middleware, "process_filter_functions", _noop_filters)
+
+    updated_form_data, updated_metadata, _events = await middleware.process_chat_payload(
+        request,
+        form_data,
+        user,
+        metadata,
+        model,
+    )
+
+    system_message = next(
+        (message for message in updated_form_data["messages"] if message.get("role") == "system"),
+        None,
+    )
+
+    assert system_message is not None
+    assert "Active step: step-2 - Validation" in system_message["content"]
+    assert updated_metadata["offsec_guided_state_effective"]["active_step_id"] == "step-2"
+    assert updated_metadata["offsec_guided_state_effective"]["waiting_for_confirmation"] is False
+    assert (
+        updated_metadata["offsec_guided_state_effective"]["remaining_step_run_command_budget"]
+        == 8
+    )
+
+
+def test_maybe_block_offsec_guided_tool_call_rejects_chained_run_command():
+    metadata = {
+        "offsec_guided_state_effective": {
+            "active_step_id": "step-1",
+            "waiting_for_confirmation": False,
+            "current_step_run_command_count": 0,
+            "step_run_command_budget": 8,
+            "remaining_step_run_command_budget": 8,
+        }
+    }
+
+    payload = middleware._maybe_block_offsec_guided_tool_call(
+        metadata,
+        "run_command",
+        "run_command",
+        {"command": "curl -I https://example.com && nikto -h https://example.com"},
+    )
+
+    assert payload is not None
+    assert payload["kind"] == "command_payload_blocked"
+
+
+def test_record_offsec_guided_run_command_tracks_budget_and_notice():
+    metadata = {
+        "offsec_guided_state_effective": {
+            "active_step_id": "step-1",
+            "waiting_for_confirmation": False,
+            "current_step_run_command_count": 5,
+            "step_run_command_budget": 8,
+            "remaining_step_run_command_budget": 3,
+        }
+    }
+
+    result = middleware._record_offsec_guided_run_command(
+        metadata,
+        json.dumps({"status": "ok"}),
+    )
+
+    assert metadata["offsec_guided_state_effective"]["current_step_run_command_count"] == 6
+    assert metadata["offsec_guided_state_effective"]["remaining_step_run_command_budget"] == 2
+    assert "guided_budget_notice" in json.loads(result)
 def test_append_tool_journey_event_is_on_demand():
     metadata = {"chat_id": "chat-1", "message_id": "msg-1", "params": {}}
     assert (

@@ -3581,6 +3581,12 @@ OFFSEC_CORPUS_ROOT = PersistentConfig(
     os.getenv("OFFSEC_CORPUS_ROOT", str(BASE_DIR / "offsec_corpus")),
 )
 
+OFFSEC_GUIDED_STEP_RUN_COMMAND_BUDGET = PersistentConfig(
+    "OFFSEC_GUIDED_STEP_RUN_COMMAND_BUDGET",
+    "rag.offsec.guided.step_run_command_budget",
+    int(os.getenv("OFFSEC_GUIDED_STEP_RUN_COMMAND_BUDGET", "8")),
+)
+
 WEB_SEARCH_EVIDENCE_MAX_TOKENS = PersistentConfig(
     "WEB_SEARCH_EVIDENCE_MAX_TOKENS",
     "rag.web.search.evidence_saturation.max_tokens",

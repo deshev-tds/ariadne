@@ -146,6 +146,18 @@ from open_webui.utils.mcp.client import MCPClient
 from open_webui.retrieval.corpus_runtime import resolve_corpus_runtime
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 from open_webui.retrieval.working_mode import normalize_working_mode
+from open_webui.utils.offsec_guided import (
+    GUIDED_STATE_KEY,
+    GUIDED_RUN_COMMAND_BUDGET_DEFAULT,
+    apply_continue_signal_to_state,
+    budget_remaining_for_state,
+    current_step_for_state,
+    default_execution_context_for_text,
+    detect_offsec_operational_turn,
+    increment_run_command_budget,
+    resolve_guided_state_from_messages,
+    should_block_command_payload,
+)
 
 
 from open_webui.config import (
@@ -179,6 +191,21 @@ OFFSEC_CONSULT_SYSTEM_PROMPT = (
     "When exact syntax, flags, or version-specific behavior becomes the blocker, prefer official or "
     "project/GitHub docs before broad web search."
 )
+OFFSEC_GUIDED_ENTRY_SYSTEM_PROMPT = (
+    "This Offsec terminal run is using the guided execution loop. Before terminal execution, call "
+    "offsec_consult, then register a structured plan with offsec_register_plan. Do not execute "
+    "run_command before a plan exists. Plans must be bounded, stepwise, and operationally disciplined."
+)
+OFFSEC_GUIDED_ENTRY_CLARIFY_SYSTEM_PROMPT = (
+    "The execution context is ambiguous for guided Offsec terminal work. Before planning or executing, "
+    "ask one short clarification: is this terminal acting only as the assessor workstation for a remote "
+    "target, or is the terminal host itself the operational target? Do not call run_command until clarified."
+)
+OFFSEC_GUIDED_INVALIDATED_SYSTEM_PROMPT = (
+    "The prior guided Offsec run cannot continue in this request. Guided runs are linear-only and bound "
+    "to a single terminal. Do not continue the old guided run. Ask the user to restart or reconfirm a new "
+    "guided run before executing terminal commands."
+)
 TOOL_NARRATION_SYSTEM_PROMPT = (
     "For compatible tool-heavy runs, you may give the user brief journey updates in the assistant text. "
     "When entering the first major tool phase, you may begin with a short orientation preamble. After that, "
@@ -198,6 +225,8 @@ TOOL_NARRATION_PHASE_ORDER = {
 }
 TOOL_NARRATION_TOOL_PHASES = {
     "offsec_consult": "orientation",
+    "offsec_register_plan": "planning",
+    "offsec_register_step_result": "evidence_check",
     "offsec_retrieve_evidence": "evidence_gathering",
     "local_corpus_list_domains": "orientation",
     "local_corpus_list_disciplines": "orientation",
@@ -340,6 +369,281 @@ DEFAULT_SELECTOR_PRIOR_WORK_EXPLICIT_TERMS = (
     "earlier",
     "saved",
 )
+
+
+def _offsec_guided_tools_available(tools: dict[str, Any] | None) -> bool:
+    if not isinstance(tools, dict):
+        return False
+    return all(name in tools for name in ("offsec_consult", "offsec_register_plan", "offsec_register_step_result"))
+
+
+def _offsec_terminal_tools_available(tools: dict[str, Any] | None) -> bool:
+    if not isinstance(tools, dict):
+        return False
+    return "run_command" in tools and "get_process_status" in tools
+
+
+def _offsec_guided_history_messages(
+    raw_history_messages: list[dict[str, Any]] | None,
+    current_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if raw_history_messages:
+        return [dict(message) for message in raw_history_messages]
+    return [
+        dict(message)
+        for message in current_messages or []
+        if message.get("role") in {"user", "assistant", "tool"}
+    ]
+
+
+def _build_offsec_guided_active_prompt(
+    state: dict[str, Any],
+) -> str:
+    step = current_step_for_state(state) or {}
+    criteria_lines = [
+        f"- {item.get('id')}: {item.get('text')}"
+        for item in step.get("acceptance_criteria") or []
+        if isinstance(item, dict)
+    ]
+    observation_lines = [
+        f"- {item.get('summary')} ({item.get('source_type')})"
+        for item in state.get("latest_observations") or []
+        if isinstance(item, dict)
+    ]
+    remaining_budget = budget_remaining_for_state(state)
+    prompt_parts = [
+        "This Offsec terminal run is inside the guided execution loop.",
+        f"Objective: {state.get('objective')}",
+        f"Phase: {state.get('phase')}",
+        f"Execution context: {state.get('execution_context')}",
+        f"Bound terminal id: {state.get('bound_terminal_id')}",
+        f"Active step: {step.get('id')} - {step.get('title')}",
+        "Primary action classes:",
+        "\n".join(f"- {item}" for item in step.get("primary_action_classes") or []) or "- none",
+        "Forbidden action classes:",
+        "\n".join(f"- {item}" for item in step.get("forbidden_action_classes") or []) or "- none",
+        "Acceptance criteria:",
+        "\n".join(criteria_lines) if criteria_lines else "- none",
+        f"Execution budget for this step: {state.get('step_run_command_budget', GUIDED_RUN_COMMAND_BUDGET_DEFAULT)} run_command calls.",
+        f"Remaining execution budget for this step: {remaining_budget} run_command calls.",
+    ]
+    if observation_lines:
+        prompt_parts.extend(
+            [
+                "Latest observations:",
+                "\n".join(observation_lines),
+            ]
+        )
+    if state.get("waiting_for_confirmation"):
+        prompt_parts.append(
+            "The prior step is waiting for user confirmation. Do not execute terminal commands until the user explicitly approves continuation or you submit a plan revision."
+        )
+    else:
+        prompt_parts.append(
+            "Execute only the active step. After bounded execution, call offsec_register_step_result and stop for user confirmation. Do not auto-advance."
+        )
+    return "\n".join(part for part in prompt_parts if part)
+
+
+def _build_offsec_guided_branch_invalidated_prompt() -> str:
+    return OFFSEC_GUIDED_INVALIDATED_SYSTEM_PROMPT
+
+
+def _build_offsec_guided_terminal_invalidated_prompt(bound_terminal_id: str, terminal_id: str) -> str:
+    return (
+        "The prior guided Offsec run is bound to terminal "
+        f"{bound_terminal_id}, but this request is using terminal {terminal_id}. "
+        "Do not continue the old guided run. Ask the user to restart or reconfirm a new guided run before executing terminal commands."
+    )
+
+
+def _offsec_guided_state_from_metadata(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+    state = metadata.get("offsec_guided_state_effective")
+    if isinstance(state, dict):
+        return copy.deepcopy(state)
+    state = metadata.get("offsec_guided_state_pending")
+    if isinstance(state, dict):
+        return copy.deepcopy(state)
+    return None
+
+
+def _offsec_guided_save_payload(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    state = _offsec_guided_state_from_metadata(metadata)
+    return {GUIDED_STATE_KEY: state} if isinstance(state, dict) else {}
+
+
+def _set_offsec_guided_effective_state(
+    metadata: dict[str, Any] | None,
+    state: dict[str, Any] | None,
+    *,
+    pending_save: bool = False,
+) -> None:
+    if not isinstance(metadata, dict):
+        return
+    if isinstance(state, dict):
+        copied = copy.deepcopy(state)
+        metadata["offsec_guided_state_effective"] = copied
+        if pending_save:
+            metadata["offsec_guided_state_pending"] = copy.deepcopy(copied)
+            metadata["offsec_guided_pending_save"] = True
+    else:
+        metadata.pop("offsec_guided_state_effective", None)
+        if pending_save:
+            metadata.pop("offsec_guided_state_pending", None)
+
+
+def _build_offsec_guided_breaker_result(
+    *,
+    kind: str,
+    tool_name: str,
+    state: dict[str, Any] | None = None,
+    detail: str = "",
+) -> dict[str, Any]:
+    payload = {
+        "status": "blocked",
+        "code": "offsec_guided",
+        "kind": kind,
+        "tool": tool_name,
+        "message": detail,
+    }
+    if isinstance(state, dict):
+        payload["active_step_id"] = state.get("active_step_id")
+        payload["remaining_step_run_command_budget"] = budget_remaining_for_state(state)
+    return payload
+
+
+def _append_offsec_guided_budget_notice(tool_result: str, remaining_budget: int) -> str:
+    notice = None
+    if remaining_budget == 2:
+        notice = (
+            "Guided loop notice: remaining execution budget for this step is 2 run_command calls. "
+            "Size your effort accordingly."
+        )
+    elif remaining_budget == 1:
+        notice = (
+            "Guided loop notice: remaining execution budget for this step is 1 run_command call. "
+            "Finish the step or prepare to register a step result."
+        )
+    elif remaining_budget == 0:
+        notice = (
+            "Guided loop notice: execution budget for this step is exhausted. "
+            "Register a step result, retrieve evidence, or revise the plan before more execution."
+        )
+
+    if not notice:
+        return tool_result
+
+    try:
+        parsed = json.loads(tool_result)
+    except Exception:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        parsed["guided_budget_notice"] = notice
+        return json.dumps(parsed, indent=2, ensure_ascii=False)
+
+    suffix = f"\n\n{notice}"
+    return f"{tool_result}{suffix}" if tool_result else notice
+
+
+def _maybe_block_offsec_guided_tool_call(
+    metadata: dict[str, Any] | None,
+    resolved_tool_function_name: str,
+    tool_function_name: str,
+    tool_function_params: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+
+    state = _offsec_guided_state_from_metadata(metadata)
+    command = (tool_function_params or {}).get("command")
+
+    if metadata.get("offsec_guided_requires_clarification") and resolved_tool_function_name in {
+        "run_command",
+        "offsec_consult",
+        "offsec_register_plan",
+    }:
+        return _build_offsec_guided_breaker_result(
+            kind="clarification_required",
+            tool_name=tool_function_name,
+            detail=(
+                "Guided Offsec execution context is ambiguous. Ask one short clarification "
+                "about whether the terminal is only the assessor workstation or the operational target before planning or executing."
+            ),
+        )
+
+    if (
+        metadata.get("offsec_guided_entry_expected")
+        and resolved_tool_function_name == "run_command"
+        and not isinstance(state, dict)
+    ):
+        return _build_offsec_guided_breaker_result(
+            kind="plan_required",
+            tool_name=tool_function_name,
+            detail=(
+                "This guided Offsec run requires offsec_consult followed by offsec_register_plan before run_command."
+            ),
+        )
+
+    if not isinstance(state, dict):
+        return None
+
+    if resolved_tool_function_name != "run_command":
+        return None
+
+    if state.get("waiting_for_confirmation"):
+        return _build_offsec_guided_breaker_result(
+            kind="confirmation_required",
+            tool_name=tool_function_name,
+            state=state,
+            detail=(
+                "The active guided step is waiting for user confirmation. "
+                "Register a revised plan or wait for explicit approval before more execution."
+            ),
+        )
+
+    if budget_remaining_for_state(state) <= 0:
+        return _build_offsec_guided_breaker_result(
+            kind="step_budget_exhausted",
+            tool_name=tool_function_name,
+            state=state,
+            detail=(
+                "The execution budget for the active guided step is exhausted. "
+                "Call offsec_register_step_result, offsec_register_plan, or offsec_retrieve_evidence before more execution."
+            ),
+        )
+
+    if should_block_command_payload(command):
+        return _build_offsec_guided_breaker_result(
+            kind="command_payload_blocked",
+            tool_name=tool_function_name,
+            state=state,
+            detail=(
+                "Guided Offsec execution blocks command chaining, multiline payloads, and backgrounding for run_command. "
+                "Use a single bounded command."
+            ),
+        )
+
+    return None
+
+
+def _record_offsec_guided_run_command(
+    metadata: dict[str, Any] | None,
+    tool_result: str,
+) -> str:
+    state = _offsec_guided_state_from_metadata(metadata)
+    if not isinstance(state, dict):
+        return tool_result
+
+    next_state = increment_run_command_budget(state)
+    if isinstance(next_state, dict):
+        _set_offsec_guided_effective_state(metadata, next_state)
+        remaining_budget = budget_remaining_for_state(next_state)
+        if remaining_budget in {2, 1, 0}:
+            return _append_offsec_guided_budget_notice(tool_result, remaining_budget)
+    return tool_result
 DEFAULT_SELECTOR_PRIOR_WORK_FILE_REF_PATTERN = re.compile(
     r"\b[\w.-]+\.(?:md|txt|pdf|docx|pptx|csv|json|yaml|yml)\b",
     re.IGNORECASE,
@@ -5543,6 +5847,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     }
     form_data["metadata"] = metadata
 
+    tools_dict = {}
+
     # When the caller provides an explicit OpenAI-style `tools` array in the
     # request body, skip all server-side tool resolution and pass the caller's
     # tools through to the model unchanged.
@@ -5800,6 +6106,91 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         )
                 except Exception as e:
                     log.exception(e)
+
+    effective_tools = metadata.get("tools") if isinstance(metadata.get("tools"), dict) else tools_dict
+    guided_history_messages = _offsec_guided_history_messages(
+        raw_history_messages,
+        form_data.get("messages", []),
+    )
+    guided_state = resolve_guided_state_from_messages(guided_history_messages)
+    latest_user_text = prompt or get_last_user_message(form_data.get("messages", [])) or ""
+    guided_branch_requested = bool(metadata.get("branch"))
+    guided_terminal_invalidated = False
+    guided_branch_invalidated = False
+
+    if isinstance(guided_state, dict) and terminal_id and guided_state.get("bound_terminal_id"):
+        if str(guided_state.get("bound_terminal_id")) != str(terminal_id):
+            guided_terminal_invalidated = True
+            metadata["offsec_guided_invalidated_reason"] = "terminal_changed"
+            metadata["offsec_guided_invalidated_bound_terminal_id"] = str(
+                guided_state.get("bound_terminal_id")
+            )
+            guided_state = None
+
+    if guided_branch_requested and (
+        isinstance(guided_state, dict)
+        or (
+            working_mode == "offsec"
+            and params.get("function_calling") == "native"
+            and detect_offsec_operational_turn(latest_user_text)
+        )
+    ):
+        guided_branch_invalidated = True
+        metadata["offsec_guided_invalidated_reason"] = "branch_requested"
+        guided_state = None
+
+    if isinstance(guided_state, dict):
+        continued_state = apply_continue_signal_to_state(guided_state, latest_user_text)
+        if isinstance(continued_state, dict):
+            guided_state = continued_state
+    _set_offsec_guided_effective_state(metadata, guided_state)
+
+    guided_entry_active = (
+        working_mode == "offsec"
+        and local_corpus_mode != "off"
+        and params.get("function_calling") == "native"
+        and corpus_runtime.offsec_enabled
+        and not payload_tools
+        and not isinstance(guided_state, dict)
+        and not guided_branch_requested
+        and _offsec_guided_tools_available(effective_tools)
+        and _offsec_terminal_tools_available(effective_tools)
+        and detect_offsec_operational_turn(latest_user_text)
+    )
+    metadata["offsec_guided_entry_expected"] = guided_entry_active
+    metadata["offsec_guided_requires_clarification"] = False
+
+    if working_mode == "offsec" and params.get("function_calling") == "native":
+        guided_prompt = None
+        if guided_branch_invalidated:
+            guided_prompt = _build_offsec_guided_branch_invalidated_prompt()
+        elif guided_terminal_invalidated:
+            guided_prompt = _build_offsec_guided_terminal_invalidated_prompt(
+                metadata.get("offsec_guided_invalidated_bound_terminal_id", ""),
+                str(terminal_id),
+            )
+        elif isinstance(guided_state, dict):
+            guided_prompt = _build_offsec_guided_active_prompt(guided_state)
+        elif guided_entry_active:
+            execution_context_default = default_execution_context_for_text(latest_user_text)
+            guided_prompt = OFFSEC_GUIDED_ENTRY_SYSTEM_PROMPT
+            if execution_context_default == "remote_observer":
+                guided_prompt += (
+                    "\nFor this request, default execution_context is remote_observer unless the user explicitly says the terminal host is the operational target."
+                )
+            else:
+                guided_prompt += f"\n{OFFSEC_GUIDED_ENTRY_CLARIFY_SYSTEM_PROMPT}"
+                metadata["offsec_guided_requires_clarification"] = True
+
+        if guided_prompt:
+            current_system = get_system_message(form_data.get("messages", []))
+            current_content = current_system.get("content", "") if current_system else ""
+            if guided_prompt not in str(current_content):
+                form_data["messages"] = add_or_update_system_message(
+                    guided_prompt,
+                    form_data["messages"],
+                    append=True,
+                )
 
     # Check if file context extraction is enabled for this model (default True)
     file_context_enabled = (
@@ -6274,6 +6665,8 @@ async def non_streaming_chat_response_handler(response, ctx):
                 metadata["message_id"],
                 {
                     "error": {"content": error},
+                    **_offsec_guided_save_payload(metadata),
+                    **({"promptTelemetry": prompt_telemetry} if prompt_telemetry else {}),
                 },
             )
             if event_emitter and (isinstance(error, str) or isinstance(error, dict)):
@@ -6356,6 +6749,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                         "role": "assistant",
                         "content": content,
                         "output": response_output,
+                        **_offsec_guided_save_payload(metadata),
                         **(
                             {"tokenTelemetry": token_telemetry}
                             if token_telemetry
@@ -7545,8 +7939,78 @@ async def streaming_chat_response_handler(response, ctx):
                         direct_tool = False
                         tool_execution_error = None
                         search_notes_blocked = False
+                        research_loop_blocked = False
+                        offsec_guided_blocked = False
+                        next_web_tool = _preferred_web_tool_for_loop_breaker(tools)
+                        research_state = _research_turn_state(metadata) or {}
+                        guided_block_result = _maybe_block_offsec_guided_tool_call(
+                            metadata,
+                            resolved_tool_function_name,
+                            tool_function_name,
+                            tool_function_params,
+                        )
 
-                        if (
+                        if guided_block_result is not None:
+                            offsec_guided_blocked = True
+                            tool_result = guided_block_result
+                            blocked_event = _append_tool_journey_event(
+                                metadata,
+                                {
+                                    "phase": "tool_loop_breaker_blocked",
+                                    "call_id": tool_call_id,
+                                    "tool": resolved_tool_function_name,
+                                    "loop_kind": "offsec_guided",
+                                    "reason": guided_block_result.get("kind"),
+                                    "remaining_step_run_command_budget": guided_block_result.get(
+                                        "remaining_step_run_command_budget"
+                                    ),
+                                },
+                            )
+                            if blocked_event:
+                                await event_emitter(
+                                    {
+                                        "type": "chat:tool:journey",
+                                        "data": blocked_event,
+                                    }
+                                )
+
+                        elif (
+                            research_loop_guard_active
+                            and resolved_tool_function_name in RESEARCH_LOOP_BREAKER_TOOL_NAMES
+                        ):
+                            research_loop_blocked = True
+                            tool_result = _build_research_loop_breaker_result(
+                                research_state,
+                                blocked=True,
+                                tool_name=tool_function_name,
+                            )
+                            blocked_event = _append_tool_journey_event(
+                                metadata,
+                                {
+                                    "phase": "tool_loop_breaker_blocked",
+                                    "call_id": tool_call_id,
+                                    "tool": resolved_tool_function_name,
+                                    "loop_kind": "research_evidence",
+                                    "reason": research_state.get(
+                                        "research_loop_breaker_reason"
+                                    ),
+                                    "weak_evidence_streak": research_state.get(
+                                        "weak_evidence_streak"
+                                    ),
+                                    "recent_artifact_count": research_state.get(
+                                        "recent_artifact_count"
+                                    ),
+                                },
+                            )
+                            if blocked_event:
+                                await event_emitter(
+                                    {
+                                        "type": "chat:tool:journey",
+                                        "data": blocked_event,
+                                    }
+                                )
+
+                        elif (
                             resolved_tool_function_name in NOTES_LOOKUP_TOOL_NAMES
                             and search_notes_guard_active
                         ):
@@ -7574,7 +8038,7 @@ async def streaming_chat_response_handler(response, ctx):
                                     }
                                 )
 
-                        if search_notes_blocked:
+                        if offsec_guided_blocked or research_loop_blocked or search_notes_blocked:
                             pass
                         elif resolved_tool_function_name in tools:
                             tool = tools[resolved_tool_function_name]
@@ -7658,6 +8122,15 @@ async def streaming_chat_response_handler(response, ctx):
                                 user,
                             )
                         )
+
+                        if (
+                            not offsec_guided_blocked
+                            and resolved_tool_function_name == "run_command"
+                        ):
+                            tool_result = _record_offsec_guided_run_command(
+                                metadata,
+                                tool_result,
+                            )
 
                         if resolved_tool_function_name in NOTES_LOOKUP_TOOL_NAMES:
                             if not search_notes_blocked:
@@ -8165,6 +8638,7 @@ async def streaming_chat_response_handler(response, ctx):
                         {
                             "content": serialize_output(output),
                             "output": output,
+                            **_offsec_guided_save_payload(metadata),
                             **({"usage": usage} if usage else {}),
                             **(
                                 {"tokenTelemetry": token_telemetry}
@@ -8190,8 +8664,11 @@ async def streaming_chat_response_handler(response, ctx):
                     or token_branch
                     or memory_telemetry
                     or tool_journey_telemetry
+                    or prompt_telemetry
+                    or termination_cause
+                    or _offsec_guided_state_from_metadata(metadata)
                 ):
-                    update_payload = {}
+                    update_payload = _offsec_guided_save_payload(metadata)
                     if usage:
                         update_payload["usage"] = usage
                     if token_telemetry:
@@ -8244,6 +8721,8 @@ async def streaming_chat_response_handler(response, ctx):
                         {
                             "content": serialize_output(output),
                             "output": output,
+                            **_offsec_guided_save_payload(metadata),
+                            "terminationCause": termination_cause,
                         },
                     )
 
