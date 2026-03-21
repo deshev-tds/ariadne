@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,13 +19,19 @@ def _build_request(
     *,
     enable_local_corpus: bool = False,
     local_corpus_root: str | None = None,
+    offsec_corpus_root: str | None = None,
 ):
+    if local_corpus_root:
+        Path(local_corpus_root).mkdir(parents=True, exist_ok=True)
+    if offsec_corpus_root:
+        Path(offsec_corpus_root).mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(
                 config=SimpleNamespace(
                     ENABLE_LOCAL_CORPUS_TOOLS=enable_local_corpus,
                     LOCAL_CORPUS_ROOT=local_corpus_root,
+                    OFFSEC_CORPUS_ROOT=offsec_corpus_root,
                     TASK_MODEL="",
                     TASK_MODEL_EXTERNAL=False,
                 )
@@ -332,6 +339,28 @@ def test_build_default_selector_guidance_skips_science_rules_for_offsec_mode():
     assert "preserve the user's substantive topic terms" in guidance
     assert "prefer local corpus tools first" not in guidance
     assert "Do not stay loyal to the local lane out of inertia" not in guidance
+
+
+def test_build_default_selector_guidance_adds_offsec_consult_rules():
+    metadata = {
+        "params": {
+            "function_calling": "default",
+            "working_mode": "offsec",
+            "local_corpus_mode": "prefer",
+        },
+        "features": {},
+    }
+    tools = {
+        "offsec_consult": {},
+        "offsec_retrieve_evidence": {},
+        "run_command": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(metadata, tools, [])
+
+    assert "offsec_consult" in guidance
+    assert "official or project/GitHub docs" in guidance
+    assert "terminal as the primary execution lane" in guidance
 
 
 def test_build_default_selector_guidance_adds_local_corpus_auto_shelf_check_rule():
@@ -821,6 +850,25 @@ def test_should_enable_shared_tool_narration_for_local_corpus_prefer():
         enable_local_corpus=True, local_corpus_root="/tmp/local-corpus"
     )
     metadata = {"params": {"function_calling": "native", "local_corpus_mode": "prefer"}}
+
+    assert (
+        middleware._should_enable_shared_tool_narration(request, metadata, {})
+        is True
+    )
+
+
+def test_should_enable_shared_tool_narration_for_offsec_prefer():
+    request = _build_request(
+        enable_local_corpus=True,
+        offsec_corpus_root="/tmp/offsec-corpus",
+    )
+    metadata = {
+        "params": {
+            "function_calling": "native",
+            "working_mode": "offsec",
+            "local_corpus_mode": "prefer",
+        }
+    }
 
     assert (
         middleware._should_enable_shared_tool_narration(request, metadata, {})
@@ -1431,6 +1479,58 @@ def test_local_corpus_collect_axis_evidence_citation_source_groups_by_book():
     assert len(sources) == 1
     assert sources[0]["source"]["id"] == "med-guide"
     assert sources[0]["metadata"][0]["axis_id"] == "management_guidance"
+
+
+def test_offsec_consult_citation_source_uses_source_documents():
+    tool_result = {
+        "source_documents": [
+            {
+                "id": "tool:burp_suite",
+                "name": "Burp Suite",
+                "type": "offsec_tool_card",
+                "content": "# Burp Suite\n\nWorkflow guidance",
+                "source_path": "/tmp/offsec/tools/burp_suite.md",
+                "book_id": "web-application-pentesting",
+                "domain": "web_security",
+            }
+        ]
+    }
+
+    sources = middleware.get_citation_source_from_tool_result(
+        "offsec_consult",
+        {},
+        tool_result,
+    )
+
+    assert len(sources) == 1
+    assert sources[0]["source"]["type"] == "offsec_tool_card"
+    assert sources[0]["metadata"][0]["book_id"] == "web-application-pentesting"
+
+
+def test_offsec_retrieve_evidence_citation_source_groups_by_book():
+    tool_result = {
+        "items": [
+            {
+                "book_id": "web-application-pentesting",
+                "title": "Web Application PenTesting",
+                "domain": "web_security",
+                "page_no": 42,
+                "section_path": "Burp Suite workflow",
+                "citation_label": "Web Application PenTesting p.42 - Burp Suite workflow",
+                "content": "Burp Suite helps with intercepting, replaying, and validating issues.",
+            }
+        ]
+    }
+
+    sources = middleware.get_citation_source_from_tool_result(
+        "offsec_retrieve_evidence",
+        {},
+        tool_result,
+    )
+
+    assert len(sources) == 1
+    assert sources[0]["source"]["id"] == "web-application-pentesting"
+    assert sources[0]["metadata"][0]["page_no"] == 42
 
 
 def test_is_empty_search_notes_result_detects_empty_payloads():

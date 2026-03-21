@@ -166,6 +166,7 @@ from open_webui.utils.deep_research import (
     LocalDeepResearchError,
 )
 from open_webui.routers.files import upload_file_handler
+from open_webui.retrieval.corpus_runtime import resolve_corpus_runtime
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 from open_webui.retrieval.working_mode import normalize_working_mode
 
@@ -192,6 +193,13 @@ LOCAL_CORPUS_PREFER_SYSTEM_PROMPT = (
     "low-stakes and the user's tone clearly invites it. If local corpus evidence is weak or unavailable, "
     "say so plainly."
 )
+OFFSEC_CONSULT_SYSTEM_PROMPT = (
+    "This chat is in Offsec mode. Use the Offsec corpus as a sparing consult layer for methodology, "
+    "tool choice, examples, and tactical recall. When methodology, tool choice, or target framing is "
+    "unclear, call offsec_consult before committing to a path. Re-consult sparingly when the target "
+    "picture materially changes during live work. When exact syntax, flags, or version-specific behavior "
+    "becomes the blocker, prefer official or project/GitHub docs before broad web search."
+)
 TOOL_NARRATION_SYSTEM_PROMPT = (
     "For compatible tool-heavy runs, you may give the user brief journey updates in the assistant text. "
     "When entering the first major tool phase, you may begin with a short orientation preamble. After that, "
@@ -210,6 +218,8 @@ TOOL_NARRATION_PHASE_ORDER = {
     "final_response": 5,
 }
 TOOL_NARRATION_TOOL_PHASES = {
+    "offsec_consult": "orientation",
+    "offsec_retrieve_evidence": "evidence_gathering",
     "local_corpus_list_domains": "orientation",
     "local_corpus_list_disciplines": "orientation",
     "local_corpus_frame_problem": "orientation",
@@ -266,6 +276,18 @@ DEFAULT_SELECTOR_LOCAL_CORPUS_AUTO_GUIDANCE = (
     "confirm an empty, weak, or merely nominal shelf."
 )
 
+DEFAULT_SELECTOR_OFFSEC_GUIDANCE = (
+    "In Offsec mode, when methodology, tool choice, or target framing is unclear, "
+    "start with offsec_consult. Re-consult sparingly when the target picture materially "
+    "changes during live work. When exact syntax, flags, or version-specific behavior "
+    "becomes the blocker, prefer official or project/GitHub docs before broad web search."
+)
+
+DEFAULT_SELECTOR_OFFSEC_TERMINAL_GUIDANCE = (
+    "When terminal tools are available, keep the terminal as the primary execution lane "
+    "and use the Offsec corpus as a sparing consult layer."
+)
+
 DEFAULT_SELECTOR_PRIOR_WORK_FALLBACK_GUIDANCE = (
     "When primary evidence lanes are unavailable, before answering from model knowledge "
     "alone, check user-owned prior work when it is likely to contain relevant leads. "
@@ -274,6 +296,8 @@ DEFAULT_SELECTOR_PRIOR_WORK_FALLBACK_GUIDANCE = (
 )
 
 DEFAULT_SELECTOR_RETRIEVAL_TOOL_NAMES = {
+    "offsec_consult",
+    "offsec_retrieve_evidence",
     "local_corpus_frame_problem",
     "local_corpus_plan_axes",
     "local_corpus_collect_axis_evidence",
@@ -292,6 +316,11 @@ DEFAULT_SELECTOR_RETRIEVAL_TOOL_NAMES = {
     "notes_lookup",
     "search_notes",
     "search_chats",
+}
+
+DEFAULT_SELECTOR_OFFSEC_TOOL_NAMES = {
+    "offsec_consult",
+    "offsec_retrieve_evidence",
 }
 
 DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES = {
@@ -315,6 +344,7 @@ DEFAULT_SELECTOR_PRIOR_WORK_TOOL_PREFERENCE = (
 )
 
 DEFAULT_SELECTOR_WEB_FEATURE_NAMES = ("web_search", "focused_search")
+DEFAULT_SELECTOR_TERMINAL_TOOL_NAMES = {"run_command", "get_process_status"}
 DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_NONE = "none"
 DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_WEAK = "weak"
 DEFAULT_SELECTOR_PRIOR_WORK_SIGNAL_STRONG = "strong"
@@ -481,6 +511,14 @@ def _build_default_selector_guidance(
         and _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES)
     ):
         clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_AUTO_GUIDANCE)
+    elif (
+        working_mode == "offsec"
+        and local_corpus_mode != "off"
+        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_OFFSEC_TOOL_NAMES)
+    ):
+        clauses.append(DEFAULT_SELECTOR_OFFSEC_GUIDANCE)
+        if _selector_has_any_tool(tools, DEFAULT_SELECTOR_TERMINAL_TOOL_NAMES):
+            clauses.append(DEFAULT_SELECTOR_OFFSEC_TERMINAL_GUIDANCE)
 
     web_enabled = any(bool(features.get(name)) for name in DEFAULT_SELECTOR_WEB_FEATURE_NAMES)
     if local_corpus_mode == "off" and not web_enabled:
@@ -594,13 +632,10 @@ def _should_enable_shared_tool_narration(
     if params.get("function_calling") != "native":
         return False
 
-    local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
-    working_mode = _normalized_working_mode(params)
+    runtime = resolve_corpus_runtime(request.app.state.config, params)
     local_corpus_enabled = (
-        working_mode == "science"
-        and local_corpus_mode == "prefer"
-        and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
-        and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
+        runtime.local_corpus_mode == "prefer"
+        and runtime.any_enabled
     )
     focused_search_enabled = bool(features.get("focused_search"))
     return bool(local_corpus_enabled or focused_search_enabled)
@@ -610,13 +645,10 @@ def _initialize_tool_narration_state(
     request: Request, metadata: dict, features: dict
 ) -> dict[str, Any]:
     params = metadata.get("params", {}) or {}
-    local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
-    working_mode = _normalized_working_mode(params)
+    runtime = resolve_corpus_runtime(request.app.state.config, params)
     local_corpus_prefer = (
-        working_mode == "science"
-        and local_corpus_mode == "prefer"
-        and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
-        and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
+        runtime.local_corpus_mode == "prefer"
+        and runtime.any_enabled
     )
     focused_search_enabled = bool(features.get("focused_search"))
     return {
@@ -1981,6 +2013,8 @@ def get_citation_source_from_tool_result(
         "web_research_strong",
         "notes_research_strong",
         "query_web_evidence",
+        "offsec_consult",
+        "offsec_retrieve_evidence",
         "local_corpus_list_domains",
         "local_corpus_list_disciplines",
         "local_corpus_frame_problem",
@@ -2113,6 +2147,68 @@ def get_citation_source_from_tool_result(
                     "metadata": metadata,
                 }
             ]
+        elif tool_name == "offsec_consult":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            source_documents = (
+                payload.get("source_documents", []) if isinstance(payload, dict) else []
+            )
+            sources = []
+            for item in source_documents:
+                if not isinstance(item, dict):
+                    continue
+                sources.append(
+                    {
+                        "source": {
+                            "id": item.get("id", ""),
+                            "name": item.get("name", "offsec consult"),
+                            "type": item.get("type", "offsec_selection"),
+                        },
+                        "document": [item.get("content", "")],
+                        "metadata": [
+                            {
+                                "source": item.get("source_path", item.get("name", "")),
+                                "name": item.get("name", "offsec consult"),
+                                "book_id": item.get("book_id", ""),
+                                "domain": item.get("domain", ""),
+                                "page_no": item.get("page_no"),
+                                "section_path": item.get("section_path", ""),
+                            }
+                        ],
+                    }
+                )
+            return sources
+        elif tool_name == "offsec_retrieve_evidence":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            grouped_sources = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                title = item.get("title", "") or "offsec corpus"
+                book_id = item.get("book_id", "")
+                key = book_id or title
+                if key not in grouped_sources:
+                    grouped_sources[key] = {
+                        "source": {
+                            "id": book_id,
+                            "name": title,
+                            "type": "offsec_book",
+                        },
+                        "document": [],
+                        "metadata": [],
+                    }
+                grouped_sources[key]["document"].append(item.get("content", ""))
+                grouped_sources[key]["metadata"].append(
+                    {
+                        "source": item.get("citation_label", title),
+                        "name": title,
+                        "book_id": book_id,
+                        "domain": item.get("domain", ""),
+                        "page_no": item.get("page_no"),
+                        "section_path": item.get("section_path", ""),
+                    }
+                )
+            return list(grouped_sources.values())
         elif tool_name == "local_corpus_retrieve_evidence":
             payload = tool_result if isinstance(tool_result, dict) else {}
             items = payload.get("items", []) if isinstance(payload, dict) else []
@@ -2798,6 +2894,27 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
             "candidate_count": parsed.get("candidate_count"),
             "fts_enabled": bool(parsed.get("fts_enabled", False)),
             "freshness_note": bool(parsed.get("freshness_note")),
+        }
+
+    if tool_name == "offsec_consult" and isinstance(parsed, dict):
+        return {
+            "phase": parsed.get("phase"),
+            "route": parsed.get("route"),
+            "matched_id": parsed.get("matched_id"),
+            "recommended_book_ids": len(parsed.get("recommended_book_ids") or []),
+            "preview_items": len(parsed.get("preview_items") or []),
+            "docs_fallback_suggested": bool(
+                parsed.get("docs_fallback_suggested", False)
+            ),
+        }
+
+    if tool_name == "offsec_retrieve_evidence" and isinstance(parsed, dict):
+        return {
+            "phase": parsed.get("phase"),
+            "next_action": parsed.get("next_action"),
+            "book_ids": len(parsed.get("book_ids") or []),
+            "items": len(parsed.get("items") or []),
+            "candidate_count": parsed.get("candidate_count"),
         }
 
     if tool_name == "local_corpus_collect_axis_evidence" and isinstance(parsed, dict):
@@ -7241,6 +7358,26 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if LOCAL_CORPUS_PREFER_SYSTEM_PROMPT not in str(current_content):
             form_data["messages"] = add_or_update_system_message(
                 LOCAL_CORPUS_PREFER_SYSTEM_PROMPT,
+                form_data["messages"],
+                append=True,
+            )
+
+    if (
+        working_mode == "offsec"
+        and local_corpus_mode != "off"
+        and metadata.get("params", {}).get("function_calling") == "native"
+        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_OFFSEC_TOOL_NAMES)
+    ):
+        current_system = get_system_message(form_data.get("messages", []))
+        current_content = current_system.get("content", "") if current_system else ""
+        offsec_system_prompt = OFFSEC_CONSULT_SYSTEM_PROMPT
+        if _selector_has_any_tool(tools, DEFAULT_SELECTOR_TERMINAL_TOOL_NAMES):
+            offsec_system_prompt = (
+                f"{offsec_system_prompt} {DEFAULT_SELECTOR_OFFSEC_TERMINAL_GUIDANCE}"
+            )
+        if offsec_system_prompt not in str(current_content):
+            form_data["messages"] = add_or_update_system_message(
+                offsec_system_prompt,
                 form_data["messages"],
                 append=True,
             )

@@ -187,12 +187,15 @@
 	let prompt = '';
 	let chatFiles = [];
 	let files = [];
-	let params = {};
+	let params: Record<string, any> = {};
 	let paramsHydratedFromSettings = false;
 	let chatThinkingEnabled = false;
 	let chatLedgerAgenticEnabled = false;
 	let chatFocusedSearchEnabled = false;
 	let chatDeepResearchEnabled = false;
+	type WorkingMode = 'general' | 'science' | 'offsec';
+	const CHAT_WORKING_MODES: WorkingMode[] = ['general', 'science', 'offsec'];
+	let chatWorkingMode: WorkingMode = 'general';
 	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 	let chatOldChatsSearchEnabled = true;
 
@@ -225,6 +228,11 @@
 	$: chatLedgerAgenticEnabled = (params?.ledger_mode ?? null) === 'agentic';
 	$: chatFocusedSearchEnabled = (params?.focused_search_mode ?? false) === true;
 	$: chatDeepResearchEnabled = (params?.deep_research_mode ?? false) === true;
+	$: chatWorkingMode = CHAT_WORKING_MODES.includes(params?.working_mode ?? '')
+		? params.working_mode
+		: ['auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
+			? 'science'
+			: 'general';
 	$: chatLocalCorpusMode = ['off', 'auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
 		? params.local_corpus_mode
 		: 'auto';
@@ -300,6 +308,12 @@
 		params = nextParams;
 	};
 
+	const setChatWorkingMode = (mode: WorkingMode) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		nextParams.working_mode = mode;
+		params = nextParams;
+	};
+
 	const setChatLocalCorpusMode = (mode: 'off' | 'auto' | 'prefer') => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
 		nextParams.local_corpus_mode = mode;
@@ -312,7 +326,7 @@
 		params = nextParams;
 	};
 
-	const getContextWindowPreviewFileSignature = (items) =>
+	const getContextWindowPreviewFileSignature = (items: any[] | null | undefined) =>
 		JSON.stringify(
 			(items ?? []).map((item) => ({
 				id: item?.id ?? null,
@@ -508,6 +522,12 @@
 						const nextParams = getDefaultChatParams();
 						if (typeof input.deepResearchEnabled === 'boolean') {
 							nextParams.deep_research_mode = input.deepResearchEnabled;
+						}
+						if (
+							typeof input.workingMode === 'string' &&
+							CHAT_WORKING_MODES.includes(input.workingMode)
+						) {
+							nextParams.working_mode = input.workingMode;
 						}
 						if (typeof input.localCorpusMode === 'string') {
 							nextParams.local_corpus_mode = ['off', 'auto', 'prefer'].includes(
@@ -1063,6 +1083,12 @@
 						const nextParams = getDefaultChatParams();
 						if (typeof input.deepResearchEnabled === 'boolean') {
 							nextParams.deep_research_mode = input.deepResearchEnabled;
+						}
+						if (
+							typeof input.workingMode === 'string' &&
+							CHAT_WORKING_MODES.includes(input.workingMode)
+						) {
+							nextParams.working_mode = input.workingMode;
 						}
 						if (typeof input.localCorpusMode === 'string') {
 							nextParams.local_corpus_mode = ['off', 'auto', 'prefer'].includes(
@@ -3245,6 +3271,8 @@
 									{setChatFocusedSearchEnabled}
 									deepResearchEnabled={chatDeepResearchEnabled}
 									{setChatDeepResearchEnabled}
+									workingMode={chatWorkingMode}
+									{setChatWorkingMode}
 									localCorpusMode={chatLocalCorpusMode}
 									{setChatLocalCorpusMode}
 									oldChatsSearchEnabled={chatOldChatsSearchEnabled}
@@ -3327,6 +3355,8 @@
 									{setChatFocusedSearchEnabled}
 									deepResearchEnabled={chatDeepResearchEnabled}
 									{setChatDeepResearchEnabled}
+									workingMode={chatWorkingMode}
+									{setChatWorkingMode}
 									localCorpusMode={chatLocalCorpusMode}
 									{setChatLocalCorpusMode}
 									oldChatsSearchEnabled={chatOldChatsSearchEnabled}

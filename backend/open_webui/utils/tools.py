@@ -54,6 +54,8 @@ from open_webui.utils.headers import include_user_info_headers
 from open_webui.tools.builtin import (
     search_web,
     web_research_strong,
+    offsec_consult,
+    offsec_retrieve_evidence,
     local_corpus_list_domains,
     local_corpus_list_disciplines,
     local_corpus_frame_problem,
@@ -96,8 +98,7 @@ from open_webui.tools.builtin import (
     view_knowledge_file,
     view_skill,
 )
-from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
-from open_webui.retrieval.working_mode import normalize_working_mode
+from open_webui.retrieval.corpus_runtime import resolve_corpus_runtime
 
 import copy
 
@@ -518,26 +519,12 @@ def get_builtin_tools(
             builtin_functions.append(fetch_url)
             builtin_functions.append(query_web_evidence)
 
-    if (
-        is_builtin_tool_enabled("local_corpus")
-        and getattr(request.app.state.config, "ENABLE_LOCAL_CORPUS_TOOLS", False)
-        and getattr(request.app.state.config, "LOCAL_CORPUS_ROOT", None)
-        and normalize_working_mode(
-            (extra_params.get("__metadata__", {}) or {}).get("params", {}).get(
-                "working_mode"
-            ),
-            local_corpus_mode=(extra_params.get("__metadata__", {}) or {})
-            .get("params", {})
-            .get("local_corpus_mode"),
-        )
-        == "science"
-        and normalize_local_corpus_mode(
-            (extra_params.get("__metadata__", {}) or {}).get("params", {}).get(
-                "local_corpus_mode"
-            )
-        )
-        != "off"
-    ):
+    corpus_runtime = resolve_corpus_runtime(
+        request.app.state.config,
+        ((extra_params.get("__metadata__", {}) or {}).get("params", {}) or {}),
+    )
+
+    if is_builtin_tool_enabled("local_corpus") and corpus_runtime.science_enabled:
         builtin_functions.extend(
             [
                 local_corpus_list_domains,
@@ -551,6 +538,14 @@ def get_builtin_tools(
                 local_corpus_retrieve_evidence,
                 local_corpus_view_table,
                 local_corpus_view_figure_metadata,
+            ]
+        )
+
+    if is_builtin_tool_enabled("local_corpus") and corpus_runtime.offsec_enabled:
+        builtin_functions.extend(
+            [
+                offsec_consult,
+                offsec_retrieve_evidence,
             ]
         )
 

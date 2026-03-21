@@ -52,6 +52,8 @@
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
 	export let deepResearchEnabled = false;
 	export let setChatDeepResearchEnabled: (enabled: boolean) => void = () => {};
+	export let workingMode: 'general' | 'science' | 'offsec' = 'general';
+	export let setChatWorkingMode: (mode: 'general' | 'science' | 'offsec') => void = () => {};
 	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
 	export let oldChatsSearchEnabled = true;
@@ -224,6 +226,8 @@
 					{setChatFocusedSearchEnabled}
 					{deepResearchEnabled}
 					{setChatDeepResearchEnabled}
+					{workingMode}
+					{setChatWorkingMode}
 					{localCorpusMode}
 					{setChatLocalCorpusMode}
 					{oldChatsSearchEnabled}
