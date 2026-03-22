@@ -140,7 +140,7 @@ The key concepts are:
 
 - A backend-owned context-maintenance layer builds a bounded hot context for each turn instead of replaying the whole branch until it fails.
 - Historical reasoning and raw tool outputs are treated as cold history for future turns rather than being replayed hot by default.
-- Tool-backed assistant turns persist a deterministic `turn_recap` so cross-turn continuity can reuse compact tool-state instead of raw tool blobs, while explicit exact-output follow-ups can still rehydrate the cold result when needed.
+- Tool-backed assistant turns persist a deterministic `turn_recap`, but normal cross-turn replay now prefers the sanitized visible assistant answer rather than a recap-only representation. The recap stays useful as server-owned fallback/debug state, while explicit exact-output follow-ups can still rehydrate the cold tool result when needed.
 - Earlier history is compacted into a structured state snapshot that preserves durable task state without pretending to be raw evidence.
 - A separate exact-recall layer can recover older raw facts when the hot context is no longer enough, using SQLite `FTS5`/`bm25(...)` over persisted branch history when lexical search is viable and bounded raw branch scans when it is not.
 - Ledger continuity is an explicit, chat-scoped continuity layer that captures durable task state or conversational style and reinjects it only when the selected mode and current turn make it relevant.
@@ -318,7 +318,7 @@ The method matters here. On the current SQLite-backed path, this is not a vague 
 
 This recall layer is intentionally bounded and conservative. It is not an always-on retrieval ritual before every response.
 
-There is a related replay-hygiene rule behind this stage now: earlier reasoning blocks and raw tool outputs no longer get the privilege of sitting in hot context just because they once existed. Cross-turn continuity prefers compact server-owned state, and tool-heavy turns are represented by deterministic recap blocks rather than by replaying whole tool transcripts back into the model.
+There is a related replay-hygiene rule behind this stage now: earlier reasoning blocks and raw tool outputs no longer get the privilege of sitting in hot context just because they once existed. The system did briefly try a stricter recap-only representation for tool-heavy turns, but that proved too lossy for follow-up synthesis over structured assistant artifacts. The current rule is narrower and more honest: raw tool transcripts stay cold, while the visible assistant turn stays hot after stripping reasoning and embedded tool-call detail. Deterministic `turn_recap` remains persisted as server-owned fallback/debug state rather than as the primary hot representation.
 
 It currently has two modes:
 
@@ -1273,6 +1273,73 @@ This matters because Ariadne is trying to produce procedural honesty, not just l
 A selector that searches old artifacts every time primary lanes are disabled is not being careful. It is being anxious.
 
 That distinction is worth preserving.
+
+### Replay Hygiene, Then a Partial Rollback
+
+Another recent lesson came from trying to tighten cross-turn context hygiene for tool-heavy chats.
+
+The initial diagnosis was correct:
+
+- historical reasoning was too expensive to keep hot
+- raw historical tool outputs were even worse
+- local models were paying prompt-budget and latency costs for ballast that rarely improved the next turn
+
+So the first pass was deliberately aggressive:
+
+- stop replaying historical reasoning
+- stop replaying raw historical tool outputs
+- persist a deterministic `turn_recap` for tool-backed assistant turns
+- use that recap as the hot representation of the earlier tool turn
+- keep the exact raw tool result cold and rehydrate it only for explicit exact-output follow-ups
+
+Part of that experiment worked exactly as intended.
+
+The system did become cleaner and cheaper:
+
+- hot context stopped carrying old scratchpad text
+- old tool blobs stopped sitting in prompt memory just because they once existed
+- exact raw output could still be recovered on demand
+
+But the stronger claim behind that experiment did not survive contact with a real local model.
+
+What broke was not raw evidence recovery. It was ordinary follow-up inference over structured assistant artifacts.
+
+When a tool-backed turn ended with something like a shortlist, table, or evidence matrix, recap-only replay turned out to be too lossy. The model could see that "a table had been created" without still having the full table in view. In practice that produced exactly the wrong kind of degradation:
+
+- follow-up synthesis became shakier
+- model-side gap filling increased
+- continuity started to depend too much on the recap's abstraction level rather than on the actual visible assistant artifact
+
+That was the point of the rollback-ish correction.
+
+The system did not go back to naive replay. It rolled back to a narrower, better-aligned contract:
+
+- historical reasoning stays cold
+- historical raw tool outputs stay cold
+- exact-output follow-ups still rehydrate the cold raw result explicitly
+- deterministic `turn_recap` stays persisted as server-owned fallback/debug state
+- but the normal hot representation of a historical tool-backed turn is once again the visible assistant answer itself, sanitized to strip reasoning and embedded tool-call detail
+
+That compromise ended up being the right one.
+
+It keeps the expensive junk out of hot context while restoring the basic conversational shape the model expects:
+
+- user turn
+- assistant turn
+- follow-up over the assistant artifact that was actually shown
+
+In other words, the rollback was not a retreat from replay hygiene. It was a correction to where the compression boundary belonged.
+
+The right boundary was:
+
+- compress tool traces
+- preserve the visible assistant artifact
+
+not:
+
+- compress the whole tool-backed turn into a recap and hope the model can reconstruct the artifact from there
+
+That distinction is now part of Ariadne's continuity model rather than an implementation accident.
 
 ## Closing Notes
 
