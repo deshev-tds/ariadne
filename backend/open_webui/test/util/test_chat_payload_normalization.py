@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from open_webui.models.chats import (
+    _preserve_server_owned_message_fields,
     derive_chat_messages_from_history,
     normalize_chat_payload,
 )
@@ -96,4 +97,53 @@ def test_to_chat_response_with_rehydration_uses_normalized_history_messages():
 
     assert response.chat["messages"][-1]["content"] == (
         "A very long answer that should stay authoritative."
+    )
+
+
+def test_preserve_server_owned_message_fields_keeps_turn_recap_and_telemetry():
+    existing = _build_chat_payload()
+    existing["history"]["messages"]["assistant-1"]["turn_recap"] = {
+        "version": 1,
+        "tools_used": [{"tool_name": "search_web", "args_preview": '{"q":"story"}'}],
+        "artifact_refs": [],
+        "assistant_takeaway": "Pulled the grounding with tools.",
+    }
+    existing["history"]["messages"]["assistant-1"]["usage"] = {"prompt_tokens": 42}
+    existing["history"]["messages"]["assistant-1"]["tokenTelemetry"] = {
+        "tokens": [1, 2, 3]
+    }
+
+    incoming = _build_chat_payload()
+    preserved = _preserve_server_owned_message_fields(existing, incoming)
+
+    assistant = preserved["history"]["messages"]["assistant-1"]
+    assert assistant["turn_recap"]["version"] == 1
+    assert assistant["usage"]["prompt_tokens"] == 42
+    assert assistant["tokenTelemetry"]["tokens"] == [1, 2, 3]
+
+
+def test_preserve_server_owned_message_fields_does_not_override_explicit_client_value():
+    existing = _build_chat_payload()
+    existing["history"]["messages"]["assistant-1"]["turn_recap"] = {
+        "version": 1,
+        "tools_used": [{"tool_name": "search_web", "args_preview": '{"q":"story"}'}],
+        "artifact_refs": [],
+        "assistant_takeaway": "Old recap",
+    }
+
+    incoming = _build_chat_payload()
+    incoming["history"]["messages"]["assistant-1"]["turn_recap"] = {
+        "version": 1,
+        "tools_used": [{"tool_name": "search_web", "args_preview": '{"q":"story"}'}],
+        "artifact_refs": [],
+        "assistant_takeaway": "New recap",
+    }
+
+    preserved = _preserve_server_owned_message_fields(existing, incoming)
+
+    assert (
+        preserved["history"]["messages"]["assistant-1"]["turn_recap"][
+            "assistant_takeaway"
+        ]
+        == "New recap"
     )

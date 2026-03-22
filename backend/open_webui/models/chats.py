@@ -5,7 +5,7 @@ import time
 import uuid
 import copy
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 from open_webui.internal.db import Base, JSONField, get_db_context
@@ -48,6 +48,21 @@ from sqlalchemy.sql.expression import bindparam
 log = logging.getLogger(__name__)
 
 
+SERVER_OWNED_MESSAGE_FIELDS = {
+    "output",
+    "usage",
+    "selectedModelId",
+    "tokenTelemetry",
+    "tokenBranch",
+    "memoryTelemetry",
+    "toolJourneyTelemetry",
+    "promptTelemetry",
+    "terminationCause",
+    "turn_recap",
+    "offsec_guided_state",
+}
+
+
 def _delete_chat_artifact_dirs(chat_ids: list[str]) -> None:
     if not chat_ids:
         return
@@ -70,6 +85,43 @@ def _delete_chat_artifact_dirs(chat_ids: list[str]) -> None:
                     chat_id,
                     exc,
                 )
+
+
+def _preserve_server_owned_message_fields(
+    existing_chat_payload: dict[str, Any], incoming_chat_payload: dict[str, Any]
+) -> dict[str, Any]:
+    existing_messages = (
+        existing_chat_payload.get("history", {}).get("messages", {})
+        if isinstance(existing_chat_payload, dict)
+        else {}
+    )
+    incoming_history = (
+        incoming_chat_payload.get("history", {})
+        if isinstance(incoming_chat_payload, dict)
+        else {}
+    )
+    incoming_messages = (
+        incoming_history.get("messages", {}) if isinstance(incoming_history, dict) else {}
+    )
+
+    if not isinstance(existing_messages, dict) or not isinstance(incoming_messages, dict):
+        return incoming_chat_payload
+
+    for message_id, incoming_message in incoming_messages.items():
+        if not isinstance(incoming_message, dict):
+            continue
+
+        existing_message = existing_messages.get(message_id)
+        if not isinstance(existing_message, dict):
+            continue
+
+        for key in SERVER_OWNED_MESSAGE_FIELDS:
+            if key in existing_message and (
+                key not in incoming_message or incoming_message.get(key) is None
+            ):
+                incoming_message[key] = copy.deepcopy(existing_message[key])
+
+    return incoming_chat_payload
 
 
 class Chat(Base):
@@ -470,6 +522,11 @@ class ChatTable:
             with get_db_context(db) as db:
                 chat_item = db.get(Chat, id)
                 normalized_chat = normalize_chat_payload(chat)
+                normalized_chat = _preserve_server_owned_message_fields(
+                    chat_item.chat if chat_item and isinstance(chat_item.chat, dict) else {},
+                    normalized_chat,
+                )
+                normalized_chat = normalize_chat_payload(normalized_chat)
                 chat_item.chat = self._clean_null_bytes(normalized_chat)
                 chat_item.title = (
                     self._clean_null_bytes(normalized_chat["title"])

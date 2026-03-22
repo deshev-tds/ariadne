@@ -139,6 +139,8 @@ The key concepts are:
 **Memory and Context**
 
 - A backend-owned context-maintenance layer builds a bounded hot context for each turn instead of replaying the whole branch until it fails.
+- Historical reasoning and raw tool outputs are treated as cold history for future turns rather than being replayed hot by default.
+- Tool-backed assistant turns persist a deterministic `turn_recap` so cross-turn continuity can reuse compact tool-state instead of raw tool blobs, while explicit exact-output follow-ups can still rehydrate the cold result when needed.
 - Earlier history is compacted into a structured state snapshot that preserves durable task state without pretending to be raw evidence.
 - A separate exact-recall layer can recover older raw facts when the hot context is no longer enough, using SQLite `FTS5`/`bm25(...)` over persisted branch history when lexical search is viable and bounded raw branch scans when it is not.
 - Ledger continuity is an explicit, chat-scoped continuity layer that captures durable task state or conversational style and reinjects it only when the selected mode and current turn make it relevant.
@@ -153,6 +155,7 @@ The key concepts are:
 **Specialized Evidence Lanes**
 
 - A domain-first local corpus lane exists for proprietary or bought literature instead of flattening everything into one generic knowledge pile.
+- Offsec mode now has a guided terminal lane for live operational work: consult local corpus first, register a structured plan, execute one bounded step, record structured observations, and stop for confirmation before continuing.
 - Deep research is a separate blocking lane through a Local Deep Research (`LDR`) sidecar.
 
 **Runtime Surfaces**
@@ -314,6 +317,8 @@ But if that live state does not provide enough evidence, the server can now reco
 The method matters here. On the current SQLite-backed path, this is not a vague "memory search" claim. Ariadne maintains a lexical index over earlier chat messages and uses SQLite `FTS5` with `bm25(...)` ranking to recover bounded candidates from persisted branch history. Conceptually, it is closer to a server-side version of what a careful user could do with browser Find over an earlier conversation, except the backend can do it against older turns that are no longer in the live prompt window.
 
 This recall layer is intentionally bounded and conservative. It is not an always-on retrieval ritual before every response.
+
+There is a related replay-hygiene rule behind this stage now: earlier reasoning blocks and raw tool outputs no longer get the privilege of sitting in hot context just because they once existed. Cross-turn continuity prefers compact server-owned state, and tool-heavy turns are represented by deterministic recap blocks rather than by replaying whole tool transcripts back into the model.
 
 It currently has two modes:
 
