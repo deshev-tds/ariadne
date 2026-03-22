@@ -27,8 +27,10 @@ from open_webui.routers.pipelines import process_pipeline_inlet_filter
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.misc import (
     convert_output_to_messages,
+    convert_output_to_history_messages,
     get_content_from_message,
     get_message_list,
+    sanitize_historical_message_for_llm,
 )
 from open_webui.utils.model_resolution import resolve_runtime_model_reference
 from open_webui.utils.task import (
@@ -278,10 +280,10 @@ def estimate_tokens_from_history_message(message: dict[str, Any]) -> int:
 
     if isinstance(message.get("output"), list):
         return estimate_tokens_from_messages(
-            convert_output_to_messages(message["output"], raw=True)
+            convert_output_to_history_messages(message["output"])
         )
 
-    return estimate_tokens_from_message(message)
+    return estimate_tokens_from_message(sanitize_historical_message_for_llm(message))
 
 
 def estimate_tokens_from_history_messages(messages: list[dict[str, Any]]) -> int:
@@ -440,14 +442,14 @@ def count_preview_messages_tokens(
 
 def history_message_to_llm_messages(message: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(message.get("output"), list):
-        return convert_output_to_messages(message["output"], raw=True)
+        return convert_output_to_history_messages(message["output"])
 
     clean_message = {
         key: value
         for key, value in message.items()
         if key not in {"id", "parentId", "childrenIds", "files"}
     }
-    return [clean_message]
+    return [sanitize_historical_message_for_llm(clean_message)]
 
 
 def flatten_history_message_content(message: dict[str, Any]) -> str:

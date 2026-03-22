@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import open_webui.utils.context_maintenance as context_maintenance
+import open_webui.utils.misc as misc
 from open_webui.utils.context_maintenance import (
     build_aggregate_context_window_preview,
     build_history_exchanges,
@@ -183,6 +184,26 @@ def test_render_history_message_for_summary_caps_reasoning_and_tool_output():
     assert "fetch_url result (truncated):" in rendered
     assert "final" in rendered
     assert len(rendered) < 3000
+
+
+def test_history_message_to_llm_messages_uses_hygienic_replay(monkeypatch):
+    monkeypatch.setattr(misc, "ENABLE_HISTORY_REASONING_REPLAY", False)
+    monkeypatch.setattr(misc, "HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS", 24)
+
+    message = _assistant_output_message(
+        "a2",
+        text="concise answer",
+        reasoning="private chain of thought",
+        tool_output="tool-result " * 40,
+    )
+
+    llm_messages = context_maintenance.history_message_to_llm_messages(message)
+
+    assert [item["role"] for item in llm_messages] == ["assistant", "tool", "assistant"]
+    assert all("<think>" not in str(item.get("content") or "") for item in llm_messages)
+    assert "[historical tool output truncated for context replay]" in llm_messages[1]["content"]
+    assert "tool-result tool-result" in llm_messages[1]["content"]
+    assert "tool-result tool-result tool-result tool-result" not in llm_messages[1]["content"]
 
 
 def test_resolve_runtime_model_reference_uses_base_model_metadata():

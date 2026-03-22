@@ -139,6 +139,8 @@ from open_webui.utils.misc import (
     convert_logit_bias_input_to_json,
     get_content_from_message,
     convert_output_to_messages,
+    convert_output_to_history_messages,
+    sanitize_historical_message_for_llm,
 )
 from open_webui.utils.tools import (
     get_tools,
@@ -7261,14 +7263,14 @@ def process_messages_with_output(messages: list[dict]) -> list[dict]:
     for message in messages:
         if message.get("role") == "assistant" and message.get("output"):
             # Use output items for clean OpenAI-format messages
-            output_messages = convert_output_to_messages(message["output"], raw=True)
+            output_messages = convert_output_to_history_messages(message["output"])
             if output_messages:
                 processed.extend(output_messages)
                 continue
 
         # Strip 'output' field before adding (LLM shouldn't see it)
         clean_message = {k: v for k, v in message.items() if k != "output"}
-        processed.append(clean_message)
+        processed.append(sanitize_historical_message_for_llm(clean_message))
 
     return processed
 
