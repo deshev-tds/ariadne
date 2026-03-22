@@ -11220,6 +11220,7 @@ async def streaming_chat_response_handler(response, ctx):
                     or tool_journey_telemetry
                     or prompt_telemetry
                     or termination_cause
+                    or turn_recap
                     or _offsec_guided_state_from_metadata(metadata)
                 ):
                     update_payload = _offsec_guided_save_payload(metadata)
