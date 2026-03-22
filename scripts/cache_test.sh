@@ -4,7 +4,7 @@ set -euo pipefail
 # ----------------------------
 # Config (override via env vars)
 # ----------------------------
-BASE_URL="${BASE_URL:-http://192.168.1.117:1234}"
+BASE_URL="${BASE_URL:-http://127.0.0.1:1234}"
 BASE_URL="${BASE_URL%/}"            # tolerate trailing slash in BASE_URL
 MODEL="${MODEL:-whatever}"
 N="${N:-3}"                        # how many repeats for each scenario

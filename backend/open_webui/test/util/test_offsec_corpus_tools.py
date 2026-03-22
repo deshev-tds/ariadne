@@ -318,18 +318,18 @@ def test_load_offsec_registry_rebases_foreign_review_paths(tmp_path):
         manifest_suffix = item["manifest_path"].split("/_compiled_docling_review/", 1)[1]
 
         item["source_name"] = source_name
-        item["source_path"] = f"/Volumes/External/Books/Offsec/foreign-source/{source_name}"
+        item["source_path"] = f"/opt/offsec/foreign-source/{source_name}"
         item["retrieval_markdown_path"] = (
-            f"/Volumes/External/Books/Offsec/_compiled_docling_review/{retrieval_suffix}"
+            f"/opt/offsec/_compiled_docling_review/{retrieval_suffix}"
         )
         item["raw_markdown_path"] = (
-            f"/Volumes/External/Books/Offsec/_compiled_docling_review/{raw_suffix}"
+            f"/opt/offsec/_compiled_docling_review/{raw_suffix}"
         )
         item["catalog_path"] = (
-            f"/Volumes/External/Books/Offsec/_compiled_docling_review/{catalog_suffix}"
+            f"/opt/offsec/_compiled_docling_review/{catalog_suffix}"
         )
         item["manifest_path"] = (
-            f"/Volumes/External/Books/Offsec/_compiled_docling_review/{manifest_suffix}"
+            f"/opt/offsec/_compiled_docling_review/{manifest_suffix}"
         )
 
     review_path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
