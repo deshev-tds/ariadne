@@ -6,7 +6,7 @@ import uuid
 import logging
 from datetime import timedelta
 from pathlib import Path
-from typing import Callable, Optional, Sequence, Union
+from typing import Any, Callable, Optional, Sequence, Union
 import json
 import aiohttp
 import mimeparse
@@ -14,6 +14,7 @@ import mimeparse
 
 import collections.abc
 from open_webui.env import (
+    AGENTIC_ARTIFACTS_DIR,
     CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE,
     ENABLE_HISTORY_REASONING_REPLAY,
     HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS,
@@ -31,6 +32,32 @@ _HISTORICAL_REASONING_TAG_RES = [
 ]
 _HISTORICAL_TOOL_OUTPUT_TRUNCATION_PREFIX = (
     "[historical tool output truncated for context replay]"
+)
+_TOOL_OUTPUT_POINTER_PREFIX = "[tool output truncated and persisted to disk]"
+_TOOL_OUTPUT_PATH_RE = re.compile(r"^path:\s*(.+)\s*$", re.MULTILINE)
+_TURN_RECAP_VERSION = 1
+_TURN_RECAP_MAX_TOOL_ENTRIES = 6
+_TURN_RECAP_MAX_ARTIFACT_REFS = 5
+_TURN_RECAP_MAX_ARGS_PREVIEW_CHARS = 160
+_TURN_RECAP_MAX_TAKEAWAY_CHARS = 400
+_TURN_RECAP_ARGS_MORE_MARKER = "..."
+_TURN_RECAP_MORE_TOOLS_MARKER = "+{count} more calls"
+_EXACT_TOOL_OUTPUT_STRONG_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\bshow\s+me\s+the\s+(?:exact|raw|full|original)\s+(?:tool\s+)?(?:output|result|response|payload|json|stdout|stderr)\b",
+        r"\bwhat\s+did\s+(?:that|the|it)\s+(?:tool\s+)?(?:return|output)\b",
+        r"\bпокажи\s+ми\s+(?:точния|суровия|пълния|оригиналния)\s+(?:tool\s+)?(?:изход|резултат|output|json|payload)\b",
+        r"\bкакво\s+върна\s+(?:това|онова|инструментът|tool[- ]?ът|tool)\b",
+    ]
+]
+_EXACT_TOOL_OUTPUT_QUALIFIER_RE = re.compile(
+    r"\b(exact|raw|full|original|verbatim|literal|точн(?:ия|ият|о)?|суров(?:ия|ият|о)?|пълн(?:ия|ият|о)?|оригиналн(?:ия|ият|о)?|буквалн(?:ия|ият|о)?)\b",
+    re.IGNORECASE,
+)
+_EXACT_TOOL_OUTPUT_TARGET_RE = re.compile(
+    r"\b(tool\s+output|tool\s+result|output|result|response|payload|json|stdout|stderr|изход|резултат|отговор|payload)\b",
+    re.IGNORECASE,
 )
 
 
@@ -291,6 +318,283 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
     return messages
 
 
+def _normalize_preview_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text_value = value
+    else:
+        try:
+            text_value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            text_value = str(value)
+
+    text_value = text_value.replace("\r\n", "\n").replace("\r", "\n")
+    text_value = re.sub(r"\s+", " ", text_value).strip()
+    return text_value
+
+
+def _truncate_preview_text(text_value: object, *, max_chars: int) -> str:
+    normalized = _normalize_preview_text(text_value)
+    if max_chars < 0 or len(normalized) <= max_chars:
+        return normalized
+
+    preview = normalized[: max(0, max_chars)].rstrip()
+    if not preview:
+        return ""
+    return f"{preview}{_TURN_RECAP_ARGS_MORE_MARKER}"
+
+
+def _resolve_tool_output_artifact_path(pointer_text: str) -> Optional[Path]:
+    if not isinstance(pointer_text, str):
+        return None
+
+    if not pointer_text.startswith(_TOOL_OUTPUT_POINTER_PREFIX):
+        return None
+
+    match = _TOOL_OUTPUT_PATH_RE.search(pointer_text)
+    if not match:
+        return None
+
+    try:
+        path = Path(match.group(1).strip()).resolve()
+        root = Path(AGENTIC_ARTIFACTS_DIR).resolve()
+        path.relative_to(root)
+        return path
+    except Exception:
+        return None
+
+
+def _rehydrate_tool_output_pointer_text(pointer_text: str) -> str:
+    path = _resolve_tool_output_artifact_path(pointer_text)
+    if path is None:
+        return pointer_text
+
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return pointer_text
+
+
+def _extract_output_text_from_blocks(blocks: object) -> str:
+    if not isinstance(blocks, list):
+        return ""
+
+    parts: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        text_value = block.get("text")
+        if text_value is None:
+            continue
+        parts.append(str(text_value))
+    return "".join(parts)
+
+
+def _extract_turn_recap_takeaway_from_output(output: list, fallback_content: str = "") -> str:
+    parts: list[str] = []
+
+    for item in output or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content_part in item.get("content", []) or []:
+            if not isinstance(content_part, dict):
+                continue
+            if content_part.get("type") == "output_text":
+                text_value = str(content_part.get("text") or "").strip()
+                if text_value:
+                    parts.append(text_value)
+
+    if parts:
+        return _truncate_preview_text("\n\n".join(parts), max_chars=_TURN_RECAP_MAX_TAKEAWAY_CHARS)
+
+    stripped_fallback = _strip_historical_reasoning_text(fallback_content or "")
+    stripped_fallback = re.sub(
+        r'<details\b(?=[^>]*\btype="tool_calls")[\s\S]*?</details>',
+        "",
+        stripped_fallback,
+        flags=re.IGNORECASE,
+    )
+    stripped_fallback = re.sub(r"\n{3,}", "\n\n", stripped_fallback).strip()
+    return _truncate_preview_text(
+        stripped_fallback,
+        max_chars=_TURN_RECAP_MAX_TAKEAWAY_CHARS,
+    )
+
+
+def _extract_artifact_refs_from_output(output: list) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+
+    def _append_ref(value: object) -> None:
+        normalized = _normalize_preview_text(value)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        refs.append(normalized)
+
+    def _append_file_like(entry: object) -> None:
+        if isinstance(entry, dict):
+            for key in ("url", "path", "src", "file_path", "id", "name"):
+                value = entry.get(key)
+                if value:
+                    _append_ref(value)
+                    return
+        elif isinstance(entry, str):
+            _append_ref(entry)
+
+    for item in output or []:
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("type") == "function_call_output":
+            for block in item.get("output", []) or []:
+                if not isinstance(block, dict):
+                    continue
+                pointer_text = block.get("text")
+                if isinstance(pointer_text, str):
+                    artifact_path = _resolve_tool_output_artifact_path(pointer_text)
+                    if artifact_path is not None:
+                        _append_ref(str(artifact_path))
+
+            for file_entry in item.get("files", []) or []:
+                _append_file_like(file_entry)
+
+            embeds = item.get("embeds")
+            if isinstance(embeds, list):
+                for embed in embeds:
+                    _append_file_like(embed)
+            elif embeds:
+                _append_file_like(embeds)
+
+    return refs[:_TURN_RECAP_MAX_ARTIFACT_REFS]
+
+
+def build_turn_recap(output: list, *, assistant_content: str = "") -> Optional[dict[str, Any]]:
+    if not isinstance(output, list):
+        return None
+
+    tool_calls: list[dict[str, str]] = []
+    omitted_tool_call_count = 0
+
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        if len(tool_calls) < _TURN_RECAP_MAX_TOOL_ENTRIES:
+            tool_calls.append(
+                {
+                    "tool_name": str(item.get("name") or ""),
+                    "args_preview": _truncate_preview_text(
+                        item.get("arguments", ""),
+                        max_chars=_TURN_RECAP_MAX_ARGS_PREVIEW_CHARS,
+                    ),
+                }
+            )
+        else:
+            omitted_tool_call_count += 1
+
+    if not tool_calls and omitted_tool_call_count == 0:
+        return None
+
+    recap: dict[str, Any] = {
+        "version": _TURN_RECAP_VERSION,
+        "tools_used": tool_calls,
+        "artifact_refs": _extract_artifact_refs_from_output(output),
+        "assistant_takeaway": _extract_turn_recap_takeaway_from_output(
+            output,
+            fallback_content=assistant_content,
+        ),
+    }
+    if omitted_tool_call_count:
+        recap["omitted_tool_call_count"] = omitted_tool_call_count
+    return recap
+
+
+def render_turn_recap_message(turn_recap: dict[str, Any]) -> dict[str, str]:
+    lines = ["[Turn recap]"]
+
+    tools_used = turn_recap.get("tools_used") or []
+    if tools_used:
+        lines.append("tools_used:")
+        for entry in tools_used:
+            if not isinstance(entry, dict):
+                continue
+            tool_name = str(entry.get("tool_name") or "").strip() or "unknown_tool"
+            args_preview = _normalize_preview_text(entry.get("args_preview"))
+            if args_preview:
+                lines.append(f"- {tool_name} args={args_preview}")
+            else:
+                lines.append(f"- {tool_name}")
+
+    omitted_tool_call_count = int(turn_recap.get("omitted_tool_call_count") or 0)
+    if omitted_tool_call_count > 0:
+        lines.append(_TURN_RECAP_MORE_TOOLS_MARKER.format(count=omitted_tool_call_count))
+
+    artifact_refs = turn_recap.get("artifact_refs") or []
+    if artifact_refs:
+        lines.append("artifact_refs:")
+        for ref in artifact_refs:
+            normalized = _normalize_preview_text(ref)
+            if normalized:
+                lines.append(f"- {normalized}")
+
+    assistant_takeaway = _normalize_preview_text(turn_recap.get("assistant_takeaway"))
+    if assistant_takeaway:
+        lines.append("assistant_takeaway:")
+        lines.append(assistant_takeaway)
+
+    return {"role": "assistant", "content": "\n".join(lines).strip()}
+
+
+def rehydrate_output_for_exact_replay(output: list) -> list:
+    if not isinstance(output, list):
+        return output
+
+    hydrated_output: list[Any] = []
+    for item in output:
+        if not isinstance(item, dict):
+            hydrated_output.append(item)
+            continue
+
+        updated_item = dict(item)
+        if updated_item.get("type") == "function_call_output":
+            blocks = []
+            for block in updated_item.get("output", []) or []:
+                if not isinstance(block, dict):
+                    blocks.append(block)
+                    continue
+
+                updated_block = dict(block)
+                if updated_block.get("type") == "input_text":
+                    text_value = updated_block.get("text")
+                    if isinstance(text_value, str):
+                        updated_block["text"] = _rehydrate_tool_output_pointer_text(
+                            text_value
+                        )
+                blocks.append(updated_block)
+            updated_item["output"] = blocks
+
+        hydrated_output.append(updated_item)
+
+    return hydrated_output
+
+
+def detect_exact_tool_output_request(messages: list[dict]) -> bool:
+    user_text = get_last_user_message(messages) or ""
+    normalized = user_text.strip()
+    if not normalized:
+        return False
+
+    for pattern in _EXACT_TOOL_OUTPUT_STRONG_PATTERNS:
+        if pattern.search(normalized):
+            return True
+
+    return bool(
+        _EXACT_TOOL_OUTPUT_QUALIFIER_RE.search(normalized)
+        and _EXACT_TOOL_OUTPUT_TARGET_RE.search(normalized)
+    )
+
+
 def _strip_historical_reasoning_text(text_value: str) -> str:
     if not isinstance(text_value, str):
         return text_value
@@ -417,9 +721,49 @@ def sanitize_historical_message_for_llm(message: dict) -> dict:
     return sanitized
 
 
-def convert_output_to_history_messages(output: list) -> list[dict]:
-    messages = convert_output_to_messages(output, raw=ENABLE_HISTORY_REASONING_REPLAY)
+def convert_output_to_history_messages(
+    output: list,
+    *,
+    prefer_exact_tool_replay: bool = False,
+) -> list[dict]:
+    prepared_output = (
+        rehydrate_output_for_exact_replay(output)
+        if prefer_exact_tool_replay
+        else output
+    )
+    messages = convert_output_to_messages(
+        prepared_output, raw=ENABLE_HISTORY_REASONING_REPLAY
+    )
     return [sanitize_historical_message_for_llm(message) for message in messages]
+
+
+def history_message_to_llm_messages(
+    message: dict[str, Any],
+    *,
+    prefer_exact_tool_replay: bool = False,
+) -> list[dict[str, Any]]:
+    if not isinstance(message, dict):
+        return []
+
+    if (
+        not prefer_exact_tool_replay
+        and message.get("role") == "assistant"
+        and isinstance(message.get("turn_recap"), dict)
+    ):
+        return [render_turn_recap_message(message["turn_recap"])]
+
+    if isinstance(message.get("output"), list):
+        return convert_output_to_history_messages(
+            message["output"],
+            prefer_exact_tool_replay=prefer_exact_tool_replay,
+        )
+
+    clean_message = {
+        key: value
+        for key, value in message.items()
+        if key not in {"id", "parentId", "childrenIds", "files", "output", "turn_recap"}
+    }
+    return [sanitize_historical_message_for_llm(clean_message)]
 
 
 def get_last_user_message(messages: list[dict]) -> Optional[str]:

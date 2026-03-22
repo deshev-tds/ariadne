@@ -206,6 +206,38 @@ def test_history_message_to_llm_messages_uses_hygienic_replay(monkeypatch):
     assert "tool-result tool-result tool-result tool-result" not in llm_messages[1]["content"]
 
 
+def test_history_message_to_llm_messages_prefers_turn_recap_when_present():
+    message = _assistant_output_message(
+        "a3",
+        text="concise answer",
+        reasoning="private chain of thought",
+        tool_output="tool-result " * 10,
+    )
+    message["turn_recap"] = {
+        "version": 1,
+        "tools_used": [{"tool_name": "fetch_url", "args_preview": '{"url":"https://example.com"}'}],
+        "artifact_refs": ["/tmp/example.txt"],
+        "assistant_takeaway": "Summarized the fetched page.",
+    }
+
+    llm_messages = context_maintenance.history_message_to_llm_messages(message)
+
+    assert llm_messages == [
+        {
+            "role": "assistant",
+            "content": (
+                "[Turn recap]\n"
+                "tools_used:\n"
+                '- fetch_url args={\"url\":\"https://example.com\"}\n'
+                "artifact_refs:\n"
+                "- /tmp/example.txt\n"
+                "assistant_takeaway:\n"
+                "Summarized the fetched page."
+            ),
+        }
+    ]
+
+
 def test_resolve_runtime_model_reference_uses_base_model_metadata():
     base_model = {
         "id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS",

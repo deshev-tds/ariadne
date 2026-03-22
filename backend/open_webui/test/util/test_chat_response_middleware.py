@@ -101,6 +101,117 @@ def test_process_messages_with_output_omits_history_reasoning_and_caps_tool_outp
     assert processed[3]["content"] == "Before\n\nAfter"
 
 
+def test_process_messages_with_output_prefers_turn_recap_over_raw_tool_history():
+    messages = [
+        {
+            "role": "assistant",
+            "turn_recap": {
+                "version": 1,
+                "tools_used": [
+                    {
+                        "tool_name": "search_web",
+                        "args_preview": '{"q":"bari cocktails"}',
+                    }
+                ],
+                "artifact_refs": ["/tmp/tool-output.txt"],
+                "assistant_takeaway": "Collected the most relevant cocktail-bar leads.",
+            },
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "search_web",
+                    "arguments": '{"q":"bari cocktails"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": [{"type": "input_text", "text": "RAW TOOL OUTPUT"}],
+                },
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Visible answer"}],
+                },
+            ],
+        }
+    ]
+
+    processed = middleware.process_messages_with_output(messages)
+
+    assert processed == [
+        {
+            "role": "assistant",
+            "content": (
+                "[Turn recap]\n"
+                "tools_used:\n"
+                '- search_web args={\"q\":\"bari cocktails\"}\n'
+                "artifact_refs:\n"
+                "- /tmp/tool-output.txt\n"
+                "assistant_takeaway:\n"
+                "Collected the most relevant cocktail-bar leads."
+            ),
+        }
+    ]
+
+
+def test_process_messages_with_output_exact_rehydrates_pointer_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(misc, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+
+    artifact = tmp_path / "chat-1__demo" / "tool_outputs" / "result.txt"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("FULL TOOL OUTPUT", encoding="utf-8")
+
+    pointer_text = (
+        "[tool output truncated and persisted to disk]\n"
+        f"path: {artifact}\n"
+        "bytes: 123\n"
+        "sha256: deadbeef\n"
+        "preview_chars: 5\n"
+        "omitted_chars: 10\n\n"
+        "preview:\n"
+        "hello"
+    )
+
+    messages = [
+        {
+            "role": "assistant",
+            "turn_recap": {
+                "version": 1,
+                "tools_used": [{"tool_name": "run_command", "args_preview": "ls -la"}],
+                "artifact_refs": [str(artifact)],
+                "assistant_takeaway": "Captured the command result.",
+            },
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "run_command",
+                    "arguments": '{"cmd":"ls -la"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": [{"type": "input_text", "text": pointer_text}],
+                },
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Done"}],
+                },
+            ],
+        }
+    ]
+
+    processed = middleware.process_messages_with_output(
+        messages,
+        prefer_exact_tool_replay=True,
+    )
+
+    assert [item["role"] for item in processed] == ["assistant", "tool", "assistant"]
+    assert processed[0]["tool_calls"][0]["function"]["name"] == "run_command"
+    assert processed[1]["content"] == "FULL TOOL OUTPUT"
+    assert processed[2]["content"] == "Done"
+
+
 @pytest.mark.asyncio
 async def test_non_streaming_chat_response_persists_without_event_emitter(monkeypatch):
     saved_messages = []
@@ -170,6 +281,82 @@ async def test_non_streaming_chat_response_persists_without_event_emitter(monkey
     assert saved_messages[0][2]["content"] == "ok"
     assert saved_messages[0][2]["output"][0]["role"] == "assistant"
     assert saved_messages[0][2]["usage"]["completion_tokens"] == 1
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_chat_response_persists_turn_recap_for_tool_turn(monkeypatch):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {},
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    response = {
+        "choices": [{"message": {"content": "Grounded answer"}}],
+        "output": [
+            {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "search_web",
+                "arguments": '{"q":"bari cocktails"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": [{"type": "input_text", "text": "RAW TOOL OUTPUT"}],
+            },
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Grounded answer"}],
+            },
+        ],
+        "usage": {"completion_tokens": 1},
+    }
+
+    await non_streaming_chat_response_handler(response, ctx)
+
+    saved_payload = saved_messages[0][2]
+    assert saved_payload["turn_recap"]["version"] == 1
+    assert saved_payload["turn_recap"]["tools_used"][0]["tool_name"] == "search_web"
+    assert saved_payload["turn_recap"]["assistant_takeaway"] == "Grounded answer"
 
 
 @pytest.mark.asyncio

@@ -138,8 +138,10 @@ from open_webui.utils.misc import (
     prepend_to_first_user_message_content,
     convert_logit_bias_input_to_json,
     get_content_from_message,
+    build_turn_recap,
     convert_output_to_messages,
-    convert_output_to_history_messages,
+    detect_exact_tool_output_request,
+    history_message_to_llm_messages,
     sanitize_historical_message_for_llm,
 )
 from open_webui.utils.tools import (
@@ -7251,7 +7253,11 @@ async def _emit_context_maintenance_result_status(
         )
 
 
-def process_messages_with_output(messages: list[dict]) -> list[dict]:
+def process_messages_with_output(
+    messages: list[dict],
+    *,
+    prefer_exact_tool_replay: bool = False,
+) -> list[dict]:
     """
     Process messages with OR-aligned output items for LLM consumption.
 
@@ -7261,15 +7267,21 @@ def process_messages_with_output(messages: list[dict]) -> list[dict]:
     processed = []
 
     for message in messages:
-        if message.get("role") == "assistant" and message.get("output"):
-            # Use output items for clean OpenAI-format messages
-            output_messages = convert_output_to_history_messages(message["output"])
-            if output_messages:
-                processed.extend(output_messages)
+        if message.get("role") == "assistant" and (
+            message.get("output") or message.get("turn_recap")
+        ):
+            history_messages = history_message_to_llm_messages(
+                message,
+                prefer_exact_tool_replay=prefer_exact_tool_replay,
+            )
+            if history_messages:
+                processed.extend(history_messages)
                 continue
 
         # Strip 'output' field before adding (LLM shouldn't see it)
-        clean_message = {k: v for k, v in message.items() if k != "output"}
+        clean_message = {
+            k: v for k, v in message.items() if k not in {"output", "turn_recap"}
+        }
         processed.append(sanitize_historical_message_for_llm(clean_message))
 
     return processed
@@ -7316,6 +7328,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     event_caller = get_event_call(metadata)
     chat_recall_enabled = _resolve_chat_recall_enabled(request, user)
     memory_telemetry: dict[str, Any] = {}
+    exact_tool_output_replay = detect_exact_tool_output_request(
+        form_data.get("messages", [])
+    )
+    metadata["exact_tool_output_replay"] = exact_tool_output_replay
 
     if chat_recall_enabled and raw_history_messages:
         try:
@@ -7323,7 +7339,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         except Exception as exc:
             log.debug("Failed to enqueue chat recall backfill for %s: %s", chat_id, exc)
 
-    if _resolve_context_maintenance_enabled(request, user):
+    if exact_tool_output_replay:
+        memory_telemetry["exact_tool_output_replay"] = {
+            "triggered": True,
+            "mode": "explicit_request",
+        }
+
+    if _resolve_context_maintenance_enabled(request, user) and not exact_tool_output_replay:
         history_messages = raw_history_messages
         if history_messages is None:
             history_messages = [
@@ -7350,7 +7372,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             )
             memory_telemetry["working_memory"] = maintenance_result.get("telemetry") or {}
 
-    if chat_recall_enabled:
+    if chat_recall_enabled and not exact_tool_output_replay:
         branch_message_ids = (
             extract_branch_message_ids(raw_history_messages) if raw_history_messages else None
         )
@@ -7437,7 +7459,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         metadata = {**metadata, "tokenBranch": token_branch}
 
     # Process messages with OR-aligned output items for clean LLM messages
-    form_data["messages"] = process_messages_with_output(form_data.get("messages", []))
+    form_data["messages"] = process_messages_with_output(
+        form_data.get("messages", []),
+        prefer_exact_tool_replay=exact_tool_output_replay,
+    )
 
     system_message = get_system_message(form_data.get("messages", []))
     if system_message:  # Chat Controls/User Settings
@@ -8969,16 +8994,6 @@ async def non_streaming_chat_response_handler(response, ctx):
             response_data["choices"][0]["message"]["content"] = content
 
             if content:
-                if event_emitter:
-                    await event_emitter(
-                        {
-                            "type": "chat:completion",
-                            "data": response_data,
-                        }
-                    )
-
-                title = Chats.get_chat_title_by_id(metadata["chat_id"])
-
                 # Use output from backend if provided (OR-compliant backends),
                 # otherwise generate from response content
                 response_output = response_data.get("output")
@@ -8992,6 +9007,29 @@ async def non_streaming_chat_response_handler(response, ctx):
                             "content": [{"type": "output_text", "text": content}],
                         }
                     ]
+
+                turn_recap = build_turn_recap(
+                    response_output,
+                    assistant_content=content,
+                )
+
+                if event_emitter:
+                    if turn_recap and (
+                        metadata.get("params", {}).get("debug_memory_telemetry")
+                        or _is_debug_flag_enabled(
+                            metadata.get("params", {}).get("debug_tool_journey")
+                        )
+                    ):
+                        response_data["turnRecap"] = turn_recap
+
+                    await event_emitter(
+                        {
+                            "type": "chat:completion",
+                            "data": response_data,
+                        }
+                    )
+
+                title = Chats.get_chat_title_by_id(metadata["chat_id"])
 
                 if event_emitter:
                     await event_emitter(
@@ -9049,6 +9087,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                             if prompt_telemetry
                             else {}
                         ),
+                        **({"turn_recap": turn_recap} if turn_recap else {}),
                         **({"usage": usage} if usage else {}),
                     },
                 )
@@ -11083,11 +11122,16 @@ async def streaming_chat_response_handler(response, ctx):
                 if isinstance(tool_journey_telemetry, dict):
                     tool_journey_telemetry["completed_at"] = int(time.time())
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
+                finalized_content = _finalize_completed_reasoning_details(
+                    serialize_output(output)
+                )
+                turn_recap = build_turn_recap(
+                    output,
+                    assistant_content=finalized_content,
+                )
                 data = {
                     "done": True,
-                    "content": _finalize_completed_reasoning_details(
-                        serialize_output(output)
-                    ),
+                    "content": finalized_content,
                     "output": output,
                     "title": title,
                     **(
@@ -11116,6 +11160,17 @@ async def streaming_chat_response_handler(response, ctx):
                         if termination_cause
                         else {}
                     ),
+                    **(
+                        {"turnRecap": turn_recap}
+                        if turn_recap
+                        and (
+                            metadata.get("params", {}).get("debug_memory_telemetry")
+                            or _is_debug_flag_enabled(
+                                metadata.get("params", {}).get("debug_tool_journey")
+                            )
+                        )
+                        else {}
+                    ),
                 }
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
@@ -11124,9 +11179,7 @@ async def streaming_chat_response_handler(response, ctx):
                         metadata["chat_id"],
                         metadata["message_id"],
                         {
-                            "content": _finalize_completed_reasoning_details(
-                                serialize_output(output)
-                            ),
+                            "content": finalized_content,
                             "output": output,
                             **_offsec_guided_save_payload(metadata),
                             **({"usage": usage} if usage else {}),
@@ -11156,6 +11209,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 if termination_cause
                                 else {}
                             ),
+                            **({"turn_recap": turn_recap} if turn_recap else {}),
                         },
                     )
                 elif (
@@ -11183,6 +11237,8 @@ async def streaming_chat_response_handler(response, ctx):
                         update_payload["promptTelemetry"] = prompt_telemetry
                     if termination_cause:
                         update_payload["terminationCause"] = termination_cause
+                    if turn_recap:
+                        update_payload["turn_recap"] = turn_recap
                     Chats.upsert_message_to_chat_by_id_and_message_id(
                         metadata["chat_id"],
                         metadata["message_id"],
