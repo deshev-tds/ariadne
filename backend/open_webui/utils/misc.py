@@ -703,7 +703,11 @@ def _sanitize_historical_message_content(
     return content
 
 
-def sanitize_historical_message_for_llm(message: dict) -> dict:
+def sanitize_historical_message_for_llm(
+    message: dict,
+    *,
+    allow_full_tool_output: bool = False,
+) -> dict:
     sanitized = dict(message)
     role = str(sanitized.get("role") or "")
 
@@ -712,7 +716,7 @@ def sanitize_historical_message_for_llm(message: dict) -> dict:
             sanitized.get("content"),
             strip_reasoning=True,
         )
-    elif role == "tool":
+    elif role == "tool" and not allow_full_tool_output:
         sanitized["content"] = _sanitize_historical_message_content(
             sanitized.get("content"),
             tool_output_max_chars=HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS,
@@ -734,7 +738,13 @@ def convert_output_to_history_messages(
     messages = convert_output_to_messages(
         prepared_output, raw=ENABLE_HISTORY_REASONING_REPLAY
     )
-    return [sanitize_historical_message_for_llm(message) for message in messages]
+    return [
+        sanitize_historical_message_for_llm(
+            message,
+            allow_full_tool_output=prefer_exact_tool_replay,
+        )
+        for message in messages
+    ]
 
 
 def history_message_to_llm_messages(
@@ -763,7 +773,12 @@ def history_message_to_llm_messages(
         for key, value in message.items()
         if key not in {"id", "parentId", "childrenIds", "files", "output", "turn_recap"}
     }
-    return [sanitize_historical_message_for_llm(clean_message)]
+    return [
+        sanitize_historical_message_for_llm(
+            clean_message,
+            allow_full_tool_output=prefer_exact_tool_replay,
+        )
+    ]
 
 
 def get_last_user_message(messages: list[dict]) -> Optional[str]:

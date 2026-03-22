@@ -212,6 +212,51 @@ def test_process_messages_with_output_exact_rehydrates_pointer_output(tmp_path, 
     assert processed[2]["content"] == "Done"
 
 
+def test_process_messages_with_output_exact_replay_keeps_long_tool_output_untruncated(
+    monkeypatch,
+):
+    monkeypatch.setattr(misc, "HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS", 16)
+
+    long_output = "0123456789" * 20
+    messages = [
+        {
+            "role": "assistant",
+            "turn_recap": {
+                "version": 1,
+                "tools_used": [{"tool_name": "search_web", "args_preview": '{"q":"bari"}'}],
+                "artifact_refs": [],
+                "assistant_takeaway": "Captured the exact search response.",
+            },
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "search_web",
+                    "arguments": '{"q":"bari"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": [{"type": "input_text", "text": long_output}],
+                },
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Done"}],
+                },
+            ],
+        }
+    ]
+
+    processed = middleware.process_messages_with_output(
+        messages,
+        prefer_exact_tool_replay=True,
+    )
+
+    assert processed[1]["role"] == "tool"
+    assert processed[1]["content"] == long_output
+    assert "[historical tool output truncated for context replay]" not in processed[1]["content"]
+
+
 @pytest.mark.asyncio
 async def test_non_streaming_chat_response_persists_without_event_emitter(monkeypatch):
     saved_messages = []
