@@ -26,6 +26,10 @@ _HISTORICAL_REASONING_DETAILS_RE = re.compile(
     r'<details\b(?=[^>]*\btype="reasoning")[\s\S]*?</details>',
     re.IGNORECASE,
 )
+_HISTORICAL_TOOL_CALL_DETAILS_RE = re.compile(
+    r'<details\b(?=[^>]*\btype="tool_calls")[\s\S]*?</details>',
+    re.IGNORECASE,
+)
 _HISTORICAL_REASONING_TAG_RES = [
     re.compile(rf"<{tag}>\s*[\s\S]*?\s*</{tag}>", re.IGNORECASE)
     for tag in ("think", "thinking", "reason", "reasoning", "thought")
@@ -606,6 +610,15 @@ def _strip_historical_reasoning_text(text_value: str) -> str:
     return stripped.strip()
 
 
+def _strip_historical_tool_call_details(text_value: str) -> str:
+    if not isinstance(text_value, str):
+        return text_value
+
+    stripped = _HISTORICAL_TOOL_CALL_DETAILS_RE.sub("", text_value)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped)
+    return stripped.strip()
+
+
 def _truncate_historical_tool_output_for_replay(
     text_value: str,
     *,
@@ -641,12 +654,15 @@ def _sanitize_historical_message_content(
     content: object,
     *,
     strip_reasoning: bool = False,
+    strip_tool_details: bool = False,
     tool_output_max_chars: int | None = None,
 ) -> object:
     if isinstance(content, str):
         value = content
         if strip_reasoning:
             value = _strip_historical_reasoning_text(value)
+        if strip_tool_details:
+            value = _strip_historical_tool_call_details(value)
         if tool_output_max_chars is not None:
             value = _truncate_historical_tool_output_for_replay(
                 value,
@@ -663,12 +679,14 @@ def _sanitize_historical_message_content(
                     updated["text"] = _sanitize_historical_message_content(
                         updated.get("text"),
                         strip_reasoning=strip_reasoning,
+                        strip_tool_details=strip_tool_details,
                         tool_output_max_chars=tool_output_max_chars,
                     )
                 elif "content" in updated:
                     updated["content"] = _sanitize_historical_message_content(
                         updated.get("content"),
                         strip_reasoning=strip_reasoning,
+                        strip_tool_details=strip_tool_details,
                         tool_output_max_chars=tool_output_max_chars,
                     )
                 out.append(updated)
@@ -677,6 +695,7 @@ def _sanitize_historical_message_content(
                     _sanitize_historical_message_content(
                         item,
                         strip_reasoning=strip_reasoning,
+                        strip_tool_details=strip_tool_details,
                         tool_output_max_chars=tool_output_max_chars,
                     )
                 )
@@ -690,12 +709,14 @@ def _sanitize_historical_message_content(
             updated["text"] = _sanitize_historical_message_content(
                 updated.get("text"),
                 strip_reasoning=strip_reasoning,
+                strip_tool_details=strip_tool_details,
                 tool_output_max_chars=tool_output_max_chars,
             )
         elif "content" in updated:
             updated["content"] = _sanitize_historical_message_content(
                 updated.get("content"),
                 strip_reasoning=strip_reasoning,
+                strip_tool_details=strip_tool_details,
                 tool_output_max_chars=tool_output_max_chars,
             )
         return updated
@@ -715,6 +736,7 @@ def sanitize_historical_message_for_llm(
         sanitized["content"] = _sanitize_historical_message_content(
             sanitized.get("content"),
             strip_reasoning=True,
+            strip_tool_details=True,
         )
     elif role == "tool" and not allow_full_tool_output:
         sanitized["content"] = _sanitize_historical_message_content(
@@ -723,6 +745,14 @@ def sanitize_historical_message_for_llm(
         )
 
     return sanitized
+
+
+def _historical_content_has_value(content: object) -> bool:
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return bool(content)
+    return content is not None
 
 
 def convert_output_to_history_messages(
@@ -755,12 +785,17 @@ def history_message_to_llm_messages(
     if not isinstance(message, dict):
         return []
 
-    if (
-        not prefer_exact_tool_replay
-        and message.get("role") == "assistant"
-        and isinstance(message.get("turn_recap"), dict)
-    ):
-        return [render_turn_recap_message(message["turn_recap"])]
+    if not prefer_exact_tool_replay and message.get("role") == "assistant":
+        visible_message = {
+            key: value
+            for key, value in message.items()
+            if key not in {"id", "parentId", "childrenIds", "files", "output", "turn_recap"}
+        }
+        sanitized_visible_message = sanitize_historical_message_for_llm(visible_message)
+        if _historical_content_has_value(sanitized_visible_message.get("content")):
+            return [sanitized_visible_message]
+        if isinstance(message.get("turn_recap"), dict):
+            return [render_turn_recap_message(message["turn_recap"])]
 
     if isinstance(message.get("output"), list):
         return convert_output_to_history_messages(

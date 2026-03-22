@@ -81,6 +81,7 @@ def test_process_messages_with_output_omits_history_reasoning_and_caps_tool_outp
             "content": (
                 "Before\n"
                 '<details type="reasoning" done="true"><summary>Thought</summary>hidden</details>\n'
+                '<details type="tool_calls" done="true"><summary>Tool</summary>tool blob</details>\n'
                 "After"
             ),
         },
@@ -98,13 +99,19 @@ def test_process_messages_with_output_omits_history_reasoning_and_caps_tool_outp
     assert "X" * 33 not in processed[1]["content"]
     assert processed[2]["content"] == "Final answer"
     assert "details type=\"reasoning\"" not in processed[3]["content"]
+    assert "details type=\"tool_calls\"" not in processed[3]["content"]
     assert processed[3]["content"] == "Before\n\nAfter"
 
 
-def test_process_messages_with_output_prefers_turn_recap_over_raw_tool_history():
+def test_process_messages_with_output_prefers_sanitized_assistant_content_over_turn_recap():
     messages = [
         {
             "role": "assistant",
+            "content": (
+                '<details type="reasoning" done="true"><summary>Thought</summary>internal</details>\n'
+                '<details type="tool_calls" done="true"><summary>Tool Executed</summary>raw tool blob</details>\n'
+                "Visible answer with full table row A.\nVisible answer with full table row B."
+            ),
             "turn_recap": {
                 "version": 1,
                 "tools_used": [
@@ -133,6 +140,38 @@ def test_process_messages_with_output_prefers_turn_recap_over_raw_tool_history()
                     "content": [{"type": "output_text", "text": "Visible answer"}],
                 },
             ],
+        }
+    ]
+
+    processed = middleware.process_messages_with_output(messages)
+
+    assert processed == [
+        {
+            "role": "assistant",
+            "content": "Visible answer with full table row A.\nVisible answer with full table row B.",
+        }
+    ]
+
+
+def test_process_messages_with_output_falls_back_to_turn_recap_when_visible_content_missing():
+    messages = [
+        {
+            "role": "assistant",
+            "content": (
+                '<details type="reasoning" done="true"><summary>Thought</summary>internal</details>\n'
+                '<details type="tool_calls" done="true"><summary>Tool Executed</summary>raw tool blob</details>'
+            ),
+            "turn_recap": {
+                "version": 1,
+                "tools_used": [
+                    {
+                        "tool_name": "search_web",
+                        "args_preview": '{"q":"bari cocktails"}',
+                    }
+                ],
+                "artifact_refs": ["/tmp/tool-output.txt"],
+                "assistant_takeaway": "Collected the most relevant cocktail-bar leads.",
+            },
         }
     ]
 
