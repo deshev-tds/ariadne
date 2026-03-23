@@ -6,6 +6,7 @@
 
 - [Ariadne Roadmap](./ariadne-roadmap.md)
 - [Workflow Diary V1 Design](./workflow-diary-v1-design.md)
+- [Workflow Lessons Serving V0](./workflow-lessons-serving-v0.md)
 - [Offsec Harness Design](./offsec-harness-design.md)
 - [Security](./SECURITY.md)
 - [Contributing](./CONTRIBUTING.md)

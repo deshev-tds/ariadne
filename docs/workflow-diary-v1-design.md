@@ -13,6 +13,10 @@ The goal is to create a bounded, inspectable "garage notebook" for recurring wor
 
 This sits directly under [Ariadne Roadmap](./ariadne-roadmap.md) and is intended to be the first implementation-grade step toward the paper lessons worth borrowing.
 
+Consumer-facing follow-up:
+
+- [Workflow Lessons Serving V0](./workflow-lessons-serving-v0.md)
+
 ## Current Status
 
 `Workflow Diary V1` is no longer design-only.
@@ -35,6 +39,12 @@ What is still pending:
 - specialist enrichment
 - weekly aggregation and digesting
 - playbook extraction and promotion
+
+Important direction change:
+
+- remaining phases should target a compact model-facing lessons serving layer
+- raw diary packets and internal materialization rows are not meant to be injected into live model context directly
+- the builder-only serving contract now exists in [Workflow Lessons Serving V0](./workflow-lessons-serving-v0.md)
 
 Production validation on 2026-03-23 confirmed:
 
@@ -717,6 +727,12 @@ Add:
 - diary entry writing
 
 Still safe because runtime behavior remains unchanged.
+
+Important constraint:
+
+- this step should materialize into a structured internal lessons substrate that can later generate compact markdown serving cards
+- it should not produce verbose diary prose and expect the model to consume that directly
+- the existing target for that materialization is `workflow_lessons/internal/lessons-catalog.jsonl`
 
 ### Step 3. Specialist Enrichment
 
