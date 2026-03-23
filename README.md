@@ -31,6 +31,7 @@ In practice, the local stack behind Ariadne is centered on `llama.cpp`, OpenAI-c
 - [Token Exploration and Response Branching](#token-exploration-and-response-branching)
 - [Thinking / Reasoning Controls](#thinking--reasoning-controls)
 - [Recent Lessons](#recent-lessons)
+- [Workflow Learning Loop](docs/workflow-learning-loop.md)
 - [Ariadne Roadmap](docs/ariadne-roadmap.md)
 - [Compatibility / Install](#compatibility--install)
 
@@ -1172,6 +1173,22 @@ In that kind of setup, Ariadne's UI toggle is not inventing a new reasoning prot
 The important distinction here is attribution: most of the generic reasoning-tag handling, thought-block rendering, and provider-specific reasoning params come from Open WebUI itself. Ariadne's own contribution is to treat template-aware thinking control as operationally important for local `llama.cpp` deployments and describe it accordingly, without pretending that one toggle can force every model/backend pair into a coherent thinking mode.
 
 ## Recent Lessons
+
+### Workflow Learning Loop
+
+Ariadne now has a bounded workflow-learning loop that can:
+
+- capture trustworthy per-turn workflow evidence
+- materialize deterministic `observed` lesson rows
+- cluster repeated patterns across distinct chats
+- let the operator promote a repeated candidate into the curated lesson catalog
+- generate a compact serving card from that promoted lesson
+
+The important boundary is that this does **not** change live runtime behavior automatically.
+
+Runtime observations, repeated candidates, curated promoted lessons, and model-facing serving cards are deliberately separate layers.
+
+For the non-code explanation of what this is, why it works, how candidates are generated, and how the admin UI fits into the loop, see [Workflow Learning Loop](docs/workflow-learning-loop.md).
 
 ### What Actually Hurt, and What Finally Helped
 

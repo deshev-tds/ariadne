@@ -15,6 +15,7 @@ This sits directly under [Ariadne Roadmap](./ariadne-roadmap.md) and is intended
 
 Consumer-facing follow-up:
 
+- [Workflow Learning Loop](./workflow-learning-loop.md)
 - [Workflow Lessons Serving V0](./workflow-lessons-serving-v0.md)
 
 ## Current Status
@@ -50,8 +51,6 @@ What Phase 1A now does:
 
 What is still pending:
 
-- production validation of the registry-backed review/export CLI path
-- repeated-candidate accumulation on real host data
 - specialist enrichment
 - weekly aggregation and digesting
 - playbook extraction and promotion
@@ -92,12 +91,15 @@ Production validation on 2026-03-23 additionally confirmed:
 - a real Offsec guided turn materialized into an `offsec` diary entry with one `observed` candidate lesson row
 - the runtime lessons catalog rebuilt cleanly on-host from those entries
 - the serving builder accepted the runtime catalog and still emitted no lesson cards because all rows remained `observed`
+- two distinct research web-evidence chats formed one real `repeated` candidate on-host
+- that repeated candidate was exported into the curated repo-root catalog
+- the thin admin UI successfully promoted the lesson and the curated serving layer updated accordingly
 
 What production has not validated yet:
 
-- the new registry-backed review step over a real runtime catalog
-- the first real `repeated` candidate formed from distinct chats on-host
-- the curated export path from runtime repeated candidate into repo-root `workflow_lessons/`
+- specialist enrichment
+- broader repeated-candidate accumulation across more workflow families
+- any runtime consultation path based on promoted lessons
 
 ## Why This Exists
 

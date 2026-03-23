@@ -5,6 +5,7 @@
 ## Working Docs
 
 - [Ariadne Roadmap](./ariadne-roadmap.md)
+- [Workflow Learning Loop](./workflow-learning-loop.md)
 - [Workflow Diary V1 Design](./workflow-diary-v1-design.md)
 - [Workflow Lessons Serving V0](./workflow-lessons-serving-v0.md)
 - [Offsec Harness Design](./offsec-harness-design.md)
@@ -23,3 +24,5 @@ Ariadne closed its first full workflow-learning loop:
 - generated promoted serving card in `workflow_lessons/_serving/`
 
 This is the first end-to-end proof that the project can turn repeated workflows into inspectable, promoted operational lessons without changing live runtime behavior.
+
+If you want the non-code explanation of what the loop is, why it works, how candidates are generated, and how a repeated workflow becomes a promoted lesson, start with [Workflow Learning Loop](./workflow-learning-loop.md).

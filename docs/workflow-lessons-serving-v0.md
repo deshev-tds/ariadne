@@ -12,6 +12,8 @@ The relevant lesson from that paper for Ariadne is not autonomous self-rewriting
 
 It is that a system only improves if it can turn experience into reusable, inspectable lessons that later steps can actually consume.
 
+For the non-code overview of the full loop, see [Workflow Learning Loop](./workflow-learning-loop.md).
+
 ## Current Status
 
 `Workflow Lessons Serving V0` is now implemented as a builder-only layer.
@@ -26,6 +28,7 @@ Implemented pieces:
 - regression coverage in
   [test_workflow_lessons_serving.py](../backend/open_webui/test/util/test_workflow_lessons_serving.py)
 - three hand-authored `promoted` seed lessons spanning `research` and `offsec`
+- a thin admin UI for viewing `observed`, `repeated`, and curated `promoted` lessons and for one-by-one promotion of repeated candidates
 
 Validation completed on 2026-03-23:
 
@@ -40,7 +43,7 @@ Current constraints:
 - only hand-authored `promoted` seed lessons are surfaced from the repo-root curated workspace
 - diary-fed runtime lessons are still `observed` only and stay under `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime/`
 - `Workflow Diary` still does not promote anything into the repo-root catalog automatically
-- the registry-backed review/export path is implemented locally, but not yet production-validated on real repeated host data
+- the registry-backed review/export path is implemented
 
 Runtime state reached on 2026-03-23:
 
@@ -49,6 +52,7 @@ Runtime state reached on 2026-03-23:
 - the builder continued to emit no `_serving/lessons/*.md` files for that runtime root because no row was `promoted`
 - runtime lesson rows are now registry-backed through `workflow_lessons/internal/taxonomy-registry.json`
 - local review/export validation confirmed that repeated clustering and curated promotion now operate on canonical codes rather than on surface wording
+- production validation also confirmed the first full repeated-to-promoted path through the thin admin UI on real host data
 
 ## Why This Exists
 
