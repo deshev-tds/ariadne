@@ -41,6 +41,12 @@ Current constraints:
 - diary-fed runtime lessons are still `observed` only and stay under `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime/`
 - `Workflow Diary` still does not promote anything into the repo-root catalog automatically
 
+Runtime state reached on 2026-03-23:
+
+- `Workflow Diary Phase 1B` now writes real runtime `observed` lesson rows into `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime/internal/lessons-catalog.jsonl`
+- production validation confirmed one `research` row and one `offsec` row built cleanly into the runtime catalog
+- the builder continued to emit no `_serving/lessons/*.md` files for that runtime root because no row was `promoted`
+
 ## Why This Exists
 
 `Workflow Diary Phase 1A` already captures trustworthy per-turn operational snapshots.
@@ -217,9 +223,10 @@ That means:
 ## Immediate Next Steps
 
 1. Review real runtime `observed` lesson rows before adding enrichment or promotion logic.
-2. Keep diary-fed runtime rows separate from the curated repo-root catalog.
-3. Keep the serving layer builder as the only path that materializes model-facing lesson cards.
-4. Delay runtime consultation until diary-fed lesson rows prove useful in practice.
+2. Decide how `observed -> repeated` should work without auto-promoting noisy one-off rows.
+3. Keep diary-fed runtime rows separate from the curated repo-root catalog.
+4. Keep the serving layer builder as the only path that materializes model-facing lesson cards.
+5. Delay runtime consultation until diary-fed lesson rows prove useful in practice.
 
 Why this is next:
 

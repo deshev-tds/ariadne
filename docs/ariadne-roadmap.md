@@ -292,6 +292,7 @@ Current status:
 - production validation was completed on 2026-03-23 for the real native streaming tool path
 - `Workflow Lessons Serving V0` is implemented, deployed, and validated as the builder-only consumer-facing layer
 - `Phase 1B: Deterministic Materializer` is implemented as a manual/admin path
+- production validation was completed on 2026-03-23 for one real `research` turn and one real `offsec` turn through the materializer path
 - the remaining work for this milestone is enrichment and later aggregation, not first-turn capture or first-pass materialization
 
 Design doc:
@@ -330,14 +331,17 @@ What Phase 1A already covers:
 
 What still remains inside Milestone 1:
 
-- specialist enrichment fallback policy
 - review workflow for diary-fed runtime lesson rows
+- `observed -> repeated` policy
+- specialist enrichment fallback policy
+- optional maintenance/admin ergonomics beyond the current manual CLI
 
 Related implemented substrate:
 
 - `Workflow Lessons Serving V0` now exists as the builder-only consumer-facing layer for promoted lessons
 - production smoke confirmed the generated `_serving` layer exists on-host and does not change runtime behavior by itself
 - `Workflow Diary` now materializes deterministic `observed` lesson rows into a runtime catalog under `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime`
+- production smoke confirmed the runtime catalog rebuilds cleanly from real diary entries while keeping `_serving` empty for non-promoted rows
 
 ### Milestone 2. Weekly Background Digest V1
 
@@ -551,7 +555,7 @@ These may be revisited later, but they are intentionally out of scope for the cu
 
 The next implementation target should be:
 
-### `Workflow Diary V1` specialist enrichment and lesson-row review
+### `Workflow Diary V1` lesson-row review and promotion policy
 
 Reason:
 
@@ -559,13 +563,13 @@ Reason:
 - the lessons serving contract now exists too
 - the builder-only serving layer has already been deployed and smoke-validated on production
 - deterministic materialization now exists too
-- the next ROI move is to improve lesson quality and reviewability without changing runtime behavior
+- the next ROI move is to decide which runtime rows are worth keeping, repeating, or eventually promoting without changing runtime behavior
 
 Tactics:
 
 - keep deterministic materialization as the always-available baseline
-- add optional enrichment only after real runtime lesson rows prove worth refining
 - review diary-fed `observed` rows before deciding how `repeated` and `promoted` should work
+- add optional enrichment only after real runtime lesson rows prove worth refining
 - continue to defer runtime injection until the diary-fed lesson corpus proves useful
 
 If diary-fed lesson materialization is not useful in practice, the later digest/playbook phases should be reconsidered before more complexity is added.

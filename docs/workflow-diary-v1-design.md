@@ -41,6 +41,8 @@ What Phase 1A now does:
 
 What is still pending:
 
+- review workflow for diary-fed `observed` lesson rows
+- promotion-state policy beyond `observed`
 - specialist enrichment
 - weekly aggregation and digesting
 - playbook extraction and promotion
@@ -70,6 +72,13 @@ Local validation for `Phase 1B` confirmed:
 - deterministic candidate lessons rebuild into a runtime catalog under `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime/`
 - repeated materializer runs are idempotent for the same packet set
 - the runtime catalog remains builder-compatible while keeping `observed` rows out of `_serving`
+
+Production validation on 2026-03-23 additionally confirmed:
+
+- a real research web-evidence turn materialized into a `research` diary entry with one `observed` candidate lesson row
+- a real Offsec guided turn materialized into an `offsec` diary entry with one `observed` candidate lesson row
+- the runtime lessons catalog rebuilt cleanly on-host from those entries
+- the serving builder accepted the runtime catalog and still emitted no lesson cards because all rows remained `observed`
 
 ## Why This Exists
 
