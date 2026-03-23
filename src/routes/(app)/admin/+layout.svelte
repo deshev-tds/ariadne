@@ -95,6 +95,14 @@
 
 						<a
 							draggable="false"
+							class="min-w-fit p-1.5 {$page.url.pathname.includes('/admin/workflow-lessons')
+								? ''
+								: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition select-none"
+							href="/admin/workflow-lessons">{$i18n.t('Workflow Lessons')}</a
+						>
+
+						<a
+							draggable="false"
 							class="min-w-fit p-1.5 {$page.url.pathname.includes('/admin/functions')
 								? ''
 								: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition select-none"
