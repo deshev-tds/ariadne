@@ -282,6 +282,12 @@ Goal:
 
 - create the first real "garage notebook" for Ariadne
 
+Current status:
+
+- `Phase 1A: Persisted Operational Snapshot` is implemented
+- production validation was completed on 2026-03-23 for the real native streaming tool path
+- the remaining work for this milestone is diary materialization and later aggregation, not first-turn capture
+
 Design doc:
 
 - [Workflow Diary V1 Design](./workflow-diary-v1-design.md)
@@ -307,6 +313,19 @@ Depends on:
 - existing telemetry
 - existing chat artifacts
 - existing `source_diary` machinery as a starting point
+
+What Phase 1A already covers:
+
+- bounded per-turn packet capture
+- strict eligibility for operationally meaningful turns
+- chat-scoped packet identity
+- fail-open packet writing that does not change runtime behavior
+
+What still remains inside Milestone 1:
+
+- background diary materialization
+- specialist enrichment fallback policy
+- maintenance/admin trigger for off-hours generation
 
 ### Milestone 2. Weekly Background Digest V1
 
@@ -518,16 +537,14 @@ These may be revisited later, but they are intentionally out of scope for the cu
 
 ## Immediate Next Step
 
-The first implementation target should be:
+The next implementation target should be:
 
-### `Workflow Diary V1`
+### `Workflow Diary V1` background materialization
 
 Reason:
 
-- it is the lowest-risk, highest-ROI starting point
-- it gives Ariadne persistent workflow memory
-- it unlocks the weekly digest
-- it helps choose the real Workflow Pack V1 instead of inventing one from scratch
-- it is the first concrete step toward Ariadne learning operator heuristics instead of only replaying chat history
+- deterministic capture already exists, so the next ROI move is to turn raw packets into usable diary entries
+- this unlocks the weekly digest without revisiting Phase 1A foundations
+- it is the smallest next step that compounds the newly validated packet corpus
 
-If this milestone is not useful in practice, the rest of the roadmap should be reconsidered before more complexity is added.
+If the materialized diary is not useful in practice, the later digest/playbook phases should be reconsidered before more complexity is added.

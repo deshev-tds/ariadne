@@ -13,6 +13,41 @@ The goal is to create a bounded, inspectable "garage notebook" for recurring wor
 
 This sits directly under [Ariadne Roadmap](./ariadne-roadmap.md) and is intended to be the first implementation-grade step toward the paper lessons worth borrowing.
 
+## Current Status
+
+`Workflow Diary V1` is no longer design-only.
+
+`Phase 1A: Persisted Operational Snapshot` is implemented in:
+
+- [middleware.py](../backend/open_webui/utils/middleware.py)
+- [test_chat_response_middleware.py](../backend/open_webui/test/util/test_chat_response_middleware.py)
+
+What Phase 1A now does:
+
+- writes one bounded JSON packet per eligible assistant turn
+- builds the packet only from the exact persisted assistant payload plus minimal request context
+- runs immediately after assistant-message persistence in both streaming and non-streaming finalize paths
+- keeps packet identity chat-scoped by writing under `<chat_artifacts_dir>/workflow_diary/packets/<message_id>.json`
+
+What is still pending:
+
+- background diary materialization
+- specialist enrichment
+- weekly aggregation and digesting
+- playbook extraction and promotion
+
+Production validation on 2026-03-23 confirmed:
+
+- negative-control plain turns do not produce packets
+- native streaming tool turns do produce packets with `tool_calls_in_output`
+- the primary path uses persisted `output`, not `turn_recap` fallback, in the validated positive case
+- packet path isolation works for the same `message_id` reused in two different chats
+
+Known caveat:
+
+- for `GLM-4.7-Flash-UD-Q8_K_XL`, native non-streaming tool execution was not a reliable positive validation path on production at the time of validation
+- this was treated as a separate runtime/tool-continuation issue, not as a `Workflow Diary` regression
+
 ## Why This Exists
 
 Ariadne already has strong runtime substrate:
@@ -626,23 +661,26 @@ The design should be implementable with targeted changes in a small number of pl
 ### Primary backend touchpoints
 
 - `backend/open_webui/utils/middleware.py`
-  - build and write the capture packet near the existing post-turn background hooks
-  - schedule or mark pending diary materialization
-  - reuse the source-diary style artifact-writing pattern
+  - Phase 1A is implemented here
+  - normalize the exact saved assistant payload into a bounded workflow snapshot
+  - write the capture packet immediately after assistant-message persistence
+  - later phases should add materialization scheduling here only if needed
 - `backend/open_webui/utils/task.py`
+  - still pending
   - add a bounded specialist task kind for workflow diary generation if needed
 - `backend/open_webui/models/chats.py`
-  - likely no schema change required if the diary stays file-backed
+  - no schema change was required for Phase 1A
 
 ### Testing touchpoints
 
 - `backend/open_webui/test/util/test_chat_response_middleware.py`
-- new focused tests for:
+- Phase 1A coverage now includes:
   - eligibility rules
   - deterministic capture packet contents
-  - idempotent rewrite behavior
-  - deterministic-only fallback when no specialist is configured
-  - research turn integration with existing `source_diary`
+  - streaming/non-streaming normalization symmetry
+  - chat-scoped path isolation
+  - controlled fallback when `output` is missing
+  - fail-open behavior
   - no writes for `local:` chats
 
 ## Rollout Plan
@@ -663,6 +701,12 @@ Why first:
 
 - this starts collecting raw substrate immediately
 - it keeps the first implementation small and deterministic
+
+Status:
+
+- completed as `Phase 1A: Persisted Operational Snapshot`
+- implemented as an observer-only layer with no runtime behavior change
+- validated locally by middleware tests and on production through native streaming tool turns
 
 ### Step 2. Background Materializer
 
