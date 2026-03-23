@@ -10,6 +10,7 @@
 		getWorkflowLessonsState,
 		promoteWorkflowLessonCandidate,
 		runWorkflowLessonsReview,
+		unpromoteWorkflowLesson,
 		type WorkflowLessonRow,
 		type WorkflowLessonsState,
 		type WorkflowRepeatedCandidate
@@ -24,6 +25,7 @@
 	let loading = true;
 	let reviewLoading = false;
 	let promoteLoadingId: string | null = null;
+	let unpromoteLoadingId: string | null = null;
 	let lastError = '';
 	let state: WorkflowLessonsState | null = null;
 
@@ -143,6 +145,30 @@
 			toast.error(`${error}`);
 		} finally {
 			promoteLoadingId = null;
+		}
+	};
+
+	const unpromoteLesson = async (lesson: WorkflowLessonRow) => {
+		if (!lesson.can_unpromote) {
+			toast.error(lesson.unpromote_reason ?? 'This lesson cannot be unpromoted in V1.');
+			return;
+		}
+		if (!window.confirm(`Unpromote ${lesson.lesson_id}?`)) {
+			return;
+		}
+
+		unpromoteLoadingId = lesson.lesson_id;
+		lastError = '';
+		try {
+			const response = await unpromoteWorkflowLesson(localStorage.token, lesson.lesson_id);
+			applyState(response.state);
+			toast.success(`Unpromoted ${response.unpromote_summary.lesson_id}.`);
+		} catch (error) {
+			console.error('Workflow lesson unpromote failed:', error);
+			lastError = `${error}`;
+			toast.error(`${error}`);
+		} finally {
+			unpromoteLoadingId = null;
 		}
 	};
 
@@ -791,6 +817,33 @@
 												<div>
 													<span class="font-medium text-gray-900 dark:text-white">Updated:</span>
 													{formatDateTime(selectedPromotedRow.updated_at)}
+												</div>
+											</div>
+											<div class="space-y-2 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+												<div class="font-medium text-sm text-gray-900 dark:text-white">
+													Unpromote
+												</div>
+												{#if !selectedPromotedRow.can_unpromote}
+													<div class="text-xs text-gray-500 dark:text-gray-400">
+														{selectedPromotedRow.unpromote_reason ??
+															'This lesson cannot be unpromoted in V1.'}
+													</div>
+												{/if}
+												<div class="flex justify-end">
+													<button
+														class="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-red-500 dark:hover:bg-red-400"
+														disabled={!selectedPromotedRow.can_unpromote || unpromoteLoadingId === selectedPromotedRow.lesson_id}
+														on:click={() => unpromoteLesson(selectedPromotedRow)}
+													>
+														{#if unpromoteLoadingId === selectedPromotedRow.lesson_id}
+															<span class="inline-flex items-center gap-2">
+																<Spinner className="size-3" />
+																<span>Unpromoting</span>
+															</span>
+														{:else}
+															Unpromote
+														{/if}
+													</button>
 												</div>
 											</div>
 											<div class="space-y-2">

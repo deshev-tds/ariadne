@@ -316,3 +316,85 @@ def test_export_workflow_lesson_candidate_rejects_duplicate_signature_without_re
 
     assert summary.replaced is True
     assert [row.lesson_id for row in exported_rows] == ["offsec_guided_promoted"]
+
+
+def test_unpromote_workflow_lesson_removes_exported_row_and_rebuilds_serving(tmp_path):
+    curated_root = tmp_path / "workflow_lessons"
+    exported = workflow_lessons.build_registry_backed_workflow_lesson_row(
+        lesson_id="research_web_evidence_grounded_turn",
+        status="promoted",
+        pattern_key="research_web_evidence_grounded_turn",
+        condition_codes=[
+            "research_turn_used_bounded_web_evidence_tools",
+            "answer_depended_on_fetched_or_queried_web_sources",
+        ],
+        prefer_codes=[
+            "fetch_or_store_concrete_sources_before_synthesis",
+            "query_bounded_web_evidence_before_unsupported_synthesis",
+        ],
+        avoid_codes=["avoid_treating_broad_search_alone_as_sufficient_evidence"],
+        signal_codes=["web_evidence_tools_used_in_research_turn"],
+        source_turn_ids=["chat-a:msg-a", "chat-b:msg-b"],
+        updated_at="2026-03-23T20:14:39Z",
+        confidence_note="Promoted from repeated runtime lesson candidate after manual review.",
+        origin="workflow_lesson_export_v1:repeat_research_091e64051b1b",
+    )
+    workflow_lessons.write_workflow_lessons_catalog(
+        curated_root / "internal" / "lessons-catalog.jsonl",
+        [exported],
+    )
+    workflow_lessons.build_workflow_lessons_serving(curated_root)
+
+    summary = workflow_lessons_review.unpromote_workflow_lesson(
+        lesson_id="research_web_evidence_grounded_turn",
+        curated_root=curated_root,
+    )
+
+    exported_rows = workflow_lessons.load_workflow_lessons_catalog(
+        curated_root / "internal" / "lessons-catalog.jsonl"
+    )
+    assert summary.removed is True
+    assert exported_rows == []
+    assert not (
+        curated_root / "_serving" / "lessons" / "research_web_evidence_grounded_turn.md"
+    ).exists()
+
+
+def test_unpromote_workflow_lesson_rejects_seed_promoted_row(tmp_path):
+    curated_root = tmp_path / "workflow_lessons"
+    seed = workflow_lessons.build_registry_backed_workflow_lesson_row(
+        lesson_id="research_local_corpus_before_weighted_answer",
+        status="promoted",
+        pattern_key="research_local_corpus_grounded_turn",
+        condition_codes=[
+            "grounded_science_workflow_used_local_corpus_tools",
+            "question_compatible_with_local_corpus_evidence",
+        ],
+        prefer_codes=[
+            "narrow_local_corpus_before_synthesis",
+            "use_retrieved_local_evidence_before_answering_from_weights",
+        ],
+        avoid_codes=[
+            "avoid_unsupported_synthesis_when_local_evidence_available",
+        ],
+        signal_codes=[
+            "local_corpus_tools_used_in_grounded_research_turn",
+        ],
+        source_turn_ids=["seed:local_corpus_prefer_contract"],
+        updated_at="2026-03-23",
+        confidence_note="Matches the current local-corpus prefer contract and selector guidance.",
+        origin="seed:project_contract",
+    )
+    workflow_lessons.write_workflow_lessons_catalog(
+        curated_root / "internal" / "lessons-catalog.jsonl",
+        [seed],
+    )
+
+    with pytest.raises(
+        workflow_lessons.WorkflowLessonsError,
+        match="CLI-only in V1",
+    ):
+        workflow_lessons_review.unpromote_workflow_lesson(
+            lesson_id="research_local_corpus_before_weighted_answer",
+            curated_root=curated_root,
+        )

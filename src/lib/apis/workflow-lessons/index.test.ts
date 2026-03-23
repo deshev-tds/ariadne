@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	getWorkflowLessonsState,
 	promoteWorkflowLessonCandidate,
-	runWorkflowLessonsReview
+	runWorkflowLessonsReview,
+	unpromoteWorkflowLesson
 } from './index';
 
 describe('workflow lessons api helpers', () => {
@@ -38,7 +39,7 @@ describe('workflow lessons api helpers', () => {
 		expect(state.runtime.observed_rows).toEqual([]);
 	});
 
-	it('posts review and promote actions', async () => {
+	it('posts review, promote and unpromote actions', async () => {
 		const fetchMock = vi
 			.fn()
 			.mockResolvedValueOnce({
@@ -89,6 +90,29 @@ describe('workflow lessons api helpers', () => {
 						curated: { promoted_rows: [] }
 					}
 				})
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({
+					unpromote_summary: {
+						curated_root: '/tmp/curated',
+						lesson_id: 'research_web_evidence_before_synthesis',
+						removed: true,
+						dry_run: false,
+						serving_root: '/tmp/curated/_serving'
+					},
+					state: {
+						runtime_root: '/tmp/runtime',
+						curated_root: '/tmp/curated',
+						runtime: {
+							observed_rows: [],
+							repeated_candidates: [],
+							review_summary: null,
+							review_digest_markdown: null
+						},
+						curated: { promoted_rows: [] }
+					}
+				})
 			});
 		vi.stubGlobal('fetch', fetchMock);
 
@@ -98,6 +122,10 @@ describe('workflow lessons api helpers', () => {
 			'repeat_research_x',
 			'research_web_evidence_before_synthesis'
 		);
+		const unpromote = await unpromoteWorkflowLesson(
+			'token-1',
+			'research_web_evidence_before_synthesis'
+		);
 
 		expect(review.review_summary.repeated_candidates).toBe(1);
 		expect(fetchMock.mock.calls[0][0]).toContain('/workflow-lessons/review');
@@ -105,6 +133,10 @@ describe('workflow lessons api helpers', () => {
 			'research_web_evidence_before_synthesis'
 		);
 		expect(fetchMock.mock.calls[1][0]).toContain('/workflow-lessons/promote');
+		expect(unpromote.unpromote_summary.lesson_id).toBe(
+			'research_web_evidence_before_synthesis'
+		);
+		expect(fetchMock.mock.calls[2][0]).toContain('/workflow-lessons/unpromote');
 	});
 
 	it('throws backend error detail', async () => {

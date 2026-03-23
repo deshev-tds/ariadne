@@ -156,6 +156,8 @@ def test_workflow_lessons_state_exposes_existing_curated_signature(monkeypatch, 
     )
     assert payload["runtime"]["repeated_candidates"][0]["can_promote"] is False
     assert len(payload["curated"]["promoted_rows"]) == 1
+    assert payload["curated"]["promoted_rows"][0]["can_unpromote"] is False
+    assert "CLI-only in V1" in payload["curated"]["promoted_rows"][0]["unpromote_reason"]
 
 
 def test_workflow_lessons_review_endpoint_writes_repeated_candidates(monkeypatch, tmp_path):
@@ -310,3 +312,97 @@ def test_workflow_lessons_promote_endpoint_rejects_invalid_or_duplicate(monkeypa
 
     assert duplicate.status_code == 400
     assert "same canonical lesson signature" in duplicate.json()["detail"]
+
+
+def test_workflow_lessons_unpromote_endpoint_removes_exported_row(monkeypatch, tmp_path):
+    client, runtime_root, curated_root = _build_client(monkeypatch, tmp_path)
+
+    workflow_lessons.write_workflow_lessons_catalog(
+        runtime_root / "internal" / "lessons-catalog.jsonl",
+        [
+            _runtime_observed_row(
+                lesson_id="obs-a",
+                pattern_key="research_web_evidence_grounded_turn",
+                source_turn_id="chat-a:msg-a",
+                updated_at="2026-03-23T20:00:00Z",
+            ),
+            _runtime_observed_row(
+                lesson_id="obs-b",
+                pattern_key="research_web_evidence_grounded_turn",
+                source_turn_id="chat-b:msg-b",
+                updated_at="2026-03-23T20:05:00Z",
+            ),
+        ],
+    )
+    workflow_lessons_review.review_runtime_workflow_lessons(runtime_root=runtime_root)
+    candidate_id = workflow_lessons_review.load_repeated_candidates(
+        runtime_root / "internal" / "repeated-candidates.jsonl"
+    )[0]["candidate_id"]
+    client.post(
+        "/api/v1/workflow-lessons/promote",
+        json={
+            "candidate_id": candidate_id,
+            "target_lesson_id": "research_web_evidence_grounded_turn",
+        },
+    )
+
+    response = client.post(
+        "/api/v1/workflow-lessons/unpromote",
+        json={"lesson_id": "research_web_evidence_grounded_turn"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["unpromote_summary"]["lesson_id"] == "research_web_evidence_grounded_turn"
+    assert payload["state"]["curated"]["promoted_rows"] == []
+    assert payload["state"]["runtime"]["repeated_candidates"][0]["existing_curated_lesson_id"] is None
+    assert payload["state"]["runtime"]["repeated_candidates"][0]["can_promote"] is True
+    assert not (
+        curated_root / "_serving" / "lessons" / "research_web_evidence_grounded_turn.md"
+    ).exists()
+
+
+def test_workflow_lessons_unpromote_endpoint_rejects_unknown_or_seed(monkeypatch, tmp_path):
+    client, _, curated_root = _build_client(monkeypatch, tmp_path)
+    workflow_lessons.write_workflow_lessons_catalog(
+        curated_root / "internal" / "lessons-catalog.jsonl",
+        [],
+    )
+
+    unknown = client.post(
+        "/api/v1/workflow-lessons/unpromote",
+        json={"lesson_id": "missing_lesson"},
+    )
+    assert unknown.status_code == 400
+    assert "Unknown curated lesson id" in unknown.json()["detail"]
+
+    seed = workflow_lessons.build_registry_backed_workflow_lesson_row(
+        lesson_id="offsec_consult_before_guided_plan",
+        status="promoted",
+        pattern_key="offsec_guided_bounded_turn",
+        condition_codes=[
+            "guided_offsec_run_active",
+            "workflow_uses_bounded_execution_or_evidence_steps",
+        ],
+        prefer_codes=[
+            "keep_execution_bounded_to_active_step",
+            "register_plan_and_step_results_instead_of_free_form_loops",
+        ],
+        avoid_codes=["avoid_execution_drift_outside_guided_step"],
+        signal_codes=["guided_offsec_state_or_guided_tool_sequence_observed"],
+        source_turn_ids=["seed:offsec"],
+        updated_at="2026-03-23T19:00:00Z",
+        confidence_note="seed",
+        origin="seed:project_contract",
+    )
+    workflow_lessons.write_workflow_lessons_catalog(
+        curated_root / "internal" / "lessons-catalog.jsonl",
+        [seed],
+    )
+
+    seed_response = client.post(
+        "/api/v1/workflow-lessons/unpromote",
+        json={"lesson_id": "offsec_consult_before_guided_plan"},
+    )
+    assert seed_response.status_code == 400
+    assert "CLI-only in V1" in seed_response.json()["detail"]

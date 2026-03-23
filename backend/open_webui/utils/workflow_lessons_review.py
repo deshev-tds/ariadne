@@ -64,6 +64,25 @@ class WorkflowLessonExportSummary:
         return payload
 
 
+@dataclass(frozen=True)
+class WorkflowLessonUnpromoteSummary:
+    curated_root: Path
+    lesson_id: str
+    removed: bool
+    dry_run: bool
+    serving_root: Path
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["curated_root"] = str(self.curated_root)
+        payload["serving_root"] = str(self.serving_root)
+        return payload
+
+
+UNPROMOTE_EXPORT_ORIGIN_PREFIX = "workflow_lesson_export_v1:"
+UNPROMOTE_CLI_ONLY_REASON = "Seed/project-contract lessons are CLI-only in V1."
+
+
 def default_runtime_workflow_lessons_root(
     artifacts_root: str | Path = AGENTIC_ARTIFACTS_DIR,
 ) -> Path:
@@ -86,6 +105,18 @@ def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def _chat_id_from_source_turn_id(source_turn_id: str) -> str:
     return str(source_turn_id or "").split(":", 1)[0].strip()
+
+
+def workflow_lesson_unpromote_reason(row: WorkflowLessonRow) -> str | None:
+    if row.status != "promoted":
+        return "Only promoted lessons can be unpromoted in V1."
+    if str(row.origin or "").startswith(UNPROMOTE_EXPORT_ORIGIN_PREFIX):
+        return None
+    return UNPROMOTE_CLI_ONLY_REASON
+
+
+def workflow_lesson_can_unpromote(row: WorkflowLessonRow) -> bool:
+    return workflow_lesson_unpromote_reason(row) is None
 
 
 def _parse_repeated_candidate(raw: dict[str, Any]) -> dict[str, Any]:
@@ -438,6 +469,56 @@ def export_workflow_lesson_candidate(
         candidate_id=candidate_id,
         target_lesson_id=target_lesson_id,
         replaced=replaced,
+        dry_run=dry_run,
+        serving_root=curated_root_path / "_serving",
+    )
+
+
+def unpromote_workflow_lesson(
+    *,
+    lesson_id: str,
+    dry_run: bool = False,
+    curated_root: str | Path | None = None,
+    registry_path: str | Path | None = None,
+) -> WorkflowLessonUnpromoteSummary:
+    registry_path_value = (
+        Path(registry_path).expanduser().resolve()
+        if registry_path is not None
+        else default_workflow_lesson_registry_path().resolve()
+    )
+    curated_root_path = (
+        Path(curated_root).expanduser().resolve()
+        if curated_root is not None
+        else registry_path_value.parents[1]
+    )
+    curated_catalog_path = curated_root_path / "internal" / "lessons-catalog.jsonl"
+    existing_rows = load_workflow_lessons_catalog(
+        curated_catalog_path,
+        registry_path=registry_path_value,
+    )
+
+    existing_row = next((row for row in existing_rows if row.lesson_id == lesson_id), None)
+    if existing_row is None:
+        raise WorkflowLessonsError(f"Unknown curated lesson id: {lesson_id}")
+
+    reason = workflow_lesson_unpromote_reason(existing_row)
+    if reason is not None:
+        raise WorkflowLessonsError(reason)
+
+    next_rows = [row for row in existing_rows if row.lesson_id != lesson_id]
+
+    if not dry_run:
+        write_workflow_lessons_catalog(
+            curated_catalog_path,
+            next_rows,
+            registry_path=registry_path_value,
+        )
+        build_workflow_lessons_serving(curated_root_path)
+
+    return WorkflowLessonUnpromoteSummary(
+        curated_root=curated_root_path,
+        lesson_id=lesson_id,
+        removed=True,
         dry_run=dry_run,
         serving_root=curated_root_path / "_serving",
     )

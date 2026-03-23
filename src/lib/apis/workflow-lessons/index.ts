@@ -22,6 +22,8 @@ export type WorkflowLessonRow = {
 	confidence_note?: string;
 	evidence_refs?: string[];
 	origin?: string;
+	can_unpromote?: boolean;
+	unpromote_reason?: string | null;
 };
 
 export type WorkflowLessonsReviewSummary = {
@@ -96,6 +98,17 @@ export type WorkflowLessonsPromoteResponse = {
 	state: WorkflowLessonsState;
 };
 
+export type WorkflowLessonsUnpromoteResponse = {
+	unpromote_summary: {
+		curated_root: string;
+		lesson_id: string;
+		removed: boolean;
+		dry_run: boolean;
+		serving_root: string;
+	};
+	state: WorkflowLessonsState;
+};
+
 const fetchWorkflowLessons = async <T>(
 	path: string,
 	token: string,
@@ -153,6 +166,18 @@ export const promoteWorkflowLessonCandidate = async (
 		body: JSON.stringify({
 			candidate_id: candidateId,
 			target_lesson_id: targetLessonId
+		})
+	});
+};
+
+export const unpromoteWorkflowLesson = async (
+	token: string,
+	lessonId: string
+): Promise<WorkflowLessonsUnpromoteResponse> => {
+	return fetchWorkflowLessons<WorkflowLessonsUnpromoteResponse>('/unpromote', token, {
+		method: 'POST',
+		body: JSON.stringify({
+			lesson_id: lessonId
 		})
 	});
 };

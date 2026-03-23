@@ -27,6 +27,9 @@ from open_webui.utils.workflow_lessons_review import (
     export_workflow_lesson_candidate,
     load_repeated_candidates,
     review_runtime_workflow_lessons,
+    unpromote_workflow_lesson,
+    workflow_lesson_can_unpromote,
+    workflow_lesson_unpromote_reason,
 )
 
 router = APIRouter()
@@ -51,6 +54,15 @@ class WorkflowLessonsPromoteForm(BaseModel):
 
 class WorkflowLessonsPromoteResponse(BaseModel):
     export_summary: dict[str, Any]
+    state: WorkflowLessonsStateResponse
+
+
+class WorkflowLessonsUnpromoteForm(BaseModel):
+    lesson_id: str = Field(min_length=1)
+
+
+class WorkflowLessonsUnpromoteResponse(BaseModel):
+    unpromote_summary: dict[str, Any]
     state: WorkflowLessonsStateResponse
 
 
@@ -99,8 +111,19 @@ def _curated_signature_map(promoted_rows: list[WorkflowLessonRow]) -> dict[str, 
     return mapping
 
 
-def _serialize_rows(rows: list[WorkflowLessonRow]) -> list[dict[str, Any]]:
-    return [workflow_lesson_row_to_dict(row) for row in rows]
+def _serialize_rows(
+    rows: list[WorkflowLessonRow],
+    *,
+    include_unpromote_state: bool = False,
+) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for row in rows:
+        payload = workflow_lesson_row_to_dict(row)
+        if include_unpromote_state:
+            payload["can_unpromote"] = workflow_lesson_can_unpromote(row)
+            payload["unpromote_reason"] = workflow_lesson_unpromote_reason(row)
+        serialized.append(payload)
+    return serialized
 
 
 def _build_review_summary(
@@ -206,7 +229,10 @@ def build_workflow_lessons_state(
             "review_digest_markdown": review_digest_markdown,
         },
         curated={
-            "promoted_rows": _serialize_rows(promoted_rows),
+            "promoted_rows": _serialize_rows(
+                promoted_rows,
+                include_unpromote_state=True,
+            ),
         },
     )
 
@@ -274,5 +300,34 @@ async def promote_workflow_lesson(
 
     return WorkflowLessonsPromoteResponse(
         export_summary=summary.to_dict(),
+        state=state,
+    )
+
+
+@router.post("/unpromote", response_model=WorkflowLessonsUnpromoteResponse)
+async def unpromote_workflow_lesson_route(
+    form_data: WorkflowLessonsUnpromoteForm,
+    user=Depends(get_admin_user),
+):
+    lesson_id = form_data.lesson_id.strip()
+    if not lesson_id:
+        raise HTTPException(status_code=400, detail="`lesson_id` must not be empty")
+
+    try:
+        summary = unpromote_workflow_lesson(
+            lesson_id=lesson_id,
+            curated_root=_default_curated_root(),
+            registry_path=_default_registry_path(),
+        )
+        state = build_workflow_lessons_state(
+            runtime_root=_default_runtime_root(),
+            curated_root=_default_curated_root(),
+            registry_path=_default_registry_path(),
+        )
+    except WorkflowLessonsError as exc:
+        raise _workflow_lessons_http_error(exc) from exc
+
+    return WorkflowLessonsUnpromoteResponse(
+        unpromote_summary=summary.to_dict(),
         state=state,
     )
