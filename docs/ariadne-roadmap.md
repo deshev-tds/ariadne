@@ -333,11 +333,10 @@ What Phase 1A already covers:
 
 What still remains inside Milestone 1:
 
-- production validation of the registry-backed review/export path
-- accumulation of enough real runtime rows to exercise the first `repeated` candidate on-host
+- runtime consultation of curated promoted lessons during live work
 - a bounded quality-control specialist pass for noisy deterministic rows before they contaminate the repeated axis
 - specialist enrichment fallback policy
-- optional maintenance/admin ergonomics beyond the current manual CLI
+- optional maintenance/admin ergonomics beyond the current thin admin UI
 
 Related implemented substrate:
 
@@ -560,23 +559,27 @@ These may be revisited later, but they are intentionally out of scope for the cu
 
 The next implementation target should be:
 
-### `Workflow Diary V1` lesson-row review and promotion policy
+### `Runtime Lesson Consultation V1`
 
 Reason:
 
 - deterministic capture exists
-- the lessons serving contract now exists too
-- the builder-only serving layer has already been deployed and smoke-validated on production
-- deterministic materialization now exists too
-- registry-backed review/export now exists locally
-- the next ROI move is to validate that real runtime rows can accumulate into honest `repeated` candidates and then be exported safely into the curated policy layer
+- deterministic materialization exists
+- registry-backed repeated clustering exists
+- one-by-one curated promotion exists
+- the thin admin UI now proves the operator review/promotion loop on real host data
+- the next missing product step is not more storage, but actual bounded model-time consumption of curated promoted lessons
 
 Tactics:
 
-- keep deterministic materialization and registry-backed identity as the always-available baseline
-- validate the review/export CLI path on real host artifacts before adding more automation
-- add a short post-materialization quality-control pass only for rows that look semantically weak, timed out, or obviously low-signal
-- only after that, add optional enrichment on top of canonical rows rather than on free-form lesson text
-- continue to defer runtime injection until the diary-fed lesson corpus proves useful
+- consult only curated `promoted` lessons, never runtime `observed` or `repeated` rows
+- use generated serving cards as the model-facing format, not raw JSON catalogs
+- shortlist server-side by working mode / workflow family / canonical identity
+- inject at most one or two lesson cards ephemerally for the current turn
+- keep consultation separate from ledger, recall evidence, and raw tool instructions
+- continue to keep promotion manual and runtime consultation bounded
 
-If diary-fed lesson materialization is not useful in practice, the later digest/playbook phases should be reconsidered before more complexity is added.
+Follow-up after that:
+
+- add a short post-materialization quality-control pass only for rows that look semantically weak, timed out, or obviously low-signal
+- only after consultation proves useful, consider optional enrichment on top of canonical rows rather than on free-form lesson text
