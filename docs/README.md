@@ -10,3 +10,16 @@
 - [Offsec Harness Design](./offsec-harness-design.md)
 - [Security](./SECURITY.md)
 - [Contributing](./CONTRIBUTING.md)
+
+## Recent Milestone
+
+`2026-03-23`
+
+Ariadne closed its first full workflow-learning loop:
+
+- runtime `observed` lesson rows from real chats
+- deterministic `repeated` candidate formation across distinct chats
+- one-by-one export into the curated repo catalog
+- generated promoted serving card in `workflow_lessons/_serving/`
+
+This is the first end-to-end proof that the project can turn repeated workflows into inspectable, promoted operational lessons without changing live runtime behavior.

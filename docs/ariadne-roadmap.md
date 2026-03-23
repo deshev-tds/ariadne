@@ -335,6 +335,7 @@ What still remains inside Milestone 1:
 
 - production validation of the registry-backed review/export path
 - accumulation of enough real runtime rows to exercise the first `repeated` candidate on-host
+- a bounded quality-control specialist pass for noisy deterministic rows before they contaminate the repeated axis
 - specialist enrichment fallback policy
 - optional maintenance/admin ergonomics beyond the current manual CLI
 
@@ -574,6 +575,7 @@ Tactics:
 
 - keep deterministic materialization and registry-backed identity as the always-available baseline
 - validate the review/export CLI path on real host artifacts before adding more automation
+- add a short post-materialization quality-control pass only for rows that look semantically weak, timed out, or obviously low-signal
 - only after that, add optional enrichment on top of canonical rows rather than on free-form lesson text
 - continue to defer runtime injection until the diary-fed lesson corpus proves useful
 
