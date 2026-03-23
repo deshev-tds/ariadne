@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from starlette.responses import StreamingResponse
 
 from open_webui.retrieval.working_mode import normalize_working_mode
 import open_webui.utils.misc as misc
@@ -13,6 +14,7 @@ from open_webui.utils.middleware import (
     apply_params_to_form_data,
     background_tasks_handler,
     non_streaming_chat_response_handler,
+    streaming_chat_response_handler,
 )
 
 
@@ -42,7 +44,34 @@ def _build_request(
                 )
             )
         )
-)
+    )
+
+
+def _build_streaming_response(events: list[dict]) -> StreamingResponse:
+    async def _iterator():
+        for event in events:
+            yield f"data: {json.dumps(event)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_iterator(), media_type="text/event-stream")
+
+
+def _build_in_memory_chat_store():
+    store = {}
+
+    def _get_message(chat_id, message_id):
+        payload = store.get((chat_id, message_id))
+        if payload is None:
+            return None
+        return json.loads(json.dumps(payload))
+
+    def _upsert_message(chat_id, message_id, payload):
+        existing = dict(store.get((chat_id, message_id)) or {})
+        existing.update(json.loads(json.dumps(payload)))
+        store[(chat_id, message_id)] = existing
+        return None
+
+    return store, _get_message, _upsert_message
 
 
 def test_process_messages_with_output_omits_history_reasoning_and_caps_tool_output(
@@ -569,6 +598,578 @@ async def test_non_streaming_chat_response_persists_offsec_guided_state(monkeypa
     )
 
     assert saved_messages[0][2][middleware.GUIDED_STATE_KEY]["guided_run_id"] == "offsec-guided-test"
+
+
+def test_normalize_workflow_saved_payload_is_consistent_for_equivalent_shapes():
+    output = [
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "search_web",
+            "arguments": '{"q":"bari cocktails"}',
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Grounded answer"}],
+        },
+    ]
+    turn_recap = misc.build_turn_recap(output, assistant_content="Grounded answer")
+    metadata = {
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "user_prompt": "Find cocktail bars in Bari.",
+        "params": {
+            "working_mode": "science",
+            "local_corpus_mode": "prefer",
+            "function_calling": "default",
+        },
+    }
+    payload_a = {
+        "role": "assistant",
+        "content": "Grounded answer",
+        "output": output,
+        "turn_recap": turn_recap,
+        "toolJourneyTelemetry": {
+            "events": [{"phase": "tool_called", "tool": "search_web"}],
+            "capped": False,
+        },
+        "promptTelemetry": {
+            "entries": [{"provider": "openai"}],
+            "capped": False,
+        },
+    }
+    payload_b = {
+        "content": "Grounded answer",
+        "output": json.loads(json.dumps(output)),
+        "turn_recap": json.loads(json.dumps(turn_recap)),
+        "toolJourneyTelemetry": {
+            "events": [{"phase": "tool_called", "tool": "search_web"}],
+            "capped": False,
+        },
+        "promptTelemetry": {
+            "entries": [{"provider": "openai"}],
+            "capped": False,
+        },
+    }
+
+    normalized_a = middleware._normalize_workflow_saved_payload(
+        metadata=metadata,
+        saved_payload=payload_a,
+    )
+    normalized_b = middleware._normalize_workflow_saved_payload(
+        metadata=metadata,
+        saved_payload=payload_b,
+    )
+
+    assert normalized_a == normalized_b
+
+
+def test_build_workflow_capture_packet_skips_termination_cause_without_other_signals():
+    packet = middleware._build_workflow_capture_packet(
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "params": {},
+        },
+        saved_payload={
+            "content": "partial",
+            "terminationCause": {
+                "kind": "task_cancelled",
+                "phase": "streaming_chat_response_handler",
+            },
+        },
+    )
+
+    assert packet is None
+
+
+def test_build_workflow_capture_packet_uses_turn_recap_fallback_when_output_missing():
+    packet = middleware._build_workflow_capture_packet(
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "params": {"working_mode": "offsec"},
+        },
+        saved_payload={
+            "content": "Registered the step.",
+            "turn_recap": {
+                "version": 1,
+                "tools_used": [
+                    {"tool_name": "offsec_register_plan", "args_preview": "{}"},
+                    {"tool_name": "run_command", "args_preview": '{"cmd":"id"}'},
+                ],
+                "omitted_tool_call_count": 1,
+                "artifact_refs": [],
+                "assistant_takeaway": "Registered plan and began execution.",
+            },
+            middleware.GUIDED_STATE_KEY: {
+                "guided_run_id": "run-1",
+                "active_step_id": "step-1",
+                "remaining_step_run_command_budget": 7,
+            },
+        },
+    )
+
+    assert packet is not None
+    assert packet["tooling"]["source"] == "turn_recap"
+    assert packet["tooling"]["tool_names_partial"] is True
+    assert packet["tooling"]["tool_call_count"] == 3
+    assert packet["capture_reasons"] == ["offsec_guided_state", "turn_recap_present"]
+
+
+def test_capture_workflow_packet_is_chat_scoped(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_artifacts_dir",
+        lambda chat_id: tmp_path / chat_id,
+    )
+
+    path_a = middleware._capture_workflow_packet_from_saved_payload(
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "params": {"working_mode": "offsec"},
+        },
+        saved_payload={
+            "content": "A",
+            middleware.GUIDED_STATE_KEY: {"guided_run_id": "run-a"},
+        },
+    )
+    path_b = middleware._capture_workflow_packet_from_saved_payload(
+        metadata={
+            "chat_id": "chat-2",
+            "message_id": "msg-1",
+            "params": {"working_mode": "offsec"},
+        },
+        saved_payload={
+            "content": "B",
+            middleware.GUIDED_STATE_KEY: {"guided_run_id": "run-b"},
+        },
+    )
+
+    assert path_a is not None
+    assert path_b is not None
+    assert path_a != path_b
+    assert Path(path_a).exists()
+    assert Path(path_b).exists()
+    assert json.loads(Path(path_a).read_text(encoding="utf-8"))["chat_id"] == "chat-1"
+    assert json.loads(Path(path_b).read_text(encoding="utf-8"))["chat_id"] == "chat-2"
+
+
+def test_capture_workflow_packet_is_fail_open_when_writer_fails(monkeypatch):
+    monkeypatch.setattr(
+        middleware,
+        "_write_workflow_capture_packet",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = middleware._capture_workflow_packet_from_saved_payload(
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "params": {"working_mode": "offsec"},
+        },
+        saved_payload={
+            "content": "ok",
+            middleware.GUIDED_STATE_KEY: {"guided_run_id": "run-1"},
+        },
+    )
+
+    assert result is None
+
+
+def test_build_workflow_capture_packet_accepts_termination_cause_with_extra_signal():
+    packet = middleware._build_workflow_capture_packet(
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "params": {},
+        },
+        saved_payload={
+            "content": "partial",
+            "terminationCause": {
+                "kind": "task_cancelled",
+                "phase": "streaming_chat_response_handler",
+            },
+            "promptTelemetry": {"entries": [{"provider": "openai"}]},
+        },
+    )
+
+    assert packet is not None
+    assert packet["capture_reasons"] == ["termination_cause", "prompt_telemetry"]
+
+
+def test_capture_workflow_packet_skips_local_chat(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_artifacts_dir",
+        lambda chat_id: tmp_path / chat_id,
+    )
+
+    result = middleware._capture_workflow_packet_from_saved_payload(
+        metadata={
+            "chat_id": "local:chat-1",
+            "message_id": "msg-1",
+            "params": {"working_mode": "offsec"},
+        },
+        saved_payload={
+            "content": "ok",
+            middleware.GUIDED_STATE_KEY: {"guided_run_id": "run-1"},
+        },
+    )
+
+    assert result is None
+    assert not any(tmp_path.rglob("*.json"))
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_tool_turn_writes_workflow_capture_packet(
+    monkeypatch, tmp_path
+):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_artifacts_dir",
+        lambda chat_id: tmp_path / chat_id,
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {},
+            "user_prompt": "Find Bari cocktail bars.",
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    await non_streaming_chat_response_handler(
+        {
+            "choices": [{"message": {"content": "Grounded answer"}}],
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "search_web",
+                    "arguments": '{"q":"bari cocktails"}',
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Grounded answer"}],
+                },
+            ],
+        },
+        ctx,
+    )
+
+    packet_path = tmp_path / "chat-1" / "workflow_diary" / "packets" / "message-1.json"
+    assert packet_path.exists()
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    assert packet["capture_reasons"] == ["tool_calls_in_output", "turn_recap_present"]
+    assert packet["tooling"]["tool_call_count"] == 1
+    assert packet["tooling"]["tool_kinds_count"] == 1
+    assert packet["tooling"]["observed_tool_names"] == ["search_web"]
+    assert packet["request_context"]["working_mode"] == "science"
+    assert saved_messages[0][2]["turn_recap"]["version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_offsec_guided_turn_writes_workflow_capture_packet(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        lambda _chat_id, _message_id, _payload: None,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_artifacts_dir",
+        lambda chat_id: tmp_path / chat_id,
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {"working_mode": "offsec"},
+            "offsec_guided_state_effective": {
+                "guided_run_id": "offsec-guided-test",
+                "active_step_id": "step-1",
+                "remaining_step_run_command_budget": 8,
+            },
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    await non_streaming_chat_response_handler(
+        {
+            "choices": [{"message": {"content": "Registered the next step."}}],
+        },
+        ctx,
+    )
+
+    packet_path = tmp_path / "chat-1" / "workflow_diary" / "packets" / "message-1.json"
+    assert packet_path.exists()
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    assert packet["capture_reasons"] == ["offsec_guided_state"]
+    assert packet["offsec_snapshot"]["present"] is True
+    assert packet["tooling"]["tool_call_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_prompt_telemetry_only_turn_does_not_write_workflow_capture_packet(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        lambda _chat_id, _message_id, _payload: None,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_artifacts_dir",
+        lambda chat_id: tmp_path / chat_id,
+    )
+
+    prompt_telemetry = {
+        "enabled": True,
+        "entries": [{"provider": "openai", "payload": {"messages": []}}],
+        "capped": False,
+    }
+
+    ctx = {
+        "request": SimpleNamespace(
+            state=SimpleNamespace(metadata={"prompt_telemetry": prompt_telemetry}),
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            ),
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {"debug_prompt_telemetry": True},
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    await non_streaming_chat_response_handler(
+        {
+            "choices": [{"message": {"content": "ok"}}],
+        },
+        ctx,
+    )
+
+    packet_path = tmp_path / "chat-1" / "workflow_diary" / "packets" / "message-1.json"
+    assert not packet_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_turn_writes_workflow_capture_packet(monkeypatch, tmp_path):
+    store, get_message, upsert_message = _build_in_memory_chat_store()
+    emitted_events = []
+
+    async def _event_emitter(event):
+        emitted_events.append(event)
+
+    async def _event_caller(_event):
+        return None
+
+    async def _process_filter_functions(
+        request=None,
+        filter_functions=None,
+        filter_type=None,
+        form_data=None,
+        extra_params=None,
+    ):
+        return form_data, {}
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_message_by_id_and_message_id",
+        get_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        upsert_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_artifacts_dir",
+        lambda chat_id: tmp_path / chat_id,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "process_filter_functions",
+        _process_filter_functions,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "get_sorted_filter_ids",
+        lambda request, model, filter_ids: [],
+    )
+    monkeypatch.setattr(
+        middleware,
+        "ENABLE_REALTIME_CHAT_SAVE",
+        False,
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            state=SimpleNamespace(direct=False),
+            cookies={},
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    MODELS={"demo-model": {"id": "demo-model"}},
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            ),
+        ),
+        "form_data": {
+            "model": "demo-model",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        "user": SimpleNamespace(id="user-1"),
+        "model": {"id": "demo-model"},
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {},
+            "system_prompt": None,
+        },
+        "events": [],
+        "event_emitter": _event_emitter,
+        "event_caller": _event_caller,
+    }
+
+    response = _build_streaming_response(
+        [
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "id": "fc_1",
+                            "call_id": "call-1",
+                            "name": "search_web",
+                            "arguments": '{"q":"bari cocktails"}',
+                            "status": "completed",
+                        },
+                        {
+                            "type": "message",
+                            "id": "msg_1",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": "Grounded answer"}
+                            ],
+                        },
+                    ],
+                    "usage": {"output_tokens": 5},
+                },
+            }
+        ]
+    )
+
+    await streaming_chat_response_handler(response, ctx)
+
+    packet_path = tmp_path / "chat-1" / "workflow_diary" / "packets" / "message-1.json"
+    assert packet_path.exists()
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    assert packet["capture_reasons"] == ["tool_calls_in_output", "turn_recap_present"]
+    assert packet["tooling"]["tool_call_count"] == 1
+    assert packet["tooling"]["observed_tool_names"] == ["search_web"]
+    assert packet["tooling"]["tool_names_partial"] is False
+    assert any(event.get("type") == "chat:completion" for event in emitted_events)
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,7 @@ In practice, the local stack behind Ariadne is centered on `llama.cpp`, OpenAI-c
 - [Token Exploration and Response Branching](#token-exploration-and-response-branching)
 - [Thinking / Reasoning Controls](#thinking--reasoning-controls)
 - [Recent Lessons](#recent-lessons)
+- [Ariadne Roadmap](docs/ariadne-roadmap.md)
 - [Compatibility / Install](#compatibility--install)
 
 Reading paths:

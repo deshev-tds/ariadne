@@ -253,6 +253,14 @@ TOOL_NARRATION_PHASE_ORDER = {
     "evidence_check": 4,
     "final_response": 5,
 }
+
+WORKFLOW_DIARY_CAPTURE_VERSION = 1
+WORKFLOW_DIARY_CAPTURE_KIND = "workflow_capture"
+WORKFLOW_DIARY_MAX_CONTENT_PREVIEW_CHARS = 6000
+WORKFLOW_DIARY_MAX_USER_PROMPT_PREVIEW_CHARS = 3000
+WORKFLOW_DIARY_MAX_SUMMARY_KEYS = 12
+WORKFLOW_DIARY_MAX_SUMMARY_VALUES = 12
+WORKFLOW_DIARY_MAX_ARTIFACT_REFS = 8
 TOOL_NARRATION_TOOL_PHASES = {
     "offsec_consult": "orientation",
     "offsec_register_plan": "planning",
@@ -502,6 +510,415 @@ def _offsec_guided_state_from_metadata(metadata: dict[str, Any] | None) -> dict[
 def _offsec_guided_save_payload(metadata: dict[str, Any] | None) -> dict[str, Any]:
     state = _offsec_guided_state_from_metadata(metadata)
     return {GUIDED_STATE_KEY: state} if isinstance(state, dict) else {}
+
+
+def _truncate_workflow_diary_text(value: Any, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}\n...[truncated]"
+
+
+def _workflow_diary_timestamp_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _workflow_diary_unique_strings(
+    values: list[Any],
+    *,
+    limit: int = WORKFLOW_DIARY_MAX_SUMMARY_VALUES,
+) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def _workflow_diary_summary_keys(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    return sorted(str(key) for key in payload.keys())[:WORKFLOW_DIARY_MAX_SUMMARY_KEYS]
+
+
+def _workflow_diary_content_preview(saved_payload: dict[str, Any]) -> str:
+    content = saved_payload.get("content")
+    if isinstance(content, str):
+        return _truncate_workflow_diary_text(
+            content, WORKFLOW_DIARY_MAX_CONTENT_PREVIEW_CHARS
+        )
+    if isinstance(content, list):
+        extracted = get_content_from_message({"content": content}) or ""
+        return _truncate_workflow_diary_text(
+            extracted, WORKFLOW_DIARY_MAX_CONTENT_PREVIEW_CHARS
+        )
+    return ""
+
+
+def _workflow_diary_tooling_from_output(output: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(output, list):
+        return None
+
+    tool_names: list[str] = []
+    tool_call_count = 0
+
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        tool_call_count += 1
+        tool_name = str(item.get("name") or "").strip()
+        if tool_name and tool_name not in tool_names:
+            tool_names.append(tool_name)
+
+    return {
+        "observed_tool_names": tool_names,
+        "tool_call_count": tool_call_count,
+        "tool_kinds_count": len(tool_names),
+        "tool_names_partial": False,
+        "source": "output",
+    }
+
+
+def _workflow_diary_tooling_from_turn_recap(turn_recap: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(turn_recap, dict):
+        return None
+
+    tools_used = turn_recap.get("tools_used") or []
+    if not isinstance(tools_used, list) or not tools_used:
+        return None
+
+    tool_names: list[str] = []
+    visible_tool_count = 0
+
+    for entry in tools_used:
+        if not isinstance(entry, dict):
+            continue
+        visible_tool_count += 1
+        tool_name = str(entry.get("tool_name") or "").strip()
+        if tool_name and tool_name not in tool_names:
+            tool_names.append(tool_name)
+
+    omitted_tool_call_count = int(turn_recap.get("omitted_tool_call_count") or 0)
+
+    return {
+        "observed_tool_names": tool_names,
+        "tool_call_count": visible_tool_count + omitted_tool_call_count,
+        "tool_kinds_count": len(tool_names),
+        "tool_names_partial": True,
+        "source": "turn_recap",
+    }
+
+
+def _workflow_diary_tooling_snapshot(saved_payload: dict[str, Any]) -> dict[str, Any]:
+    output_tooling = _workflow_diary_tooling_from_output(saved_payload.get("output"))
+    if output_tooling is not None and output_tooling.get("tool_call_count", 0) > 0:
+        return output_tooling
+
+    if saved_payload.get("output") is None:
+        recap_tooling = _workflow_diary_tooling_from_turn_recap(
+            saved_payload.get("turn_recap")
+        )
+        if recap_tooling is not None:
+            return recap_tooling
+
+    return {
+        "observed_tool_names": [],
+        "tool_call_count": 0,
+        "tool_kinds_count": 0,
+        "tool_names_partial": False,
+        "source": "none",
+    }
+
+
+def _workflow_diary_artifact_refs(turn_recap: Any) -> list[str]:
+    if not isinstance(turn_recap, dict):
+        return []
+    refs = turn_recap.get("artifact_refs") or []
+    entries: list[str] = []
+    for ref in refs:
+        normalized = str(ref or "").strip()
+        if not normalized:
+            continue
+        entries.append(normalized)
+        if len(entries) >= WORKFLOW_DIARY_MAX_ARTIFACT_REFS:
+            break
+    return entries
+
+
+def _workflow_diary_memory_telemetry_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"present": False}
+
+    ledger = payload.get("ledger") or {}
+    recall = payload.get("recall") or {}
+    return {
+        "present": True,
+        "keys": _workflow_diary_summary_keys(payload),
+        "ledger_injected": (
+            bool(ledger.get("injected")) if isinstance(ledger, dict) else None
+        ),
+        "recall_reason": (
+            str(recall.get("reason") or "").strip() if isinstance(recall, dict) else ""
+        ),
+        "recall_hit_count": (
+            int(recall.get("hit_count") or 0) if isinstance(recall, dict) else 0
+        ),
+    }
+
+
+def _workflow_diary_tool_journey_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"present": False}
+
+    events = payload.get("events") or []
+    if not isinstance(events, list):
+        events = []
+
+    phases = _workflow_diary_unique_strings(
+        [event.get("phase") for event in events if isinstance(event, dict)]
+    )
+    tools = _workflow_diary_unique_strings(
+        [event.get("tool") for event in events if isinstance(event, dict)]
+    )
+
+    return {
+        "present": True,
+        "keys": _workflow_diary_summary_keys(payload),
+        "event_count": len(events),
+        "phases": phases,
+        "tools": tools,
+        "capped": bool(payload.get("capped")),
+    }
+
+
+def _workflow_diary_prompt_telemetry_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"present": False}
+
+    entries = payload.get("entries") or []
+    return {
+        "present": True,
+        "keys": _workflow_diary_summary_keys(payload),
+        "entry_count": len(entries) if isinstance(entries, list) else 0,
+        "capped": bool(payload.get("capped")),
+    }
+
+
+def _workflow_diary_offsec_snapshot(saved_payload: dict[str, Any]) -> dict[str, Any]:
+    state = saved_payload.get(GUIDED_STATE_KEY)
+    if not isinstance(state, dict):
+        return {"present": False}
+
+    return {
+        "present": True,
+        "guided_run_id": str(state.get("guided_run_id") or "").strip(),
+        "active_step_id": str(state.get("active_step_id") or "").strip(),
+        "waiting_for_confirmation": bool(state.get("waiting_for_confirmation")),
+        "current_step_run_command_count": int(
+            state.get("current_step_run_command_count") or 0
+        ),
+        "remaining_step_run_command_budget": int(
+            state.get("remaining_step_run_command_budget") or 0
+        ),
+    }
+
+
+def _normalize_workflow_saved_payload(
+    *,
+    metadata: dict[str, Any] | None,
+    saved_payload: dict[str, Any],
+) -> dict[str, Any]:
+    params = (metadata or {}).get("params") or {}
+    turn_recap = (
+        copy.deepcopy(saved_payload.get("turn_recap"))
+        if isinstance(saved_payload.get("turn_recap"), dict)
+        else None
+    )
+    request_context = {
+        "working_mode": _normalized_working_mode(params),
+        "local_corpus_mode": normalize_local_corpus_mode(
+            params.get("local_corpus_mode")
+        ),
+        "function_calling": str(params.get("function_calling") or "default"),
+    }
+
+    user_prompt = str((metadata or {}).get("user_prompt") or "").strip()
+    if user_prompt:
+        request_context["user_prompt_preview"] = _truncate_workflow_diary_text(
+            user_prompt,
+            WORKFLOW_DIARY_MAX_USER_PROMPT_PREVIEW_CHARS,
+        )
+
+    return {
+        "request_context": request_context,
+        "assistant_snapshot": {
+            "content_preview": _workflow_diary_content_preview(saved_payload),
+            "turn_recap_present": turn_recap is not None,
+            "termination_cause": (
+                copy.deepcopy(saved_payload.get("terminationCause"))
+                if isinstance(saved_payload.get("terminationCause"), dict)
+                else None
+            ),
+            "artifact_refs": _workflow_diary_artifact_refs(turn_recap),
+        },
+        "tooling": _workflow_diary_tooling_snapshot(saved_payload),
+        "telemetry_presence": {
+            "memory": _workflow_diary_memory_telemetry_summary(
+                saved_payload.get("memoryTelemetry")
+            ),
+            "tool_journey": _workflow_diary_tool_journey_summary(
+                saved_payload.get("toolJourneyTelemetry")
+            ),
+            "prompt": _workflow_diary_prompt_telemetry_summary(
+                saved_payload.get("promptTelemetry")
+            ),
+        },
+        "offsec_snapshot": _workflow_diary_offsec_snapshot(saved_payload),
+    }
+
+
+def _workflow_capture_reasons(normalized_snapshot: dict[str, Any]) -> Optional[list[str]]:
+    tooling = normalized_snapshot.get("tooling") or {}
+    assistant_snapshot = normalized_snapshot.get("assistant_snapshot") or {}
+    telemetry_presence = normalized_snapshot.get("telemetry_presence") or {}
+    offsec_snapshot = normalized_snapshot.get("offsec_snapshot") or {}
+
+    strong_reasons: list[str] = []
+    if int(tooling.get("tool_call_count") or 0) > 0 and tooling.get("source") == "output":
+        strong_reasons.append("tool_calls_in_output")
+    if offsec_snapshot.get("present"):
+        strong_reasons.append("offsec_guided_state")
+
+    weak_reasons: list[str] = []
+    if assistant_snapshot.get("termination_cause") is not None:
+        weak_reasons.append("termination_cause")
+    if assistant_snapshot.get("turn_recap_present"):
+        weak_reasons.append("turn_recap_present")
+    if (telemetry_presence.get("memory") or {}).get("present"):
+        weak_reasons.append("memory_telemetry")
+    if (telemetry_presence.get("tool_journey") or {}).get("present"):
+        weak_reasons.append("tool_journey_telemetry")
+    if (telemetry_presence.get("prompt") or {}).get("present"):
+        weak_reasons.append("prompt_telemetry")
+
+    if strong_reasons:
+        return [*strong_reasons, *weak_reasons]
+
+    if "termination_cause" in weak_reasons and len(weak_reasons) >= 2:
+        return weak_reasons
+
+    return None
+
+
+def _build_workflow_capture_packet(
+    *,
+    metadata: dict[str, Any] | None,
+    saved_payload: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    normalized_snapshot = _normalize_workflow_saved_payload(
+        metadata=metadata,
+        saved_payload=copy.deepcopy(saved_payload),
+    )
+    capture_reasons = _workflow_capture_reasons(normalized_snapshot)
+    if not capture_reasons:
+        return None
+
+    chat_id = str((metadata or {}).get("chat_id") or "").strip()
+    message_id = str((metadata or {}).get("message_id") or "").strip()
+
+    return {
+        "version": WORKFLOW_DIARY_CAPTURE_VERSION,
+        "kind": WORKFLOW_DIARY_CAPTURE_KIND,
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "captured_at": _workflow_diary_timestamp_iso(),
+        **normalized_snapshot,
+        "capture_reasons": capture_reasons,
+    }
+
+
+def _write_workflow_capture_packet(
+    *,
+    chat_id: str,
+    message_id: str,
+    packet: dict[str, Any],
+) -> str:
+    chat_dir = _resolve_chat_artifacts_dir(chat_id)
+    if chat_dir is None:
+        raise ValueError(
+            "Unable to resolve chat artifacts directory for workflow diary packet"
+        )
+
+    packet_dir = chat_dir / "workflow_diary" / "packets"
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    target_path = packet_dir / f"{message_id}.json"
+    temp_path = packet_dir / f".{message_id}.{uuid4().hex}.tmp"
+    temp_path.write_text(
+        json.dumps(packet, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+        errors="replace",
+    )
+    temp_path.replace(target_path)
+    return str(target_path)
+
+
+def _capture_workflow_packet_from_saved_payload(
+    *,
+    metadata: dict[str, Any] | None,
+    saved_payload: dict[str, Any] | None,
+) -> Optional[str]:
+    if not isinstance(saved_payload, dict):
+        return None
+
+    chat_id = str((metadata or {}).get("chat_id") or "").strip()
+    message_id = str((metadata or {}).get("message_id") or "").strip()
+    if not chat_id or not message_id or chat_id.startswith("local:"):
+        return None
+
+    try:
+        packet = _build_workflow_capture_packet(
+            metadata=metadata,
+            saved_payload=saved_payload,
+        )
+        if not packet:
+            return None
+        return _write_workflow_capture_packet(
+            chat_id=chat_id,
+            message_id=message_id,
+            packet=packet,
+        )
+    except Exception as exc:
+        log.warning(
+            "Failed to capture workflow diary packet for %s/%s: %s",
+            chat_id,
+            message_id,
+            exc,
+        )
+        return None
+
+
+def _upsert_assistant_message_with_workflow_capture(
+    *,
+    metadata: dict[str, Any] | None,
+    saved_payload: dict[str, Any],
+) -> None:
+    chat_id = str((metadata or {}).get("chat_id") or "").strip()
+    message_id = str((metadata or {}).get("message_id") or "").strip()
+    Chats.upsert_message_to_chat_by_id_and_message_id(
+        chat_id,
+        message_id,
+        saved_payload,
+    )
+    _capture_workflow_packet_from_saved_payload(
+        metadata=metadata,
+        saved_payload=saved_payload,
+    )
 
 
 def _set_offsec_guided_effective_state(
@@ -9062,34 +9479,25 @@ async def non_streaming_chat_response_handler(response, ctx):
 
                 # Save message in the database
                 usage = normalize_usage(response_data.get("usage", {}) or {})
-
-                Chats.upsert_message_to_chat_by_id_and_message_id(
-                    metadata["chat_id"],
-                    metadata["message_id"],
-                    {
-                        "role": "assistant",
-                        "content": content,
-                        "output": response_output,
-                        **_offsec_guided_save_payload(metadata),
-                        **(
-                            {"tokenTelemetry": token_telemetry}
-                            if token_telemetry
-                            else {}
-                        ),
-                        **({"tokenBranch": token_branch} if token_branch else {}),
-                        **(
-                            {"toolJourneyTelemetry": tool_journey_telemetry}
-                            if tool_journey_telemetry
-                            else {}
-                        ),
-                        **(
-                            {"promptTelemetry": prompt_telemetry}
-                            if prompt_telemetry
-                            else {}
-                        ),
-                        **({"turn_recap": turn_recap} if turn_recap else {}),
-                        **({"usage": usage} if usage else {}),
-                    },
+                saved_payload = {
+                    "role": "assistant",
+                    "content": content,
+                    "output": response_output,
+                    **_offsec_guided_save_payload(metadata),
+                    **({"tokenTelemetry": token_telemetry} if token_telemetry else {}),
+                    **({"tokenBranch": token_branch} if token_branch else {}),
+                    **(
+                        {"toolJourneyTelemetry": tool_journey_telemetry}
+                        if tool_journey_telemetry
+                        else {}
+                    ),
+                    **({"promptTelemetry": prompt_telemetry} if prompt_telemetry else {}),
+                    **({"turn_recap": turn_recap} if turn_recap else {}),
+                    **({"usage": usage} if usage else {}),
+                }
+                _upsert_assistant_message_with_workflow_capture(
+                    metadata=metadata,
+                    saved_payload=saved_payload,
                 )
 
                 # Send a webhook notification if the user is not active
@@ -11172,45 +11580,36 @@ async def streaming_chat_response_handler(response, ctx):
                         else {}
                     ),
                 }
+                saved_payload = {
+                    "content": finalized_content,
+                    "output": output,
+                    **_offsec_guided_save_payload(metadata),
+                    **({"usage": usage} if usage else {}),
+                    **({"tokenTelemetry": token_telemetry} if token_telemetry else {}),
+                    **({"tokenBranch": token_branch} if token_branch else {}),
+                    **(
+                        {"memoryTelemetry": memory_telemetry}
+                        if memory_telemetry
+                        else {}
+                    ),
+                    **(
+                        {"toolJourneyTelemetry": tool_journey_telemetry}
+                        if tool_journey_telemetry
+                        else {}
+                    ),
+                    **({"promptTelemetry": prompt_telemetry} if prompt_telemetry else {}),
+                    **(
+                        {"terminationCause": termination_cause}
+                        if termination_cause
+                        else {}
+                    ),
+                    **({"turn_recap": turn_recap} if turn_recap else {}),
+                }
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
-                    # Save message in the database
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        {
-                            "content": finalized_content,
-                            "output": output,
-                            **_offsec_guided_save_payload(metadata),
-                            **({"usage": usage} if usage else {}),
-                            **(
-                                {"tokenTelemetry": token_telemetry}
-                                if token_telemetry
-                                else {}
-                            ),
-                            **({"tokenBranch": token_branch} if token_branch else {}),
-                            **(
-                                {"memoryTelemetry": memory_telemetry}
-                                if memory_telemetry
-                                else {}
-                            ),
-                            **(
-                                {"toolJourneyTelemetry": tool_journey_telemetry}
-                                if tool_journey_telemetry
-                                else {}
-                            ),
-                            **(
-                                {"promptTelemetry": prompt_telemetry}
-                                if prompt_telemetry
-                                else {}
-                            ),
-                            **(
-                                {"terminationCause": termination_cause}
-                                if termination_cause
-                                else {}
-                            ),
-                            **({"turn_recap": turn_recap} if turn_recap else {}),
-                        },
+                    _upsert_assistant_message_with_workflow_capture(
+                        metadata=metadata,
+                        saved_payload=saved_payload,
                     )
                 elif (
                     usage
@@ -11240,10 +11639,9 @@ async def streaming_chat_response_handler(response, ctx):
                         update_payload["terminationCause"] = termination_cause
                     if turn_recap:
                         update_payload["turn_recap"] = turn_recap
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        update_payload,
+                    _upsert_assistant_message_with_workflow_capture(
+                        metadata=metadata,
+                        saved_payload=update_payload,
                     )
 
                 # Send a webhook notification if the user is not active
@@ -11279,11 +11677,9 @@ async def streaming_chat_response_handler(response, ctx):
                 await event_emitter({"type": "chat:tasks:cancel"})
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
-                    # Save message in the database
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        {
+                    _upsert_assistant_message_with_workflow_capture(
+                        metadata=metadata,
+                        saved_payload={
                             "content": _finalize_completed_reasoning_details(
                                 serialize_output(output)
                             ),
