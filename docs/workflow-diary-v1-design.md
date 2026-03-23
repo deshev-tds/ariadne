@@ -45,6 +45,7 @@ Important direction change:
 - remaining phases should target a compact model-facing lessons serving layer
 - raw diary packets and internal materialization rows are not meant to be injected into live model context directly
 - the builder-only serving contract now exists in [Workflow Lessons Serving V0](./workflow-lessons-serving-v0.md)
+- that serving contract was implemented and smoke-validated on production on 2026-03-23, so Step 2 now has a real downstream target instead of a hypothetical one
 
 Production validation on 2026-03-23 confirmed:
 
@@ -733,6 +734,12 @@ Important constraint:
 - this step should materialize into a structured internal lessons substrate that can later generate compact markdown serving cards
 - it should not produce verbose diary prose and expect the model to consume that directly
 - the existing target for that materialization is `workflow_lessons/internal/lessons-catalog.jsonl`
+
+Why this is now the right next step:
+
+- `Phase 1A` already captures trustworthy bounded packets
+- `Workflow Lessons Serving V0` already proves the consumer-facing card format and builder path
+- the missing bridge is the materializer that turns packet evidence into reviewable internal lesson rows
 
 ### Step 3. Specialist Enrichment
 

@@ -25,6 +25,14 @@ Implemented pieces:
   [workflow_lessons.py](../backend/open_webui/utils/workflow_lessons.py)
 - regression coverage in
   [test_workflow_lessons_serving.py](../backend/open_webui/test/util/test_workflow_lessons_serving.py)
+- three hand-authored `promoted` seed lessons spanning `research` and `offsec`
+
+Validation completed on 2026-03-23:
+
+- local builder and regression tests passed before deploy
+- production filesystem smoke confirmed `_serving/` was generated with family pages and lesson cards
+- production UI/API smoke confirmed no runtime regression on plain turns, native tool turns, or a realistic research/tool turn
+- direct HTTP streaming native tool execution remains a separate API-path caveat for `GLM-4.7-Flash-UD-Q8_K_XL`, but this does not affect the builder-only serving milestone itself
 
 Current constraints:
 
@@ -211,3 +219,9 @@ That means:
 2. Write new lesson rows as internal structured records, not as markdown prose.
 3. Keep the serving layer builder as the only path that materializes model-facing lesson cards.
 4. Delay runtime consultation until diary-fed lesson rows prove useful in practice.
+
+Why this is next:
+
+- packet capture is already trustworthy enough to act as diary substrate
+- the serving contract is already real and validated, so new lesson rows now have a stable consumer-facing target
+- this is the first step that can turn raw operational memory into reusable improvement memory

@@ -290,6 +290,7 @@ Current status:
 
 - `Phase 1A: Persisted Operational Snapshot` is implemented
 - production validation was completed on 2026-03-23 for the real native streaming tool path
+- `Workflow Lessons Serving V0` is implemented, deployed, and validated as the builder-only consumer-facing layer
 - the remaining work for this milestone is diary materialization and later aggregation, not first-turn capture
 
 Design doc:
@@ -335,6 +336,7 @@ What still remains inside Milestone 1:
 Related implemented substrate:
 
 - `Workflow Lessons Serving V0` now exists as the builder-only consumer-facing layer for promoted lessons
+- production smoke confirmed the generated `_serving` layer exists on-host and does not change runtime behavior by itself
 
 ### Milestone 2. Weekly Background Digest V1
 
@@ -554,6 +556,7 @@ Reason:
 
 - deterministic capture exists
 - the lessons serving contract now exists too
+- the builder-only serving layer has already been deployed and smoke-validated on production
 - the next ROI move is to materialize diary-backed lesson rows into the internal lessons catalog that already feeds the serving builder
 
 Tactics:
