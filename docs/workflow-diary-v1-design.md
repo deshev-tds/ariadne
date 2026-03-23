@@ -26,6 +26,12 @@ Consumer-facing follow-up:
 - [middleware.py](../backend/open_webui/utils/middleware.py)
 - [test_chat_response_middleware.py](../backend/open_webui/test/util/test_chat_response_middleware.py)
 
+`Phase 1B: Deterministic Materializer` is implemented in:
+
+- [workflow_diary_materializer.py](../backend/open_webui/utils/workflow_diary_materializer.py)
+- [materialize_workflow_diary.py](../scripts/materialize_workflow_diary.py)
+- [test_workflow_diary_materializer.py](../backend/open_webui/test/util/test_workflow_diary_materializer.py)
+
 What Phase 1A now does:
 
 - writes one bounded JSON packet per eligible assistant turn
@@ -35,7 +41,6 @@ What Phase 1A now does:
 
 What is still pending:
 
-- background diary materialization
 - specialist enrichment
 - weekly aggregation and digesting
 - playbook extraction and promotion
@@ -58,6 +63,13 @@ Known caveat:
 
 - for `GLM-4.7-Flash-UD-Q8_K_XL`, native non-streaming tool execution was not a reliable positive validation path on production at the time of validation
 - this was treated as a separate runtime/tool-continuation issue, not as a `Workflow Diary` regression
+
+Local validation for `Phase 1B` confirmed:
+
+- packets now materialize into chat-scoped `workflow_diary/entries/<message_id>.json`
+- deterministic candidate lessons rebuild into a runtime catalog under `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime/`
+- repeated materializer runs are idempotent for the same packet set
+- the runtime catalog remains builder-compatible while keeping `observed` rows out of `_serving`
 
 ## Why This Exists
 

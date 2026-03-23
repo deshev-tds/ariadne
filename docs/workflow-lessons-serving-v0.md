@@ -37,8 +37,9 @@ Validation completed on 2026-03-23:
 Current constraints:
 
 - there is still no runtime consumer
-- only hand-authored `promoted` seed lessons are surfaced
-- `Workflow Diary` does not materialize into the internal lessons catalog yet
+- only hand-authored `promoted` seed lessons are surfaced from the repo-root curated workspace
+- diary-fed runtime lessons are still `observed` only and stay under `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime/`
+- `Workflow Diary` still does not promote anything into the repo-root catalog automatically
 
 ## Why This Exists
 
@@ -215,8 +216,8 @@ That means:
 
 ## Immediate Next Steps
 
-1. Implement `Workflow Diary` background materialization against the internal lessons schema.
-2. Write new lesson rows as internal structured records, not as markdown prose.
+1. Review real runtime `observed` lesson rows before adding enrichment or promotion logic.
+2. Keep diary-fed runtime rows separate from the curated repo-root catalog.
 3. Keep the serving layer builder as the only path that materializes model-facing lesson cards.
 4. Delay runtime consultation until diary-fed lesson rows prove useful in practice.
 

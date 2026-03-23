@@ -4,6 +4,7 @@ import json
 import math
 import re
 import shutil
+from uuid import uuid4
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -265,6 +266,77 @@ def load_workflow_lessons_catalog(catalog_path: Path) -> list[WorkflowLessonRow]
         rows.append(row)
 
     return rows
+
+
+def validate_workflow_lesson_row(
+    raw: dict[str, Any], *, line_no: int = 1
+) -> WorkflowLessonRow:
+    return _validate_row(raw, line_no=line_no)
+
+
+def workflow_lesson_row_to_dict(row: WorkflowLessonRow) -> dict[str, Any]:
+    payload = {
+        "lesson_id": row.lesson_id,
+        "status": row.status,
+        "working_mode": row.working_mode,
+        "workflow_family": row.workflow_family,
+        "title": row.title,
+        "applies_when": list(row.applies_when),
+        "prefer": list(row.prefer),
+        "avoid": list(row.avoid),
+        "signal": list(row.signal),
+        "source_turn_ids": list(row.source_turn_ids),
+        "updated_at": row.updated_at,
+    }
+    if row.do_not_apply_when:
+        payload["do_not_apply_when"] = list(row.do_not_apply_when)
+    if row.confidence_note:
+        payload["confidence_note"] = row.confidence_note
+    if row.evidence_refs:
+        payload["evidence_refs"] = list(row.evidence_refs)
+    if row.origin:
+        payload["origin"] = row.origin
+    return payload
+
+
+def _coerce_workflow_lesson_row(
+    row: WorkflowLessonRow | dict[str, Any], *, line_no: int
+) -> WorkflowLessonRow:
+    if isinstance(row, WorkflowLessonRow):
+        return row
+    if isinstance(row, dict):
+        return validate_workflow_lesson_row(row, line_no=line_no)
+    raise WorkflowLessonsError(f"Catalog row {line_no} must be a workflow lesson row")
+
+
+def write_workflow_lessons_catalog(
+    catalog_path: str | Path,
+    rows: list[WorkflowLessonRow | dict[str, Any]],
+) -> list[WorkflowLessonRow]:
+    path = Path(catalog_path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    normalized_rows: list[WorkflowLessonRow] = []
+    seen_ids: set[str] = set()
+    for line_no, row in enumerate(rows, start=1):
+        normalized = _coerce_workflow_lesson_row(row, line_no=line_no)
+        if normalized.lesson_id in seen_ids:
+            raise WorkflowLessonsError(f"Duplicate lesson_id: {normalized.lesson_id}")
+        seen_ids.add(normalized.lesson_id)
+        normalized_rows.append(normalized)
+
+    normalized_rows.sort(key=lambda row: row.lesson_id)
+    payload = "\n".join(
+        json.dumps(workflow_lesson_row_to_dict(row), ensure_ascii=False)
+        for row in normalized_rows
+    )
+    if payload:
+        payload += "\n"
+
+    temp_path = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+    temp_path.write_text(payload, encoding="utf-8")
+    temp_path.replace(path)
+    return normalized_rows
 
 
 def _write_text(path: Path, text: str) -> None:
