@@ -131,10 +131,13 @@ def test_materialize_workflow_diary_research_local_corpus_packet(tmp_path):
     assert entry["workflow_family"] == "research"
     assert "local_corpus" in entry["workflow_tags"]
     assert "multi_tool" in entry["workflow_tags"]
+    assert entry["canonical_lesson"]["pattern_key"] == "research_local_corpus_grounded_turn"
     assert candidate["status"] == "observed"
     assert candidate["lesson_id"] == (
         "research_local_corpus_grounded_turn__chat-local__msg-local"
     )
+    assert candidate["registry_version"] == "workflow_lessons_taxonomy_v1"
+    assert candidate["pattern_key"] == "research_local_corpus_grounded_turn"
     assert catalog[0].lesson_id == candidate["lesson_id"]
 
 
@@ -172,6 +175,7 @@ def test_materialize_workflow_diary_research_web_packet_with_source_diary(tmp_pa
     assert "web_evidence" in entry["workflow_tags"]
     assert "source_diary_available" in entry["outcome"]["success_signals"]
     assert entry["references"]["source_diary"] == f"source_diary/{message_id}.md"
+    assert entry["canonical_lesson"]["pattern_key"] == "research_web_evidence_grounded_turn"
     assert entry["candidate_lessons"][0]["lesson_id"] == (
         "research_web_evidence_grounded_turn__chat-web__msg-web"
     )
@@ -218,9 +222,50 @@ def test_materialize_workflow_diary_offsec_guided_packet(tmp_path):
     assert entry["workflow_family"] == "offsec"
     assert "guided" in entry["workflow_tags"]
     assert "guided_state_present" in entry["outcome"]["success_signals"]
+    assert entry["canonical_lesson"]["pattern_key"] == "offsec_guided_bounded_turn"
     assert entry["candidate_lessons"][0]["lesson_id"] == (
         "offsec_guided_bounded_turn__chat-offsec__msg-offsec"
     )
+
+
+def test_materialize_workflow_diary_offsec_guided_sequence_without_state(tmp_path):
+    chat_id = "chat-offsec-seq"
+    message_id = "msg-offsec-seq"
+    _write_packet(
+        tmp_path,
+        chat_id=chat_id,
+        chat_label="offsec-seq",
+        message_id=message_id,
+        packet=_packet(
+            chat_id=chat_id,
+            message_id=message_id,
+            working_mode="offsec",
+            tool_names=["offsec_consult", "offsec_register_plan"],
+            tool_call_count=2,
+            turn_recap_present=True,
+            offsec_snapshot={"present": False},
+        ),
+    )
+
+    materializer.materialize_workflow_diary(
+        artifacts_root=tmp_path,
+        runtime_root=tmp_path / "_workflow_lessons_runtime",
+        min_age_minutes=0,
+    )
+
+    entry = _read_json(
+        tmp_path
+        / f"{chat_id}__offsec-seq"
+        / "workflow_diary"
+        / "entries"
+        / f"{message_id}.json"
+    )
+
+    assert entry["workflow_family"] == "offsec"
+    assert "guided" in entry["workflow_tags"]
+    assert "guided_sequence_observed" in entry["outcome"]["success_signals"]
+    assert "offsec_guided_sequence:offsec_consult+offsec_register_plan" in entry["classifier"]["reasons"]
+    assert entry["candidate_lessons"][0]["pattern_key"] == "offsec_guided_bounded_turn"
 
 
 def test_materialize_workflow_diary_general_packet_writes_entry_without_candidate(tmp_path):

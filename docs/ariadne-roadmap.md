@@ -293,7 +293,9 @@ Current status:
 - `Workflow Lessons Serving V0` is implemented, deployed, and validated as the builder-only consumer-facing layer
 - `Phase 1B: Deterministic Materializer` is implemented as a manual/admin path
 - production validation was completed on 2026-03-23 for one real `research` turn and one real `offsec` turn through the materializer path
-- the remaining work for this milestone is enrichment and later aggregation, not first-turn capture or first-pass materialization
+- `Workflow Lesson Taxonomy Registry V1` is now implemented locally as the canonical identity layer for runtime lessons
+- local validation now covers registry-backed materialization, repeated-candidate review, and one-by-one export into the curated catalog
+- the remaining work for this milestone is production validation of the review/export path, then later enrichment and aggregation
 
 Design doc:
 
@@ -331,8 +333,8 @@ What Phase 1A already covers:
 
 What still remains inside Milestone 1:
 
-- review workflow for diary-fed runtime lesson rows
-- `observed -> repeated` policy
+- production validation of the registry-backed review/export path
+- accumulation of enough real runtime rows to exercise the first `repeated` candidate on-host
 - specialist enrichment fallback policy
 - optional maintenance/admin ergonomics beyond the current manual CLI
 
@@ -342,6 +344,8 @@ Related implemented substrate:
 - production smoke confirmed the generated `_serving` layer exists on-host and does not change runtime behavior by itself
 - `Workflow Diary` now materializes deterministic `observed` lesson rows into a runtime catalog under `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime`
 - production smoke confirmed the runtime catalog rebuilds cleanly from real diary entries while keeping `_serving` empty for non-promoted rows
+- runtime lesson rows are now registry-backed through `workflow_lessons/internal/taxonomy-registry.json`
+- repeated clustering and curated export now work on canonical registry identity rather than on surface wording
 
 ### Milestone 2. Weekly Background Digest V1
 
@@ -563,13 +567,14 @@ Reason:
 - the lessons serving contract now exists too
 - the builder-only serving layer has already been deployed and smoke-validated on production
 - deterministic materialization now exists too
-- the next ROI move is to decide which runtime rows are worth keeping, repeating, or eventually promoting without changing runtime behavior
+- registry-backed review/export now exists locally
+- the next ROI move is to validate that real runtime rows can accumulate into honest `repeated` candidates and then be exported safely into the curated policy layer
 
 Tactics:
 
-- keep deterministic materialization as the always-available baseline
-- review diary-fed `observed` rows before deciding how `repeated` and `promoted` should work
-- add optional enrichment only after real runtime lesson rows prove worth refining
+- keep deterministic materialization and registry-backed identity as the always-available baseline
+- validate the review/export CLI path on real host artifacts before adding more automation
+- only after that, add optional enrichment on top of canonical rows rather than on free-form lesson text
 - continue to defer runtime injection until the diary-fed lesson corpus proves useful
 
 If diary-fed lesson materialization is not useful in practice, the later digest/playbook phases should be reconsidered before more complexity is added.

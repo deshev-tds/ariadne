@@ -1,0 +1,65 @@
+{
+  "registry_version": "workflow_lessons_taxonomy_v1",
+  "patterns": [
+    {
+      "pattern_key": "research_local_corpus_grounded_turn",
+      "working_mode": "science",
+      "workflow_family": "research",
+      "title": "Research: Local Corpus Grounded Turn",
+      "conditions": {
+        "grounded_science_workflow_used_local_corpus_tools": "a grounded science workflow used local corpus tools",
+        "question_compatible_with_local_corpus_evidence": "the question was compatible with local corpus evidence"
+      },
+      "prefer_actions": {
+        "narrow_local_corpus_before_synthesis": "narrow the local corpus before synthesis",
+        "use_retrieved_local_evidence_before_answering_from_weights": "use retrieved local evidence before answering from weights"
+      },
+      "avoid_actions": {
+        "avoid_unsupported_synthesis_when_local_evidence_available": "jumping straight to unsupported synthesis when local evidence is available"
+      },
+      "signals": {
+        "local_corpus_tools_used_in_grounded_research_turn": "local_corpus_* tools were used in a grounded research turn"
+      }
+    },
+    {
+      "pattern_key": "research_web_evidence_grounded_turn",
+      "working_mode": "science",
+      "workflow_family": "research",
+      "title": "Research: Web Evidence Grounded Turn",
+      "conditions": {
+        "research_turn_used_bounded_web_evidence_tools": "a research turn used bounded web evidence tools",
+        "answer_depended_on_fetched_or_queried_web_sources": "the answer depended on fetched or queried web sources"
+      },
+      "prefer_actions": {
+        "fetch_or_store_concrete_sources_before_synthesis": "fetch or store concrete sources before synthesis",
+        "query_bounded_web_evidence_before_unsupported_synthesis": "query bounded web evidence before unsupported synthesis"
+      },
+      "avoid_actions": {
+        "avoid_treating_broad_search_alone_as_sufficient_evidence": "treating broad search alone as sufficient evidence"
+      },
+      "signals": {
+        "web_evidence_tools_used_in_research_turn": "web evidence tools were used in a research turn"
+      }
+    },
+    {
+      "pattern_key": "offsec_guided_bounded_turn",
+      "working_mode": "offsec",
+      "workflow_family": "offsec",
+      "title": "Offsec: Guided Bounded Turn",
+      "conditions": {
+        "guided_offsec_run_active": "a guided Offsec run is active",
+        "workflow_uses_bounded_execution_or_evidence_steps": "the workflow uses bounded execution or evidence steps"
+      },
+      "prefer_actions": {
+        "keep_execution_bounded_to_active_step": "keep execution bounded to the active step",
+        "register_plan_and_step_results_instead_of_free_form_loops": "register plan and step results instead of free-form loops"
+      },
+      "avoid_actions": {
+        "avoid_execution_drift_outside_guided_step": "letting execution drift outside the guided step"
+      },
+      "signals": {
+        "guided_offsec_state_or_guided_tool_sequence_observed": "guided Offsec state or guided Offsec tool sequence was observed"
+      }
+    }
+  ]
+}

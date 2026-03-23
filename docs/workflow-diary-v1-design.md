@@ -32,6 +32,15 @@ Consumer-facing follow-up:
 - [materialize_workflow_diary.py](../scripts/materialize_workflow_diary.py)
 - [test_workflow_diary_materializer.py](../backend/open_webui/test/util/test_workflow_diary_materializer.py)
 
+`Workflow Lesson Taxonomy Registry V1` and the first review/export loop are implemented in:
+
+- [workflow_lessons.py](../backend/open_webui/utils/workflow_lessons.py)
+- [workflow_lessons_review.py](../backend/open_webui/utils/workflow_lessons_review.py)
+- [review_workflow_lessons.py](../scripts/review_workflow_lessons.py)
+- [export_workflow_lesson.py](../scripts/export_workflow_lesson.py)
+- [test_workflow_lessons_review.py](../backend/open_webui/test/util/test_workflow_lessons_review.py)
+- [taxonomy-registry.json](../workflow_lessons/internal/taxonomy-registry.json)
+
 What Phase 1A now does:
 
 - writes one bounded JSON packet per eligible assistant turn
@@ -41,8 +50,8 @@ What Phase 1A now does:
 
 What is still pending:
 
-- review workflow for diary-fed `observed` lesson rows
-- promotion-state policy beyond `observed`
+- production validation of the registry-backed review/export CLI path
+- repeated-candidate accumulation on real host data
 - specialist enrichment
 - weekly aggregation and digesting
 - playbook extraction and promotion
@@ -72,6 +81,10 @@ Local validation for `Phase 1B` confirmed:
 - deterministic candidate lessons rebuild into a runtime catalog under `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime/`
 - repeated materializer runs are idempotent for the same packet set
 - the runtime catalog remains builder-compatible while keeping `observed` rows out of `_serving`
+- runtime lesson rows are now registry-backed and validated against `workflow_lessons/internal/taxonomy-registry.json`
+- Offsec guided semantics are inferred before row creation, so review no longer needs review-time semantic repair
+- local review tests confirmed that two canonical-equivalent rows from different chats become one repeated candidate
+- local export tests confirmed one-by-one promotion into the curated catalog with canonical duplicate detection
 
 Production validation on 2026-03-23 additionally confirmed:
 
@@ -79,6 +92,12 @@ Production validation on 2026-03-23 additionally confirmed:
 - a real Offsec guided turn materialized into an `offsec` diary entry with one `observed` candidate lesson row
 - the runtime lessons catalog rebuilt cleanly on-host from those entries
 - the serving builder accepted the runtime catalog and still emitted no lesson cards because all rows remained `observed`
+
+What production has not validated yet:
+
+- the new registry-backed review step over a real runtime catalog
+- the first real `repeated` candidate formed from distinct chats on-host
+- the curated export path from runtime repeated candidate into repo-root `workflow_lessons/`
 
 ## Why This Exists
 

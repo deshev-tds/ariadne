@@ -51,6 +51,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Compute results without writing entries or runtime catalog",
     )
+    parser.add_argument(
+        "--registry-path",
+        default=None,
+        help="Workflow lesson taxonomy registry path (default: repo workflow_lessons/internal/taxonomy-registry.json)",
+    )
     return parser.parse_args()
 
 
@@ -73,6 +78,7 @@ def main() -> int:
         message_id=args.message_id,
         min_age_minutes=args.min_age_minutes,
         dry_run=args.dry_run,
+        registry_path=args.registry_path,
     )
     print(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2))
     return 0

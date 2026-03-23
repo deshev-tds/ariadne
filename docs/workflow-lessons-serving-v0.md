@@ -40,12 +40,15 @@ Current constraints:
 - only hand-authored `promoted` seed lessons are surfaced from the repo-root curated workspace
 - diary-fed runtime lessons are still `observed` only and stay under `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime/`
 - `Workflow Diary` still does not promote anything into the repo-root catalog automatically
+- the registry-backed review/export path is implemented locally, but not yet production-validated on real repeated host data
 
 Runtime state reached on 2026-03-23:
 
 - `Workflow Diary Phase 1B` now writes real runtime `observed` lesson rows into `AGENTIC_ARTIFACTS_DIR/_workflow_lessons_runtime/internal/lessons-catalog.jsonl`
 - production validation confirmed one `research` row and one `offsec` row built cleanly into the runtime catalog
 - the builder continued to emit no `_serving/lessons/*.md` files for that runtime root because no row was `promoted`
+- runtime lesson rows are now registry-backed through `workflow_lessons/internal/taxonomy-registry.json`
+- local review/export validation confirmed that repeated clustering and curated promotion now operate on canonical codes rather than on surface wording
 
 ## Why This Exists
 
@@ -222,14 +225,14 @@ That means:
 
 ## Immediate Next Steps
 
-1. Review real runtime `observed` lesson rows before adding enrichment or promotion logic.
-2. Decide how `observed -> repeated` should work without auto-promoting noisy one-off rows.
+1. Validate the registry-backed review CLI on real host runtime rows until the first genuine `repeated` candidate appears.
+2. Validate the one-by-one export path from repeated runtime candidate into the curated repo-root catalog.
 3. Keep diary-fed runtime rows separate from the curated repo-root catalog.
 4. Keep the serving layer builder as the only path that materializes model-facing lesson cards.
-5. Delay runtime consultation until diary-fed lesson rows prove useful in practice.
+5. Delay runtime consultation until repeated/promoted lesson flow proves useful in practice.
 
 Why this is next:
 
 - packet capture is already trustworthy enough to act as diary substrate
 - the serving contract is already real and validated, so new lesson rows now have a stable consumer-facing target
-- this is the first step that can turn raw operational memory into reusable improvement memory
+- canonical registry identity now exists, so the remaining question is whether repeated host usage produces useful review/promote candidates in practice

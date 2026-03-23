@@ -15,6 +15,7 @@ from open_webui.env import AGENTIC_ARTIFACTS_DIR
 from open_webui.utils.workflow_lessons import (
     WorkflowLessonRow,
     WorkflowLessonsError,
+    build_registry_backed_workflow_lesson_row,
     validate_workflow_lesson_row,
     workflow_lesson_row_to_dict,
     write_workflow_lessons_catalog,
@@ -42,6 +43,11 @@ OFFSEC_TOOLS = {
     "offsec_retrieve_evidence",
     "run_command",
 }
+
+OFFSEC_GUIDED_SEQUENCE_TOOLSETS = (
+    {"offsec_consult", "offsec_register_plan"},
+    {"offsec_register_plan", "offsec_register_step_result"},
+)
 
 LESSON_PATTERN_RESEARCH_LOCAL = "research_local_corpus_grounded_turn"
 LESSON_PATTERN_RESEARCH_WEB = "research_web_evidence_grounded_turn"
@@ -181,7 +187,27 @@ def _has_offsec_tool(tool_names: list[str]) -> bool:
     return any(name.startswith("offsec_") or name in OFFSEC_TOOLS for name in tool_names)
 
 
-def _classify_workflow_family(packet: dict[str, Any], tool_names: list[str]) -> tuple[str, list[str]]:
+def _has_offsec_guided_semantics(
+    packet: dict[str, Any], tool_names: list[str]
+) -> tuple[bool, list[str]]:
+    offsec_snapshot = packet.get("offsec_snapshot") or {}
+    if offsec_snapshot.get("present"):
+        return True, ["offsec_guided_state_present"]
+
+    tool_set = set(tool_names)
+    for required in OFFSEC_GUIDED_SEQUENCE_TOOLSETS:
+        if required.issubset(tool_set):
+            return True, [f"offsec_guided_sequence:{'+'.join(sorted(required))}"]
+    return False, []
+
+
+def _classify_workflow_family(
+    packet: dict[str, Any],
+    tool_names: list[str],
+    *,
+    offsec_guided: bool,
+    offsec_guided_reasons: list[str],
+) -> tuple[str, list[str]]:
     request_context = packet.get("request_context") or {}
     offsec_snapshot = packet.get("offsec_snapshot") or {}
     working_mode = str(request_context.get("working_mode") or "").strip().lower()
@@ -189,13 +215,15 @@ def _classify_workflow_family(packet: dict[str, Any], tool_names: list[str]) -> 
     reasons: list[str] = []
     if (
         working_mode == "offsec"
-        or bool(offsec_snapshot.get("present"))
+        or offsec_guided
         or _has_offsec_tool(tool_names)
     ):
         if working_mode == "offsec":
             reasons.append("working_mode_offsec")
         if offsec_snapshot.get("present"):
             reasons.append("offsec_guided_state_present")
+        elif offsec_guided_reasons:
+            reasons.extend(offsec_guided_reasons)
         if _has_offsec_tool(tool_names):
             reasons.append("offsec_tool_observed")
         return "offsec", reasons
@@ -211,12 +239,13 @@ def _classify_workflow_family(packet: dict[str, Any], tool_names: list[str]) -> 
     return "general", reasons
 
 
-def _workflow_tags(packet: dict[str, Any], tool_names: list[str]) -> list[str]:
+def _workflow_tags(
+    packet: dict[str, Any], tool_names: list[str], *, offsec_guided: bool
+) -> list[str]:
     tags: list[str] = []
     tooling = packet.get("tooling") or {}
-    offsec_snapshot = packet.get("offsec_snapshot") or {}
 
-    if offsec_snapshot.get("present"):
+    if offsec_guided:
         tags.append("guided")
     if "run_command" in tool_names:
         tags.append("terminal")
@@ -233,7 +262,12 @@ def _workflow_tags(packet: dict[str, Any], tool_names: list[str]) -> list[str]:
     return tags
 
 
-def _success_signals(packet: dict[str, Any], *, source_diary_path: str | None) -> list[str]:
+def _success_signals(
+    packet: dict[str, Any],
+    *,
+    source_diary_path: str | None,
+    offsec_guided: bool,
+) -> list[str]:
     tooling = packet.get("tooling") or {}
     assistant_snapshot = packet.get("assistant_snapshot") or {}
     offsec_snapshot = packet.get("offsec_snapshot") or {}
@@ -245,6 +279,8 @@ def _success_signals(packet: dict[str, Any], *, source_diary_path: str | None) -
         signals.append("turn_recap_present")
     if offsec_snapshot.get("present"):
         signals.append("guided_state_present")
+    elif offsec_guided:
+        signals.append("guided_sequence_observed")
     if source_diary_path:
         signals.append("source_diary_available")
     return signals
@@ -268,33 +304,81 @@ def _failure_signals(packet: dict[str, Any]) -> list[str]:
     return signals
 
 
-def _candidate_lesson_pattern(
+def _candidate_lesson_spec(
     *,
     workflow_family: str,
     tool_names: list[str],
     tooling: dict[str, Any],
-    offsec_snapshot: dict[str, Any],
-) -> str | None:
+    offsec_guided: bool,
+) -> dict[str, Any] | None:
     if tooling.get("tool_names_partial"):
         return None
-    if workflow_family == "offsec" and (
-        offsec_snapshot.get("present") or _has_offsec_tool(tool_names)
-    ):
-        return LESSON_PATTERN_OFFSEC_GUIDED
+    if workflow_family == "offsec" and (offsec_guided or _has_offsec_tool(tool_names)):
+        return {
+            "pattern_key": LESSON_PATTERN_OFFSEC_GUIDED,
+            "condition_codes": [
+                "guided_offsec_run_active",
+                "workflow_uses_bounded_execution_or_evidence_steps",
+            ],
+            "prefer_codes": [
+                "keep_execution_bounded_to_active_step",
+                "register_plan_and_step_results_instead_of_free_form_loops",
+            ],
+            "avoid_codes": [
+                "avoid_execution_drift_outside_guided_step",
+            ],
+            "signal_codes": [
+                "guided_offsec_state_or_guided_tool_sequence_observed",
+            ],
+        }
     if workflow_family == "research" and _has_local_corpus_tool(tool_names):
-        return LESSON_PATTERN_RESEARCH_LOCAL
+        return {
+            "pattern_key": LESSON_PATTERN_RESEARCH_LOCAL,
+            "condition_codes": [
+                "grounded_science_workflow_used_local_corpus_tools",
+                "question_compatible_with_local_corpus_evidence",
+            ],
+            "prefer_codes": [
+                "narrow_local_corpus_before_synthesis",
+                "use_retrieved_local_evidence_before_answering_from_weights",
+            ],
+            "avoid_codes": [
+                "avoid_unsupported_synthesis_when_local_evidence_available",
+            ],
+            "signal_codes": [
+                "local_corpus_tools_used_in_grounded_research_turn",
+            ],
+        }
     if workflow_family == "research" and _has_web_evidence_tool(tool_names):
-        return LESSON_PATTERN_RESEARCH_WEB
+        return {
+            "pattern_key": LESSON_PATTERN_RESEARCH_WEB,
+            "condition_codes": [
+                "research_turn_used_bounded_web_evidence_tools",
+                "answer_depended_on_fetched_or_queried_web_sources",
+            ],
+            "prefer_codes": [
+                "fetch_or_store_concrete_sources_before_synthesis",
+                "query_bounded_web_evidence_before_unsupported_synthesis",
+            ],
+            "avoid_codes": [
+                "avoid_treating_broad_search_alone_as_sufficient_evidence",
+            ],
+            "signal_codes": [
+                "web_evidence_tools_used_in_research_turn",
+            ],
+        }
     return None
 
 
-def _candidate_lesson_payload(
+def _candidate_lesson_row(
     *,
-    pattern_key: str,
     chat_id: str,
     message_id: str,
     materialized_at: str,
-) -> dict[str, Any]:
+    lesson_spec: dict[str, Any],
+    registry_path: str | Path | None = None,
+) -> WorkflowLessonRow:
+    pattern_key = str(lesson_spec["pattern_key"])
     lesson_id = "__".join(
         [
             pattern_key,
@@ -302,82 +386,20 @@ def _candidate_lesson_payload(
             _safe_lesson_component(message_id),
         ]
     )
-    shared = {
-        "lesson_id": lesson_id,
-        "status": "observed",
-        "source_turn_ids": [f"{chat_id}:{message_id}"],
-        "updated_at": materialized_at,
-        "confidence_note": "Deterministic observation from workflow capture packet.",
-        "origin": f"workflow_diary_materializer_v1:{pattern_key}",
-    }
-
-    if pattern_key == LESSON_PATTERN_RESEARCH_LOCAL:
-        return {
-            **shared,
-            "working_mode": "science",
-            "workflow_family": "research",
-            "title": "Research: Local Corpus Grounded Turn",
-            "applies_when": [
-                "a grounded science workflow used local corpus tools",
-                "the question was compatible with local corpus evidence",
-            ],
-            "prefer": [
-                "narrow the local corpus before synthesis",
-                "use retrieved local evidence before answering from weights",
-            ],
-            "avoid": [
-                "jumping straight to unsupported synthesis when local evidence is available"
-            ],
-            "signal": [
-                "local_corpus_* tools were used in a grounded research turn"
-            ],
-        }
-
-    if pattern_key == LESSON_PATTERN_RESEARCH_WEB:
-        return {
-            **shared,
-            "working_mode": "science",
-            "workflow_family": "research",
-            "title": "Research: Web Evidence Grounded Turn",
-            "applies_when": [
-                "a research turn used bounded web evidence tools",
-                "the answer depended on fetched or queried web sources",
-            ],
-            "prefer": [
-                "fetch or store concrete sources before synthesis",
-                "query bounded web evidence before unsupported synthesis",
-            ],
-            "avoid": [
-                "treating broad search alone as sufficient evidence",
-            ],
-            "signal": [
-                "web evidence tools were used in a research turn"
-            ],
-        }
-
-    if pattern_key == LESSON_PATTERN_OFFSEC_GUIDED:
-        return {
-            **shared,
-            "working_mode": "offsec",
-            "workflow_family": "offsec",
-            "title": "Offsec: Guided Bounded Turn",
-            "applies_when": [
-                "a guided Offsec run is active",
-                "the workflow uses bounded execution or evidence steps",
-            ],
-            "prefer": [
-                "keep execution bounded to the active step",
-                "register plan and step results instead of free-form loops",
-            ],
-            "avoid": [
-                "letting execution drift outside the guided step",
-            ],
-            "signal": [
-                "guided Offsec state or Offsec tool usage was observed"
-            ],
-        }
-
-    raise ValueError(f"Unknown lesson pattern: {pattern_key}")
+    return build_registry_backed_workflow_lesson_row(
+        lesson_id=lesson_id,
+        status="observed",
+        pattern_key=pattern_key,
+        condition_codes=lesson_spec["condition_codes"],
+        prefer_codes=lesson_spec["prefer_codes"],
+        avoid_codes=lesson_spec["avoid_codes"],
+        signal_codes=lesson_spec["signal_codes"],
+        source_turn_ids=[f"{chat_id}:{message_id}"],
+        updated_at=materialized_at,
+        confidence_note="Deterministic observation from workflow capture packet.",
+        origin=f"workflow_diary_materializer_v1:{pattern_key}",
+        registry_path=registry_path,
+    )
 
 
 def _materialize_entry_from_packet(
@@ -385,6 +407,7 @@ def _materialize_entry_from_packet(
     packet: dict[str, Any],
     packet_path: Path,
     existing_entry: dict[str, Any] | None = None,
+    registry_path: str | Path | None = None,
 ) -> tuple[dict[str, Any], list[WorkflowLessonRow]]:
     chat_id = str(packet.get("chat_id") or "").strip()
     message_id = str(packet.get("message_id") or "").strip()
@@ -395,7 +418,13 @@ def _materialize_entry_from_packet(
     tooling = copy.deepcopy(packet.get("tooling") or {})
     offsec_snapshot = copy.deepcopy(packet.get("offsec_snapshot") or {})
     tool_names = _tool_names(packet)
-    workflow_family, classifier_reasons = _classify_workflow_family(packet, tool_names)
+    offsec_guided, offsec_guided_reasons = _has_offsec_guided_semantics(packet, tool_names)
+    workflow_family, classifier_reasons = _classify_workflow_family(
+        packet,
+        tool_names,
+        offsec_guided=offsec_guided,
+        offsec_guided_reasons=offsec_guided_reasons,
+    )
     source_diary_path = chat_dir / "source_diary" / f"{message_id}.md"
     source_diary_ref = (
         _relative_chat_artifact_path(source_diary_path, chat_dir=chat_dir)
@@ -408,21 +437,20 @@ def _materialize_entry_from_packet(
     materialized_at = existing_materialized_at or _utc_now_iso()
 
     candidate_rows: list[WorkflowLessonRow] = []
-    pattern_key = _candidate_lesson_pattern(
+    lesson_spec = _candidate_lesson_spec(
         workflow_family=workflow_family,
         tool_names=tool_names,
         tooling=tooling,
-        offsec_snapshot=offsec_snapshot,
+        offsec_guided=offsec_guided,
     )
-    if pattern_key:
+    if lesson_spec:
         candidate_rows.append(
-            validate_workflow_lesson_row(
-                _candidate_lesson_payload(
-                    pattern_key=pattern_key,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    materialized_at=materialized_at,
-                )
+            _candidate_lesson_row(
+                chat_id=chat_id,
+                message_id=message_id,
+                materialized_at=materialized_at,
+                lesson_spec=lesson_spec,
+                registry_path=registry_path,
             )
         )
 
@@ -435,18 +463,34 @@ def _materialize_entry_from_packet(
         "captured_at": packet.get("captured_at"),
         "materialized_at": materialized_at,
         "workflow_family": workflow_family,
-        "workflow_tags": _workflow_tags(packet, tool_names),
+        "workflow_tags": _workflow_tags(packet, tool_names, offsec_guided=offsec_guided),
         "classifier": {
             "kind": "heuristic_v1",
             "confidence": 1.0,
             "reasons": classifier_reasons,
         },
+        "canonical_lesson": (
+            {
+                "registry_version": candidate_rows[0].registry_version,
+                "pattern_key": candidate_rows[0].pattern_key,
+                "condition_codes": list(candidate_rows[0].condition_codes),
+                "prefer_codes": list(candidate_rows[0].prefer_codes),
+                "avoid_codes": list(candidate_rows[0].avoid_codes),
+                "signal_codes": list(candidate_rows[0].signal_codes),
+            }
+            if candidate_rows
+            else None
+        ),
         "request_context": request_context,
         "assistant_snapshot": assistant_snapshot,
         "tooling": tooling,
         "offsec_snapshot": offsec_snapshot,
         "outcome": {
-            "success_signals": _success_signals(packet, source_diary_path=source_diary_ref),
+            "success_signals": _success_signals(
+                packet,
+                source_diary_path=source_diary_ref,
+                offsec_guided=offsec_guided,
+            ),
             "failure_signals": _failure_signals(packet),
             "wasteful_actions": [],
             "invariant_violations": [],
@@ -488,6 +532,7 @@ def materialize_workflow_diary(
     message_id: str | None = None,
     min_age_minutes: int = 15,
     dry_run: bool = False,
+    registry_path: str | Path | None = None,
 ) -> WorkflowDiaryMaterializationSummary:
     artifacts_root_path = Path(artifacts_root).expanduser().resolve()
     runtime_root_path = (
@@ -533,6 +578,7 @@ def materialize_workflow_diary(
                 packet=packet,
                 packet_path=packet_path,
                 existing_entry=existing_entry,
+                registry_path=registry_path,
             )
             pending_entries[(chat_id_value, message_id_value)] = entry
             entries_written += 1
@@ -569,7 +615,11 @@ def materialize_workflow_diary(
         entry = entry_map[key]
         for idx, raw in enumerate(entry.get("candidate_lessons") or [], start=1):
             try:
-                all_rows.append(validate_workflow_lesson_row(raw, line_no=idx))
+                all_rows.append(
+                    validate_workflow_lesson_row(
+                        raw, line_no=idx, registry_path=registry_path
+                    )
+                )
             except WorkflowLessonsError as exc:
                 log.warning(
                     "Skipping candidate lesson for %s/%s: %s",
@@ -583,6 +633,7 @@ def materialize_workflow_diary(
         write_workflow_lessons_catalog(
             runtime_root_path / RUNTIME_WORKFLOW_LESSONS_CATALOG_RELATIVE_PATH,
             catalog_rows,
+            registry_path=registry_path,
         )
 
     return WorkflowDiaryMaterializationSummary(
