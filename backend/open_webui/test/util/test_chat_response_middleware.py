@@ -2649,6 +2649,153 @@ async def test_non_streaming_chat_response_blocks_unready_research_guided_draft(
 
 
 @pytest.mark.asyncio
+async def test_non_streaming_chat_response_uses_cautious_fallback_when_unresolved_repair_returns_answer(
+    monkeypatch,
+):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Research Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    async def fake_generate_chat_completion(*_args, **_kwargs):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "There is not strong evidence that evening blue-light-blocking "
+                            "glasses improve sleep latency in adults. A recent systematic "
+                            "review/meta-analysis suggests any effect is small and uncertain."
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.generate_chat_completion",
+        fake_generate_chat_completion,
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            state=SimpleNamespace(direct=False),
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    MODELS={"model-1": {"id": "model-1"}},
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(
+                        WEBUI_URL="https://example.test",
+                        ENABLE_RESEARCH_GUIDED_VERIFIER=False,
+                        RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES=1,
+                    ),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "model_id": "model-1",
+            "params": {},
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "research",
+                "ready_to_answer": False,
+                "goals": [
+                    {
+                        "goal_id": "goal-1",
+                        "question": "Is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?",
+                        "is_strict": True,
+                        "status": "open",
+                        "resolution_basis": "",
+                        "disconfirmation_outcome": "",
+                        "coverage_requirement": "strict",
+                        "coverage_pending_reason": "required coverage probes still missing: broader fallback",
+                        "probe_budget": {
+                            "required": {
+                                "target_aligned": True,
+                                "disconfirming": True,
+                                "strong_source": True,
+                                "broader_fallback": True,
+                            },
+                            "observed": {
+                                "target_aligned": 1,
+                                "disconfirming": 1,
+                                "strong_source": 1,
+                                "broader_fallback": 0,
+                            },
+                        },
+                    }
+                ],
+                "working_propositions": [],
+                "candidate_claims": [],
+                "evidence_ledger": [],
+                "repair_pass_count": 0,
+            },
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {
+            "model": "model-1",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        "tasks": None,
+    }
+
+    response = {
+        "choices": [{"message": {"content": "Confident final answer."}}],
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "r-1",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "hidden"}],
+            },
+            {
+                "type": "message",
+                "id": "msg-1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Confident final answer."}],
+            },
+        ],
+        "usage": {"completion_tokens": 1},
+    }
+
+    await non_streaming_chat_response_handler(response, ctx)
+
+    saved_payload = saved_messages[0][2]
+    assert middleware.RESEARCH_INCOMPLETE_MARKER not in saved_payload["content"]
+    assert "There is not strong evidence" in saved_payload["content"]
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["incomplete_reason"]
+        == "unresolved_research"
+    )
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["phase"]
+        == "final_response"
+    )
+
+
+@pytest.mark.asyncio
 async def test_non_streaming_chat_response_allows_cautious_research_guided_answer(
     monkeypatch,
 ):

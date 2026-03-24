@@ -7006,6 +7006,8 @@ async def _apply_research_guided_output_policy(
                 "incomplete_reason": "unresolved_research",
             },
         )
+        fallback_content: str | None = None
+        fallback_output: list[dict[str, Any]] | None = None
         repair_instruction = build_research_repair_instruction(state, mode="unresolved")
         repaired = await _run_research_guided_repair_pass(
             request,
@@ -7030,11 +7032,29 @@ async def _apply_research_guided_output_policy(
                 content = repaired_content
                 output = repaired_output
             else:
+                if repaired_content:
+                    fallback_content = repaired_content
+                    fallback_output = repaired_output
                 state = _research_guided_state_from_metadata(metadata) or state
         else:
             state = _research_guided_state_from_metadata(metadata) or state
 
         if not isinstance(state, dict) or not state.get("ready_to_answer"):
+            if fallback_content and fallback_output is not None:
+                if isinstance(state, dict):
+                    state["incomplete_reason"] = "unresolved_research"
+                    state["phase"] = "final_response"
+                    state["stop_reason"] = state.get("stop_reason") or "unresolved_research_cautious_answer"
+                    _set_research_guided_state(metadata, state)
+                _append_research_guided_event(
+                    metadata,
+                    {
+                        "event": "research_cautious_fallback_persisted",
+                        "incomplete_reason": "unresolved_research",
+                        "ready_to_answer": False,
+                    },
+                )
+                return fallback_content, fallback_output
             if isinstance(state, dict):
                 state["incomplete_reason"] = "unresolved_research"
                 _set_research_guided_state(metadata, state)

@@ -203,6 +203,13 @@ async def search_web(
     Search the public web for information. Best for current events, external references,
     or topics not covered in internal documents.
     Use this as the default first-step discovery tool for open-world web research.
+    Search result snippets are excerpts, not full-page content.
+    For research turns, the expected choreography is:
+    - `search_web` for discovery
+    - `fetch_url(url, mode="store")` for any page you want to inspect locally
+    - `query_web_evidence(...)` only after a page has been fetched/stored
+    Do not pass `owui_key="web:..."` source keys from search results into
+    `query_web_evidence`; they are source references, not stored artifact IDs.
     Keep calls concise:
     - Prefer one high-quality query first.
     - Avoid repeated near-identical queries.
@@ -231,7 +238,17 @@ async def search_web(
         results = results[:count] if results else []
 
         return json.dumps(
-            [{"title": r.title, "link": r.link, "snippet": r.snippet} for r in results],
+            [
+                {
+                    "title": r.title,
+                    "link": r.link,
+                    "snippet": r.snippet,
+                    "snippet_is_excerpt": True,
+                    "full_text_requires_fetch": True,
+                    "query_web_evidence_ready": False,
+                }
+                for r in results
+            ],
             ensure_ascii=False,
         )
     except Exception as e:
@@ -1201,6 +1218,9 @@ async def query_web_evidence(
     Returns compact evidence windows plus diagnostics, not full raw pages.
     If `artifact_ids` is omitted, this searches stored web artifacts from the current
     assistant turn only, defined as the exact `(chat_id, message_id)` pair.
+    Only stored artifact IDs are valid here, typically the `artifact_id` returned by
+    `fetch_url(url, mode="store")`. Search-result source keys like `web:...` are not
+    stored artifacts and cannot be queried until the page is fetched/stored.
     Weak or empty evidence means lexical match was weak or the artifact set was
     insufficient; it does not automatically mean no relevant pages were fetched.
     A snippet marked `snippet_truncated=true` is clipped to a window, not invalid.

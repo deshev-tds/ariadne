@@ -131,6 +131,63 @@ def test_query_web_evidence_store_empty_implicit_scope_is_diagnostic(tmp_path, m
     assert queried["suggested_next_action"] == "fetch_more"
 
 
+def test_query_web_evidence_store_explains_search_source_keys_are_not_stored_artifacts(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web_store, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        web_store.Chats,
+        "get_chat_title_by_id",
+        lambda _chat_id: "Web Evidence Test",
+    )
+
+    queried = web_store.query_web_evidence_store(
+        chat_id="chat-1",
+        message_id="msg-empty",
+        query="sleep onset latency",
+        artifact_ids=["web:example-one", "web:example-two"],
+    )
+
+    assert queried["status"] == "not_found"
+    assert queried["suggested_next_action"] == "fetch_store_then_query"
+    assert "call fetch_url(url, mode=\"store\") first" in queried["message"]
+
+
+@pytest.mark.asyncio
+async def test_search_web_marks_results_as_excerpts(monkeypatch):
+    class _Result:
+        def __init__(self, title, link, snippet):
+            self.title = title
+            self.link = link
+            self.snippet = snippet
+
+    def _fake_search_web(_request, _engine, _query, _user):
+        return [_Result("Example", "https://example.org/page", "snippet text")]
+
+    monkeypatch.setattr(builtin_tools, "_search_web", _fake_search_web)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    WEB_SEARCH_ENGINE="test-engine",
+                    WEB_SEARCH_RESULT_COUNT=None,
+                )
+            )
+        )
+    )
+
+    payload = await builtin_tools.search_web(
+        "sleep onset latency",
+        __request__=request,
+        __user__=None,
+    )
+    parsed = json.loads(payload)
+    assert parsed[0]["snippet_is_excerpt"] is True
+    assert parsed[0]["full_text_requires_fetch"] is True
+    assert parsed[0]["query_web_evidence_ready"] is False
+
+
 def test_query_web_evidence_store_large_artifact_returns_multiple_relevant_chunks(
     tmp_path, monkeypatch
 ):

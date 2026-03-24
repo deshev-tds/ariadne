@@ -674,6 +674,28 @@ def test_research_guided_fetch_url_counts_as_strong_source_probe():
     assert goal["probe_budget"]["observed"]["strong_source"] == 1
 
 
+def test_research_guided_fetch_url_content_mode_counts_as_strong_source_probe():
+    state = research_guided.build_initial_state(
+        "What evidence exists for whether evening blue light changes circadian phase?"
+    )
+
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="fetch_url",
+        tool_params={
+            "url": "https://doi.org/10.1000/example-doi",
+            "title": "Randomized human trial on evening blue light and circadian phase",
+        },
+        tool_result=(
+            "Randomized human trial on evening blue light and circadian phase.\n"
+            + ("Methods and results from a usable article page are shown here. " * 30)
+        ),
+    )
+
+    goal = state["goals"][0]
+    assert goal["probe_budget"]["observed"]["strong_source"] == 1
+
+
 def test_research_guided_completed_turn_finalization_downgrades_supported_goal_without_disconfirmation():
     state = research_guided.build_initial_state(
         "What evidence exists for whether evening blue light changes circadian phase?"

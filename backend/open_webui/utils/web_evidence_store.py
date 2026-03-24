@@ -239,6 +239,23 @@ def _normalize_bool(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _artifact_ids_look_like_search_source_keys(values: list[str]) -> bool:
+    if not values:
+        return False
+    return all(str(value or "").strip().startswith("web:") for value in values)
+
+
+def _not_found_scope_message(normalized_artifact_ids: list[str]) -> tuple[str, str]:
+    if _artifact_ids_look_like_search_source_keys(normalized_artifact_ids):
+        return (
+            "Provided artifact_ids look like search/source owui keys, not stored web artifacts. "
+            "Search snippets are excerpts; call fetch_url(url, mode=\"store\") first, then call "
+            "query_web_evidence with the returned artifact_id or omit artifact_ids for the current turn.",
+            "fetch_store_then_query",
+        )
+    return "No local web evidence index found.", "fetch_more"
+
+
 def _safe_path_component(value: Any, fallback: str, max_len: int = 80) -> str:
     normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip(".-_")
     if not normalized:
@@ -3439,6 +3456,7 @@ def query_web_evidence_store(
 
     chat_dir = resolve_chat_artifacts_dir(normalized_chat_id)
     if chat_dir is None:
+        missing_message, next_action = _not_found_scope_message(normalized_artifact_ids)
         return {
             "status": "not_found",
             "query": query,
@@ -3450,14 +3468,14 @@ def query_web_evidence_store(
             "searched_domains": [],
             "missing_artifact_ids": normalized_artifact_ids,
             "evidence_strength": "weak",
-            "suggested_next_action": "fetch_more",
+            "suggested_next_action": next_action,
             "snippets": [],
             "narrow_count": 0,
             "wide_count": 0,
             "wide_pass_used": False,
             "fts_enabled": False,
             "artifact_ids": [],
-            "message": "No chat artifact directory found.",
+            "message": missing_message if normalized_artifact_ids else "No chat artifact directory found.",
             "retrieval_mode_effective": normalized_retrieval_mode,
             "structured_index_used": False,
             "fallback_chunk_mode": False,
@@ -3479,6 +3497,7 @@ def query_web_evidence_store(
 
     db_path = chat_dir / "web_evidence.sqlite"
     if not db_path.exists():
+        missing_message, next_action = _not_found_scope_message(normalized_artifact_ids)
         return {
             "status": "not_found",
             "query": query,
@@ -3490,14 +3509,14 @@ def query_web_evidence_store(
             "searched_domains": [],
             "missing_artifact_ids": normalized_artifact_ids,
             "evidence_strength": "weak",
-            "suggested_next_action": "fetch_more",
+            "suggested_next_action": next_action,
             "snippets": [],
             "narrow_count": 0,
             "wide_count": 0,
             "wide_pass_used": False,
             "fts_enabled": False,
             "artifact_ids": [],
-            "message": "No local web evidence index found.",
+            "message": missing_message,
             "retrieval_mode_effective": normalized_retrieval_mode,
             "structured_index_used": False,
             "fallback_chunk_mode": False,

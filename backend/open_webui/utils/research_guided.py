@@ -2262,6 +2262,48 @@ def register_tool_event(
                 for goal in updated.get("goals") or []:
                     if counts_as_strong and _context_fit(goal, combined_text) != "weak":
                         _mark_probe_observed(goal, "strong_source")
+        elif isinstance(parsed, str):
+            url = _normalize_text(tool_params.get("url") or "")
+            canonical_url = canonicalize_url(url)
+            if canonical_url:
+                if canonical_url in (updated.get("unique_fetch_urls") or []):
+                    updated["duplicate_fetch_count"] = int(updated.get("duplicate_fetch_count") or 0) + 1
+                else:
+                    updated.setdefault("unique_fetch_urls", []).append(canonical_url)
+
+            content = str(parsed or "")
+            content_chars = len(content)
+            search_title = _search_result_title_for_url(updated, url)
+            resolved_title, _title_source = resolve_stored_title(
+                explicit_title=tool_params.get("title"),
+                url=url,
+                content=content,
+                metadata_title_candidates=[],
+                search_result_title=search_title,
+            )
+            page_quality = classify_page_quality(
+                url=url,
+                resolved_title=resolved_title,
+                content=content,
+                content_source="content_mode_fetch",
+                resource_kind="",
+                content_type="text/html",
+                status="fetched",
+                content_chars=content_chars,
+            )
+            counts_as_strong = counts_as_strong_source(page_quality)
+            blocked = content_chars <= 0 or page_quality == PAGE_QUALITY_CHALLENGE
+            if blocked:
+                updated["blocked_access_count"] = int(updated.get("blocked_access_count") or 0) + 1
+                updated["negative_signal_count"] = int(updated.get("negative_signal_count") or 0) + 1
+            elif page_quality in PAGE_QUALITY_REJECTED or page_quality == PAGE_QUALITY_PARTIAL:
+                updated["negative_signal_count"] = int(updated.get("negative_signal_count") or 0) + 1
+
+            if not blocked:
+                combined_text = " ".join(filter(None, [resolved_title, url]))
+                for goal in updated.get("goals") or []:
+                    if counts_as_strong and _context_fit(goal, combined_text) != "weak":
+                        _mark_probe_observed(goal, "strong_source")
 
     elif normalized_tool_name == "query_web_evidence" and isinstance(parsed, dict):
         snippets = parsed.get("snippets") or []
@@ -2598,6 +2640,9 @@ def build_research_repair_instruction(
         lines.append(
             "Do not finalize the answer yet. The research-guided gate blocked the draft because the evidence state is not ready."
         )
+        lines.append(
+            "Do not narrate your search process or tool attempts. Either close the missing coverage immediately, or answer the user now with a cautious, evidence-bounded conclusion from the evidence already found."
+        )
         missing_items: list[str] = []
         for goal in state.get("goals") or []:
             pending = _normalize_text(goal.get("coverage_pending_reason") or "")
@@ -2627,7 +2672,7 @@ def build_research_repair_instruction(
             )
         else:
             lines.append(
-                "Continue only if you can close the missing coverage cleanly in this turn. Otherwise answer cautiously and avoid verified-fact framing."
+                "If you cannot close the missing coverage cleanly in this turn, stop searching and answer cautiously now. Separate directly supported findings from reasonable inference, mention the remaining uncertainty, and avoid verified-fact framing."
             )
         return " ".join(lines).strip()
 
