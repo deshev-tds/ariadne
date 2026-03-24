@@ -352,9 +352,27 @@ def test_query_web_evidence_store_single_artifact_compaction_surfaces_result_sni
         snippet for snippet in top_three if snippet.get("expanded_context_applied")
     )
     assert expanded["snippet_truncated"] is True
-    assert int(expanded["effective_window_chars"]) >= 500
+    assert int(expanded["effective_window_chars"]) >= 2500
     assert any(snippet.get("result_clause_complete") for snippet in top_three)
     assert any(snippet.get("truncation_trust_hint") for snippet in top_three)
+
+
+def test_expand_context_window_uses_large_hit_centered_local_section():
+    content = ("abcdefghij " * 2000).strip()
+    start = 9000
+    end = 9200
+    anchor = 9100
+
+    new_start, new_end, expanded = web_store._expand_context_window(
+        content,
+        start=start,
+        end=end,
+        anchor_index=anchor,
+    )
+
+    assert new_start <= anchor - 2500
+    assert new_end >= anchor + 3100
+    assert len(expanded) >= 5500
 
 
 def test_query_web_evidence_store_segmented_concept_alignment_prefers_exact_outcome(
@@ -995,6 +1013,54 @@ async def test_query_web_evidence_tool_passes_concept_alignment_flag(monkeypatch
 
     assert captured["concept_alignment_enabled"] is True
     assert payload["concept_alignment_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_query_web_evidence_tool_adds_local_section_notice(monkeypatch):
+    monkeypatch.setattr(
+        builtin_tools,
+        "query_web_evidence_store",
+        lambda **kwargs: {
+            "status": "ok",
+            "query": kwargs["query"],
+            "chat_id": kwargs["chat_id"],
+            "message_id": kwargs["message_id"],
+            "scope_mode": "implicit_current_message",
+            "searched_artifact_count": 1,
+            "searched_artifact_ids": ["wp_1"],
+            "searched_domains": ["example.org"],
+            "missing_artifact_ids": [],
+            "evidence_strength": "adequate",
+            "suggested_next_action": "refine_within_same_source",
+            "snippets": [
+                {
+                    "artifact_id": "wp_1",
+                    "url": "https://example.org/page",
+                    "domain": "example.org",
+                    "title": "Example",
+                    "start": 100,
+                    "end": 5900,
+                    "score": 0.9,
+                    "text": "evidence window",
+                }
+            ],
+            "narrow_count": 1,
+            "wide_count": 0,
+            "wide_pass_used": False,
+            "fts_enabled": True,
+            "retrieval_mode_effective": kwargs.get("retrieval_mode"),
+        },
+    )
+
+    output = await builtin_tools.query_web_evidence(
+        query="sleep latency",
+        __request__=_request_with_retrieval_mode(),
+        __metadata__={"chat_id": "chat-1", "message_id": "msg-1"},
+    )
+    payload = json.loads(output)
+
+    assert payload["returned_context_kind"] == "hit_centered_local_section"
+    assert "hit-centered local section" in payload["agent_context_notice"]
 
 
 @pytest.mark.asyncio

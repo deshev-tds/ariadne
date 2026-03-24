@@ -1306,7 +1306,7 @@ async def query_web_evidence(
     """
     WEB SOURCES ONLY.
     Query per-chat locally stored web artifacts using lexical retrieval (FTS5).
-    Returns compact evidence windows plus diagnostics, not full raw pages.
+    Returns hit-centered local sections plus diagnostics, not full raw pages.
     If `artifact_ids` is omitted, this searches stored web artifacts from the current
     assistant turn only, defined as the exact `(chat_id, message_id)` pair.
     Only stored artifact IDs are valid here, typically the `artifact_id` returned by
@@ -1314,10 +1314,10 @@ async def query_web_evidence(
     stored artifacts and cannot be queried until the page is fetched/stored.
     Weak or empty evidence means lexical match was weak or the artifact set was
     insufficient; it does not automatically mean no relevant pages were fetched.
-    A snippet marked `snippet_truncated=true` is clipped to a window, not invalid.
-    If `truncation_trust_hint=true` or `result_clause_complete=true`, treat the
-    returned snippet as usable evidence and stay with the same source before trying
-    a new web search.
+    Returned text is a deliberately selected local section around the matched hit so
+    you can inspect the relevant part of the source without loading the whole page.
+    If you need a different part of the same source, issue a more specific query
+    instead of re-fetching the page.
     Prefer the agent-facing diagnostic fields when present:
     - `exact_target_match_found`
     - `best_hit_is_adjacent_outcome`
@@ -1392,6 +1392,14 @@ async def query_web_evidence(
             payload["concept_alignment_enabled"] = bool(
                 payload.get("concept_alignment_enabled", concept_alignment_enabled)
             )
+            if payload.get("snippets"):
+                payload["returned_context_kind"] = "hit_centered_local_section"
+                payload["agent_context_notice"] = (
+                    "To avoid overloading context, each returned text block is a hit-centered "
+                    "local section from the source chosen for your current query. If you need "
+                    "a different part of the same source, issue a more specific query instead "
+                    "of re-fetching the page."
+                )
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"query_web_evidence error: {e}")

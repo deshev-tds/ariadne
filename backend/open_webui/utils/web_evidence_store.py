@@ -198,9 +198,9 @@ RESULT_PVALUE_RE = re.compile(
     re.IGNORECASE,
 )
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
-EXPANDED_CONTEXT_TARGET_CHARS = 1900
-EXPANDED_CONTEXT_BEFORE_CHARS = 180
-EXPANDED_CONTEXT_AFTER_CHARS = 1720
+EXPANDED_CONTEXT_TARGET_CHARS = 5800
+EXPANDED_CONTEXT_BEFORE_CHARS = 2600
+EXPANDED_CONTEXT_AFTER_CHARS = 3200
 EXPANDED_CONTEXT_MAX_MERGE_GAP = 160
 
 
@@ -1003,18 +1003,7 @@ def _snippet_should_expand(
     query_profile: Optional[dict[str, Any]] = None,
 ) -> bool:
     text = str(snippet.get("text") or "")
-    if not text:
-        return False
-    result_like = _looks_result_like(text)
-    if not result_like and bool((query_profile or {}).get("result_intent")):
-        result_like = bool(RESULT_NUMERIC_SIGNAL_RE.search(_normalize_numeric_text(text)))
-    if not result_like:
-        return False
-    if bool(snippet.get("snippet_truncated")):
-        return True
-    if len(text) < 900:
-        return True
-    return not _result_clause_complete(text)
+    return bool(text)
 
 
 def _merge_expanded_snippets(
@@ -1274,11 +1263,7 @@ def _semantic_rerank_concept_snippets(
 def _concept_should_expand(
     snippet: dict[str, Any],
 ) -> bool:
-    if not _normalize_bool(snippet.get("has_numeric_clause")):
-        return False
-    if str(snippet.get("alignment_strength") or "none") in {"exact", "strong"}:
-        return True
-    return bool(snippet.get("snippet_truncated"))
+    return bool(str(snippet.get("text") or ""))
 
 
 def _annotate_and_expand_snippets_concept(
