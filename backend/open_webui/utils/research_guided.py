@@ -867,6 +867,11 @@ def build_initial_state(objective: Any) -> dict[str, Any]:
         "query_rewrite_count": 0,
         "low_novelty_query_count": 0,
         "truncation_trust_hits": 0,
+        "concept_aligned_trust_hits": 0,
+        "adjacent_outcome_conflict_count": 0,
+        "semantic_rerank_used": False,
+        "semantic_rerank_candidate_count": 0,
+        "alias_confidence_summary": {},
         "pdf_extract_failed_count": 0,
         "conservative_sufficiency_triggered": False,
         "cautious_answer_allowed": False,
@@ -2271,6 +2276,29 @@ def register_tool_event(
             )
         if trustable_truncated_hits:
             updated["truncation_trust_hits"] = int(updated.get("truncation_trust_hits") or 0) + trustable_truncated_hits
+        concept_aligned_hits = int(parsed.get("concept_aligned_trust_hits") or 0)
+        if concept_aligned_hits:
+            updated["concept_aligned_trust_hits"] = int(
+                updated.get("concept_aligned_trust_hits") or 0
+            ) + concept_aligned_hits
+        adjacent_outcome_conflicts = int(parsed.get("adjacent_outcome_conflict_count") or 0)
+        if adjacent_outcome_conflicts:
+            updated["adjacent_outcome_conflict_count"] = int(
+                updated.get("adjacent_outcome_conflict_count") or 0
+            ) + adjacent_outcome_conflicts
+        if _normalize_bool(parsed.get("semantic_rerank_used")):
+            updated["semantic_rerank_used"] = True
+        semantic_rerank_candidates = int(parsed.get("semantic_rerank_candidate_count") or 0)
+        if semantic_rerank_candidates:
+            updated["semantic_rerank_candidate_count"] = int(
+                updated.get("semantic_rerank_candidate_count") or 0
+            ) + semantic_rerank_candidates
+        alias_confidence_summary = dict(parsed.get("alias_confidence_summary") or {})
+        if alias_confidence_summary:
+            merged_alias_summary = dict(updated.get("alias_confidence_summary") or {})
+            for key, value in alias_confidence_summary.items():
+                merged_alias_summary[str(key)] = int(merged_alias_summary.get(str(key)) or 0) + int(value or 0)
+            updated["alias_confidence_summary"] = merged_alias_summary
 
         artifact_scope_ids = [
             _normalize_text(value)
@@ -2581,6 +2609,14 @@ def build_research_repair_instruction(
             lines.append(
                 "A recent evidence query already returned a usable truncated result clause. Use that result or ask for more context around the same hit; do not abandon the source solely because the window was clipped."
             )
+        if int(state.get("concept_aligned_trust_hits") or 0) > 0:
+            lines.append(
+                "A recent evidence query already returned exact or strong outcome-aligned evidence in the current source. Use that evidence line or its expanded context before trying a broader search."
+            )
+        elif int(state.get("adjacent_outcome_conflict_count") or 0) > 0:
+            lines.append(
+                "Recent evidence queries found nearby numeric clauses for adjacent outcomes. Refine within the same source for the exact target concept before answering."
+            )
         if int(state.get("pdf_extract_failed_count") or 0) > 0:
             lines.append(
                 "Do not rely on the failed PDF extraction path. Prefer an already usable stored HTML/article source if one exists."
@@ -2762,6 +2798,11 @@ def build_research_snapshot(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "query_rewrite_count": int(state.get("query_rewrite_count") or 0),
         "low_novelty_query_count": int(state.get("low_novelty_query_count") or 0),
         "truncation_trust_hits": int(state.get("truncation_trust_hits") or 0),
+        "concept_aligned_trust_hits": int(state.get("concept_aligned_trust_hits") or 0),
+        "adjacent_outcome_conflict_count": int(state.get("adjacent_outcome_conflict_count") or 0),
+        "semantic_rerank_used": bool(state.get("semantic_rerank_used")),
+        "semantic_rerank_candidate_count": int(state.get("semantic_rerank_candidate_count") or 0),
+        "alias_confidence_summary": copy.deepcopy(state.get("alias_confidence_summary") or {}),
         "pdf_extract_failed_count": int(state.get("pdf_extract_failed_count") or 0),
         "page_quality_counts": copy.deepcopy(state.get("page_quality_counts") or {}),
         "stop_reason": state.get("stop_reason"),
@@ -2796,6 +2837,11 @@ def build_runtime_summary(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "query_rewrite_count": snapshot.get("query_rewrite_count"),
         "low_novelty_query_count": snapshot.get("low_novelty_query_count"),
         "truncation_trust_hits": snapshot.get("truncation_trust_hits"),
+        "concept_aligned_trust_hits": snapshot.get("concept_aligned_trust_hits"),
+        "adjacent_outcome_conflict_count": snapshot.get("adjacent_outcome_conflict_count"),
+        "semantic_rerank_used": snapshot.get("semantic_rerank_used"),
+        "semantic_rerank_candidate_count": snapshot.get("semantic_rerank_candidate_count"),
+        "alias_confidence_summary": snapshot.get("alias_confidence_summary"),
         "pdf_extract_failed_count": snapshot.get("pdf_extract_failed_count"),
         "page_quality_counts": snapshot.get("page_quality_counts"),
         "stop_reason": snapshot.get("stop_reason"),

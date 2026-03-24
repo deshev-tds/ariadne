@@ -596,6 +596,7 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS,
             "WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS,
             "WEB_EVIDENCE_RETRIEVAL_MODE": request.app.state.config.WEB_EVIDENCE_RETRIEVAL_MODE,
+            "ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT": request.app.state.config.ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT,
             "WEB_LOADER_CONCURRENT_REQUESTS": request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
@@ -697,6 +698,7 @@ class WebConfig(BaseModel):
     WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS: Optional[int] = None
     WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS: Optional[int] = None
     WEB_EVIDENCE_RETRIEVAL_MODE: Optional[str] = None
+    ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT: Optional[bool] = None
     WEB_LOADER_CONCURRENT_REQUESTS: Optional[int] = None
     WEB_SEARCH_DOMAIN_FILTER_LIST: Optional[List[str]] = []
     BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: Optional[bool] = None
@@ -1419,6 +1421,11 @@ async def update_rag_config(
             form_data.web.WEB_EVIDENCE_RETRIEVAL_MODE
             if form_data.web.WEB_EVIDENCE_RETRIEVAL_MODE is not None
             else request.app.state.config.WEB_EVIDENCE_RETRIEVAL_MODE
+        )
+        request.app.state.config.ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT = (
+            form_data.web.ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT
+            if form_data.web.ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT is not None
+            else request.app.state.config.ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT
         )
         request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS = (
             form_data.web.WEB_LOADER_CONCURRENT_REQUESTS

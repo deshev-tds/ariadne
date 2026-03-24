@@ -286,6 +286,46 @@ def test_research_guided_trustable_truncated_result_allows_cautious_exit():
     assert "use that result or ask for more context around the same hit" in repair.lower()
 
 
+def test_research_guided_tracks_concept_alignment_and_same_source_refine_signal():
+    state = research_guided.build_initial_state(
+        "Is there strong evidence that evening light blocking improves sleep onset latency?"
+    )
+
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={"query": "sleep onset latency"},
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 1,
+            "searched_domains": ["example.org"],
+            "concept_aligned_trust_hits": 1,
+            "adjacent_outcome_conflict_count": 2,
+            "semantic_rerank_used": True,
+            "semantic_rerank_candidate_count": 4,
+            "alias_confidence_summary": {"high": 1, "medium": 2},
+            "snippets": [
+                {
+                    "artifact_id": "art-1",
+                    "domain": "example.org",
+                    "text": "For sleep onset latency (SOL), the pooled mean difference was -4.86 minutes.",
+                    "alignment_strength": "exact",
+                    "result_clause_complete": True,
+                    "truncation_trust_hint": False,
+                }
+            ],
+        },
+    )
+
+    assert state["concept_aligned_trust_hits"] == 1
+    assert state["adjacent_outcome_conflict_count"] == 2
+    assert state["semantic_rerank_used"] is True
+    assert state["semantic_rerank_candidate_count"] == 4
+    assert state["alias_confidence_summary"]["high"] == 1
+    repair = research_guided.build_research_repair_instruction(state, mode="unresolved")
+    assert "exact or strong outcome-aligned evidence" in repair.lower()
+
+
 def test_research_guided_strict_goal_conflict_before_broader_fallback_stays_open():
     state = research_guided.build_initial_state(
         "Based on recent human studies and reviews, is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?"

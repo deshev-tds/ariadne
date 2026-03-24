@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import sqlite3
 import time
@@ -34,6 +36,71 @@ MAX_FOCUS_CLAUSES = 4
 MAX_SEGMENT_CHARS = 1600
 SEGMENT_DEDUPE_MAX_SPAN_CHARS = 2200
 SEGMENT_DEDUPE_MAX_GAP_CHARS = 80
+CONCEPT_ALIGNMENT_TABLE_NEIGHBORHOOD_CHARS = 2500
+CONCEPT_ALIGNMENT_TABLE_BLOCK_RADIUS = 3
+CONCEPT_ALIGNMENT_SEMANTIC_SHORTLIST = 8
+CONCEPT_ALIGNMENT_AMBIGUOUS_SCORE_GAP = 0.08
+CONCEPT_ALIGNMENT_ARTIFACT_SCOPE_MAX = 3
+
+QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "does",
+    "for",
+    "from",
+    "has",
+    "have",
+    "how",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "recent",
+    "recently",
+    "that",
+    "the",
+    "their",
+    "there",
+    "these",
+    "this",
+    "those",
+    "to",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "with",
+}
+NUMERIC_VALUE_RE = re.compile(r"(?<![A-Za-z])[-+]?\d+(?:\.\d+)?(?:%|/[0-9]+)?")
+STAT_OPERATOR_RE = re.compile(r"(?:=|<=|>=|<|>|±|to)\s*[-+]?\d")
+PARENTHETICAL_ALIAS_RE = re.compile(
+    r"\b([A-Za-z][A-Za-z0-9/\-, ]{3,120}?)\s*\(([A-Z][A-Z0-9-]{1,12})\)"
+)
+REVERSE_ALIAS_RE = re.compile(
+    r"\b([A-Z][A-Z0-9-]{1,12})\s*\(([A-Za-z][A-Za-z0-9/\-, ]{3,120}?)\)"
+)
+SHORT_ALIAS_TOKEN_RE = re.compile(r"\b[A-Z][A-Z0-9-]{1,12}\b")
+TABLE_LIKE_ROW_RE = re.compile(r"(?:\||\t| {2,})")
+CAPTION_LINE_RE = re.compile(r"^\s*(?:table|figure|fig\.?)\b", re.IGNORECASE)
+FOOTNOTE_LINE_RE = re.compile(r"^\s*(?:note|notes|abbreviations?)\b", re.IGNORECASE)
+ALIGNMENT_STRENGTH_ORDER = {
+    "none": 0,
+    "weak": 1,
+    "strong": 2,
+    "exact": 3,
+}
 
 SINGLE_ARTIFACT_LOW_SIGNAL_TOKENS = {
     "adult",
@@ -162,6 +229,14 @@ def resolve_web_evidence_retrieval_mode(
     if override in WEB_EVIDENCE_RETRIEVAL_MODE_VALUES:
         return override_mode, "chat_override"
     return default_mode, "global_default"
+
+
+def _normalize_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _safe_path_component(value: Any, fallback: str, max_len: int = 80) -> str:
@@ -368,6 +443,202 @@ def _normalize_numeric_text(value: Any) -> str:
     )
 
 
+def _normalize_text_span(value: Any) -> str:
+    return re.sub(r"\s+", " ", _normalize_numeric_text(value)).strip().lower()
+
+
+def _content_query_tokens(query: str) -> list[str]:
+    tokens = re.findall(r"[A-Za-z0-9-]{2,}", str(query or ""))
+    filtered: list[str] = []
+    for token in tokens:
+        normalized = token.strip().lower()
+        if not normalized or normalized in QUERY_STOPWORDS:
+            continue
+        filtered.append(normalized)
+    return filtered
+
+
+def _build_query_concepts(query: str) -> tuple[list[str], list[str], list[str]]:
+    tokens = _content_query_tokens(query)
+    if not tokens:
+        return [], [], []
+
+    modifiers: list[str] = []
+    single_tokens = _dedupe_terms_preserve_order(tokens, limit=16)
+    concepts: list[str] = []
+
+    max_span = min(4, len(tokens))
+    for span_len in range(max_span, 1, -1):
+        for idx in range(0, len(tokens) - span_len + 1):
+            concepts.append(" ".join(tokens[idx : idx + span_len]))
+
+    raw_abbreviations = [
+        match.group(0)
+        for match in re.finditer(r"\b[A-Z][A-Z0-9-]{1,12}\b", str(query or ""))
+    ]
+    concepts.extend(raw_abbreviations)
+    target_concepts = _dedupe_terms_preserve_order([_normalize_text_span(item) for item in concepts], limit=8)
+
+    if not target_concepts:
+        target_concepts = single_tokens[:4]
+
+    if len(single_tokens) > len(target_concepts):
+        concept_tokens = {
+            token
+            for concept in target_concepts
+            for token in re.findall(r"[a-z0-9-]{2,}", concept)
+        }
+        modifiers = [token for token in single_tokens if token not in concept_tokens][:6]
+
+    return target_concepts, modifiers, single_tokens
+
+
+def _build_concept_first_query_profile(
+    *,
+    query: str,
+    scope_rows: list[Any],
+) -> dict[str, Any]:
+    target_concepts, query_modifiers, single_tokens = _build_query_concepts(query)
+    normalized_terms = single_tokens[:]
+    if not normalized_terms and target_concepts:
+        normalized_terms = _dedupe_terms_preserve_order(
+            [
+                token
+                for concept in target_concepts
+                for token in re.findall(r"[a-z0-9-]{2,}", concept)
+            ],
+            limit=16,
+        )
+    return {
+        "normalized_query": str(query or "").strip(),
+        "normalized_terms": normalized_terms,
+        "target_concepts": target_concepts,
+        "query_modifiers": query_modifiers,
+        "single_artifact_scope": len(scope_rows) == 1,
+        "title_overlap_dropped": 0,
+        "compaction_applied": False,
+        "serving_logic": "concept",
+    }
+
+
+def _token_overlap_ratio(left: str, right: str) -> float:
+    left_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9-]{2,}", _normalize_text_span(left))
+        if token not in QUERY_STOPWORDS
+    }
+    right_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9-]{2,}", _normalize_text_span(right))
+        if token not in QUERY_STOPWORDS
+    }
+    if not left_tokens or not right_tokens:
+        return 0.0
+    overlap = len(left_tokens & right_tokens)
+    return overlap / max(1, min(len(left_tokens), len(right_tokens)))
+
+
+def _concept_matches_target(canonical_concept: str, target_concepts: list[str]) -> bool:
+    normalized = _normalize_text_span(canonical_concept)
+    if not normalized or not target_concepts:
+        return False
+    for target in target_concepts:
+        normalized_target = _normalize_text_span(target)
+        if not normalized_target:
+            continue
+        if normalized == normalized_target:
+            return True
+        if normalized in normalized_target or normalized_target in normalized:
+            return True
+        if _token_overlap_ratio(normalized, normalized_target) >= 0.67:
+            return True
+    return False
+
+
+def _extract_alias_registry(text: str) -> dict[str, dict[str, Any]]:
+    normalized_text = _normalize_numeric_text(text)
+    alias_to_canonicals: dict[str, set[str]] = {}
+    alias_sources: dict[tuple[str, str], str] = {}
+
+    for match in PARENTHETICAL_ALIAS_RE.finditer(normalized_text):
+        canonical = _normalize_text_span(match.group(1))
+        alias = _normalize_text_span(match.group(2))
+        if not canonical or not alias:
+            continue
+        alias_to_canonicals.setdefault(alias, set()).add(canonical)
+        alias_sources[(alias, canonical)] = "explicit_definition"
+
+    for match in REVERSE_ALIAS_RE.finditer(normalized_text):
+        alias = _normalize_text_span(match.group(1))
+        canonical = _normalize_text_span(match.group(2))
+        if not canonical or not alias:
+            continue
+        alias_to_canonicals.setdefault(alias, set()).add(canonical)
+        alias_sources[(alias, canonical)] = "explicit_definition"
+
+    registry: dict[str, dict[str, Any]] = {}
+    for alias, canonicals in alias_to_canonicals.items():
+        candidates = sorted(canonical for canonical in canonicals if canonical)
+        ambiguous = len(candidates) != 1
+        canonical = candidates[0] if candidates else ""
+        registry[alias] = {
+            "alias_text": alias,
+            "canonical_concept": canonical,
+            "evidence_type": "explicit_definition",
+            "confidence_tier": "high" if not ambiguous else "low",
+            "ambiguous": ambiguous,
+            "candidate_canonicals": candidates,
+        }
+    return registry
+
+
+def _extract_medium_confidence_aliases(
+    *,
+    text: str,
+    target_concepts: list[str],
+    existing_registry: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    registry = dict(existing_registry)
+    if not target_concepts:
+        return registry
+
+    lowered = _normalize_numeric_text(text)
+    for alias_match in SHORT_ALIAS_TOKEN_RE.finditer(lowered):
+        alias = _normalize_text_span(alias_match.group(0))
+        if not alias or alias in registry:
+            continue
+        concept_hits: list[str] = []
+        left = max(0, alias_match.start() - 160)
+        right = min(len(lowered), alias_match.end() + 160)
+        window = lowered[left:right]
+        for concept in target_concepts:
+            if concept and concept in _normalize_text_span(window):
+                concept_hits.append(concept)
+        concept_hits = _dedupe_terms_preserve_order(concept_hits, limit=4)
+        if len(concept_hits) != 1:
+            continue
+        registry[alias] = {
+            "alias_text": alias,
+            "canonical_concept": concept_hits[0],
+            "evidence_type": "repeated_local_cooccurrence",
+            "confidence_tier": "medium",
+            "ambiguous": False,
+            "candidate_canonicals": concept_hits,
+        }
+    return registry
+
+
+def _alias_confidence_summary(alias_registry: dict[str, dict[str, Any]]) -> dict[str, int]:
+    summary = {"high": 0, "medium": 0, "low": 0, "ambiguous": 0}
+    for alias in alias_registry.values():
+        if alias.get("ambiguous"):
+            summary["ambiguous"] += 1
+        tier = str(alias.get("confidence_tier") or "").lower()
+        if tier in summary:
+            summary[tier] += 1
+    return summary
+
+
 def _looks_result_like(text: str) -> bool:
     lowered = _normalize_numeric_text(text).lower()
     if not lowered:
@@ -395,6 +666,251 @@ def _result_clause_complete(text: str) -> bool:
         if stripped.endswith((".", ";", "!", "?")):
             return True
         if "confidence interval" in lowered or RESULT_PVALUE_RE.search(lowered):
+            return True
+    return False
+
+
+def _split_sentences_with_offsets(text: str) -> list[dict[str, Any]]:
+    normalized = _normalize_numeric_text(text)
+    if not normalized:
+        return []
+    spans: list[dict[str, Any]] = []
+    start = 0
+    for match in SENTENCE_SPLIT_RE.finditer(normalized):
+        end = match.start()
+        sentence = normalized[start:end].strip()
+        if sentence:
+            spans.append({"text": sentence, "start": start, "end": end})
+        start = match.end()
+    tail = normalized[start:].strip()
+    if tail:
+        spans.append({"text": tail, "start": start, "end": len(normalized)})
+    return spans
+
+
+def _has_numeric_clause(text: str) -> bool:
+    normalized = _normalize_numeric_text(text)
+    if not normalized:
+        return False
+    numeric_hits = len(NUMERIC_VALUE_RE.findall(normalized))
+    if numeric_hits >= 2:
+        return True
+    return bool(STAT_OPERATOR_RE.search(normalized))
+
+
+def _concept_exact_in_text(text: str, target_concepts: list[str]) -> Optional[str]:
+    normalized = _normalize_text_span(text)
+    if not normalized:
+        return None
+    for concept in target_concepts:
+        normalized_concept = _normalize_text_span(concept)
+        if normalized_concept and normalized_concept in normalized:
+            return normalized_concept
+    return None
+
+
+def _alias_hits_in_text(
+    text: str,
+    alias_registry: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    lowered = _normalize_text_span(text)
+    if not lowered or not alias_registry:
+        return []
+    hits: list[dict[str, Any]] = []
+    for alias, meta in alias_registry.items():
+        if alias and re.search(rf"\b{re.escape(alias)}\b", lowered):
+            hits.append(meta)
+    return hits
+
+
+def _table_like_lines(text: str) -> list[dict[str, Any]]:
+    lines: list[dict[str, Any]] = []
+    cursor = 0
+    for raw_line in _normalize_numeric_text(text).splitlines(keepends=True):
+        end = cursor + len(raw_line)
+        stripped = raw_line.strip()
+        if stripped:
+            lines.append(
+                {
+                    "text": stripped,
+                    "start": cursor,
+                    "end": end,
+                    "table_like": bool(TABLE_LIKE_ROW_RE.search(raw_line) or len(NUMERIC_VALUE_RE.findall(raw_line)) >= 2),
+                    "caption_like": bool(CAPTION_LINE_RE.match(stripped)),
+                    "footnote_like": bool(FOOTNOTE_LINE_RE.match(stripped)),
+                    "numeric": _has_numeric_clause(stripped),
+                }
+            )
+        cursor = end
+    return lines
+
+
+def _line_alignment_from_neighborhood(
+    *,
+    line_index: int,
+    lines: list[dict[str, Any]],
+    target_concepts: list[str],
+    alias_registry: dict[str, dict[str, Any]],
+) -> tuple[str, str, str, list[str], bool]:
+    line = lines[line_index]
+    reasons: list[str] = []
+    exact_concept = _concept_exact_in_text(line["text"], target_concepts)
+    if exact_concept:
+        reasons.append("query_term_same_line")
+        return "exact", "same_sentence", "query_exact_term", reasons, False
+
+    alias_hits = _alias_hits_in_text(line["text"], alias_registry)
+    for meta in alias_hits:
+        if meta.get("ambiguous"):
+            reasons.append("alias_ambiguous_same_line")
+            continue
+        if _concept_matches_target(str(meta.get("canonical_concept") or ""), target_concepts):
+            tier = str(meta.get("confidence_tier") or "")
+            reasons.append(f"{tier}_alias_same_line")
+            if tier == "high":
+                return "exact", "same_sentence", "high_confidence_alias", reasons, False
+            if tier == "medium":
+                return "weak", "same_segment", "medium_confidence_alias", reasons, False
+
+    for radius in range(1, 3):
+        for neighbor_idx in (line_index - radius, line_index + radius):
+            if neighbor_idx < 0 or neighbor_idx >= len(lines):
+                continue
+            neighbor = lines[neighbor_idx]
+            exact_concept = _concept_exact_in_text(neighbor["text"], target_concepts)
+            if exact_concept:
+                reasons.append("query_term_adjacent_line")
+                if neighbor.get("caption_like"):
+                    return "strong", "table_caption_row", "query_exact_term", reasons, False
+                if neighbor.get("footnote_like"):
+                    return "weak", "table_footnote_row", "query_exact_term", reasons, False
+                return "strong", "adjacent_sentence", "query_exact_term", reasons, False
+            alias_hits = _alias_hits_in_text(neighbor["text"], alias_registry)
+            for meta in alias_hits:
+                if meta.get("ambiguous"):
+                    reasons.append("alias_ambiguous_adjacent_line")
+                    continue
+                if _concept_matches_target(str(meta.get("canonical_concept") or ""), target_concepts):
+                    tier = str(meta.get("confidence_tier") or "")
+                    reasons.append(f"{tier}_alias_adjacent_line")
+                    if tier == "high":
+                        evidence = "table_caption_row" if neighbor.get("caption_like") else "adjacent_sentence"
+                        return "strong", evidence, "high_confidence_alias", reasons, False
+                    if tier == "medium":
+                        return "weak", "same_segment", "medium_confidence_alias", reasons, False
+
+    sibling_conflict = False
+    for meta in alias_hits:
+        canonical = str(meta.get("canonical_concept") or "")
+        if meta.get("ambiguous"):
+            sibling_conflict = True
+            reasons.append("alias_ambiguous")
+            continue
+        if not _concept_matches_target(canonical, target_concepts):
+            sibling_conflict = True
+            reasons.append("sibling_alias_same_line")
+    return "none", "none", "none", reasons, sibling_conflict
+
+
+def _same_segment_alignment(
+    *,
+    text: str,
+    target_concepts: list[str],
+    alias_registry: dict[str, dict[str, Any]],
+) -> tuple[str, str, str, list[str], bool]:
+    reasons: list[str] = []
+    if _concept_exact_in_text(text, target_concepts):
+        reasons.append("query_term_same_segment")
+        return "weak", "same_segment", "query_exact_term", reasons, False
+    alias_hits = _alias_hits_in_text(text, alias_registry)
+    sibling_conflict = False
+    for meta in alias_hits:
+        canonical = str(meta.get("canonical_concept") or "")
+        tier = str(meta.get("confidence_tier") or "")
+        if meta.get("ambiguous"):
+            sibling_conflict = True
+            reasons.append("alias_ambiguous_same_segment")
+            continue
+        if _concept_matches_target(canonical, target_concepts):
+            reasons.append(f"{tier}_alias_same_segment")
+            if tier == "medium":
+                return "weak", "same_segment", "medium_confidence_alias", reasons, False
+        else:
+            sibling_conflict = True
+            reasons.append("sibling_alias_same_segment")
+    return "none", "none", "none", reasons, sibling_conflict
+
+
+def _concept_alignment_for_text(
+    *,
+    text: str,
+    target_concepts: list[str],
+    alias_registry: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    lines = _table_like_lines(text)
+    best = {
+        "concept_aligned": False,
+        "alignment_strength": "none",
+        "alignment_evidence": "none",
+        "alignment_concept_source": "none",
+        "alignment_reason_codes": [],
+        "adjacent_outcome_conflict": False,
+        "has_numeric_clause": False,
+    }
+
+    for idx, line in enumerate(lines):
+        if not line.get("numeric"):
+            continue
+        strength, evidence, source, reasons, sibling_conflict = _line_alignment_from_neighborhood(
+            line_index=idx,
+            lines=lines,
+            target_concepts=target_concepts,
+            alias_registry=alias_registry,
+        )
+        candidate = {
+            "concept_aligned": strength in {"exact", "strong", "weak"},
+            "alignment_strength": strength,
+            "alignment_evidence": evidence,
+            "alignment_concept_source": source,
+            "alignment_reason_codes": reasons[:6],
+            "adjacent_outcome_conflict": sibling_conflict,
+            "has_numeric_clause": True,
+        }
+        if ALIGNMENT_STRENGTH_ORDER.get(candidate["alignment_strength"], 0) > ALIGNMENT_STRENGTH_ORDER.get(
+            best["alignment_strength"], 0
+        ):
+            best = candidate
+
+    if best["alignment_strength"] != "none":
+        return best
+
+    strength, evidence, source, reasons, sibling_conflict = _same_segment_alignment(
+        text=text,
+        target_concepts=target_concepts,
+        alias_registry=alias_registry,
+    )
+    return {
+        "concept_aligned": strength in {"exact", "strong", "weak"},
+        "alignment_strength": strength,
+        "alignment_evidence": evidence,
+        "alignment_concept_source": source,
+        "alignment_reason_codes": reasons[:6],
+        "adjacent_outcome_conflict": sibling_conflict,
+        "has_numeric_clause": any(line.get("numeric") for line in lines),
+    }
+
+
+def _concept_result_clause_complete(text: str) -> bool:
+    for sentence in _split_sentences_with_offsets(text):
+        normalized = _normalize_numeric_text(sentence.get("text") or "")
+        if not normalized or len(normalized) < 18:
+            continue
+        if not _has_numeric_clause(normalized):
+            continue
+        if normalized.rstrip().endswith((".", ";", "!", "?")):
+            return True
+    for line in _table_like_lines(text):
+        if line.get("numeric") and line.get("table_like"):
             return True
     return False
 
@@ -625,6 +1141,328 @@ def _annotate_and_expand_snippets(
     return merged, {
         "expanded_context_count": expanded_context_count,
         "truncation_trust_hits": truncation_trust_hits,
+    }
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, sqlite3.Row):
+        return row[key] if key in row.keys() else default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return default
+
+
+def _build_artifact_alignment_contexts(
+    *,
+    scope_rows: list[Any],
+    query_profile: Optional[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    target_concepts = list((query_profile or {}).get("target_concepts") or [])
+    contexts: dict[str, dict[str, Any]] = {}
+    for row in scope_rows:
+        artifact_id = str(_row_value(row, "artifact_id", "") or "")
+        if not artifact_id:
+            continue
+        path = str(_row_value(row, "path", "") or "")
+        content = _read_artifact_text(path)
+        alias_registry = _extract_alias_registry(content)
+        alias_registry = _extract_medium_confidence_aliases(
+            text=content,
+            target_concepts=target_concepts,
+            existing_registry=alias_registry,
+        )
+        contexts[artifact_id] = {
+            "path": path,
+            "content": content,
+            "alias_registry": alias_registry,
+            "alias_confidence_summary": _alias_confidence_summary(alias_registry),
+        }
+    return contexts
+
+
+def _concept_snippet_sort_key(snippet: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        -ALIGNMENT_STRENGTH_ORDER.get(str(snippet.get("alignment_strength") or "none"), 0),
+        -int(_normalize_bool(snippet.get("result_clause_complete"))),
+        -int(not _normalize_bool(snippet.get("adjacent_outcome_conflict"))),
+        -float(snippet.get("semantic_score", 0.0) or 0.0),
+        -float(snippet.get("score", 0.0) or 0.0),
+        -float(snippet.get("structure_confidence", 0.0) or 0.0),
+        str(snippet.get("artifact_id", "") or ""),
+        int(snippet.get("start", 0) or 0),
+    )
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    numerator = sum(float(a) * float(b) for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(float(a) * float(a) for a in left))
+    right_norm = math.sqrt(sum(float(b) * float(b) for b in right))
+    if left_norm <= 0.0 or right_norm <= 0.0:
+        return 0.0
+    return numerator / (left_norm * right_norm)
+
+
+def _run_async_sync(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+        return None
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
+def _semantic_rerank_concept_snippets(
+    *,
+    snippets: list[dict[str, Any]],
+    query_profile: Optional[dict[str, Any]],
+    embedding_function: Any = None,
+) -> tuple[list[dict[str, Any]], bool, int]:
+    if not embedding_function or len(snippets) < 2:
+        return snippets, False, 0
+
+    shortlist = snippets[: min(CONCEPT_ALIGNMENT_SEMANTIC_SHORTLIST, len(snippets))]
+    top_gap = abs(float(shortlist[0].get("score", 0.0) or 0.0) - float(shortlist[1].get("score", 0.0) or 0.0))
+    if (
+        ALIGNMENT_STRENGTH_ORDER.get(str(shortlist[0].get("alignment_strength") or "none"), 0) >= ALIGNMENT_STRENGTH_ORDER["strong"]
+        or top_gap > CONCEPT_ALIGNMENT_AMBIGUOUS_SCORE_GAP
+    ):
+        return snippets, False, 0
+
+    query_text = " ".join((query_profile or {}).get("target_concepts") or []) or str(
+        (query_profile or {}).get("normalized_query") or ""
+    )
+    embeddings = _run_async_sync(
+        embedding_function([query_text, *[str(snippet.get("text") or "") for snippet in shortlist]])
+    )
+    if not isinstance(embeddings, list) or len(embeddings) != len(shortlist) + 1:
+        return snippets, False, 0
+
+    query_embedding = embeddings[0]
+    reranked: list[dict[str, Any]] = []
+    for snippet, embedding in zip(shortlist, embeddings[1:]):
+        updated = dict(snippet)
+        try:
+            updated["semantic_score"] = round(
+                _cosine_similarity(list(query_embedding), list(embedding)),
+                4,
+            )
+        except Exception:
+            updated["semantic_score"] = 0.0
+        reranked.append(updated)
+    reranked.sort(key=_concept_snippet_sort_key)
+    return [*reranked, *snippets[len(shortlist) :]], True, len(shortlist)
+
+
+def _concept_should_expand(
+    snippet: dict[str, Any],
+) -> bool:
+    if not _normalize_bool(snippet.get("has_numeric_clause")):
+        return False
+    if str(snippet.get("alignment_strength") or "none") in {"exact", "strong"}:
+        return True
+    return bool(snippet.get("snippet_truncated"))
+
+
+def _annotate_and_expand_snippets_concept(
+    snippets: list[dict[str, Any]],
+    *,
+    scope_artifact_count: int,
+    query_profile: Optional[dict[str, Any]],
+    artifact_contexts: dict[str, dict[str, Any]],
+    embedding_function: Any = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not snippets:
+        return [], {
+            "expanded_context_count": 0,
+            "truncation_trust_hits": 0,
+            "concept_aligned_trust_hits": 0,
+            "adjacent_outcome_conflict_count": 0,
+            "semantic_rerank_used": False,
+            "semantic_rerank_candidate_count": 0,
+            "alias_confidence_summary": {"high": 0, "medium": 0, "low": 0, "ambiguous": 0},
+        }
+
+    tight_scope = int(scope_artifact_count or 0) > 0 and int(scope_artifact_count or 0) <= CONCEPT_ALIGNMENT_ARTIFACT_SCOPE_MAX
+    text_cache: dict[str, str] = {
+        str(context.get("path") or ""): str(context.get("content") or "")
+        for context in artifact_contexts.values()
+        if str(context.get("path") or "")
+    }
+    expansions_by_artifact: dict[str, int] = {}
+    expanded_context_count = 0
+    annotated: list[dict[str, Any]] = []
+    alias_summary = {"high": 0, "medium": 0, "low": 0, "ambiguous": 0}
+    for context in artifact_contexts.values():
+        for key, value in dict(context.get("alias_confidence_summary") or {}).items():
+            if key in alias_summary:
+                alias_summary[key] += int(value or 0)
+
+    for snippet in snippets:
+        updated = dict(snippet)
+        artifact_id = str(updated.get("artifact_id") or "")
+        context = artifact_contexts.get(artifact_id) or {}
+        alias_registry = dict(context.get("alias_registry") or {})
+        path = str(updated.get("path") or context.get("path") or "")
+        content = text_cache.get(path)
+        if content is None and path:
+            content = _read_artifact_text(path)
+            text_cache[path] = content
+        content = content or str(updated.get("text") or "")
+
+        raw_start = int(updated.get("start") or 0)
+        raw_end = int(updated.get("end") or 0)
+        raw_text = str(updated.get("text") or "")
+        updated["snippet_truncated"] = bool(raw_start > 0 or raw_end < len(content))
+        alignment = _concept_alignment_for_text(
+            text=raw_text,
+            target_concepts=list((query_profile or {}).get("target_concepts") or []),
+            alias_registry=alias_registry,
+        )
+        updated.update(alignment)
+        updated["result_clause_complete"] = _concept_result_clause_complete(raw_text)
+        updated["expanded_context_applied"] = False
+        updated["effective_window_chars"] = max(0, raw_end - raw_start)
+        updated["expansion_anchor_start"] = int(updated.get("hit_index") or raw_start)
+        updated["truncation_trust_hint"] = bool(
+            updated["snippet_truncated"]
+            and updated["result_clause_complete"]
+            and str(updated.get("alignment_strength") or "none") in {"exact", "strong"}
+        )
+
+        should_expand = (
+            tight_scope
+            and expansions_by_artifact.get(artifact_id, 0) <= 0
+            and _concept_should_expand(updated)
+        )
+        if content and should_expand:
+            new_start, new_end, expanded_text = _expand_context_window(
+                content,
+                start=raw_start,
+                end=raw_end,
+                anchor_index=int(updated.get("hit_index") or raw_start),
+            )
+            if expanded_text and (new_start != raw_start or new_end != raw_end):
+                updated["start"] = new_start
+                updated["end"] = new_end
+                updated["text"] = expanded_text
+                updated["expanded_context_applied"] = True
+                updated["effective_window_chars"] = new_end - new_start
+                updated["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
+                updated.update(
+                    _concept_alignment_for_text(
+                        text=expanded_text,
+                        target_concepts=list((query_profile or {}).get("target_concepts") or []),
+                        alias_registry=alias_registry,
+                    )
+                )
+                updated["result_clause_complete"] = _concept_result_clause_complete(expanded_text)
+                updated["truncation_trust_hint"] = bool(
+                    updated["snippet_truncated"]
+                    and updated["result_clause_complete"]
+                    and str(updated.get("alignment_strength") or "none") in {"exact", "strong"}
+                )
+                expanded_context_count += 1
+                expansions_by_artifact[artifact_id] = expansions_by_artifact.get(artifact_id, 0) + 1
+
+        annotated.append(updated)
+
+    merged = _merge_expanded_snippets(annotated, text_cache=text_cache)
+    reranked, semantic_rerank_used, semantic_rerank_candidate_count = _semantic_rerank_concept_snippets(
+        snippets=merged,
+        query_profile=query_profile,
+        embedding_function=embedding_function,
+    )
+    reranked.sort(key=_concept_snippet_sort_key)
+    truncation_trust_hits = sum(
+        1 for snippet in reranked if _normalize_bool(snippet.get("truncation_trust_hint"))
+    )
+    concept_aligned_trust_hits = sum(
+        1
+        for snippet in reranked
+        if str(snippet.get("alignment_strength") or "none") in {"exact", "strong"}
+        and _normalize_bool(snippet.get("result_clause_complete"))
+    )
+    adjacent_outcome_conflict_count = sum(
+        1 for snippet in reranked if _normalize_bool(snippet.get("adjacent_outcome_conflict"))
+    )
+    return reranked, {
+        "expanded_context_count": expanded_context_count,
+        "truncation_trust_hits": truncation_trust_hits,
+        "concept_aligned_trust_hits": concept_aligned_trust_hits,
+        "adjacent_outcome_conflict_count": adjacent_outcome_conflict_count,
+        "semantic_rerank_used": semantic_rerank_used,
+        "semantic_rerank_candidate_count": semantic_rerank_candidate_count,
+        "alias_confidence_summary": alias_summary,
+    }
+
+
+def _classify_evidence_strength_concept(snippets: list[dict[str, Any]]) -> str:
+    aligned = [
+        snippet
+        for snippet in snippets
+        if str(snippet.get("alignment_strength") or "none") in {"exact", "strong"}
+        and _normalize_bool(snippet.get("result_clause_complete"))
+    ]
+    if not aligned:
+        return "weak"
+    unique_domains = {
+        str(snippet.get("domain") or "").strip().lower()
+        for snippet in aligned
+        if str(snippet.get("domain") or "").strip()
+    }
+    if len(aligned) >= 2 and len(unique_domains) >= 2:
+        return "strong"
+    return "adequate"
+
+
+def _suggest_next_action_concept(
+    *,
+    searched_artifact_count: int,
+    snippets: list[dict[str, Any]],
+) -> str:
+    if searched_artifact_count <= 0:
+        return "fetch_more"
+    if any(
+        str(snippet.get("alignment_strength") or "none") in {"exact", "strong"}
+        and _normalize_bool(snippet.get("result_clause_complete"))
+        for snippet in snippets
+    ):
+        return "answer_with_current_evidence"
+    return "refine_within_same_source"
+
+
+def _build_concept_alignment_shadow_diff(
+    *,
+    serving_payload: dict[str, Any],
+    shadow_payload: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    if not isinstance(shadow_payload, dict):
+        return {"ran": False}
+
+    serving_top = ((serving_payload.get("snippets") or [])[:1] or [{}])[0]
+    shadow_top = ((shadow_payload.get("snippets") or [])[:1] or [{}])[0]
+    serving_identity = (
+        str(serving_top.get("artifact_id") or ""),
+        int(serving_top.get("start", 0) or 0),
+        int(serving_top.get("end", 0) or 0),
+    )
+    shadow_identity = (
+        str(shadow_top.get("artifact_id") or ""),
+        int(shadow_top.get("start", 0) or 0),
+        int(shadow_top.get("end", 0) or 0),
+    )
+    return {
+        "ran": True,
+        "top_hit_changed": serving_identity != shadow_identity,
+        "serving_top_hit": serving_identity,
+        "shadow_top_hit": shadow_identity,
+        "serving_next_action": serving_payload.get("suggested_next_action"),
+        "shadow_next_action": shadow_payload.get("suggested_next_action"),
+        "serving_trust_hits": int(serving_payload.get("concept_aligned_trust_hits") or serving_payload.get("truncation_trust_hits") or 0),
+        "shadow_trust_hits": int(shadow_payload.get("concept_aligned_trust_hits") or shadow_payload.get("truncation_trust_hits") or 0),
+        "serving_adjacent_outcome_conflicts": int(serving_payload.get("adjacent_outcome_conflict_count") or 0),
+        "shadow_adjacent_outcome_conflicts": int(shadow_payload.get("adjacent_outcome_conflict_count") or 0),
     }
 
 
@@ -1364,9 +2202,26 @@ def _extract_window(content: str, terms: list[str], window_chars: int) -> tuple[
     return start, end, snippet, best_idx
 
 
-def _best_hit_index(content: str, terms: list[str]) -> int:
+def _best_hit_index(
+    content: str,
+    terms: list[str],
+    query_profile: Optional[dict[str, Any]] = None,
+) -> int:
     normalized = _normalize_numeric_text(content).lower()
     if not normalized:
+        return 0
+    if str((query_profile or {}).get("serving_logic") or "") == "concept":
+        for concept in (query_profile or {}).get("target_concepts") or []:
+            idx = normalized.find(str(concept or "").lower())
+            if idx >= 0:
+                return idx
+        numeric_match = NUMERIC_VALUE_RE.search(normalized)
+        if numeric_match:
+            return numeric_match.start()
+        for term in terms:
+            idx = normalized.find(str(term or "").lower())
+            if idx >= 0:
+                return idx
         return 0
     cue_positions: list[int] = []
     for cue in RESULT_CLAUSE_COMPLETE_CUES:
@@ -1490,7 +2345,11 @@ def _score_text_block(
     density = min(1.0, total_hits / max(1, len(terms) * 2))
     lexical_score = (0.75 * coverage) + (0.25 * density)
     blended = max(0.0, min(1.0, (0.8 * lexical_score) + (0.2 * rank_score)))
-    if isinstance(query_profile, dict) and query_profile.get("result_intent"):
+    if (
+        isinstance(query_profile, dict)
+        and query_profile.get("result_intent")
+        and str(query_profile.get("serving_logic") or "legacy") == "legacy"
+    ):
         bonus = _result_intent_section_bonus(text)
         if _result_clause_complete(text):
             bonus += 0.28
@@ -2021,6 +2880,52 @@ def _select_final_segment_snippets(
     return selected[:limit] if selected else snippets[:limit]
 
 
+def _select_final_segment_snippets_concept(
+    snippets: list[dict[str, Any]],
+    *,
+    focus_targets: dict[str, set[str]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not snippets:
+        return []
+    if not focus_targets:
+        return snippets[:limit]
+
+    selected: list[dict[str, Any]] = []
+    seen_identities: set[tuple[str, int, int]] = set()
+    for clause, target_ids in focus_targets.items():
+        if not clause or not target_ids:
+            continue
+        winner = next(
+            (
+                snippet
+                for snippet in snippets
+                if _snippet_segment_ids(snippet).intersection(target_ids)
+            ),
+            None,
+        )
+        if winner is None:
+            continue
+        identity = _snippet_identity(winner)
+        if identity in seen_identities:
+            continue
+        selected.append(winner)
+        seen_identities.add(identity)
+        if len(selected) >= limit:
+            return selected[:limit]
+
+    for snippet in snippets:
+        if len(selected) >= limit:
+            break
+        identity = _snippet_identity(snippet)
+        if identity in seen_identities:
+            continue
+        selected.append(snippet)
+        seen_identities.add(identity)
+
+    return selected[:limit]
+
+
 def _load_scope_rows(
     conn: sqlite3.Connection,
     *,
@@ -2140,7 +3045,7 @@ def _build_segment_snippets(
                 "hit_index": int(
                     row["start_offset"] if isinstance(row, sqlite3.Row) else row.get("start_offset") or 0
                 )
-                + _best_hit_index(content, terms),
+                + _best_hit_index(content, terms, query_profile=query_profile),
                 "score": blended,
                 "text": content,
                 "label": label,
@@ -2164,7 +3069,7 @@ def _build_segment_snippets(
     return snippets[:limit]
 
 
-def _query_web_evidence_store_segmented(
+def _query_web_evidence_store_segmented_legacy(
     *,
     db_path: Path,
     chat_id: str,
@@ -2333,6 +3238,183 @@ def _query_web_evidence_store_segmented(
     }
 
 
+def _query_web_evidence_store_segmented_concept(
+    *,
+    db_path: Path,
+    chat_id: str,
+    message_id: Optional[str],
+    query: str,
+    effective_query: Optional[str],
+    query_profile: Optional[dict[str, Any]],
+    terms: list[str],
+    scope_rows: list[sqlite3.Row],
+    missing_artifact_ids: list[str],
+    searched_artifact_ids: list[str],
+    searched_domains: list[str],
+    top_k: int,
+    embedding_function: Any = None,
+) -> dict[str, Any]:
+    focus_clauses = []
+    focus_targets: dict[str, set[str]] = {}
+    with _sqlite_conn(db_path) as conn:
+        _init_db(conn)
+        segment_meta = _ensure_segment_indexes(
+            conn,
+            chat_id=chat_id,
+            artifact_rows=scope_rows,
+        )
+        segment_rows, fts_enabled = _query_segment_rows(
+            conn,
+            chat_id=chat_id,
+            terms=terms,
+            artifact_ids=searched_artifact_ids,
+            limit=max(top_k * 3, 12),
+        )
+        large_artifact_in_scope = any(
+            int(row["content_chars"] or 0) >= LARGE_ARTIFACT_CHARS_THRESHOLD for row in scope_rows
+        )
+        focus_clauses = _extract_focus_clauses(query) if large_artifact_in_scope else []
+        if focus_clauses:
+            focus_targets = _resolve_focus_targets(
+                conn,
+                chat_id=chat_id,
+                original_query=query,
+                focus_clauses=focus_clauses,
+                artifact_ids=searched_artifact_ids,
+            )
+
+    snippets = _build_segment_snippets(
+        segment_rows,
+        terms=terms,
+        limit=max(top_k, 1),
+        query_profile=query_profile,
+    )
+    coverage_before_merge = _count_focus_coverage(
+        snippets,
+        focus_targets=focus_targets,
+    )
+
+    focus_retrieval_used = False
+    focus_candidates = 0
+    focus_admitted = 0
+    focus_dropped_low_score = 0
+    focus_candidate_snippets: list[dict[str, Any]] = []
+
+    if focus_clauses and coverage_before_merge < len(focus_clauses):
+        focus_retrieval_used = True
+        with _sqlite_conn(db_path) as conn:
+            _init_db(conn)
+            for clause in focus_clauses:
+                composite_terms = _focus_query_terms(query, clause)
+                rows, _ = _query_segment_rows(
+                    conn,
+                    chat_id=chat_id,
+                    terms=composite_terms,
+                    artifact_ids=searched_artifact_ids,
+                    limit=6,
+                )
+                clause_profile = dict(query_profile or {})
+                clause_profile["normalized_query"] = clause
+                clause_profile["normalized_terms"] = composite_terms
+                clause_profile["target_concepts"], clause_profile["query_modifiers"], _ = _build_query_concepts(
+                    clause
+                )
+                clause_snippets = _build_segment_snippets(
+                    rows,
+                    terms=composite_terms,
+                    limit=2,
+                    query_profile=clause_profile,
+                )
+                focus_candidates += len(clause_snippets)
+                admitted_for_clause = False
+                for snippet in clause_snippets:
+                    snippet["focus_clause"] = clause
+                    if float(snippet.get("score", 0.0) or 0.0) >= FOCUS_WINNER_SCORE_FLOOR and not admitted_for_clause:
+                        focus_candidate_snippets.append(snippet)
+                        focus_admitted += 1
+                        admitted_for_clause = True
+                    else:
+                        focus_dropped_low_score += 1
+
+    merged_candidates = [*snippets, *focus_candidate_snippets]
+    deduped_snippets, dedupe_meta = _dedupe_segment_snippets(merged_candidates)
+    artifact_contexts = _build_artifact_alignment_contexts(
+        scope_rows=scope_rows,
+        query_profile=query_profile,
+    )
+    aligned_snippets, concept_meta = _annotate_and_expand_snippets_concept(
+        deduped_snippets,
+        scope_artifact_count=len(searched_artifact_ids),
+        query_profile=query_profile,
+        artifact_contexts=artifact_contexts,
+        embedding_function=embedding_function,
+    )
+    final_limit = min(12, max(top_k, len(focus_clauses) * 2 if focus_clauses else top_k))
+    final_snippets = _select_final_segment_snippets_concept(
+        aligned_snippets,
+        focus_targets=focus_targets,
+        limit=final_limit,
+    )
+    coverage_after_merge = _count_focus_coverage(
+        final_snippets,
+        focus_targets=focus_targets,
+    )
+    evidence_strength = _classify_evidence_strength_concept(final_snippets)
+    suggested_next_action = _suggest_next_action_concept(
+        searched_artifact_count=len(searched_artifact_ids),
+        snippets=final_snippets,
+    )
+    structured_index_used = any(
+        item.get("segmentation_mode") in {"structured", "weak_structured"}
+        for item in segment_meta
+    )
+    fallback_chunk_mode = any(
+        item.get("segmentation_mode") == "chunk" for item in segment_meta
+    )
+
+    return {
+        "status": "ok",
+        "query": query,
+        "normalized_query": effective_query or query,
+        "chat_id": chat_id,
+        "message_id": str(message_id or ""),
+        "scope_mode": "implicit_current_message",
+        "artifact_ids": searched_artifact_ids,
+        "searched_artifact_count": len(searched_artifact_ids),
+        "searched_artifact_ids": searched_artifact_ids,
+        "searched_domains": searched_domains,
+        "missing_artifact_ids": missing_artifact_ids,
+        "snippets": final_snippets,
+        "narrow_count": len(snippets),
+        "wide_count": 0,
+        "wide_pass_used": False,
+        "fts_enabled": bool(fts_enabled),
+        "top_k": top_k,
+        "window_chars": MAX_SEGMENT_CHARS,
+        "widen_if_weak": False,
+        "weak_narrow_evidence": evidence_strength == "weak",
+        "evidence_strength": evidence_strength,
+        "suggested_next_action": suggested_next_action,
+        "retrieval_mode_effective": WEB_EVIDENCE_RETRIEVAL_MODE_SEGMENTED,
+        "structured_index_used": structured_index_used,
+        "fallback_chunk_mode": fallback_chunk_mode,
+        "focus_retrieval_used": focus_retrieval_used,
+        "focus_count": len(focus_clauses),
+        "focus_clauses": focus_clauses,
+        "coverage_before_merge": coverage_before_merge,
+        "coverage_after_merge": coverage_after_merge,
+        "focus_candidates": focus_candidates,
+        "focus_admitted": focus_admitted,
+        "focus_dropped_low_score": focus_dropped_low_score,
+        "query_compaction_applied": False,
+        "title_overlap_dropped": 0,
+        "target_concepts": list((query_profile or {}).get("target_concepts") or []),
+        "query_modifiers": list((query_profile or {}).get("query_modifiers") or []),
+        **concept_meta,
+        **dedupe_meta,
+    }
+
+
 def query_web_evidence_store(
     *,
     chat_id: str,
@@ -2345,6 +3427,9 @@ def query_web_evidence_store(
     wide_top_k: int = 10,
     wide_window_chars: int = 640,
     retrieval_mode: str = WEB_EVIDENCE_RETRIEVAL_MODE_LEGACY,
+    concept_alignment_enabled: bool = False,
+    embedding_function: Any = None,
+    reranking_function: Any = None,
 ) -> dict[str, Any]:
     normalized_chat_id = str(chat_id or "").strip()
     if not normalized_chat_id:
@@ -2388,6 +3473,8 @@ def query_web_evidence_store(
             "snippets_dropped_overlap": 0,
             "expanded_context_count": 0,
             "truncation_trust_hits": 0,
+            "concept_alignment_enabled": bool(concept_alignment_enabled),
+            "concept_alignment_shadow": {"ran": False},
         }
 
     db_path = chat_dir / "web_evidence.sqlite"
@@ -2426,6 +3513,8 @@ def query_web_evidence_store(
             "snippets_dropped_overlap": 0,
             "expanded_context_count": 0,
             "truncation_trust_hits": 0,
+            "concept_alignment_enabled": bool(concept_alignment_enabled),
+            "concept_alignment_shadow": {"ran": False},
         }
 
     bounded_top_k = max(1, min(20, int(top_k or 6)))
@@ -2488,7 +3577,11 @@ def query_web_evidence_store(
                             "start": int(chunk.get("start") or 0),
                             "end": int(chunk.get("end") or 0),
                             "hit_index": int(chunk.get("start") or 0)
-                            + _best_hit_index(str(chunk.get("text") or ""), terms),
+                            + _best_hit_index(
+                                str(chunk.get("text") or ""),
+                                terms,
+                                query_profile=query_profile,
+                            ),
                             "score": chunk_score,
                             "text": str(chunk.get("text") or ""),
                             "chunked": True,
@@ -2511,7 +3604,11 @@ def query_web_evidence_store(
                                 "start": int(chunk.get("start") or 0),
                                 "end": int(chunk.get("end") or 0),
                                 "hit_index": int(chunk.get("start") or 0)
-                                + _best_hit_index(str(chunk.get("text") or ""), terms),
+                                + _best_hit_index(
+                                    str(chunk.get("text") or ""),
+                                    terms,
+                                    query_profile=query_profile,
+                                ),
                                 "score": round(rank_score, 4),
                                 "text": str(chunk.get("text") or ""),
                                 "chunked": True,
@@ -2578,12 +3675,21 @@ def query_web_evidence_store(
             message_id=message_id,
             artifact_ids=normalized_artifact_ids,
         )
-        query_profile = _single_artifact_query_profile(
+        legacy_query_profile = _single_artifact_query_profile(
             query=query,
             scope_rows=scope_rows,
         )
-        effective_query = str(query_profile.get("normalized_query") or query or "").strip()
-        terms = list(query_profile.get("normalized_terms") or _fts_query_terms(effective_query))
+        legacy_query_profile["serving_logic"] = "legacy"
+        concept_query_profile = _build_concept_first_query_profile(
+            query=query,
+            scope_rows=scope_rows,
+        )
+        active_query_profile = (
+            concept_query_profile if _normalize_bool(concept_alignment_enabled) else legacy_query_profile
+        )
+        query_profile = active_query_profile
+        effective_query = str(active_query_profile.get("normalized_query") or query or "").strip()
+        terms = list(active_query_profile.get("normalized_terms") or _fts_query_terms(effective_query))
         searched_artifact_ids = [
             str(row["artifact_id"] or "") for row in scope_rows if str(row["artifact_id"] or "")
         ]
@@ -2594,23 +3700,57 @@ def query_web_evidence_store(
                 if str(row["domain"] or "").strip()
             }
         )
-        single_artifact_direct_scan = bool(query_profile.get("single_artifact_scope"))
+        single_artifact_direct_scan = bool(active_query_profile.get("single_artifact_scope"))
         if normalized_retrieval_mode == WEB_EVIDENCE_RETRIEVAL_MODE_SEGMENTED:
-            return _query_web_evidence_store_segmented(
+            legacy_effective_query = str(legacy_query_profile.get("normalized_query") or query or "").strip()
+            legacy_terms = list(
+                legacy_query_profile.get("normalized_terms") or _fts_query_terms(legacy_effective_query)
+            )
+            concept_effective_query = str(concept_query_profile.get("normalized_query") or query or "").strip()
+            concept_terms = list(
+                concept_query_profile.get("normalized_terms") or _fts_query_terms(concept_effective_query)
+            )
+            legacy_payload = _query_web_evidence_store_segmented_legacy(
                 db_path=db_path,
                 chat_id=normalized_chat_id,
                 message_id=message_id,
                 query=query,
-                effective_query=effective_query,
-                query_profile=query_profile,
-                terms=terms,
+                effective_query=legacy_effective_query,
+                query_profile=legacy_query_profile,
+                terms=legacy_terms,
                 scope_rows=scope_rows,
                 missing_artifact_ids=missing_artifact_ids,
                 searched_artifact_ids=searched_artifact_ids,
                 searched_domains=searched_domains,
                 top_k=bounded_top_k,
-            ) | {
+            )
+            concept_payload = _query_web_evidence_store_segmented_concept(
+                db_path=db_path,
+                chat_id=normalized_chat_id,
+                message_id=message_id,
+                query=query,
+                effective_query=concept_effective_query,
+                query_profile=concept_query_profile,
+                terms=concept_terms,
+                scope_rows=scope_rows,
+                missing_artifact_ids=missing_artifact_ids,
+                searched_artifact_ids=searched_artifact_ids,
+                searched_domains=searched_domains,
+                top_k=bounded_top_k,
+                embedding_function=embedding_function,
+            )
+            serving_payload = concept_payload if _normalize_bool(concept_alignment_enabled) else legacy_payload
+            shadow_payload = legacy_payload if _normalize_bool(concept_alignment_enabled) else concept_payload
+            return serving_payload | {
                 "scope_mode": scope_mode,
+                "concept_alignment_enabled": bool(concept_alignment_enabled),
+                "concept_alignment_serving_path": (
+                    "concept" if _normalize_bool(concept_alignment_enabled) else "legacy"
+                ),
+                "concept_alignment_shadow": _build_concept_alignment_shadow_diff(
+                    serving_payload=serving_payload,
+                    shadow_payload=shadow_payload,
+                ),
             }
         if single_artifact_direct_scan:
             narrow_rows = scope_rows[:1]
@@ -2647,18 +3787,37 @@ def query_web_evidence_store(
         wide_used = True
 
     snippets = wide if wide_used and wide else narrow
-    snippets, expansion_meta = _annotate_and_expand_snippets(
-        snippets,
-        scope_artifact_count=len(searched_artifact_ids),
-        query_profile=query_profile,
-    )
-    evidence_strength = _classify_evidence_strength(snippets)
-    suggested_next_action = _suggest_next_action(
-        searched_artifact_count=len(searched_artifact_ids),
-        searched_domains=searched_domains,
-        snippets=snippets,
-        evidence_strength=evidence_strength,
-    )
+    if _normalize_bool(concept_alignment_enabled):
+        artifact_contexts = _build_artifact_alignment_contexts(
+            scope_rows=scope_rows,
+            query_profile=active_query_profile,
+        )
+        snippets, expansion_meta = _annotate_and_expand_snippets_concept(
+            snippets,
+            scope_artifact_count=len(searched_artifact_ids),
+            query_profile=active_query_profile,
+            artifact_contexts=artifact_contexts,
+            embedding_function=embedding_function,
+        )
+        snippets = snippets[:bounded_top_k]
+        evidence_strength = _classify_evidence_strength_concept(snippets)
+        suggested_next_action = _suggest_next_action_concept(
+            searched_artifact_count=len(searched_artifact_ids),
+            snippets=snippets,
+        )
+    else:
+        snippets, expansion_meta = _annotate_and_expand_snippets(
+            snippets,
+            scope_artifact_count=len(searched_artifact_ids),
+            query_profile=active_query_profile,
+        )
+        evidence_strength = _classify_evidence_strength(snippets)
+        suggested_next_action = _suggest_next_action(
+            searched_artifact_count=len(searched_artifact_ids),
+            searched_domains=searched_domains,
+            snippets=snippets,
+            evidence_strength=evidence_strength,
+        )
 
     return {
         "status": "ok",
@@ -2696,7 +3855,14 @@ def query_web_evidence_store(
         "focus_dropped_low_score": 0,
         "dedupe_cluster_count": 0,
         "snippets_dropped_overlap": 0,
-        "query_compaction_applied": bool(query_profile.get("compaction_applied")),
-        "title_overlap_dropped": int(query_profile.get("title_overlap_dropped") or 0),
+        "query_compaction_applied": bool(active_query_profile.get("compaction_applied")),
+        "title_overlap_dropped": int(active_query_profile.get("title_overlap_dropped") or 0),
+        "target_concepts": list(active_query_profile.get("target_concepts") or []),
+        "query_modifiers": list(active_query_profile.get("query_modifiers") or []),
+        "concept_alignment_enabled": bool(concept_alignment_enabled),
+        "concept_alignment_serving_path": (
+            "concept" if _normalize_bool(concept_alignment_enabled) else "legacy"
+        ),
+        "concept_alignment_shadow": {"ran": False},
         **expansion_meta,
     }

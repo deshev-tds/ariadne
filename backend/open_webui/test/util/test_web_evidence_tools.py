@@ -7,11 +7,20 @@ import open_webui.tools.builtin as builtin_tools
 import open_webui.utils.web_evidence_store as web_store
 
 
-def _request_with_retrieval_mode(mode: str = "legacy_store_retrieval"):
+def _request_with_retrieval_mode(
+    mode: str = "legacy_store_retrieval",
+    *,
+    concept_alignment_enabled: bool = False,
+):
     return SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(
-                config=SimpleNamespace(WEB_EVIDENCE_RETRIEVAL_MODE=mode)
+                config=SimpleNamespace(
+                    WEB_EVIDENCE_RETRIEVAL_MODE=mode,
+                    ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT=concept_alignment_enabled,
+                ),
+                EMBEDDING_FUNCTION=None,
+                RERANKING_FUNCTION=None,
             )
         )
     )
@@ -236,6 +245,146 @@ def test_query_web_evidence_store_single_artifact_compaction_surfaces_result_sni
     assert int(expanded["effective_window_chars"]) >= 500
     assert any(snippet.get("result_clause_complete") for snippet in top_three)
     assert any(snippet.get("truncation_trust_hint") for snippet in top_three)
+
+
+def test_query_web_evidence_store_segmented_concept_alignment_prefers_exact_outcome(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web_store, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        web_store.Chats,
+        "get_chat_title_by_id",
+        lambda _chat_id: "Concept Alignment Test",
+    )
+
+    content = (
+        "# Outcomes\n"
+        "Sleep onset latency (SOL), sleep efficiency (SE), total sleep time (TST), and "
+        "wake after sleep onset (WASO) were assessed.\n\n"
+        "# Results\n"
+        "No significant effects were found for SE (MD = -0.61; 95% CI -7.58 to 6.35; p = 0.86) "
+        "or WASO (MD = -1.47; 95% CI -14.94 to 11.99; p = 0.83).\n"
+        "For sleep onset latency (SOL), the pooled mean difference was -4.86 minutes "
+        "(95% CI -20.23 to 10.52; p = 0.54).\n"
+    )
+
+    stored = web_store.store_web_page(
+        chat_id="chat-concept",
+        message_id="msg-concept",
+        url="https://example.org/review",
+        title="Systematic review of evening light interventions",
+        content=content,
+    )
+
+    queried = web_store.query_web_evidence_store(
+        chat_id="chat-concept",
+        message_id="msg-concept",
+        query="sleep onset latency",
+        artifact_ids=[stored["artifact_id"]],
+        top_k=6,
+        retrieval_mode=web_store.WEB_EVIDENCE_RETRIEVAL_MODE_SEGMENTED,
+        concept_alignment_enabled=True,
+    )
+
+    assert queried["status"] == "ok"
+    assert queried["concept_alignment_enabled"] is True
+    assert queried["concept_alignment_serving_path"] == "concept"
+    assert queried["suggested_next_action"] == "answer_with_current_evidence"
+    top = queried["snippets"][0]
+    assert "-4.86" in top["text"]
+    assert top["alignment_strength"] in {"exact", "strong"}
+    assert queried["concept_aligned_trust_hits"] >= 1
+    assert any(
+        "-0.61" in snippet["text"] and not snippet.get("truncation_trust_hint")
+        for snippet in queried["snippets"]
+    )
+
+
+def test_query_web_evidence_store_segmented_concept_alignment_uses_table_caption_linkage(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web_store, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        web_store.Chats,
+        "get_chat_title_by_id",
+        lambda _chat_id: "Table Alignment Test",
+    )
+
+    content = (
+        "# Synthesized findings\n"
+        "Table 2. Sleep onset latency (SOL) pooled outcome\n"
+        "Metric | MD | 95% interval | p\n"
+        "Pooled result | -4.86 | -20.23 to 10.52 | 0.54\n"
+        "Comparator row | -1.47 | -14.94 to 11.99 | 0.83\n"
+    )
+
+    stored = web_store.store_web_page(
+        chat_id="chat-table",
+        message_id="msg-table",
+        url="https://example.org/table",
+        title="Outcome Table",
+        content=content,
+    )
+
+    queried = web_store.query_web_evidence_store(
+        chat_id="chat-table",
+        message_id="msg-table",
+        query="sleep onset latency",
+        artifact_ids=[stored["artifact_id"]],
+        top_k=4,
+        retrieval_mode=web_store.WEB_EVIDENCE_RETRIEVAL_MODE_SEGMENTED,
+        concept_alignment_enabled=True,
+    )
+
+    assert queried["status"] == "ok"
+    top = queried["snippets"][0]
+    assert top["alignment_strength"] in {"strong", "exact"}
+    assert top["alignment_evidence"] in {"table_caption_row", "adjacent_sentence", "same_sentence"}
+    assert queried["suggested_next_action"] == "answer_with_current_evidence"
+
+
+def test_query_web_evidence_store_segmented_shadow_diff_runs_when_concept_path_is_shadow(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web_store, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        web_store.Chats,
+        "get_chat_title_by_id",
+        lambda _chat_id: "Shadow Comparator Test",
+    )
+
+    content = (
+        "# Outcomes\n"
+        "Sleep onset latency (SOL), sleep efficiency (SE), and wake after sleep onset (WASO) were assessed.\n\n"
+        "# Results\n"
+        "No significant effects were found for SE (MD = -0.61; 95% CI -7.58 to 6.35; p = 0.86) "
+        "or WASO (MD = -1.47; 95% CI -14.94 to 11.99; p = 0.83).\n"
+        "For sleep onset latency (SOL), the pooled mean difference was -4.86 minutes "
+        "(95% CI -20.23 to 10.52; p = 0.54).\n"
+    )
+
+    stored = web_store.store_web_page(
+        chat_id="chat-shadow",
+        message_id="msg-shadow",
+        url="https://example.org/shadow",
+        title="Shadow Example",
+        content=content,
+    )
+
+    queried = web_store.query_web_evidence_store(
+        chat_id="chat-shadow",
+        message_id="msg-shadow",
+        query="sleep onset latency",
+        artifact_ids=[stored["artifact_id"]],
+        top_k=6,
+        retrieval_mode=web_store.WEB_EVIDENCE_RETRIEVAL_MODE_SEGMENTED,
+        concept_alignment_enabled=False,
+    )
+
+    assert queried["status"] == "ok"
+    assert queried["concept_alignment_serving_path"] == "legacy"
+    assert queried["concept_alignment_shadow"]["ran"] is True
+    assert queried["concept_alignment_shadow"]["shadow_top_hit"][0] == stored["artifact_id"]
 
 
 def test_query_web_evidence_store_segmented_mode_uses_focus_retrieval_for_large_document(
@@ -597,6 +746,7 @@ async def test_query_web_evidence_tool_uses_store(monkeypatch):
     assert payload["scope_mode"] == "implicit_current_message"
     assert len(payload["snippets"]) == 1
     assert captured["retrieval_mode"] == "legacy_store_retrieval"
+    assert captured["concept_alignment_enabled"] is False
     assert payload["retrieval_mode_source"] == "global_default"
 
 
@@ -642,6 +792,49 @@ async def test_query_web_evidence_tool_honors_chat_override(monkeypatch):
     assert captured["retrieval_mode"] == "segmented_confidence_gated"
     assert payload["retrieval_mode_effective"] == "segmented_confidence_gated"
     assert payload["retrieval_mode_source"] == "chat_override"
+
+
+@pytest.mark.asyncio
+async def test_query_web_evidence_tool_passes_concept_alignment_flag(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        builtin_tools,
+        "query_web_evidence_store",
+        lambda **kwargs: captured.update(kwargs) or {
+            "status": "ok",
+            "query": kwargs["query"],
+            "chat_id": kwargs["chat_id"],
+            "message_id": kwargs["message_id"],
+            "scope_mode": "implicit_current_message",
+            "searched_artifact_count": 1,
+            "searched_artifact_ids": ["wp_1"],
+            "searched_domains": ["example.org"],
+            "missing_artifact_ids": [],
+            "evidence_strength": "adequate",
+            "suggested_next_action": "answer_with_current_evidence",
+            "snippets": [],
+            "narrow_count": 0,
+            "wide_count": 0,
+            "wide_pass_used": False,
+            "fts_enabled": True,
+            "retrieval_mode_effective": kwargs.get("retrieval_mode"),
+            "concept_alignment_enabled": kwargs.get("concept_alignment_enabled"),
+        },
+    )
+
+    output = await builtin_tools.query_web_evidence(
+        query="sleep onset latency",
+        __request__=_request_with_retrieval_mode(
+            "segmented_confidence_gated",
+            concept_alignment_enabled=True,
+        ),
+        __metadata__={"chat_id": "chat-1", "message_id": "msg-1"},
+    )
+    payload = json.loads(output)
+
+    assert captured["concept_alignment_enabled"] is True
+    assert payload["concept_alignment_enabled"] is True
 
 
 @pytest.mark.asyncio

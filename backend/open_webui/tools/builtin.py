@@ -1238,6 +1238,19 @@ async def query_web_evidence(
             config_or_path=config,
             metadata=__metadata__,
         )
+        concept_alignment_enabled = bool(
+            getattr(config, "ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT", False)
+        )
+        embedding_function = getattr(
+            getattr(getattr(__request__, "app", None), "state", None),
+            "EMBEDDING_FUNCTION",
+            None,
+        )
+        reranking_function = getattr(
+            getattr(getattr(__request__, "app", None), "state", None),
+            "RERANKING_FUNCTION",
+            None,
+        )
         payload = await asyncio.to_thread(
             query_web_evidence_store,
             chat_id=chat_id,
@@ -1250,12 +1263,18 @@ async def query_web_evidence(
             wide_top_k=wide_top_k,
             wide_window_chars=wide_window_chars,
             retrieval_mode=retrieval_mode,
+            concept_alignment_enabled=concept_alignment_enabled,
+            embedding_function=embedding_function,
+            reranking_function=reranking_function,
         )
         if isinstance(payload, dict):
             payload["retrieval_mode_effective"] = payload.get(
                 "retrieval_mode_effective", retrieval_mode
             )
             payload["retrieval_mode_source"] = retrieval_mode_source
+            payload["concept_alignment_enabled"] = bool(
+                payload.get("concept_alignment_enabled", concept_alignment_enabled)
+            )
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"query_web_evidence error: {e}")

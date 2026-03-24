@@ -3726,6 +3726,12 @@ WEB_EVIDENCE_RETRIEVAL_MODE = PersistentConfig(
     os.getenv("WEB_EVIDENCE_RETRIEVAL_MODE", "legacy_store_retrieval"),
 )
 
+ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT = PersistentConfig(
+    "ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT",
+    "rag.web.search.evidence_concept_alignment.enable",
+    os.getenv("ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT", "False").lower() == "true",
+)
+
 
 WEB_LOADER_ENGINE = PersistentConfig(
     "WEB_LOADER_ENGINE",
