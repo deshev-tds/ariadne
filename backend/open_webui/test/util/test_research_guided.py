@@ -272,6 +272,9 @@ def test_research_guided_trustable_truncated_result_allows_cautious_exit():
             ],
         },
     )
+    state["goals"][0]["probe_budget"]["observed"]["broader_fallback"] = 1
+    state = research_guided._refresh_resolutions(state)
+    state = research_guided.finalize_state_for_answer(state)
 
     goal = state["goals"][0]
     assert state["truncation_trust_hits"] == 1
@@ -284,6 +287,54 @@ def test_research_guided_trustable_truncated_result_allows_cautious_exit():
     assert state["candidate_claims"][0]["label"] == research_guided.CLAIM_LABEL_INFERENCE
     repair = research_guided.build_research_repair_instruction(state, mode="unresolved")
     assert "use that result or ask for more context around the same hit" in repair.lower()
+
+
+def test_research_guided_single_family_inconclusive_review_does_not_trigger_conservative_exit_without_breadth():
+    state = research_guided.build_initial_state(
+        "Based on recent human studies and reviews, is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?"
+    )
+
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="fetch_url",
+        tool_params={"url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/", "mode": "store"},
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-meta",
+            "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/",
+            "domain": "pmc.ncbi.nlm.nih.gov",
+            "title": "Systematic review and meta-analysis of blue-light blocking glasses",
+            "content_chars": 1800,
+            "identifier_hints": {
+                "pmcid": "PMC12668929",
+                "doi": "10.3389/fneur.2025.1699303",
+            },
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={"query": "sleep onset latency blue-light blocking glasses"},
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 1,
+            "searched_domains": ["pmc.ncbi.nlm.nih.gov"],
+            "snippets": [
+                {
+                    "artifact_id": "art-meta",
+                    "domain": "pmc.ncbi.nlm.nih.gov",
+                    "text": "The pooled mean difference was -4.86 minutes (95% confidence interval -20.23 to 10.52), not statistically significant.",
+                }
+            ],
+        },
+    )
+
+    goal = state["goals"][0]
+    assert goal["status"] == research_guided.GOAL_STATUS_OPEN
+    assert goal["resolution_basis"] == ""
+    assert state["cautious_answer_allowed"] is False
+    assert state["ready_to_answer"] is False
 
 
 def test_research_guided_tracks_concept_alignment_and_same_source_refine_signal():

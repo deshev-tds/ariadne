@@ -10,7 +10,8 @@ import json
 import logging
 import time
 import asyncio
-from typing import Optional
+import re
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import Request
@@ -89,6 +90,27 @@ from open_webui.utils.research_guided import (
 log = logging.getLogger(__name__)
 
 MAX_KNOWLEDGE_BASE_SEARCH_ITEMS = 10_000
+SEARCH_SOURCE_ONLY_TOOL_NAMES = {
+    "search_web",
+    "web_research_strong",
+    "search_strong_sources",
+    "notes_research_strong",
+}
+SCHOLARLY_MIRROR_DOMAIN_TOKENS = {
+    "pmc.ncbi.nlm.nih.gov",
+    "pubmed.ncbi.nlm.nih.gov",
+    "doi.org",
+    "frontiersin.org",
+    "sciencedirect.com",
+    "springer.com",
+    "nature.com",
+    "wiley.com",
+    "tandfonline.com",
+    "jamanetwork.com",
+    "nejm.org",
+    "thelancet.com",
+    "bmj.com",
+}
 
 # =============================================================================
 # TIME UTILITIES
@@ -193,6 +215,88 @@ async def calculate_timestamp(
 # =============================================================================
 
 
+def _normalized_search_title_fingerprint(title: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(title or "").lower()).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
+def _is_scholarly_or_mirror_result(link: str) -> bool:
+    parsed = urlparse(str(link or ""))
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    if any(token in host for token in SCHOLARLY_MIRROR_DOMAIN_TOKENS):
+        return True
+    if "/articles/pmc" in path or "/pmc" in path or "/doi/" in path:
+        return True
+    return False
+
+
+def _search_result_family_candidate(title: str, link: str, snippet: str) -> str:
+    hints = extract_identifier_hints(title=title, url=link, text=snippet)
+    for key in ("doi", "pmcid", "pmid", "arxiv", "nct"):
+        value = str(hints.get(key) or "").strip()
+        if value:
+            return f"{key}:{value}"
+    title_fp = _normalized_search_title_fingerprint(title)
+    if _is_scholarly_or_mirror_result(link) and len(title_fp) >= 32:
+        return f"title:{title_fp}"
+    return ""
+
+
+def _collapse_search_result_mirrors(results: list[Any]) -> list[dict[str, Any]]:
+    collapsed: list[dict[str, Any]] = []
+    family_index: dict[str, int] = {}
+    title_index: dict[str, int] = {}
+
+    for result in results or []:
+        title = str(getattr(result, "title", "") or "")
+        link = str(getattr(result, "link", "") or "")
+        snippet = str(getattr(result, "snippet", "") or "")
+        family_candidate = _search_result_family_candidate(title, link, snippet)
+        item = {
+            "title": title,
+            "link": link,
+            "snippet": snippet,
+            "snippet_is_excerpt": True,
+            "full_text_requires_fetch": True,
+            "query_web_evidence_ready": False,
+            "evidence_family_candidate": family_candidate,
+            "mirror_family_collapsed": False,
+            "collapsed_mirror_count": 1,
+            "mirror_urls": [link] if link else [],
+        }
+        title_fp = _normalized_search_title_fingerprint(title)
+        collapse_index: int | None = None
+        if family_candidate and family_candidate in family_index:
+            collapse_index = family_index[family_candidate]
+        elif title_fp and _is_scholarly_or_mirror_result(link) and title_fp in title_index:
+            collapse_index = title_index[title_fp]
+
+        if collapse_index is not None:
+            target = collapsed[collapse_index]
+            target["mirror_family_collapsed"] = True
+            target["collapsed_mirror_count"] = int(target.get("collapsed_mirror_count") or 1) + 1
+            mirror_urls = list(target.get("mirror_urls") or [])
+            if link and link not in mirror_urls:
+                mirror_urls.append(link)
+            target["mirror_urls"] = mirror_urls
+            continue
+
+        if family_candidate:
+            family_index[family_candidate] = len(collapsed)
+        if title_fp and _is_scholarly_or_mirror_result(link):
+            title_index[title_fp] = len(collapsed)
+        collapsed.append(item)
+
+    for item in collapsed:
+        if item.get("mirror_family_collapsed"):
+            item["independence_hint"] = "same_article_mirror_collapsed"
+        else:
+            item["independence_hint"] = "independence_not_established"
+    return collapsed
+
+
 async def search_web(
     query: str,
     count: int = 5,
@@ -237,20 +341,7 @@ async def search_web(
         # Limit results
         results = results[:count] if results else []
 
-        return json.dumps(
-            [
-                {
-                    "title": r.title,
-                    "link": r.link,
-                    "snippet": r.snippet,
-                    "snippet_is_excerpt": True,
-                    "full_text_requires_fetch": True,
-                    "query_web_evidence_ready": False,
-                }
-                for r in results
-            ],
-            ensure_ascii=False,
-        )
+        return json.dumps(_collapse_search_result_mirrors(results), ensure_ascii=False)
     except Exception as e:
         log.exception(f"search_web error: {e}")
         return json.dumps({"error": str(e)})

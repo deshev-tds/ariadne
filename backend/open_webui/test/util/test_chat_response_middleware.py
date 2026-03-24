@@ -132,6 +132,27 @@ def test_process_messages_with_output_omits_history_reasoning_and_caps_tool_outp
     assert processed[3]["content"] == "Before\n\nAfter"
 
 
+def test_get_source_context_omits_owui_key_for_search_results():
+    sources = [
+        {
+            "source": {"name": "builtin:search_web/search_web", "id": "search_web"},
+            "document": ["Example Title\nExample snippet"],
+            "metadata": [{"source": "https://example.org/page", "url": "https://example.org/page"}],
+        },
+        {
+            "source": {"name": "https://example.org/article", "id": "https://example.org/article"},
+            "document": ["Fetched article body"],
+            "metadata": [{"source": "https://example.org/article", "url": "https://example.org/article"}],
+        },
+    ]
+
+    context = middleware.get_source_context(sources)
+
+    assert "Example Title\nExample snippet</source>" in context
+    assert context.count('owui_key="') == 1
+    assert 'name="https://example.org/article" owui_key="' in context
+
+
 def test_process_messages_with_output_prefers_sanitized_assistant_content_over_turn_recap():
     messages = [
         {
@@ -2882,7 +2903,7 @@ async def test_non_streaming_chat_response_allows_cautious_research_guided_answe
                                 "target_aligned": 1,
                                 "disconfirming": 0,
                                 "strong_source": 1,
-                                "broader_fallback": 0,
+                                "broader_fallback": 1,
                             },
                         },
                     }

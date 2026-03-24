@@ -5004,6 +5004,23 @@ def _build_source_owui_key(
     if not isinstance(source_info, dict):
         source_info = {}
 
+    def _is_search_source_reference() -> bool:
+        candidates = [
+            source_info.get("id"),
+            source_info.get("name"),
+        ]
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if not text:
+                continue
+            normalized = {text, text.split("/")[-1], text.split(":")[-1]}
+            if normalized & {"search_web", "web_research_strong", "search_strong_sources", "notes_research_strong"}:
+                return True
+        return False
+
+    if _is_search_source_reference():
+        return ""
+
     url_candidates: list[Any] = [
         metadata_dict.get("source"),
         metadata_dict.get("url"),

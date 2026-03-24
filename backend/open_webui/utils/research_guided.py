@@ -901,6 +901,8 @@ def build_entry_prompt(state: dict[str, Any]) -> str:
         "This science turn is using the research-guided loop.",
         "Stay goals-first. Do not lock in a thesis early.",
         "Use evidence tools to resolve the goals below, and preserve uncertainty when evidence is weak or conflicting.",
+        "Use `search_web` for discovery, then `fetch_url(url, mode=\"store\")` before `query_web_evidence` on a page.",
+        "Search-result source keys like `web:...` are not stored artifacts and do not count as fetched pages.",
     ]
     if goals:
         lines.append("Primary goals:")
@@ -1636,6 +1638,17 @@ def _goal_has_conservative_sufficiency(
     if _goal_contract_satisfied(goal, qualifying_support):
         return False
 
+    metrics = _goal_support_metrics(goal, qualifying_support)
+    observed = ((goal.get("probe_budget") or {}).get("observed") or {})
+    disconfirmation_attempts = goal.get("disconfirmation_attempts") or []
+    has_breadth_signal = (
+        metrics["independent_family_count"] >= 2
+        or int(observed.get("broader_fallback") or 0) > 0
+        or any(attempt.get("meaningful") for attempt in disconfirmation_attempts)
+    )
+    if not has_breadth_signal:
+        return False
+
     weak_signal = any(_record_is_inconclusive_or_weak(record) for record in qualifying_support)
     if not weak_signal:
         return False
@@ -2113,6 +2126,7 @@ def register_tool_event(
     if normalized_tool_name == "search_web":
         if isinstance(parsed, list):
             title_registry = updated.setdefault("search_result_titles", {})
+            seen_search_families: set[str] = set()
             for item in parsed[:8]:
                 if not isinstance(item, dict):
                     continue
@@ -2120,6 +2134,14 @@ def register_tool_event(
                 title = _normalize_text(item.get("title") or "")
                 if link and title:
                     title_registry[link] = title
+                family_candidate = _normalize_text(item.get("evidence_family_candidate") or "")
+                if family_candidate:
+                    seen_search_families.add(family_candidate)
+            if seen_search_families:
+                updated["search_result_family_count"] = max(
+                    int(updated.get("search_result_family_count") or 0),
+                    len(seen_search_families),
+                )
         for goal in updated.get("goals") or []:
             alignment = _query_alignment(goal, query_value)
             if alignment == "target_aligned":

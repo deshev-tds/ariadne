@@ -188,6 +188,59 @@ async def test_search_web_marks_results_as_excerpts(monkeypatch):
     assert parsed[0]["query_web_evidence_ready"] is False
 
 
+@pytest.mark.asyncio
+async def test_search_web_collapses_same_article_mirrors(monkeypatch):
+    class _Result:
+        def __init__(self, title, link, snippet):
+            self.title = title
+            self.link = link
+            self.snippet = snippet
+
+    def _fake_search_web(_request, _engine, _query, _user):
+        return [
+            _Result(
+                "Efficacy of blue-light blocking glasses on actigraphic sleep outcomes: a systematic review and meta-analysis of randomized controlled crossover trials",
+                "https://www.frontiersin.org/journals/neurology/articles/10.3389/fneur.2025.1699303/full",
+                "Systematic review and meta-analysis of adults with sleep onset latency outcomes.",
+            ),
+            _Result(
+                "Efficacy of blue-light blocking glasses on actigraphic sleep outcomes: a systematic review and meta-analysis of randomized controlled crossover trials",
+                "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/",
+                "Mirror page for the same systematic review and meta-analysis.",
+            ),
+            _Result(
+                "Effect of evening blue light blocking glasses on subjective and objective sleep in healthy adults",
+                "https://example.org/independent-rct",
+                "Randomized controlled trial in healthy adults.",
+            ),
+        ]
+
+    monkeypatch.setattr(builtin_tools, "_search_web", _fake_search_web)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    WEB_SEARCH_ENGINE="test-engine",
+                    WEB_SEARCH_RESULT_COUNT=None,
+                )
+            )
+        )
+    )
+
+    payload = await builtin_tools.search_web(
+        "blue light blocking glasses sleep latency adults",
+        __request__=request,
+        __user__=None,
+    )
+    parsed = json.loads(payload)
+    assert len(parsed) == 2
+    assert parsed[0]["mirror_family_collapsed"] is True
+    assert parsed[0]["collapsed_mirror_count"] == 2
+    assert len(parsed[0]["mirror_urls"]) == 2
+    assert parsed[0]["independence_hint"] == "same_article_mirror_collapsed"
+
+
 def test_query_web_evidence_store_large_artifact_returns_multiple_relevant_chunks(
     tmp_path, monkeypatch
 ):
