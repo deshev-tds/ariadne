@@ -18,9 +18,15 @@ log = logging.getLogger(__name__)
 
 WEB_EVIDENCE_RETRIEVAL_MODE_LEGACY = "legacy_store_retrieval"
 WEB_EVIDENCE_RETRIEVAL_MODE_SEGMENTED = "segmented_confidence_gated"
+WEB_EVIDENCE_CONTEXT_MODE_LOCAL_SECTION = "local_section"
+WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE = "full_article"
 WEB_EVIDENCE_RETRIEVAL_MODE_VALUES = {
     WEB_EVIDENCE_RETRIEVAL_MODE_LEGACY,
     WEB_EVIDENCE_RETRIEVAL_MODE_SEGMENTED,
+}
+WEB_EVIDENCE_CONTEXT_MODE_VALUES = {
+    WEB_EVIDENCE_CONTEXT_MODE_LOCAL_SECTION,
+    WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE,
 }
 
 LARGE_ARTIFACT_CHARS_THRESHOLD = 8000
@@ -209,6 +215,33 @@ def normalize_web_evidence_retrieval_mode(value: Any) -> str:
     if normalized in WEB_EVIDENCE_RETRIEVAL_MODE_VALUES:
         return normalized
     return WEB_EVIDENCE_RETRIEVAL_MODE_LEGACY
+
+
+def normalize_web_evidence_context_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in WEB_EVIDENCE_CONTEXT_MODE_VALUES:
+        return normalized
+    return WEB_EVIDENCE_CONTEXT_MODE_LOCAL_SECTION
+
+
+def resolve_web_evidence_context_mode(
+    *, config_or_path: Any = None, metadata: Optional[dict[str, Any]] = None
+) -> tuple[str, str]:
+    default_mode = normalize_web_evidence_context_mode(
+        getattr(config_or_path, "WEB_EVIDENCE_CONTEXT_MODE", None)
+        if config_or_path is not None
+        else None
+    )
+    params = {}
+    if isinstance(metadata, dict):
+        params = metadata.get("params", {}) or {}
+    override = params.get("web_evidence_context_mode")
+    if override is None and isinstance(params.get("custom_params"), dict):
+        override = (params.get("custom_params") or {}).get("web_evidence_context_mode")
+    override_mode = normalize_web_evidence_context_mode(override)
+    if override in WEB_EVIDENCE_CONTEXT_MODE_VALUES:
+        return override_mode, "chat_override"
+    return default_mode, "global_default"
 
 
 def resolve_web_evidence_retrieval_mode(
@@ -1242,27 +1275,57 @@ def _expand_top_snippet_after_ranking(
     *,
     scope_artifact_count: int,
     query_profile: Optional[dict[str, Any]] = None,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    context_mode: str = WEB_EVIDENCE_CONTEXT_MODE_LOCAL_SECTION,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not snippets:
-        return [], {"expanded_context_count": 0, "truncation_trust_hits": 0}
+        return [], {
+            "expanded_context_count": 0,
+            "truncation_trust_hits": 0,
+            "returned_context_kind": "none",
+        }
     tight_scope = int(scope_artifact_count or 0) > 0 and int(scope_artifact_count or 0) <= 2
+    normalized_context_mode = normalize_web_evidence_context_mode(context_mode)
     if not tight_scope:
         return list(snippets), {
             "expanded_context_count": 0,
             "truncation_trust_hits": sum(
                 1 for snippet in snippets if _normalize_bool(snippet.get("truncation_trust_hint"))
             ),
+            "returned_context_kind": "ranked_snippets",
         }
 
     updated_snippets = [dict(snippet) for snippet in snippets]
     top = updated_snippets[0]
-    if _snippet_should_expand(top, query_profile=query_profile):
-        path = str(top.get("path") or "")
-        content = _read_artifact_text(path) if path else ""
-        content = content or str(top.get("text") or "")
-        raw_start = int(top.get("start") or 0)
-        raw_end = int(top.get("end") or 0)
-        if content:
+    path = str(top.get("path") or "")
+    content = _read_artifact_text(path) if path else ""
+    content = content or str(top.get("text") or "")
+    raw_start = int(top.get("start") or 0)
+    raw_end = int(top.get("end") or 0)
+    if content:
+        if (
+            normalized_context_mode == WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE
+            and int(scope_artifact_count or 0) == 1
+        ):
+            top["start"] = 0
+            top["end"] = len(content)
+            top["text"] = content.strip()
+            top["expanded_context_applied"] = True
+            top["effective_window_chars"] = len(content)
+            top["snippet_truncated"] = False
+            top["result_clause_complete"] = _result_clause_complete(top["text"])
+            top["truncation_trust_hint"] = False
+            top["expansion_anchor_start"] = int(top.get("hit_index") or raw_start)
+            updated_snippets[0] = top
+            return updated_snippets, {
+                "expanded_context_count": 1,
+                "truncation_trust_hits": sum(
+                    1
+                    for snippet in updated_snippets
+                    if _normalize_bool(snippet.get("truncation_trust_hint"))
+                ),
+                "returned_context_kind": "full_article",
+            }
+        if _snippet_should_expand(top, query_profile=query_profile):
             new_start, new_end, expanded_text = _expand_context_window(
                 content,
                 start=raw_start,
@@ -1289,6 +1352,7 @@ def _expand_top_snippet_after_ranking(
                         for snippet in updated_snippets
                         if _normalize_bool(snippet.get("truncation_trust_hint"))
                     ),
+                    "returned_context_kind": "hit_centered_local_section",
                 }
 
     return updated_snippets, {
@@ -1296,6 +1360,7 @@ def _expand_top_snippet_after_ranking(
         "truncation_trust_hits": sum(
             1 for snippet in updated_snippets if _normalize_bool(snippet.get("truncation_trust_hint"))
         ),
+        "returned_context_kind": "ranked_snippets",
     }
 
 
@@ -1306,10 +1371,12 @@ def _expand_top_snippet_after_ranking_concept(
     query_profile: Optional[dict[str, Any]],
     artifact_contexts: dict[str, dict[str, Any]],
     base_meta: dict[str, Any],
+    context_mode: str = WEB_EVIDENCE_CONTEXT_MODE_LOCAL_SECTION,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not snippets:
         return [], dict(base_meta or {})
     tight_scope = int(scope_artifact_count or 0) > 0 and int(scope_artifact_count or 0) <= CONCEPT_ALIGNMENT_ARTIFACT_SCOPE_MAX
+    normalized_context_mode = normalize_web_evidence_context_mode(context_mode)
     updated_snippets = [dict(snippet) for snippet in snippets]
     expanded_context_count = 0
     if tight_scope and _concept_should_expand(updated_snippets[0]):
@@ -1325,35 +1392,58 @@ def _expand_top_snippet_after_ranking_concept(
         raw_start = int(top.get("start") or 0)
         raw_end = int(top.get("end") or 0)
         if content:
-            new_start, new_end, expanded_text = _expand_context_window(
-                content,
-                start=raw_start,
-                end=raw_end,
-                anchor_index=int(top.get("hit_index") or raw_start),
-            )
-            if expanded_text and (new_start != raw_start or new_end != raw_end):
-                top["start"] = new_start
-                top["end"] = new_end
-                top["text"] = expanded_text
+            if (
+                normalized_context_mode == WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE
+                and int(scope_artifact_count or 0) == 1
+            ):
+                top["start"] = 0
+                top["end"] = len(content)
+                top["text"] = content.strip()
                 top["expanded_context_applied"] = True
-                top["effective_window_chars"] = new_end - new_start
-                top["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
+                top["effective_window_chars"] = len(content)
+                top["snippet_truncated"] = False
                 top.update(
                     _concept_alignment_for_text(
-                        text=expanded_text,
+                        text=top["text"],
                         target_concepts=list((query_profile or {}).get("target_concepts") or []),
                         alias_registry=alias_registry,
                     )
                 )
-                top["result_clause_complete"] = _concept_result_clause_complete(expanded_text)
-                top["truncation_trust_hint"] = bool(
-                    top["snippet_truncated"]
-                    and top["result_clause_complete"]
-                    and str(top.get("alignment_strength") or "none") in {"exact", "strong"}
-                )
+                top["result_clause_complete"] = _concept_result_clause_complete(top["text"])
+                top["truncation_trust_hint"] = False
                 top["expansion_anchor_start"] = int(top.get("hit_index") or raw_start)
                 updated_snippets[0] = top
                 expanded_context_count = 1
+            else:
+                new_start, new_end, expanded_text = _expand_context_window(
+                    content,
+                    start=raw_start,
+                    end=raw_end,
+                    anchor_index=int(top.get("hit_index") or raw_start),
+                )
+                if expanded_text and (new_start != raw_start or new_end != raw_end):
+                    top["start"] = new_start
+                    top["end"] = new_end
+                    top["text"] = expanded_text
+                    top["expanded_context_applied"] = True
+                    top["effective_window_chars"] = new_end - new_start
+                    top["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
+                    top.update(
+                        _concept_alignment_for_text(
+                            text=expanded_text,
+                            target_concepts=list((query_profile or {}).get("target_concepts") or []),
+                            alias_registry=alias_registry,
+                        )
+                    )
+                    top["result_clause_complete"] = _concept_result_clause_complete(expanded_text)
+                    top["truncation_trust_hint"] = bool(
+                        top["snippet_truncated"]
+                        and top["result_clause_complete"]
+                        and str(top.get("alignment_strength") or "none") in {"exact", "strong"}
+                    )
+                    top["expansion_anchor_start"] = int(top.get("hit_index") or raw_start)
+                    updated_snippets[0] = top
+                    expanded_context_count = 1
 
     updated_meta = dict(base_meta or {})
     updated_meta["expanded_context_count"] = expanded_context_count
@@ -1368,6 +1458,11 @@ def _expand_top_snippet_after_ranking_concept(
     )
     updated_meta["adjacent_outcome_conflict_count"] = sum(
         1 for snippet in updated_snippets if _normalize_bool(snippet.get("adjacent_outcome_conflict"))
+    )
+    updated_meta["returned_context_kind"] = (
+        "full_article"
+        if normalized_context_mode == WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE and expanded_context_count
+        else ("hit_centered_local_section" if expanded_context_count else "ranked_snippets")
     )
     return updated_snippets, updated_meta
 
@@ -1632,6 +1727,41 @@ def _apply_agent_guidance_overlay(
         payload["serving_confidence_downgraded"] = False
         payload["serving_confidence_reason"] = []
     return payload
+
+
+def _payload_window_notice(
+    *,
+    payload: dict[str, Any],
+    requested_window_chars: int,
+    context_mode: str,
+) -> dict[str, Any]:
+    updated = dict(payload or {})
+    snippets = list(updated.get("snippets") or [])
+    top = snippets[0] if snippets else {}
+    effective_window_chars = int(
+        top.get("effective_window_chars")
+        or max(0, int(top.get("end") or 0) - int(top.get("start") or 0))
+        or requested_window_chars
+    )
+    updated["window_chars_requested"] = int(requested_window_chars or 0)
+    updated["window_chars_effective"] = effective_window_chars
+    updated["top_snippet_has_full_result_clause"] = bool(
+        isinstance(top, dict) and _normalize_bool(top.get("result_clause_complete"))
+    )
+    returned_context_kind = str(
+        updated.get("returned_context_kind")
+        or (
+            "full_article"
+            if normalize_web_evidence_context_mode(context_mode) == WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE
+            else "ranked_snippets"
+        )
+    )
+    updated["returned_context_kind"] = returned_context_kind
+    updated["repeat_window_increase_wont_help"] = returned_context_kind in {
+        "hit_centered_local_section",
+        "full_article",
+    }
+    return updated
 
 
 def _iter_line_records(text: str) -> list[dict[str, Any]]:
@@ -3251,6 +3381,8 @@ def _query_web_evidence_store_segmented_legacy(
     searched_artifact_ids: list[str],
     searched_domains: list[str],
     top_k: int,
+    window_chars: int,
+    context_mode: str = WEB_EVIDENCE_CONTEXT_MODE_LOCAL_SECTION,
 ) -> dict[str, Any]:
     focus_clauses = []
     focus_targets: dict[str, set[str]] = {}
@@ -3350,6 +3482,7 @@ def _query_web_evidence_store_segmented_legacy(
         final_snippets,
         scope_artifact_count=len(searched_artifact_ids),
         query_profile=query_profile,
+        context_mode=context_mode,
     )
     coverage_after_merge = _count_focus_coverage(
         final_snippets,
@@ -3370,7 +3503,8 @@ def _query_web_evidence_store_segmented_legacy(
         item.get("segmentation_mode") == "chunk" for item in segment_meta
     )
 
-    return {
+    return _payload_window_notice(
+        payload={
         "status": "ok",
         "query": query,
         "normalized_query": effective_query or query,
@@ -3408,7 +3542,10 @@ def _query_web_evidence_store_segmented_legacy(
         "title_overlap_dropped": int((query_profile or {}).get("title_overlap_dropped") or 0),
         **expansion_meta,
         **dedupe_meta,
-    }
+    },
+        requested_window_chars=window_chars,
+        context_mode=context_mode,
+    )
 
 
 def _query_web_evidence_store_segmented_concept(
@@ -3426,6 +3563,8 @@ def _query_web_evidence_store_segmented_concept(
     searched_domains: list[str],
     top_k: int,
     embedding_function: Any = None,
+    window_chars: int = 320,
+    context_mode: str = WEB_EVIDENCE_CONTEXT_MODE_LOCAL_SECTION,
 ) -> dict[str, Any]:
     focus_clauses = []
     focus_targets: dict[str, set[str]] = {}
@@ -3534,6 +3673,7 @@ def _query_web_evidence_store_segmented_concept(
         query_profile=query_profile,
         artifact_contexts=artifact_contexts,
         base_meta=concept_meta,
+        context_mode=context_mode,
     )
     coverage_after_merge = _count_focus_coverage(
         final_snippets,
@@ -3552,7 +3692,8 @@ def _query_web_evidence_store_segmented_concept(
         item.get("segmentation_mode") == "chunk" for item in segment_meta
     )
 
-    return {
+    return _payload_window_notice(
+        payload={
         "status": "ok",
         "query": query,
         "normalized_query": effective_query or query,
@@ -3592,7 +3733,10 @@ def _query_web_evidence_store_segmented_concept(
         "query_modifiers": list((query_profile or {}).get("query_modifiers") or []),
         **concept_meta,
         **dedupe_meta,
-    }
+    },
+        requested_window_chars=window_chars,
+        context_mode=context_mode,
+    )
 
 
 def query_web_evidence_store(
@@ -3607,6 +3751,7 @@ def query_web_evidence_store(
     wide_top_k: int = 10,
     wide_window_chars: int = 640,
     retrieval_mode: str = WEB_EVIDENCE_RETRIEVAL_MODE_LEGACY,
+    context_mode: str = WEB_EVIDENCE_CONTEXT_MODE_LOCAL_SECTION,
     concept_alignment_enabled: bool = False,
     embedding_function: Any = None,
     reranking_function: Any = None,
@@ -3616,6 +3761,7 @@ def query_web_evidence_store(
         raise ValueError("chat_id is required for evidence queries")
     normalized_artifact_ids = _normalize_artifact_ids(artifact_ids)
     normalized_retrieval_mode = normalize_web_evidence_retrieval_mode(retrieval_mode)
+    normalized_context_mode = normalize_web_evidence_context_mode(context_mode)
 
     chat_dir = resolve_chat_artifacts_dir(normalized_chat_id)
     if chat_dir is None:
@@ -3905,6 +4051,8 @@ def query_web_evidence_store(
                 searched_artifact_ids=searched_artifact_ids,
                 searched_domains=searched_domains,
                 top_k=bounded_top_k,
+                window_chars=bounded_window_chars,
+                context_mode=normalized_context_mode,
             )
             concept_payload = _query_web_evidence_store_segmented_concept(
                 db_path=db_path,
@@ -3920,6 +4068,8 @@ def query_web_evidence_store(
                 searched_domains=searched_domains,
                 top_k=bounded_top_k,
                 embedding_function=embedding_function,
+                window_chars=bounded_window_chars,
+                context_mode=normalized_context_mode,
             )
             serving_payload = concept_payload if _normalize_bool(concept_alignment_enabled) else legacy_payload
             shadow_payload = legacy_payload if _normalize_bool(concept_alignment_enabled) else concept_payload
@@ -3989,6 +4139,7 @@ def query_web_evidence_store(
             query_profile=active_query_profile,
             artifact_contexts=artifact_contexts,
             base_meta=expansion_meta,
+            context_mode=normalized_context_mode,
         )
         evidence_strength = _classify_evidence_strength_concept(snippets)
         suggested_next_action = _suggest_next_action_concept(
@@ -4005,6 +4156,7 @@ def query_web_evidence_store(
             snippets,
             scope_artifact_count=len(searched_artifact_ids),
             query_profile=active_query_profile,
+            context_mode=normalized_context_mode,
         )
         evidence_strength = _classify_evidence_strength(snippets)
         suggested_next_action = _suggest_next_action(
@@ -4015,7 +4167,8 @@ def query_web_evidence_store(
         )
 
     return _apply_agent_guidance_overlay(
-        serving_payload={
+        serving_payload=_payload_window_notice(
+            payload={
         "status": "ok",
         "query": query,
         "normalized_query": effective_query,
@@ -4062,6 +4215,9 @@ def query_web_evidence_store(
         "concept_alignment_shadow": {"ran": False},
         **expansion_meta,
     },
+            requested_window_chars=bounded_window_chars,
+            context_mode=normalized_context_mode,
+        ),
         shadow_payload=None,
         query_profile=active_query_profile,
     )

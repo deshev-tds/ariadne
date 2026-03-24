@@ -72,6 +72,7 @@ from open_webui.models.memories import Memories
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.utils.sanitize import sanitize_code
 from open_webui.utils.web_evidence_store import (
+    resolve_web_evidence_context_mode,
     query_web_evidence_store,
     resolve_web_evidence_retrieval_mode,
     store_web_page,
@@ -1306,7 +1307,8 @@ async def query_web_evidence(
     """
     WEB SOURCES ONLY.
     Query per-chat locally stored web artifacts using lexical retrieval (FTS5).
-    Returns hit-centered local sections plus diagnostics, not full raw pages.
+    Returns either a hit-centered local section or, if configured, the full article
+    for the top-ranked hit. It does not automatically dump all fetched sources.
     If `artifact_ids` is omitted, this searches stored web artifacts from the current
     assistant turn only, defined as the exact `(chat_id, message_id)` pair.
     Only stored artifact IDs are valid here, typically the `artifact_id` returned by
@@ -1314,14 +1316,18 @@ async def query_web_evidence(
     stored artifacts and cannot be queried until the page is fetched/stored.
     Weak or empty evidence means lexical match was weak or the artifact set was
     insufficient; it does not automatically mean no relevant pages were fetched.
-    Returned text is a deliberately selected local section around the matched hit so
-    you can inspect the relevant part of the source without loading the whole page.
-    If you need a different part of the same source, issue a more specific query
-    instead of re-fetching the page.
+    `window_chars` is best-effort only. In segmented retrieval, the tool may return
+    a fixed larger context around the top hit, or the entire article if configured.
+    Repeating the same query with a larger `window_chars` often will not expose more.
+    If the top snippet is insufficient, prefer a more specific query over increasing
+    `window_chars` or re-fetching the same page.
     Prefer the agent-facing diagnostic fields when present:
     - `exact_target_match_found`
     - `best_hit_is_adjacent_outcome`
     - `agent_guidance`
+    - `window_chars_requested`
+    - `window_chars_effective`
+    - `repeat_window_increase_wont_help`
     If `agent_guidance=refine_within_same_source`, keep querying the same stored
     artifact for the exact outcome/claim rather than broadening immediately.
 
@@ -1355,6 +1361,10 @@ async def query_web_evidence(
             config_or_path=config,
             metadata=__metadata__,
         )
+        context_mode, context_mode_source = resolve_web_evidence_context_mode(
+            config_or_path=config,
+            metadata=__metadata__,
+        )
         concept_alignment_enabled = bool(
             getattr(config, "ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT", False)
         )
@@ -1380,6 +1390,7 @@ async def query_web_evidence(
             wide_top_k=wide_top_k,
             wide_window_chars=wide_window_chars,
             retrieval_mode=retrieval_mode,
+            context_mode=context_mode,
             concept_alignment_enabled=concept_alignment_enabled,
             embedding_function=embedding_function,
             reranking_function=reranking_function,
@@ -1392,14 +1403,29 @@ async def query_web_evidence(
             payload["concept_alignment_enabled"] = bool(
                 payload.get("concept_alignment_enabled", concept_alignment_enabled)
             )
+            payload["context_mode_effective"] = payload.get(
+                "context_mode_effective", context_mode
+            )
+            payload["context_mode_source"] = context_mode_source
             if payload.get("snippets"):
-                payload["returned_context_kind"] = "hit_centered_local_section"
-                payload["agent_context_notice"] = (
-                    "To avoid overloading context, each returned text block is a hit-centered "
-                    "local section from the source chosen for your current query. If you need "
-                    "a different part of the same source, issue a more specific query instead "
-                    "of re-fetching the page."
-                )
+                returned_context_kind = str(payload.get("returned_context_kind") or "ranked_snippets")
+                if returned_context_kind == "full_article":
+                    payload["agent_context_notice"] = (
+                        "The top result is the full article for the best-ranked hit. Increasing "
+                        "`window_chars` will not reveal more from this source."
+                    )
+                elif returned_context_kind == "hit_centered_local_section":
+                    payload["agent_context_notice"] = (
+                        "To avoid overloading context, the top result is already the largest "
+                        "hit-centered local section we return for this source. If you need a "
+                        "different part of the same source, issue a more specific query rather "
+                        "than increasing `window_chars`."
+                    )
+                else:
+                    payload["agent_context_notice"] = (
+                        "These are ranked snippets from the stored source. If the top result "
+                        "is insufficient, refine the query terms before re-fetching the page."
+                    )
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"query_web_evidence error: {e}")

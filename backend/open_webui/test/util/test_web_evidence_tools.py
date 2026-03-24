@@ -375,6 +375,77 @@ def test_expand_context_window_uses_large_hit_centered_local_section():
     assert len(expanded) >= 5500
 
 
+def test_query_web_evidence_store_reports_effective_window_and_no_repeat_growth(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web_store, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(web_store.Chats, "get_chat_title_by_id", lambda _chat_id: "Replay")
+
+    stored = web_store.store_web_page(
+        chat_id="chat-window",
+        message_id="msg-window",
+        url="https://example.org/article",
+        title="Example Article",
+        content=("sleep latency result block " * 800).strip(),
+        retrieval_mode="segmented_confidence_gated",
+    )
+
+    queried = web_store.query_web_evidence_store(
+        chat_id="chat-window",
+        message_id="msg-window",
+        query="sleep latency",
+        artifact_ids=[stored["artifact_id"]],
+        top_k=6,
+        window_chars=320,
+        retrieval_mode="segmented_confidence_gated",
+    )
+
+    assert queried["window_chars_requested"] == 320
+    assert queried["window_chars_effective"] >= 5000
+    assert queried["returned_context_kind"] == "hit_centered_local_section"
+    assert queried["repeat_window_increase_wont_help"] is True
+
+
+def test_query_web_evidence_store_full_article_mode_returns_entire_article(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web_store, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(web_store.Chats, "get_chat_title_by_id", lambda _chat_id: "Replay")
+
+    content = (
+        "Title\n"
+        "Background text.\n"
+        "Results: sleep latency improved by 2 minutes in one arm but remained non-significant overall.\n"
+        + ("Supplementary context.\n" * 400)
+    )
+    stored = web_store.store_web_page(
+        chat_id="chat-full-article",
+        message_id="msg-full-article",
+        url="https://example.org/full",
+        title="Full Article",
+        content=content,
+        retrieval_mode="segmented_confidence_gated",
+    )
+
+    queried = web_store.query_web_evidence_store(
+        chat_id="chat-full-article",
+        message_id="msg-full-article",
+        query="sleep latency",
+        artifact_ids=[stored["artifact_id"]],
+        top_k=4,
+        window_chars=320,
+        retrieval_mode="segmented_confidence_gated",
+        context_mode="full_article",
+    )
+
+    top = queried["snippets"][0]
+    assert queried["returned_context_kind"] == "full_article"
+    assert queried["repeat_window_increase_wont_help"] is True
+    assert top["start"] == 0
+    assert top["end"] == len(content)
+    assert top["text"] == content.strip()
+
+
 def test_query_web_evidence_store_segmented_concept_alignment_prefers_exact_outcome(
     tmp_path, monkeypatch
 ):
@@ -1049,6 +1120,10 @@ async def test_query_web_evidence_tool_adds_local_section_notice(monkeypatch):
             "wide_pass_used": False,
             "fts_enabled": True,
             "retrieval_mode_effective": kwargs.get("retrieval_mode"),
+            "window_chars_requested": 320,
+            "window_chars_effective": 5800,
+            "returned_context_kind": "hit_centered_local_section",
+            "repeat_window_increase_wont_help": True,
         },
     )
 
@@ -1061,6 +1136,8 @@ async def test_query_web_evidence_tool_adds_local_section_notice(monkeypatch):
 
     assert payload["returned_context_kind"] == "hit_centered_local_section"
     assert "hit-centered local section" in payload["agent_context_notice"]
+    assert payload["window_chars_requested"] == 320
+    assert payload["repeat_window_increase_wont_help"] is True
 
 
 @pytest.mark.asyncio
