@@ -2514,6 +2514,415 @@ async def test_non_streaming_chat_response_finalizes_research_guided_turn_and_st
 
 
 @pytest.mark.asyncio
+async def test_non_streaming_chat_response_blocks_unready_research_guided_draft(
+    monkeypatch,
+):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Research Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    async def fake_generate_chat_completion(*_args, **_kwargs):
+        return {"choices": [{"message": {"content": ""}}]}
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.generate_chat_completion",
+        fake_generate_chat_completion,
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            state=SimpleNamespace(direct=False),
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    MODELS={"model-1": {"id": "model-1"}},
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(
+                        WEBUI_URL="https://example.test",
+                        ENABLE_RESEARCH_GUIDED_VERIFIER=False,
+                        RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES=1,
+                    ),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "model_id": "model-1",
+            "params": {},
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "research",
+                "ready_to_answer": False,
+                "goals": [
+                    {
+                        "goal_id": "goal-1",
+                        "question": "Is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?",
+                        "is_strict": True,
+                        "status": "open",
+                        "resolution_basis": "",
+                        "disconfirmation_outcome": "",
+                        "coverage_requirement": "strict",
+                        "coverage_pending_reason": "required coverage probes still missing: disconfirming, broader fallback",
+                        "probe_budget": {
+                            "required": {
+                                "target_aligned": True,
+                                "disconfirming": True,
+                                "strong_source": True,
+                                "broader_fallback": True,
+                            },
+                            "observed": {
+                                "target_aligned": 0,
+                                "disconfirming": 0,
+                                "strong_source": 0,
+                                "broader_fallback": 0,
+                            },
+                        },
+                    }
+                ],
+                "working_propositions": [],
+                "candidate_claims": [],
+                "evidence_ledger": [],
+                "repair_pass_count": 0,
+            },
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {
+            "model": "model-1",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        "tasks": None,
+    }
+
+    response = {
+        "choices": [{"message": {"content": "Confident final answer."}}],
+        "usage": {"completion_tokens": 1},
+    }
+
+    await non_streaming_chat_response_handler(response, ctx)
+
+    saved_payload = saved_messages[0][2]
+    assert middleware.RESEARCH_INCOMPLETE_MARKER in saved_payload["content"]
+    assert "### Research Status" not in saved_payload["content"]
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["incomplete_reason"]
+        == "unresolved_research"
+    )
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["repair_pass_count"] == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_chat_response_caps_research_guided_draft_when_verifier_rejects(
+    monkeypatch,
+):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Research Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    async def fake_generate_chat_completion(_request, form_data=None, **_kwargs):
+        if form_data.get("metadata", {}).get("task") == "research_guided_verifier":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "verdict": "cap",
+                                    "reasons": ["draft overstates the evidence strength"],
+                                    "instructions": [],
+                                    "unsupported_claims": [],
+                                    "missing_limitations": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        raise AssertionError("unexpected repair pass")
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.generate_chat_completion",
+        fake_generate_chat_completion,
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            state=SimpleNamespace(direct=False),
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    MODELS={"model-1": {"id": "model-1"}},
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(
+                        WEBUI_URL="https://example.test",
+                        ENABLE_RESEARCH_GUIDED_VERIFIER=True,
+                        RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES=1,
+                    ),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "model_id": "model-1",
+            "params": {},
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "final_response",
+                "ready_to_answer": True,
+                "goals": [
+                    {
+                        "goal_id": "goal-1",
+                        "question": "Is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?",
+                        "is_strict": True,
+                        "status": "supported",
+                        "resolution_basis": "contract_satisfied",
+                        "disconfirmation_outcome": "not_found_under_budgeted_probe",
+                        "coverage_requirement": "strict",
+                    }
+                ],
+                "candidate_claims": [
+                    {
+                        "text": "Evidence for meaningful improvement in sleep latency remains limited.",
+                        "label": "reasonable_inference",
+                        "basis_summary": "supported by systematic synthesis and one corroborating source family",
+                        "must_include_limitations": [
+                            "support relied on snippet/summary evidence rather than full-text corroboration"
+                        ],
+                    }
+                ],
+                "evidence_ledger": [],
+            },
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {
+            "model": "model-1",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        "tasks": None,
+    }
+
+    response = {
+        "choices": [{"message": {"content": "**Verified facts:** This is settled."}}],
+        "usage": {"completion_tokens": 1},
+    }
+
+    await non_streaming_chat_response_handler(response, ctx)
+
+    saved_payload = saved_messages[0][2]
+    assert "**Current evidence:**" in saved_payload["content"]
+    assert "### Research Status" in saved_payload["content"]
+    assert "This is settled." not in saved_payload["content"]
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["verifier_verdict"]
+        == "cap"
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_chat_response_revises_then_allows_research_guided_draft(
+    monkeypatch,
+):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Research Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    verifier_calls = {"count": 0}
+
+    async def fake_generate_chat_completion(_request, form_data=None, **_kwargs):
+        task = form_data.get("metadata", {}).get("task")
+        if task == "research_guided_verifier":
+            verifier_calls["count"] += 1
+            if verifier_calls["count"] == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "verdict": "revise",
+                                        "reasons": ["missing a required limitation"],
+                                        "instructions": ["state that the evidence is not verified"],
+                                        "unsupported_claims": [],
+                                        "missing_limitations": [
+                                            "support relied on snippet/summary evidence rather than full-text corroboration"
+                                        ],
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "verdict": "allow",
+                                    "reasons": [],
+                                    "instructions": [],
+                                    "unsupported_claims": [],
+                                    "missing_limitations": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "The evidence is suggestive but not verified, and the support relied on snippet/summary evidence rather than full-text corroboration."
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.generate_chat_completion",
+        fake_generate_chat_completion,
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            state=SimpleNamespace(direct=False),
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    MODELS={"model-1": {"id": "model-1"}},
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(
+                        WEBUI_URL="https://example.test",
+                        ENABLE_RESEARCH_GUIDED_VERIFIER=True,
+                        RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES=1,
+                    ),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "model_id": "model-1",
+            "params": {},
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "final_response",
+                "ready_to_answer": True,
+                "goals": [
+                    {
+                        "goal_id": "goal-1",
+                        "question": "Is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?",
+                        "is_strict": True,
+                        "status": "supported",
+                        "resolution_basis": "contract_satisfied",
+                        "disconfirmation_outcome": "not_found_under_budgeted_probe",
+                        "coverage_requirement": "strict",
+                    }
+                ],
+                "candidate_claims": [
+                    {
+                        "text": "Evidence for meaningful improvement in sleep latency remains limited.",
+                        "label": "reasonable_inference",
+                        "basis_summary": "supported by systematic synthesis and one corroborating source family",
+                        "must_include_limitations": [
+                            "support relied on snippet/summary evidence rather than full-text corroboration"
+                        ],
+                    }
+                ],
+                "evidence_ledger": [],
+                "repair_pass_count": 0,
+            },
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {
+            "model": "model-1",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        "tasks": None,
+    }
+
+    response = {
+        "choices": [{"message": {"content": "Evidence is verified and settled."}}],
+        "usage": {"completion_tokens": 1},
+    }
+
+    await non_streaming_chat_response_handler(response, ctx)
+
+    saved_payload = saved_messages[0][2]
+    assert "suggestive but not verified" in saved_payload["content"]
+    assert "### Research Status" in saved_payload["content"]
+    assert middleware.RESEARCH_INCOMPLETE_MARKER not in saved_payload["content"]
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["verifier_verdict"]
+        == "allow"
+    )
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["repair_pass_count"] == 1
+    )
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_tools_handler_injects_default_selector_guidance(
     monkeypatch,
 ):

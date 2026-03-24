@@ -76,6 +76,11 @@ from open_webui.utils.web_evidence_store import (
     store_web_page,
 )
 from open_webui.utils.research_guided import extract_identifier_hints
+from open_webui.utils.research_guided import (
+    classify_page_quality,
+    counts_as_strong_source,
+    resolve_stored_title,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1067,9 +1072,39 @@ async def fetch_url(
                     ensure_ascii=False,
                 )
 
-            inferred_title = (title or "").strip()
-            if not inferred_title:
-                inferred_title = (urlparse(url).netloc or url).strip()
+            metadata_title_candidates: list[str] = []
+            if docs:
+                first_doc = docs[0]
+                metadata = first_doc.metadata if hasattr(first_doc, "metadata") else {}
+                if isinstance(metadata, dict):
+                    for key in (
+                        "title",
+                        "document_title",
+                        "page_title",
+                        "og_title",
+                        "og:title",
+                        "name",
+                    ):
+                        candidate = str(metadata.get(key) or "").strip()
+                        if candidate and candidate not in metadata_title_candidates:
+                            metadata_title_candidates.append(candidate)
+
+            inferred_title, title_source = resolve_stored_title(
+                explicit_title=title,
+                url=url,
+                content=content,
+                metadata_title_candidates=metadata_title_candidates,
+            )
+            page_quality = classify_page_quality(
+                url=url,
+                resolved_title=inferred_title,
+                content=content,
+                content_source=content_source,
+                resource_kind=resource_kind,
+                content_type=content_type,
+                status="stored",
+                content_chars=len(content or ""),
+            )
             identifier_hints = extract_identifier_hints(
                 title=inferred_title,
                 url=url,
@@ -1091,7 +1126,14 @@ async def fetch_url(
             pointer["content_type"] = content_type
             pointer["binary_handling"] = binary_handling
             pointer["extraction_engine"] = extraction_engine
-            pointer["retry_recommended"] = False
+            pointer["resolved_title"] = inferred_title
+            pointer["title_source"] = title_source
+            pointer["page_quality"] = page_quality
+            pointer["counts_as_strong_source"] = counts_as_strong_source(page_quality)
+            pointer["retry_recommended"] = page_quality in {
+                "challenge_or_antibot",
+                "thin_shell",
+            }
             pointer["retrieval_mode_effective"] = retrieval_mode
             pointer["retrieval_mode_source"] = retrieval_mode_source
             pointer["available_to"] = "query_web_evidence"

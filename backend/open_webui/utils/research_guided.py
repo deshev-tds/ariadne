@@ -17,9 +17,12 @@ RESEARCH_GUIDED_MAX_CLAIMS_PER_GOAL = 2
 RESEARCH_GUIDED_DEFAULT_MAX_UNIQUE_QUERIES = 8
 RESEARCH_GUIDED_DEFAULT_MAX_UNIQUE_FETCHES = 6
 RESEARCH_STATUS_MARKER = "### Research Status"
+RESEARCH_INCOMPLETE_MARKER = "### Research Incomplete"
 RESEARCH_GUIDED_QUERY_OVERLAP_THRESHOLD = 0.6
 RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_SCOPE = 1
 RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_GOAL = 2
+RESEARCH_GUIDED_MAX_VERIFIER_REASONS = 3
+RESEARCH_GUIDED_MAX_VERIFIER_INSTRUCTIONS = 2
 
 GOAL_STATUS_OPEN = "open"
 GOAL_STATUS_SUPPORTED = "supported"
@@ -233,6 +236,60 @@ FAMILY_PRECEDENCE = {
     "unresolved:": 6,
 }
 
+PAGE_QUALITY_USABLE = "usable_article"
+PAGE_QUALITY_PARTIAL = "partial_article"
+PAGE_QUALITY_THIN = "thin_shell"
+PAGE_QUALITY_CHALLENGE = "challenge_or_antibot"
+PAGE_QUALITY_GENERIC = "generic_index"
+
+PAGE_QUALITY_REJECTED = {
+    PAGE_QUALITY_THIN,
+    PAGE_QUALITY_CHALLENGE,
+    PAGE_QUALITY_GENERIC,
+}
+
+PRIMARY_SOURCE_ROLES = {"primary_study"}
+SECONDARY_SOURCE_ROLES = {
+    "systematic_synthesis",
+    "secondary_summary",
+    "guideline_or_standard",
+    "mirror_or_index",
+}
+
+HOSTNAME_TITLE_PREFIXES = {
+    "www.",
+}
+
+PAGE_CHALLENGE_CUES = {
+    "just a moment",
+    "verify you are human",
+    "enable javascript",
+    "checking your browser",
+    "security check",
+    "cloudflare",
+    "vercel security checkpoint",
+    "access denied",
+    "captcha",
+}
+
+PAGE_GENERIC_CUES = {
+    "home",
+    "homepage",
+    "index",
+    "article",
+    "paper",
+}
+
+NAMED_PRIMARY_ENTITY_PATTERNS = (
+    re.compile(
+        r"\b([A-Z][A-Za-z0-9-]+(?: [A-Z][A-Za-z0-9-]+){0,5} "
+        r"(?:trial|study|theorem|dataset|benchmark|experiment))\b"
+    ),
+    re.compile(r"\b([A-Z][A-Za-z]+ et al\. \d{4})\b"),
+    re.compile(r"\b(NCT\d{8}|PMC\d+)\b", re.IGNORECASE),
+    re.compile(r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b", re.IGNORECASE),
+)
+
 
 def normalize_research_guided_mode(value: Any) -> bool:
     if isinstance(value, bool):
@@ -299,6 +356,130 @@ def canonicalize_url(url: Any) -> str:
     if query:
         normalized = f"{normalized}?{query}"
     return normalized
+
+
+def title_looks_like_hostname(title: Any, url: Any = "") -> bool:
+    normalized_title = _normalize_text(title).strip().lower()
+    if not normalized_title:
+        return True
+    normalized_title = normalized_title.rstrip("/")
+    try:
+        netloc = (urlsplit(_normalize_text(url)).netloc or "").strip().lower()
+    except Exception:
+        netloc = ""
+    for prefix in HOSTNAME_TITLE_PREFIXES:
+        if netloc.startswith(prefix):
+            netloc = netloc[len(prefix) :]
+    title_cmp = normalized_title
+    if title_cmp.startswith("www."):
+        title_cmp = title_cmp[4:]
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    if title_cmp == netloc:
+        return True
+    return bool(re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", title_cmp))
+
+
+def _extract_title_from_content(content: Any) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    for raw_line in text.splitlines()[:12]:
+        line = raw_line.strip().lstrip("#").strip()
+        if len(line) < 12 or len(line) > 180:
+            continue
+        lowered = line.lower()
+        if any(cue in lowered for cue in PAGE_CHALLENGE_CUES):
+            continue
+        if line.count(" ") < 2:
+            continue
+        return _normalize_text(line)
+    return ""
+
+
+def resolve_stored_title(
+    *,
+    explicit_title: Any = "",
+    url: Any = "",
+    content: Any = "",
+    metadata_title_candidates: Optional[list[Any]] = None,
+    search_result_title: Any = "",
+) -> tuple[str, str]:
+    explicit = _normalize_text(explicit_title)
+    if explicit and not title_looks_like_hostname(explicit, url):
+        return explicit, "explicit_title"
+
+    for candidate in metadata_title_candidates or []:
+        normalized = _normalize_text(candidate)
+        if normalized and not title_looks_like_hostname(normalized, url):
+            return normalized, "extracted_metadata"
+
+    extracted = _extract_title_from_content(content)
+    if extracted and not title_looks_like_hostname(extracted, url):
+        return extracted, "content_heading"
+
+    search_title = _normalize_text(search_result_title)
+    if search_title and not title_looks_like_hostname(search_title, url):
+        return search_title, "search_result_registry"
+
+    fallback = explicit or _normalize_text(urlsplit(_normalize_text(url)).netloc or url)
+    return fallback, "url_fallback"
+
+
+def classify_page_quality(
+    *,
+    url: Any = "",
+    resolved_title: Any = "",
+    content: Any = "",
+    content_source: Any = "",
+    resource_kind: Any = "",
+    content_type: Any = "",
+    error: Any = "",
+    status: Any = "",
+    content_chars: Any = 0,
+) -> str:
+    normalized_text = _normalize_text(content).lower()
+    normalized_title = _normalize_text(resolved_title)
+    normalized_error = _normalize_text(error).lower()
+    normalized_status = _normalize_text(status).lower()
+    chars = 0
+    try:
+        chars = int(content_chars or 0)
+    except Exception:
+        chars = 0
+
+    challenge_text = " ".join(
+        filter(
+            None,
+            [
+                normalized_text[:400],
+                normalized_error,
+                normalized_status,
+                _normalize_text(content_source).lower(),
+                _normalize_text(resource_kind).lower(),
+                _normalize_text(content_type).lower(),
+            ],
+        )
+    )
+    if any(cue in challenge_text for cue in PAGE_CHALLENGE_CUES):
+        return PAGE_QUALITY_CHALLENGE
+    if chars <= 0:
+        return PAGE_QUALITY_THIN
+    if title_looks_like_hostname(normalized_title, url):
+        if chars >= 800:
+            return PAGE_QUALITY_PARTIAL
+        return PAGE_QUALITY_GENERIC
+    if chars < 180:
+        return PAGE_QUALITY_THIN
+    if chars < 900:
+        return PAGE_QUALITY_PARTIAL
+    if any(cue == normalized_title.lower() for cue in PAGE_GENERIC_CUES):
+        return PAGE_QUALITY_GENERIC
+    return PAGE_QUALITY_USABLE
+
+
+def counts_as_strong_source(page_quality: Any) -> bool:
+    return _normalize_text(page_quality) == PAGE_QUALITY_USABLE
 
 
 def query_fingerprint(value: Any) -> str:
@@ -501,6 +682,27 @@ def _coverage_requirement_for_objective(objective: str) -> str:
     return "normal"
 
 
+def _contract_implies_strict(contract: dict[str, Any] | None) -> bool:
+    contract = contract or {}
+    return _normalize_bool(contract.get("direct_support_required_for_verified")) and _normalize_bool(
+        contract.get("contradiction_blocks_verified")
+    )
+
+
+def _is_strict_goal(
+    objective: str,
+    *,
+    contract: Optional[dict[str, Any]] = None,
+    priority: str = "primary",
+) -> bool:
+    normalized = _normalize_text(objective).lower()
+    if priority == "primary" and any(
+        term in normalized for term in STRICT_EVIDENCE_REQUIREMENT_CUES | {"verified facts"}
+    ):
+        return True
+    return _contract_implies_strict(contract)
+
+
 def _probe_budget_for_resolution_type(resolution_type: str) -> dict[str, Any]:
     require_strong_source = resolution_type in {"comparison", "magnitude", "recommendation", "causal", "fact"}
     return {
@@ -528,13 +730,20 @@ def _build_primary_goal(objective: str, *, goal_index: int = 1) -> dict[str, Any
     goal_terms = _tokenize_terms(question)
     disconfirmation_terms = _tokenize_terms(disconfirmation_target)
     goal_id = f"goal_{goal_index}_{_goal_slug(question)}"
+    contract = _contract_for_resolution_type(resolution_type)
+    is_strict = _is_strict_goal(
+        objective,
+        contract=contract,
+        priority="primary" if goal_index == 1 else "secondary",
+    )
     return {
         "goal_id": goal_id,
         "question": question,
         "priority": "primary",
         "resolution_type": resolution_type,
-        "coverage_requirement": _coverage_requirement_for_objective(objective),
-        "acceptance_contract": _contract_for_resolution_type(resolution_type),
+        "coverage_requirement": "strict" if is_strict else _coverage_requirement_for_objective(objective),
+        "is_strict": is_strict,
+        "acceptance_contract": contract,
         "status": GOAL_STATUS_OPEN,
         "resolution_basis": "",
         "disconfirmation_targets": [disconfirmation_target],
@@ -626,12 +835,14 @@ def build_initial_state(objective: Any) -> dict[str, Any]:
         "candidate_claims": [],
         "evidence_ledger": [],
         "stored_artifacts": [],
+        "search_result_titles": {},
         "unique_query_fingerprints": [],
         "unique_fetch_urls": [],
         "duplicate_query_count": 0,
         "duplicate_fetch_count": 0,
         "negative_signal_count": 0,
         "blocked_access_count": 0,
+        "page_quality_counts": {},
         "family_aliases": {},
         "family_alias_count": 0,
         "same_family_conflict_count": 0,
@@ -642,6 +853,15 @@ def build_initial_state(objective: Any) -> dict[str, Any]:
         "goal_query_rewrite_counts": {},
         "ready_to_answer": False,
         "stop_reason": "",
+        "post_draft_gate_triggered": False,
+        "repair_pass_count": 0,
+        "incomplete_reason": "",
+        "verifier_enabled": False,
+        "verifier_verdict": "",
+        "verifier_reasons": [],
+        "verifier_latency_ms": 0,
+        "verifier_unsupported_claims": [],
+        "verifier_missing_limitations": [],
         "max_unique_queries": RESEARCH_GUIDED_DEFAULT_MAX_UNIQUE_QUERIES,
         "max_unique_fetches": RESEARCH_GUIDED_DEFAULT_MAX_UNIQUE_FETCHES,
         "pending_system_note": "",
@@ -691,6 +911,23 @@ def _probe_budget_complete(goal: dict[str, Any]) -> bool:
         if is_required and int(observed.get(key) or 0) <= 0:
             return False
     return True
+
+
+def _refresh_page_quality_counts(state: dict[str, Any]) -> None:
+    counts: dict[str, int] = {}
+    for artifact in state.get("stored_artifacts") or []:
+        quality = _normalize_text(artifact.get("page_quality") or "")
+        if not quality:
+            continue
+        counts[quality] = counts.get(quality, 0) + 1
+    state["page_quality_counts"] = counts
+
+
+def _search_result_title_for_url(state: dict[str, Any], url: str) -> str:
+    registry = state.get("search_result_titles") or {}
+    if not isinstance(registry, dict):
+        return ""
+    return _normalize_text(registry.get(canonicalize_url(url)) or "")
 
 
 def _family_ids_from_hints(
@@ -1705,6 +1942,15 @@ def register_tool_event(
             updated.setdefault("unique_query_fingerprints", []).append(query_fp)
 
     if normalized_tool_name == "search_web":
+        if isinstance(parsed, list):
+            title_registry = updated.setdefault("search_result_titles", {})
+            for item in parsed[:8]:
+                if not isinstance(item, dict):
+                    continue
+                link = canonicalize_url(item.get("link") or item.get("url") or "")
+                title = _normalize_text(item.get("title") or "")
+                if link and title:
+                    title_registry[link] = title
         for goal in updated.get("goals") or []:
             alignment = _query_alignment(goal, query_value)
             if alignment == "target_aligned":
@@ -1777,11 +2023,35 @@ def register_tool_event(
                 "unsupported_binary",
                 "document_extract_failed",
             } or (parsed.get("mode") == "store" and content_chars <= 0)
+            page_quality = _normalize_text(parsed.get("page_quality") or "")
+            counts_as_strong = (
+                _normalize_bool(parsed.get("counts_as_strong_source"))
+                if "counts_as_strong_source" in parsed
+                else (
+                    counts_as_strong_source(page_quality)
+                    if page_quality
+                    else not blocked
+                )
+            )
+            if page_quality == PAGE_QUALITY_CHALLENGE:
+                blocked = True
             if blocked:
                 updated["blocked_access_count"] = int(updated.get("blocked_access_count") or 0) + 1
                 updated["negative_signal_count"] = int(updated.get("negative_signal_count") or 0) + 1
+            elif page_quality in PAGE_QUALITY_REJECTED or page_quality == PAGE_QUALITY_PARTIAL:
+                updated["negative_signal_count"] = int(updated.get("negative_signal_count") or 0) + 1
             if parsed.get("artifact_id"):
-                title = _normalize_text(parsed.get("title") or "")
+                title = _normalize_text(
+                    parsed.get("resolved_title")
+                    or parsed.get("title")
+                    or _search_result_title_for_url(updated, url)
+                )
+                title_source = _normalize_text(parsed.get("title_source") or "")
+                if title_source == "url_fallback":
+                    search_title = _search_result_title_for_url(updated, url)
+                    if search_title:
+                        title = search_title
+                        title_source = "search_result_registry"
                 identifier_hints = dict(parsed.get("identifier_hints") or {})
                 canonical_family_id, identifier_hints = _resolve_family_id(
                     updated,
@@ -1794,19 +2064,28 @@ def register_tool_event(
                         "artifact_id": parsed.get("artifact_id"),
                         "url": url,
                         "domain": parsed.get("domain") or _domain_from_url(url),
-                        "title": parsed.get("title") or "",
+                        "title": title,
+                        "title_source": title_source,
                         "blocked": blocked,
                         "mode": parsed.get("mode") or tool_params.get("mode") or "",
                         "content_chars": content_chars,
+                        "page_quality": page_quality,
+                        "counts_as_strong_source": counts_as_strong,
                         "identifier_hints": identifier_hints,
                         "canonical_family_id": canonical_family_id,
+                        "evidence_role": derive_evidence_role(
+                            domain=_normalize_text(parsed.get("domain") or _domain_from_url(url)),
+                            title=title,
+                            url=url,
+                        ),
                     }
                 )
+                _refresh_page_quality_counts(updated)
             if not blocked:
-                title = _normalize_text(parsed.get("title") or "")
+                title = _normalize_text(parsed.get("resolved_title") or parsed.get("title") or "")
                 combined_text = " ".join(filter(None, [title, url]))
                 for goal in updated.get("goals") or []:
-                    if _context_fit(goal, combined_text) != "weak":
+                    if counts_as_strong and _context_fit(goal, combined_text) != "weak":
                         _mark_probe_observed(goal, "strong_source")
 
     elif normalized_tool_name == "query_web_evidence" and isinstance(parsed, dict):
@@ -1875,6 +2154,7 @@ def register_tool_event(
             text = _normalize_text(snippet.get("text") or "")
             identifier_hints = dict(artifact.get("identifier_hints") or {})
             canonical_family_id = _normalize_text(artifact.get("canonical_family_id") or "")
+            artifact_source_role = _normalize_text(artifact.get("evidence_role") or "")
             content_depth = (
                 "full_text"
                 if str(artifact.get("mode") or "").strip().lower() == "content"
@@ -1888,7 +2168,7 @@ def register_tool_event(
                         updated,
                         goal_ids=[goal.get("goal_id")],
                         stance="supports",
-                        source_role="primary_study",
+                        source_role=artifact_source_role,
                         title=title,
                         url=url,
                         domain=domain,
@@ -1903,7 +2183,7 @@ def register_tool_event(
                         updated,
                         goal_ids=[goal.get("goal_id")],
                         stance="opposes",
-                        source_role="primary_study",
+                        source_role=artifact_source_role,
                         title=title,
                         url=url,
                         domain=domain,
@@ -2036,6 +2316,194 @@ def finalize_state_for_answer(state: dict[str, Any]) -> dict[str, Any]:
     return updated
 
 
+def state_has_strict_goals(state: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    return any(_normalize_bool(goal.get("is_strict")) for goal in (state.get("goals") or []))
+
+
+def build_research_capped_block(state: Optional[dict[str, Any]]) -> str:
+    if not isinstance(state, dict):
+        return ""
+    claims = state.get("candidate_claims") or []
+    if not claims:
+        return ""
+    lines = ["**Current evidence:**"]
+    for claim in claims[: RESEARCH_GUIDED_MAX_GOALS * RESEARCH_GUIDED_MAX_CLAIMS_PER_GOAL]:
+        lines.append(f"- {claim.get('text')} [{claim.get('label')}]")
+        lines.append(f"  Basis: {claim.get('basis_summary')}")
+        limitations = claim.get("must_include_limitations") or []
+        if limitations:
+            lines.append(f"  Limitation: {limitations[0]}")
+    return "\n".join(lines).strip()
+
+
+def build_research_incomplete_block(state: Optional[dict[str, Any]]) -> str:
+    if not isinstance(state, dict):
+        return ""
+    lines = [RESEARCH_INCOMPLETE_MARKER]
+    goals = state.get("goals") or []
+    claims = state.get("candidate_claims") or []
+    if goals:
+        for goal in goals[:RESEARCH_GUIDED_MAX_GOALS]:
+            lines.append("")
+            lines.append(f"Goal: {goal.get('question')}")
+            status = _normalize_text(goal.get("status") or "open") or "open"
+            resolution = _normalize_text(goal.get("resolution_basis") or "") or "unresolved"
+            lines.append(f"Status: {status} ({resolution})")
+            pending = _normalize_text(goal.get("coverage_pending_reason") or "")
+            if pending:
+                lines.append(f"Missing: {pending}")
+            elif _normalize_text(goal.get("disconfirmation_outcome") or "") == "not_meaningfully_tested":
+                lines.append("Missing: disconfirmation probe was not meaningfully completed")
+    elif claims:
+        for claim in claims[: RESEARCH_GUIDED_MAX_GOALS * RESEARCH_GUIDED_MAX_CLAIMS_PER_GOAL]:
+            lines.append("")
+            lines.append(f"Claim: {claim.get('text')}")
+            lines.append(f"Label: {claim.get('label')}")
+            lines.append(f"Basis: {claim.get('basis_summary')}")
+            limitations = claim.get("must_include_limitations") or []
+            if limitations:
+                lines.append(f"Limitation: {limitations[0]}")
+    reason = _normalize_text(state.get("incomplete_reason") or "")
+    if reason:
+        lines.append("")
+        lines.append(f"Reason: {reason}")
+    return "\n".join(lines).strip()
+
+
+def build_research_repair_instruction(
+    state: Optional[dict[str, Any]],
+    *,
+    mode: str,
+    verifier_result: Optional[dict[str, Any]] = None,
+) -> str:
+    if not isinstance(state, dict):
+        return ""
+    lines: list[str] = []
+    if mode == "unresolved":
+        lines.append(
+            "Do not finalize the answer yet. The research-guided gate blocked the draft because the evidence state is not ready."
+        )
+        missing_items: list[str] = []
+        for goal in state.get("goals") or []:
+            pending = _normalize_text(goal.get("coverage_pending_reason") or "")
+            if pending:
+                missing_items.append(pending)
+        if missing_items:
+            lines.append("Missing coverage items: " + "; ".join(missing_items[:2]) + ".")
+        lines.append(
+            "Continue only if you can close the missing coverage cleanly in this turn. Otherwise answer cautiously and avoid verified-fact framing."
+        )
+        return " ".join(lines).strip()
+
+    verifier_result = verifier_result or {}
+    lines.append(
+        "Revise the draft so it matches the research-guided state exactly. Do not add new claims, new examples, or stronger phrasing."
+    )
+    reasons = [
+        _normalize_text(item)
+        for item in (verifier_result.get("reasons") or [])[:RESEARCH_GUIDED_MAX_VERIFIER_REASONS]
+        if _normalize_text(item)
+    ]
+    if reasons:
+        lines.append("Verifier concerns: " + "; ".join(reasons) + ".")
+    instructions = [
+        _normalize_text(item)
+        for item in (verifier_result.get("instructions") or [])[:RESEARCH_GUIDED_MAX_VERIFIER_INSTRUCTIONS]
+        if _normalize_text(item)
+    ]
+    if instructions:
+        lines.append("Apply these corrections: " + "; ".join(instructions) + ".")
+    lines.append(
+        "Preserve claim labels and explicitly keep required limitations for any non-verified claim."
+    )
+    return " ".join(lines).strip()
+
+
+def _family_views(state: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    families: dict[str, dict[str, Any]] = {}
+    for record in state.get("evidence_ledger") or []:
+        if record.get("blocked"):
+            continue
+        family_id = _normalize_text(record.get("evidence_family_id") or "")
+        if not family_id:
+            continue
+        bucket = families.setdefault(
+            family_id,
+            {
+                "family_id": family_id,
+                "titles": [],
+                "roles": set(),
+                "identifiers": record.get("identifier_hints") or {},
+            },
+        )
+        title = _normalize_text((record.get("source_ref") or {}).get("title") or "")
+        if title and title not in bucket["titles"]:
+            bucket["titles"].append(title)
+        role = _normalize_text(record.get("source_role") or "")
+        if role:
+            bucket["roles"].add(role)
+
+    primary: list[dict[str, Any]] = []
+    secondary: list[dict[str, Any]] = []
+    for bucket in families.values():
+        item = {
+            "family_id": bucket["family_id"],
+            "titles": bucket["titles"][:3],
+            "roles": sorted(bucket["roles"]),
+            "identifiers": bucket["identifiers"],
+        }
+        if any(role in PRIMARY_SOURCE_ROLES for role in bucket["roles"]):
+            primary.append(item)
+        else:
+            secondary.append(item)
+    return primary, secondary
+
+
+def extract_named_entity_mentions(text: Any) -> list[str]:
+    normalized = str(text or "")
+    mentions: list[str] = []
+    seen: set[str] = set()
+    for pattern in NAMED_PRIMARY_ENTITY_PATTERNS:
+        for match in pattern.finditer(normalized):
+            value = _normalize_text(match.group(1) if match.groups() else match.group(0))
+            if not value or value.lower() in seen:
+                continue
+            seen.add(value.lower())
+            mentions.append(value)
+            if len(mentions) >= 8:
+                return mentions
+    return mentions
+
+
+def build_micro_verifier_context(
+    state: Optional[dict[str, Any]],
+    draft_answer: str,
+) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    primary_families, secondary_families = _family_views(state)
+    return {
+        "objective": _normalize_text(state.get("objective") or ""),
+        "goal_summary": [
+            {
+                "question": goal.get("question"),
+                "is_strict": bool(goal.get("is_strict")),
+                "status": goal.get("status"),
+                "resolution_basis": goal.get("resolution_basis"),
+                "coverage_pending_reason": goal.get("coverage_pending_reason"),
+            }
+            for goal in (state.get("goals") or [])[:RESEARCH_GUIDED_MAX_GOALS]
+        ],
+        "candidate_claims": copy.deepcopy(state.get("candidate_claims") or []),
+        "research_snapshot": build_research_snapshot(state),
+        "primary_source_families": primary_families,
+        "secondary_source_families": secondary_families,
+        "named_entity_mentions_in_draft": extract_named_entity_mentions(draft_answer),
+    }
+
+
 def build_research_status_block(state: Optional[dict[str, Any]]) -> str:
     if not isinstance(state, dict):
         return ""
@@ -2068,6 +2536,7 @@ def build_research_snapshot(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "goal_statuses": [
             {
                 "goal_id": goal.get("goal_id"),
+                "is_strict": bool(goal.get("is_strict")),
                 "status": goal.get("status"),
                 "resolution_basis": goal.get("resolution_basis"),
                 "disconfirmation_outcome": goal.get("disconfirmation_outcome"),
@@ -2094,8 +2563,16 @@ def build_research_snapshot(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "same_family_conflict_count": int(state.get("same_family_conflict_count") or 0),
         "query_rewrite_count": int(state.get("query_rewrite_count") or 0),
         "low_novelty_query_count": int(state.get("low_novelty_query_count") or 0),
+        "page_quality_counts": copy.deepcopy(state.get("page_quality_counts") or {}),
         "stop_reason": state.get("stop_reason"),
         "ready_to_answer": bool(state.get("ready_to_answer")),
+        "post_draft_gate_triggered": bool(state.get("post_draft_gate_triggered")),
+        "repair_pass_count": int(state.get("repair_pass_count") or 0),
+        "incomplete_reason": _normalize_text(state.get("incomplete_reason") or ""),
+        "verifier_enabled": bool(state.get("verifier_enabled")),
+        "verifier_verdict": _normalize_text(state.get("verifier_verdict") or ""),
+        "verifier_reasons": copy.deepcopy(state.get("verifier_reasons") or []),
+        "verifier_latency_ms": int(state.get("verifier_latency_ms") or 0),
     }
 
 
@@ -2116,6 +2593,14 @@ def build_runtime_summary(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "same_family_conflict_count": snapshot.get("same_family_conflict_count"),
         "query_rewrite_count": snapshot.get("query_rewrite_count"),
         "low_novelty_query_count": snapshot.get("low_novelty_query_count"),
+        "page_quality_counts": snapshot.get("page_quality_counts"),
         "stop_reason": snapshot.get("stop_reason"),
         "ready_to_answer": snapshot.get("ready_to_answer"),
+        "post_draft_gate_triggered": snapshot.get("post_draft_gate_triggered"),
+        "repair_pass_count": snapshot.get("repair_pass_count"),
+        "incomplete_reason": snapshot.get("incomplete_reason"),
+        "verifier_enabled": snapshot.get("verifier_enabled"),
+        "verifier_verdict": snapshot.get("verifier_verdict"),
+        "verifier_reasons": snapshot.get("verifier_reasons"),
+        "verifier_latency_ms": snapshot.get("verifier_latency_ms"),
     }

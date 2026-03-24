@@ -152,6 +152,13 @@ def _normalize_runtime_event(kind: str, payload: Any) -> dict[str, Any]:
             "negative_signal_count": data.get("negative_signal_count"),
             "blocked_access_count": data.get("blocked_access_count"),
             "stop_reason": data.get("stop_reason"),
+            "incomplete_reason": data.get("incomplete_reason"),
+            "repair_pass_count": data.get("repair_pass_count"),
+            "verifier_verdict": data.get("verifier_verdict"),
+            "verifier_latency_ms": data.get("verifier_latency_ms"),
+            "page_quality_counts": copy.deepcopy(data.get("page_quality_counts"))
+            if isinstance(data.get("page_quality_counts"), dict)
+            else None,
         }
 
     return {"preview": _truncate_text(payload)}

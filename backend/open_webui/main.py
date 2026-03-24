@@ -307,6 +307,8 @@ from open_webui.config import (
     # Deep Research
     ENABLE_DEEP_RESEARCH,
     ENABLE_RESEARCH_GUIDED,
+    ENABLE_RESEARCH_GUIDED_VERIFIER,
+    RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES,
     DEEP_RESEARCH_SIDECAR_URL,
     DEEP_RESEARCH_SIDECAR_USERNAME,
     DEEP_RESEARCH_SIDECAR_PASSWORD,
@@ -1144,6 +1146,10 @@ app.state.config.YOUTUBE_LOADER_PROXY_URL = YOUTUBE_LOADER_PROXY_URL
 
 app.state.config.ENABLE_DEEP_RESEARCH = ENABLE_DEEP_RESEARCH
 app.state.config.ENABLE_RESEARCH_GUIDED = ENABLE_RESEARCH_GUIDED
+app.state.config.ENABLE_RESEARCH_GUIDED_VERIFIER = ENABLE_RESEARCH_GUIDED_VERIFIER
+app.state.config.RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES = (
+    RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES
+)
 app.state.config.DEEP_RESEARCH_SIDECAR_URL = DEEP_RESEARCH_SIDECAR_URL
 app.state.config.DEEP_RESEARCH_SIDECAR_USERNAME = DEEP_RESEARCH_SIDECAR_USERNAME
 app.state.config.DEEP_RESEARCH_SIDECAR_PASSWORD = DEEP_RESEARCH_SIDECAR_PASSWORD
@@ -2780,6 +2786,9 @@ async def get_app_config(request: Request):
                     ),
                     "enable_research_guided": getattr(
                         app.state.config, "ENABLE_RESEARCH_GUIDED", False
+                    ),
+                    "enable_research_guided_verifier": getattr(
+                        app.state.config, "ENABLE_RESEARCH_GUIDED_VERIFIER", False
                     ),
                     "enable_web_search": app.state.config.ENABLE_WEB_SEARCH,
                     "enable_code_execution": app.state.config.ENABLE_CODE_EXECUTION,

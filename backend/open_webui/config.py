@@ -3393,6 +3393,18 @@ ENABLE_RESEARCH_GUIDED = PersistentConfig(
     os.getenv("ENABLE_RESEARCH_GUIDED", "False").lower() == "true",
 )
 
+ENABLE_RESEARCH_GUIDED_VERIFIER = PersistentConfig(
+    "ENABLE_RESEARCH_GUIDED_VERIFIER",
+    "rag.research.guided.verifier.enable",
+    os.getenv("ENABLE_RESEARCH_GUIDED_VERIFIER", "False").lower() == "true",
+)
+
+RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES = PersistentConfig(
+    "RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES",
+    "rag.research.guided.verifier.max_repair_passes",
+    int(os.getenv("RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES", "1")),
+)
+
 DEEP_RESEARCH_SIDECAR_URL = PersistentConfig(
     "DEEP_RESEARCH_SIDECAR_URL",
     "deep_research.sidecar_url",
