@@ -2279,10 +2279,8 @@ def register_tool_event(
                 )
                 _refresh_page_quality_counts(updated)
             if not blocked:
-                title = _normalize_text(parsed.get("resolved_title") or parsed.get("title") or "")
-                combined_text = " ".join(filter(None, [title, url]))
                 for goal in updated.get("goals") or []:
-                    if counts_as_strong and _context_fit(goal, combined_text) != "weak":
+                    if counts_as_strong:
                         _mark_probe_observed(goal, "strong_source")
         elif isinstance(parsed, str):
             url = _normalize_text(tool_params.get("url") or "")
@@ -2322,9 +2320,8 @@ def register_tool_event(
                 updated["negative_signal_count"] = int(updated.get("negative_signal_count") or 0) + 1
 
             if not blocked:
-                combined_text = " ".join(filter(None, [resolved_title, url]))
                 for goal in updated.get("goals") or []:
-                    if counts_as_strong and _context_fit(goal, combined_text) != "weak":
+                    if counts_as_strong:
                         _mark_probe_observed(goal, "strong_source")
 
     elif normalized_tool_name == "query_web_evidence" and isinstance(parsed, dict):
@@ -2612,6 +2609,36 @@ def build_research_capped_block(state: Optional[dict[str, Any]]) -> str:
         limitations = claim.get("must_include_limitations") or []
         if limitations:
             lines.append(f"  Limitation: {limitations[0]}")
+    return "\n".join(lines).strip()
+
+
+def build_research_cautious_fallback_block(state: Optional[dict[str, Any]]) -> str:
+    if not isinstance(state, dict):
+        return ""
+    evidence_ledger = list(state.get("evidence_ledger") or [])
+    if not evidence_ledger:
+        return ""
+    provisional = finalize_state_for_answer(state)
+    claims = provisional.get("candidate_claims") or []
+    if not claims:
+        return ""
+    lines = ["**Current evidence:**"]
+    for claim in claims[: RESEARCH_GUIDED_MAX_GOALS * RESEARCH_GUIDED_MAX_CLAIMS_PER_GOAL]:
+        lines.append(f"- {claim.get('text')} [{claim.get('label')}]")
+        lines.append(f"  Basis: {claim.get('basis_summary')}")
+        limitations = claim.get("must_include_limitations") or []
+        if limitations:
+            lines.append(f"  Limitation: {limitations[0]}")
+    pending_items = []
+    for goal in state.get("goals") or []:
+        pending = _normalize_text(goal.get("coverage_pending_reason") or "")
+        if pending and pending not in pending_items:
+            pending_items.append(pending)
+    if pending_items:
+        lines.append("")
+        lines.append("**Remaining uncertainty:**")
+        for item in pending_items[:2]:
+            lines.append(f"- {item}")
     return "\n".join(lines).strip()
 
 

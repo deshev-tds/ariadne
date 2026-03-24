@@ -725,6 +725,36 @@ def test_research_guided_fetch_url_counts_as_strong_source_probe():
     assert goal["probe_budget"]["observed"]["strong_source"] == 1
 
 
+def test_research_guided_fetch_url_counts_strong_source_even_with_generic_title():
+    state = research_guided.build_initial_state(
+        "Is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?"
+    )
+
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="fetch_url",
+        tool_params={
+            "url": "https://www.frontiersin.org/journals/neurology/articles/10.3389/fneur.2025.1699303/full",
+            "mode": "store",
+        },
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-frontiers",
+            "url": "https://www.frontiersin.org/journals/neurology/articles/10.3389/fneur.2025.1699303/full",
+            "domain": "www.frontiersin.org",
+            "title": "SYSTEMATIC REVIEW article",
+            "resolved_title": "SYSTEMATIC REVIEW article",
+            "page_quality": "usable_article",
+            "counts_as_strong_source": True,
+            "content_chars": 44000,
+        },
+    )
+
+    goal = state["goals"][0]
+    assert goal["probe_budget"]["observed"]["strong_source"] == 1
+
+
 def test_research_guided_fetch_url_content_mode_counts_as_strong_source_probe():
     state = research_guided.build_initial_state(
         "What evidence exists for whether evening blue light changes circadian phase?"

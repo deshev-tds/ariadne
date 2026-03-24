@@ -194,6 +194,7 @@ from open_webui.utils.research_guided import (
     build_entry_prompt as build_research_guided_entry_prompt,
     build_micro_verifier_context,
     build_research_capped_block,
+    build_research_cautious_fallback_block,
     build_research_incomplete_block,
     build_research_repair_instruction,
     build_research_snapshot,
@@ -7072,6 +7073,30 @@ async def _apply_research_guided_output_policy(
                     },
                 )
                 return fallback_content, fallback_output
+            cautious_machine_block = (
+                build_research_cautious_fallback_block(state)
+                if isinstance(state, dict)
+                else ""
+            )
+            if cautious_machine_block:
+                if isinstance(state, dict):
+                    state["incomplete_reason"] = "unresolved_research"
+                    state["phase"] = "final_response"
+                    state["stop_reason"] = state.get("stop_reason") or "unresolved_research_cautious_answer"
+                    _set_research_guided_state(metadata, state)
+                _append_research_guided_event(
+                    metadata,
+                    {
+                        "event": "research_cautious_machine_fallback_persisted",
+                        "incomplete_reason": "unresolved_research",
+                        "ready_to_answer": False,
+                    },
+                )
+                cautious_output = _research_guided_output_message(
+                    cautious_machine_block,
+                    base_output=output,
+                )
+                return cautious_machine_block, cautious_output
             if isinstance(state, dict):
                 state["incomplete_reason"] = "unresolved_research"
                 _set_research_guided_state(metadata, state)

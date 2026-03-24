@@ -497,6 +497,56 @@ def test_query_web_evidence_store_segmented_shadow_diff_runs_when_concept_path_i
     assert queried["concept_alignment_shadow"]["shadow_top_hit"][0] == stored["artifact_id"]
 
 
+def test_query_web_evidence_store_shadow_conflict_downgrades_agent_guidance(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web_store, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        web_store.Chats,
+        "get_chat_title_by_id",
+        lambda _chat_id: "Shadow Downgrade Test",
+    )
+
+    content = (
+        "# Results\n"
+        "No significant effects were found for SE (MD = -0.61; 95% CI -7.58 to 6.35; p = 0.86) "
+        "or WASO (MD = -1.47; 95% CI -14.94 to 11.99; p = 0.83).\n"
+        "Conclusion: BBGs may provide small improvements in sleep, but current evidence from RCTs "
+        "does not support significant effects.\n\n"
+        "# Introduction\n"
+        "Blue light can delay sleep onset latency in theory, and sleep onset latency (SOL) is an "
+        "important outcome for evening interventions.\n"
+    )
+
+    stored = web_store.store_web_page(
+        chat_id="chat-shadow-downgrade",
+        message_id="msg-shadow-downgrade",
+        url="https://example.org/shadow-downgrade",
+        title="Shadow Downgrade Example",
+        content=content,
+    )
+
+    queried = web_store.query_web_evidence_store(
+        chat_id="chat-shadow-downgrade",
+        message_id="msg-shadow-downgrade",
+        query="sleep onset latency",
+        artifact_ids=[stored["artifact_id"]],
+        top_k=4,
+        retrieval_mode=web_store.WEB_EVIDENCE_RETRIEVAL_MODE_SEGMENTED,
+        concept_alignment_enabled=False,
+    )
+
+    assert queried["status"] == "ok"
+    assert queried["concept_alignment_shadow"]["ran"] is True
+    assert queried["exact_target_match_found"] is False
+    assert queried["agent_guidance"] == "refine_within_same_source"
+    assert queried["suggested_next_action"] == "refine_within_same_source"
+    assert queried["truncation_trust_hits"] == 0
+    assert queried["serving_confidence_downgraded"] is True
+    assert "shadow_action_disagreement" in queried["agent_guidance_reason_codes"]
+    assert all(not snippet.get("truncation_trust_hint") for snippet in queried["snippets"])
+
+
 def test_query_web_evidence_store_segmented_mode_uses_focus_retrieval_for_large_document(
     tmp_path, monkeypatch
 ):

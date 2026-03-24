@@ -1318,6 +1318,12 @@ async def query_web_evidence(
     If `truncation_trust_hint=true` or `result_clause_complete=true`, treat the
     returned snippet as usable evidence and stay with the same source before trying
     a new web search.
+    Prefer the agent-facing diagnostic fields when present:
+    - `exact_target_match_found`
+    - `best_hit_is_adjacent_outcome`
+    - `agent_guidance`
+    If `agent_guidance=refine_within_same_source`, keep querying the same stored
+    artifact for the exact outcome/claim rather than broadening immediately.
 
     :param query: Evidence query to match against stored web artifacts
     :param artifact_ids: Optional exact subset of artifact IDs to search

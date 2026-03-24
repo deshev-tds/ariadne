@@ -1483,6 +1483,104 @@ def _build_concept_alignment_shadow_diff(
     }
 
 
+def _apply_agent_guidance_overlay(
+    *,
+    serving_payload: dict[str, Any],
+    shadow_payload: Optional[dict[str, Any]],
+    query_profile: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    payload = dict(serving_payload or {})
+    target_outcomes = list((query_profile or {}).get("target_concepts") or [])
+    serving_logic = str((query_profile or {}).get("serving_logic") or "")
+    shadow_ran = isinstance(shadow_payload, dict)
+    serving_has_alignment = any(
+        isinstance(snippet, dict) and "alignment_strength" in snippet
+        for snippet in (payload.get("snippets") or [])
+    )
+    if not shadow_ran and not serving_has_alignment:
+        payload["target_outcomes"] = target_outcomes
+        payload["exact_target_match_found"] = None
+        payload["best_hit_is_adjacent_outcome"] = False
+        payload["agent_guidance"] = (
+            "use_current_evidence"
+            if str(payload.get("suggested_next_action") or "") == "answer_with_current_evidence"
+            else str(payload.get("suggested_next_action") or "refine_within_same_source")
+        )
+        payload["agent_guidance_reason_codes"] = []
+        payload["serving_confidence_downgraded"] = False
+        payload["serving_confidence_reason"] = []
+        payload.setdefault("concept_alignment_shadow", {"ran": False})
+        return payload
+    diagnostic_payload = (
+        payload
+        if serving_logic == "concept" or serving_has_alignment
+        else (shadow_payload if shadow_ran else payload)
+    )
+    diagnostic_snippets = list((diagnostic_payload or {}).get("snippets") or [])
+    shadow_diff = (
+        _build_concept_alignment_shadow_diff(
+            serving_payload=serving_payload,
+            shadow_payload=shadow_payload,
+        )
+        if shadow_ran
+        else {"ran": False}
+    )
+
+    exact_target_match_found = any(
+        str(snippet.get("alignment_strength") or "none") in {"exact", "strong"}
+        and _normalize_bool(snippet.get("result_clause_complete"))
+        for snippet in diagnostic_snippets
+    )
+    best_hit_is_adjacent_outcome = False
+    if diagnostic_snippets:
+        best_hit_is_adjacent_outcome = _normalize_bool(
+            diagnostic_snippets[0].get("adjacent_outcome_conflict")
+        )
+    if not best_hit_is_adjacent_outcome and diagnostic_payload is not payload:
+        best_hit_is_adjacent_outcome = bool(
+            int((diagnostic_payload or {}).get("adjacent_outcome_conflict_count") or 0) > 0
+        )
+
+    guidance_reason_codes: list[str] = []
+    if not exact_target_match_found:
+        guidance_reason_codes.append("exact_target_result_not_found")
+    if best_hit_is_adjacent_outcome:
+        guidance_reason_codes.append("best_hit_adjacent_outcome_conflict")
+    if serving_logic != "concept" and shadow_diff.get("top_hit_changed"):
+        guidance_reason_codes.append("shadow_top_hit_disagreement")
+    if (
+        serving_logic != "concept"
+        and shadow_diff.get("serving_next_action") != shadow_diff.get("shadow_next_action")
+    ):
+        guidance_reason_codes.append("shadow_action_disagreement")
+
+    guidance = "use_current_evidence" if exact_target_match_found else "refine_within_same_source"
+    downgraded = guidance != "use_current_evidence"
+
+    payload["target_outcomes"] = target_outcomes
+    payload["exact_target_match_found"] = exact_target_match_found
+    payload["best_hit_is_adjacent_outcome"] = best_hit_is_adjacent_outcome
+    payload["agent_guidance"] = guidance
+    payload["agent_guidance_reason_codes"] = guidance_reason_codes[:6]
+    payload["concept_alignment_shadow"] = shadow_diff
+
+    if downgraded:
+        payload["suggested_next_action"] = "refine_within_same_source"
+        payload["truncation_trust_hits"] = 0
+        payload["serving_confidence_downgraded"] = True
+        payload["serving_confidence_reason"] = guidance_reason_codes[:6]
+        downgraded_snippets: list[dict[str, Any]] = []
+        for snippet in payload.get("snippets") or []:
+            updated = dict(snippet)
+            updated["truncation_trust_hint"] = False
+            downgraded_snippets.append(updated)
+        payload["snippets"] = downgraded_snippets
+    else:
+        payload["serving_confidence_downgraded"] = False
+        payload["serving_confidence_reason"] = []
+    return payload
+
+
 def _iter_line_records(text: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     offset = 0
@@ -3760,15 +3858,16 @@ def query_web_evidence_store(
             )
             serving_payload = concept_payload if _normalize_bool(concept_alignment_enabled) else legacy_payload
             shadow_payload = legacy_payload if _normalize_bool(concept_alignment_enabled) else concept_payload
+            serving_payload = _apply_agent_guidance_overlay(
+                serving_payload=serving_payload,
+                shadow_payload=shadow_payload,
+                query_profile=active_query_profile,
+            )
             return serving_payload | {
                 "scope_mode": scope_mode,
                 "concept_alignment_enabled": bool(concept_alignment_enabled),
                 "concept_alignment_serving_path": (
                     "concept" if _normalize_bool(concept_alignment_enabled) else "legacy"
-                ),
-                "concept_alignment_shadow": _build_concept_alignment_shadow_diff(
-                    serving_payload=serving_payload,
-                    shadow_payload=shadow_payload,
                 ),
             }
         if single_artifact_direct_scan:
@@ -3838,7 +3937,8 @@ def query_web_evidence_store(
             evidence_strength=evidence_strength,
         )
 
-    return {
+    return _apply_agent_guidance_overlay(
+        serving_payload={
         "status": "ok",
         "query": query,
         "normalized_query": effective_query,
@@ -3884,4 +3984,7 @@ def query_web_evidence_store(
         ),
         "concept_alignment_shadow": {"ran": False},
         **expansion_meta,
-    }
+    },
+        shadow_payload=None,
+        query_profile=active_query_profile,
+    )
