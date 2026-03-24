@@ -75,7 +75,11 @@ from open_webui.utils.web_evidence_store import (
     resolve_web_evidence_retrieval_mode,
     store_web_page,
 )
-from open_webui.utils.research_guided import extract_identifier_hints
+from open_webui.utils.research_guided import (
+    RESEARCH_GUIDED_STATE_KEY,
+    canonicalize_url,
+    extract_identifier_hints,
+)
 from open_webui.utils.research_guided import (
     classify_page_quality,
     counts_as_strong_source,
@@ -1032,6 +1036,16 @@ async def fetch_url(
             config_or_path=config,
             metadata=__metadata__,
         )
+        search_result_title = ""
+        research_state = (__metadata__ or {}).get(RESEARCH_GUIDED_STATE_KEY) or {}
+        if isinstance(research_state, dict):
+            title_registry = research_state.get("search_result_titles") or {}
+            canonical_url = canonicalize_url(url)
+            search_result_title = str(
+                title_registry.get(canonical_url)
+                or title_registry.get(str(url or ""))
+                or ""
+            ).strip()
         content, docs, fetch_meta = await asyncio.to_thread(
             get_content_from_url, __request__, url
         )
@@ -1073,6 +1087,9 @@ async def fetch_url(
                 )
 
             metadata_title_candidates: list[str] = []
+            fetch_meta_title = str(fetch_meta.get("filename") or "").strip()
+            if fetch_meta_title:
+                metadata_title_candidates.append(fetch_meta_title)
             if docs:
                 first_doc = docs[0]
                 metadata = first_doc.metadata if hasattr(first_doc, "metadata") else {}
@@ -1094,6 +1111,7 @@ async def fetch_url(
                 url=url,
                 content=content,
                 metadata_title_candidates=metadata_title_candidates,
+                search_result_title=search_result_title,
             )
             page_quality = classify_page_quality(
                 url=url,
@@ -1185,6 +1203,10 @@ async def query_web_evidence(
     assistant turn only, defined as the exact `(chat_id, message_id)` pair.
     Weak or empty evidence means lexical match was weak or the artifact set was
     insufficient; it does not automatically mean no relevant pages were fetched.
+    A snippet marked `snippet_truncated=true` is clipped to a window, not invalid.
+    If `truncation_trust_hint=true` or `result_clause_complete=true`, treat the
+    returned snippet as usable evidence and stay with the same source before trying
+    a new web search.
 
     :param query: Evidence query to match against stored web artifacts
     :param artifact_ids: Optional exact subset of artifact IDs to search

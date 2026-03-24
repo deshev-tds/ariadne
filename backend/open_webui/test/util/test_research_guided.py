@@ -226,6 +226,66 @@ def test_research_guided_strict_goal_rejects_single_snippet_meta_source():
     assert state["candidate_claims"] == []
 
 
+def test_research_guided_trustable_truncated_result_allows_cautious_exit():
+    state = research_guided.build_initial_state(
+        "Based on recent human studies and reviews, is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?"
+    )
+
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="fetch_url",
+        tool_params={"url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/", "mode": "store"},
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-meta",
+            "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/",
+            "domain": "pmc.ncbi.nlm.nih.gov",
+            "title": "Systematic review and meta-analysis of blue-light blocking glasses",
+            "content_chars": 1800,
+            "identifier_hints": {
+                "pmcid": "PMC12668929",
+                "doi": "10.3389/fneur.2025.1699303",
+            },
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={
+            "query": "sleep onset latency blue-light blocking glasses results confidence interval"
+        },
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 1,
+            "searched_domains": ["pmc.ncbi.nlm.nih.gov"],
+            "truncation_trust_hits": 1,
+            "snippets": [
+                {
+                    "artifact_id": "art-meta",
+                    "domain": "pmc.ncbi.nlm.nih.gov",
+                    "text": "The pooled mean difference was -4.86 minutes (95% confidence interval -20.23 to 10.52), not statistically significant.",
+                    "snippet_truncated": True,
+                    "result_clause_complete": True,
+                    "truncation_trust_hint": True,
+                }
+            ],
+        },
+    )
+
+    goal = state["goals"][0]
+    assert state["truncation_trust_hits"] == 1
+    assert goal["status"] == research_guided.GOAL_STATUS_INSUFFICIENT
+    assert goal["resolution_basis"] == "conservative_sufficiency"
+    assert goal["coverage_pending_reason"] == ""
+    assert state["cautious_answer_allowed"] is True
+    assert state["ready_to_answer"] is True
+    assert state["candidate_claims"]
+    assert state["candidate_claims"][0]["label"] == research_guided.CLAIM_LABEL_INFERENCE
+    repair = research_guided.build_research_repair_instruction(state, mode="unresolved")
+    assert "use that result or ask for more context around the same hit" in repair.lower()
+
+
 def test_research_guided_strict_goal_conflict_before_broader_fallback_stays_open():
     state = research_guided.build_initial_state(
         "Based on recent human studies and reviews, is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?"

@@ -220,6 +220,8 @@ def test_query_web_evidence_store_single_artifact_compaction_surfaces_result_sni
     assert queried["status"] == "ok"
     assert queried["query_compaction_applied"] is True
     assert queried["normalized_query"] != queried["query"]
+    assert queried["expanded_context_count"] >= 1
+    assert queried["truncation_trust_hits"] >= 1
     top_three = queried["snippets"][:3]
     assert any(
         "pooled mean difference" in snippet["text"].lower()
@@ -227,6 +229,13 @@ def test_query_web_evidence_store_single_artifact_compaction_surfaces_result_sni
         or "not statistically significant" in snippet["text"].lower()
         for snippet in top_three
     )
+    expanded = next(
+        snippet for snippet in top_three if snippet.get("expanded_context_applied")
+    )
+    assert expanded["snippet_truncated"] is True
+    assert int(expanded["effective_window_chars"]) >= 500
+    assert any(snippet.get("result_clause_complete") for snippet in top_three)
+    assert any(snippet.get("truncation_trust_hint") for snippet in top_three)
 
 
 def test_query_web_evidence_store_segmented_mode_uses_focus_retrieval_for_large_document(

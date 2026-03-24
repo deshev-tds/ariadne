@@ -2649,6 +2649,174 @@ async def test_non_streaming_chat_response_blocks_unready_research_guided_draft(
 
 
 @pytest.mark.asyncio
+async def test_non_streaming_chat_response_allows_cautious_research_guided_answer(
+    monkeypatch,
+):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Research Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            state=SimpleNamespace(direct=False),
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    MODELS={"model-1": {"id": "model-1"}},
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(
+                        WEBUI_URL="https://example.test",
+                        ENABLE_RESEARCH_GUIDED_VERIFIER=False,
+                        RESEARCH_GUIDED_VERIFIER_MAX_REPAIR_PASSES=1,
+                    ),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "model_id": "model-1",
+            "params": {},
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "research",
+                "ready_to_answer": False,
+                "goals": [
+                    {
+                        "goal_id": "goal-1",
+                        "question": "Is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?",
+                        "is_strict": True,
+                        "status": "open",
+                        "resolution_basis": "",
+                        "disconfirmation_outcome": "",
+                        "resolution_type": "fact",
+                        "coverage_requirement": "strict",
+                        "coverage_pending_reason": "required coverage probes still missing: disconfirming, broader fallback",
+                        "goal_terms": ["strong", "evidence", "blue-light-blocking", "glasses", "sleep", "latency", "adults"],
+                        "acceptance_contract": {
+                            "allowed_evidence_classes": [
+                                "direct_empirical",
+                                "observational",
+                                "systematic_synthesis",
+                                "guideline",
+                                "canonical_reference",
+                                "mechanistic",
+                            ],
+                            "forbidden_as_sole_support_classes": ["secondary_summary", "mirror_or_index"],
+                            "direct_support_required_for_verified": True,
+                            "contradiction_blocks_verified": True,
+                        },
+                        "probe_budget": {
+                            "required": {
+                                "target_aligned": True,
+                                "disconfirming": True,
+                                "strong_source": True,
+                                "broader_fallback": True,
+                            },
+                            "observed": {
+                                "target_aligned": 1,
+                                "disconfirming": 0,
+                                "strong_source": 1,
+                                "broader_fallback": 0,
+                            },
+                        },
+                    }
+                ],
+                "working_propositions": [],
+                "candidate_claims": [],
+                "stored_artifacts": [],
+                "evidence_ledger": [
+                    {
+                        "evidence_id": "ev-1",
+                        "goal_ids": ["goal-1"],
+                        "source_role": "systematic_synthesis",
+                        "source_ref": {
+                            "title": "Blue-light blocking glasses meta-analysis",
+                            "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/",
+                            "domain": "pmc.ncbi.nlm.nih.gov",
+                        },
+                        "canonical_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929",
+                        "evidence_family_id": "doi:10.3389/fneur.2025.1699303",
+                        "identifier_hints": {"pmcid": "PMC12668929", "doi": "10.3389/fneur.2025.1699303"},
+                        "evidence_class": "systematic_synthesis",
+                        "stance": "supports",
+                        "directness": "direct",
+                        "method_strength": "high",
+                        "context_fit": "strong",
+                        "content_depth": "snippet",
+                        "value_bucket": "high",
+                        "limitations": [],
+                        "blocked": False,
+                        "text_preview": "The pooled mean difference was -4.86 minutes (95% confidence interval -20.23 to 10.52), not statistically significant.",
+                    }
+                ],
+                "repair_pass_count": 0,
+            },
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {
+            "model": "model-1",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        "tasks": None,
+    }
+
+    response = {
+        "choices": [{"message": {"content": "**Verified facts:**\n- The evidence is limited."}}],
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "r-1",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "hidden"}],
+            },
+            {
+                "type": "message",
+                "id": "msg-1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "**Verified facts:**\n- The evidence is limited."}],
+            },
+        ],
+        "usage": {"completion_tokens": 1},
+    }
+
+    await non_streaming_chat_response_handler(response, ctx)
+
+    saved_payload = saved_messages[0][2]
+    assert middleware.RESEARCH_INCOMPLETE_MARKER not in saved_payload["content"]
+    assert "### Research Status" in saved_payload["content"]
+    assert saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["ready_to_answer"] is True
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["cautious_answer_allowed"]
+        is True
+    )
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["candidate_claims"][0]["label"]
+        == "reasonable_inference"
+    )
+
+
+@pytest.mark.asyncio
 async def test_non_streaming_chat_response_caps_research_guided_draft_when_verifier_rejects(
     monkeypatch,
 ):

@@ -134,6 +134,55 @@ def test_get_content_from_url_uses_document_path_for_pdf(monkeypatch):
     assert fetch_meta["content_source"] == "document_extractor"
 
 
+def test_get_content_from_url_sniffs_hidden_pdf_url(monkeypatch):
+    class DocumentLoaderStub:
+        def load(self, filename, file_content_type, file_path):
+            assert filename == "frontiers-article.pdf"
+            assert file_content_type == "application/pdf"
+            assert file_path.endswith(".pdf")
+            return [
+                Document(
+                    page_content="Extracted PDF body with non-gibberish quantitative results.",
+                    metadata={"source": "temp.pdf"},
+                )
+            ]
+
+    monkeypatch.setattr(
+        retrieval_utils,
+        "_sniff_remote_resource",
+        lambda _request, _url: (
+            "document_supported",
+            "pdf",
+            {"content_type": "application/pdf", "filename": "frontiers-article.pdf"},
+        ),
+    )
+    monkeypatch.setattr(
+        retrieval_utils,
+        "_fetch_document_bytes",
+        lambda _request, _url: (b"%PDF-1.6 fake", "application/pdf"),
+    )
+    monkeypatch.setattr(
+        retrieval_utils, "_build_document_loader", lambda _request: DocumentLoaderStub()
+    )
+    monkeypatch.setattr(
+        retrieval_utils,
+        "get_loader",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Web loader path should not be used for hidden PDF URLs")
+        ),
+    )
+
+    content, docs, fetch_meta = retrieval_utils.get_content_from_url(
+        _request_stub(),
+        "https://public-pages-files-2025.frontiersin.org/journals/neurology/articles/10.3389/fneur.2025.1699303/pdf",
+    )
+
+    assert "Extracted PDF body" in content
+    assert docs[0].metadata["resource_kind"] == "pdf"
+    assert fetch_meta["resource_kind"] == "pdf"
+    assert fetch_meta["filename"] == "frontiers-article.pdf"
+
+
 def test_get_content_from_url_returns_typed_result_for_unsupported_binary(monkeypatch):
     monkeypatch.setattr(
         retrieval_utils,

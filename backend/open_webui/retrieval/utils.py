@@ -157,6 +157,94 @@ def _classify_url_resource(url: str) -> tuple[str, Optional[str]]:
     return "html_like", ext or None
 
 
+def _content_disposition_filename(value: str) -> str:
+    header = str(value or "")
+    if not header:
+        return ""
+    utf_match = re.search(r"filename\*\s*=\s*UTF-8''([^;]+)", header, re.IGNORECASE)
+    if utf_match:
+        return unquote(utf_match.group(1)).strip().strip('"')
+    plain_match = re.search(r'filename\s*=\s*"?(?P<name>[^";]+)"?', header, re.IGNORECASE)
+    if plain_match:
+        return plain_match.group("name").strip()
+    return ""
+
+
+def _build_fetch_session(request, *, accept: str) -> requests.Session:
+    session = requests.Session()
+    session.trust_env = bool(request.app.state.config.WEB_SEARCH_TRUST_ENV)
+    session.headers.update({**_BROWSER_FETCH_HEADERS, "Accept": accept})
+    return session
+
+
+def _looks_like_hidden_pdf_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    return (
+        path.endswith("/pdf")
+        or "/pdf/" in path
+        or "format=pdf" in query
+        or "download=pdf" in query
+    )
+
+
+def _sniff_remote_resource(request, url: str) -> tuple[Optional[str], Optional[str], dict[str, Any]]:
+    verify_ssl = bool(request.app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION)
+    timeout_value = _get_timeout_value(request)
+    looks_pdfish = _looks_like_hidden_pdf_url(url)
+    sniff_meta: dict[str, Any] = {
+        "content_type": None,
+        "filename": "",
+    }
+
+    session = _build_fetch_session(
+        request,
+        accept="application/pdf,text/markdown,text/plain,*/*;q=0.8",
+    )
+    try:
+        head_response = session.head(
+            url,
+            timeout=timeout_value,
+            allow_redirects=True,
+            verify=verify_ssl,
+        )
+        content_type = (head_response.headers.get("Content-Type") or "").split(";")[0].strip()
+        sniff_meta["content_type"] = content_type or None
+        sniff_meta["filename"] = _content_disposition_filename(
+            head_response.headers.get("Content-Disposition") or ""
+        )
+        if content_type == "application/pdf":
+            return "document_supported", "pdf", sniff_meta
+    except Exception:
+        pass
+
+    if not looks_pdfish and sniff_meta.get("content_type"):
+        return None, None, sniff_meta
+
+    try:
+        get_response = session.get(
+            url,
+            timeout=timeout_value,
+            allow_redirects=True,
+            verify=verify_ssl,
+            stream=True,
+        )
+        get_response.raise_for_status()
+        content_type = (get_response.headers.get("Content-Type") or "").split(";")[0].strip()
+        if content_type:
+            sniff_meta["content_type"] = content_type
+        filename = _content_disposition_filename(get_response.headers.get("Content-Disposition") or "")
+        if filename:
+            sniff_meta["filename"] = filename
+        first_bytes = get_response.raw.read(8, decode_content=True)
+        if sniff_meta.get("content_type") == "application/pdf" or first_bytes.startswith(b"%PDF-"):
+            return "document_supported", "pdf", sniff_meta
+    except Exception:
+        return None, None, sniff_meta
+    return None, None, sniff_meta
+
+
 def _build_document_loader(request) -> Loader:
     return Loader(
         engine=request.app.state.config.CONTENT_EXTRACTION_ENGINE,
@@ -194,16 +282,10 @@ def _build_document_loader(request) -> Loader:
 
 def _fetch_document_bytes(request, url: str) -> tuple[bytes, Optional[str]]:
     verify_ssl = bool(request.app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION)
-    trust_env = bool(request.app.state.config.WEB_SEARCH_TRUST_ENV)
     timeout_value = _get_timeout_value(request)
-
-    session = requests.Session()
-    session.trust_env = trust_env
-    session.headers.update(
-        {
-            **_BROWSER_FETCH_HEADERS,
-            "Accept": "application/pdf,text/markdown,text/plain,*/*;q=0.8",
-        }
+    session = _build_fetch_session(
+        request,
+        accept="application/pdf,text/markdown,text/plain,*/*;q=0.8",
     )
     response = session.get(
         url,
@@ -248,13 +330,14 @@ def _document_failure_payload(
 
 
 def _extract_supported_document(
-    request, url: str, resource_kind: str
+    request, url: str, resource_kind: str, sniff_meta: Optional[dict[str, Any]] = None
 ) -> tuple[str, list[Document], dict[str, Any]]:
     extraction_engine = getattr(
         request.app.state.config, "CONTENT_EXTRACTION_ENGINE", ""
     )
     temp_path = None
-    guessed_content_type = ""
+    guessed_content_type = _normalize_extracted_text((sniff_meta or {}).get("content_type") or "")
+    filename = str((sniff_meta or {}).get("filename") or "").strip()
     try:
         content_bytes, content_type = _fetch_document_bytes(request, url)
         guessed_content_type = content_type or mimetypes.guess_type(url)[0] or ""
@@ -264,7 +347,7 @@ def _extract_supported_document(
             temp_path = tmp.name
 
         docs = _build_document_loader(request).load(
-            filename=f"fetched_document.{resource_kind}",
+            filename=filename or f"fetched_document.{resource_kind}",
             file_content_type=guessed_content_type,
             file_path=temp_path,
         )
@@ -296,6 +379,7 @@ def _extract_supported_document(
                         "content_type": guessed_content_type or None,
                         "binary_handling": "direct_document_extract",
                         "extraction_engine": extraction_engine,
+                        "filename": filename or None,
                     },
                 )
             )
@@ -307,6 +391,7 @@ def _extract_supported_document(
             "content_source": "document_extractor",
             "binary_handling": "direct_document_extract",
             "extraction_engine": extraction_engine,
+            "filename": filename or None,
         }
     except Exception as exc:
         log.exception("Document extraction failed for %s: %s", url, exc)
@@ -450,6 +535,10 @@ def _direct_fetch_html(request, url: str) -> Optional[str]:
 
 def get_content_from_url(request, url: str) -> tuple[str, list[Document], dict[str, Any]]:
     resource_mode, resource_kind = _classify_url_resource(url)
+    if resource_mode == "html_like" and _looks_like_hidden_pdf_url(url):
+        sniffed_mode, sniffed_kind, sniff_meta = _sniff_remote_resource(request, url)
+        if sniffed_mode == "document_supported" and sniffed_kind:
+            return _extract_supported_document(request, url, sniffed_kind, sniff_meta=sniff_meta)
 
     if resource_mode == "document_supported" and resource_kind:
         return _extract_supported_document(request, url, resource_kind)

@@ -108,6 +108,33 @@ RESULT_SECTION_NEGATIVE_CUES = (
     "keywords",
     "copyright notice",
 )
+RESULT_CLAUSE_COMPLETE_CUES = (
+    "confidence interval",
+    "mean difference",
+    "odds ratio",
+    "hazard ratio",
+    "risk ratio",
+    "effect size",
+    "not statistically significant",
+    "statistically significant",
+    "low certainty",
+    "limited evidence",
+    "inconclusive",
+    "conclusion",
+)
+RESULT_NUMERIC_SIGNAL_RE = re.compile(
+    r"\b(?:md|rr|or|hr|ci|p)\b|\b\d+(?:\.\d+)?\b",
+    re.IGNORECASE,
+)
+RESULT_PVALUE_RE = re.compile(
+    r"\bp\s*(?:=|>=|>|≤|<=|<)\s*([0-9]*\.?[0-9]+)\b",
+    re.IGNORECASE,
+)
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+EXPANDED_CONTEXT_TARGET_CHARS = 1900
+EXPANDED_CONTEXT_BEFORE_CHARS = 180
+EXPANDED_CONTEXT_AFTER_CHARS = 1720
+EXPANDED_CONTEXT_MAX_MERGE_GAP = 160
 
 
 def normalize_web_evidence_retrieval_mode(value: Any) -> str:
@@ -329,6 +356,276 @@ def _read_artifact_text(path: str) -> str:
         return Path(str(path or "")).read_text(encoding="utf-8", errors="replace")
     except Exception:
         return ""
+
+
+def _normalize_numeric_text(value: Any) -> str:
+    return (
+        str(value or "")
+        .replace("−", "-")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace(" ", " ")
+    )
+
+
+def _looks_result_like(text: str) -> bool:
+    lowered = _normalize_numeric_text(text).lower()
+    if not lowered:
+        return False
+    if any(cue in lowered for cue in RESULT_CLAUSE_COMPLETE_CUES):
+        return True
+    return bool(RESULT_PVALUE_RE.search(lowered))
+
+
+def _result_clause_complete(text: str) -> bool:
+    normalized = _normalize_numeric_text(text)
+    if not normalized:
+        return False
+    for sentence in SENTENCE_SPLIT_RE.split(normalized):
+        stripped = sentence.strip()
+        lowered = stripped.lower()
+        if len(stripped) < 24:
+            continue
+        if not RESULT_NUMERIC_SIGNAL_RE.search(stripped):
+            continue
+        if not any(cue in lowered for cue in RESULT_CLAUSE_COMPLETE_CUES) and not RESULT_PVALUE_RE.search(
+            lowered
+        ):
+            continue
+        if stripped.endswith((".", ";", "!", "?")):
+            return True
+        if "confidence interval" in lowered or RESULT_PVALUE_RE.search(lowered):
+            return True
+    return False
+
+
+def _align_to_sentence_boundary(
+    text: str,
+    index: int,
+    *,
+    direction: str,
+    max_adjust_chars: int = 160,
+) -> int:
+    bounded = max(0, min(len(text), int(index or 0)))
+    if direction == "backward":
+        cursor = bounded
+        remaining = max_adjust_chars
+        while cursor > 0 and remaining > 0 and text[cursor - 1] not in {".", "!", "?", "\n"}:
+            cursor -= 1
+            remaining -= 1
+        return cursor
+    cursor = bounded
+    remaining = max_adjust_chars
+    while (
+        cursor < len(text)
+        and remaining > 0
+        and text[cursor - 1 if cursor > 0 else 0] not in {".", "!", "?", "\n"}
+    ):
+        cursor += 1
+        remaining -= 1
+    return min(len(text), cursor)
+
+
+def _expand_context_window(
+    content: str,
+    *,
+    start: int,
+    end: int,
+    anchor_index: Optional[int] = None,
+    target_chars: int = EXPANDED_CONTEXT_TARGET_CHARS,
+    before_chars: int = EXPANDED_CONTEXT_BEFORE_CHARS,
+    after_chars: int = EXPANDED_CONTEXT_AFTER_CHARS,
+) -> tuple[int, int, str]:
+    text = str(content or "")
+    if not text:
+        return 0, 0, ""
+    bounded_start = max(0, min(len(text), int(start or 0)))
+    bounded_end = max(bounded_start, min(len(text), int(end or 0)))
+    anchor = max(
+        bounded_start,
+        min(len(text), int(anchor_index if anchor_index is not None else bounded_start)),
+    )
+
+    anchor_start = max(0, anchor - before_chars)
+    anchor_end = min(len(text), max(bounded_end, anchor) + after_chars)
+    span = anchor_end - anchor_start
+    if span < target_chars:
+        remaining = target_chars - span
+        grow_before = min(anchor_start, min(remaining // 6, 80))
+        grow_after = min(len(text) - anchor_end, remaining - grow_before)
+        anchor_start -= grow_before
+        anchor_end += grow_after
+
+    aligned_start = _align_to_sentence_boundary(text, anchor_start, direction="backward")
+    aligned_end = _align_to_sentence_boundary(text, anchor_end, direction="forward")
+    if aligned_end <= aligned_start:
+        aligned_start = anchor_start
+        aligned_end = anchor_end
+    return aligned_start, aligned_end, text[aligned_start:aligned_end].strip()
+
+
+def _snippet_should_expand(
+    snippet: dict[str, Any],
+    *,
+    query_profile: Optional[dict[str, Any]] = None,
+) -> bool:
+    text = str(snippet.get("text") or "")
+    if not text:
+        return False
+    result_like = _looks_result_like(text)
+    if not result_like and bool((query_profile or {}).get("result_intent")):
+        result_like = bool(RESULT_NUMERIC_SIGNAL_RE.search(_normalize_numeric_text(text)))
+    if not result_like:
+        return False
+    if bool(snippet.get("snippet_truncated")):
+        return True
+    if len(text) < 900:
+        return True
+    return not _result_clause_complete(text)
+
+
+def _merge_expanded_snippets(
+    snippets: list[dict[str, Any]],
+    *,
+    text_cache: dict[str, str],
+) -> list[dict[str, Any]]:
+    if len(snippets) <= 1:
+        return snippets
+
+    merged: list[dict[str, Any]] = []
+    snippets_sorted = sorted(
+        snippets,
+        key=lambda item: (
+            str(item.get("artifact_id") or ""),
+            int(item.get("start") or 0),
+            int(item.get("end") or 0),
+        ),
+    )
+    current: Optional[dict[str, Any]] = None
+    for snippet in snippets_sorted:
+        if current is None:
+            current = dict(snippet)
+            continue
+        same_artifact = str(current.get("artifact_id") or "") == str(snippet.get("artifact_id") or "")
+        overlaps = int(snippet.get("start") or 0) <= int(current.get("end") or 0) + EXPANDED_CONTEXT_MAX_MERGE_GAP
+        if (
+            same_artifact
+            and overlaps
+            and current.get("expanded_context_applied")
+            and snippet.get("expanded_context_applied")
+        ):
+            path = str(current.get("path") or snippet.get("path") or "")
+            content = text_cache.get(path) if path else ""
+            if content:
+                start = min(int(current.get("start") or 0), int(snippet.get("start") or 0))
+                end = max(int(current.get("end") or 0), int(snippet.get("end") or 0))
+                current["start"] = start
+                current["end"] = end
+                current["text"] = content[start:end].strip()
+                current["effective_window_chars"] = end - start
+            current["score"] = max(
+                float(current.get("score", 0.0) or 0.0),
+                float(snippet.get("score", 0.0) or 0.0),
+            )
+            current["expanded_context_applied"] = bool(
+                current.get("expanded_context_applied") or snippet.get("expanded_context_applied")
+            )
+            current["snippet_truncated"] = bool(current.get("snippet_truncated") or snippet.get("snippet_truncated"))
+            current["result_clause_complete"] = bool(
+                current.get("result_clause_complete") or snippet.get("result_clause_complete")
+            )
+            current["truncation_trust_hint"] = bool(
+                current.get("truncation_trust_hint") or snippet.get("truncation_trust_hint")
+            )
+            continue
+        merged.append(current)
+        current = dict(snippet)
+
+    if current is not None:
+        merged.append(current)
+    merged.sort(
+        key=lambda item: (
+            -float(item.get("score", 0.0) or 0.0),
+            str(item.get("artifact_id") or ""),
+            int(item.get("start", 0) or 0),
+        )
+    )
+    return merged
+
+
+def _annotate_and_expand_snippets(
+    snippets: list[dict[str, Any]],
+    *,
+    scope_artifact_count: int,
+    query_profile: Optional[dict[str, Any]] = None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if not snippets:
+        return [], {"expanded_context_count": 0, "truncation_trust_hits": 0}
+
+    tight_scope = int(scope_artifact_count or 0) > 0 and int(scope_artifact_count or 0) <= 2
+    text_cache: dict[str, str] = {}
+    expanded_context_count = 0
+    truncation_trust_hits = 0
+    expansions_by_artifact: dict[str, int] = {}
+    annotated: list[dict[str, Any]] = []
+
+    for snippet in snippets:
+        updated = dict(snippet)
+        path = str(updated.get("path") or "")
+        artifact_id = str(updated.get("artifact_id") or "")
+        content = text_cache.get(path)
+        if content is None and path:
+            content = _read_artifact_text(path)
+            text_cache[path] = content
+        content = content or str(updated.get("text") or "")
+
+        raw_start = int(updated.get("start") or 0)
+        raw_end = int(updated.get("end") or 0)
+        raw_text = str(updated.get("text") or "")
+        updated["snippet_truncated"] = bool(raw_start > 0 or raw_end < len(content))
+        updated["result_clause_complete"] = _result_clause_complete(raw_text)
+        updated["truncation_trust_hint"] = bool(
+            updated["result_clause_complete"] and updated["snippet_truncated"]
+        )
+        updated["expanded_context_applied"] = False
+        updated["effective_window_chars"] = max(0, raw_end - raw_start)
+        updated["expansion_anchor_start"] = int(updated.get("hit_index") or raw_start)
+
+        should_expand = (
+            tight_scope
+            and expansions_by_artifact.get(artifact_id, 0) <= 0
+            and _snippet_should_expand(updated, query_profile=query_profile)
+        )
+        if content and should_expand:
+            new_start, new_end, expanded_text = _expand_context_window(
+                content,
+                start=raw_start,
+                end=raw_end,
+                anchor_index=int(updated.get("hit_index") or raw_start),
+            )
+            if expanded_text and (new_start != raw_start or new_end != raw_end):
+                updated["start"] = new_start
+                updated["end"] = new_end
+                updated["text"] = expanded_text
+                updated["expanded_context_applied"] = True
+                updated["effective_window_chars"] = new_end - new_start
+                updated["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
+                updated["result_clause_complete"] = _result_clause_complete(expanded_text)
+                updated["truncation_trust_hint"] = bool(
+                    updated["result_clause_complete"] and updated["snippet_truncated"]
+                )
+                expanded_context_count += 1
+                expansions_by_artifact[artifact_id] = expansions_by_artifact.get(artifact_id, 0) + 1
+
+        if updated["truncation_trust_hint"]:
+            truncation_trust_hits += 1
+        annotated.append(updated)
+
+    merged = _merge_expanded_snippets(annotated, text_cache=text_cache)
+    return merged, {
+        "expanded_context_count": expanded_context_count,
+        "truncation_trust_hits": truncation_trust_hits,
+    }
 
 
 def _iter_line_records(text: str) -> list[dict[str, Any]]:
@@ -1067,6 +1364,27 @@ def _extract_window(content: str, terms: list[str], window_chars: int) -> tuple[
     return start, end, snippet, best_idx
 
 
+def _best_hit_index(content: str, terms: list[str]) -> int:
+    normalized = _normalize_numeric_text(content).lower()
+    if not normalized:
+        return 0
+    cue_positions: list[int] = []
+    for cue in RESULT_CLAUSE_COMPLETE_CUES:
+        idx = normalized.find(cue)
+        if idx >= 0:
+            cue_positions.append(idx)
+    if cue_positions:
+        return min(cue_positions)
+    p_match = RESULT_PVALUE_RE.search(normalized)
+    if p_match:
+        return p_match.start()
+    for term in terms:
+        idx = normalized.find(str(term or "").lower())
+        if idx >= 0:
+            return idx
+    return 0
+
+
 def _align_chunk_end(content: str, end: int, max_forward: int = 120) -> int:
     bounded_end = min(len(content), end)
     remaining = max_forward
@@ -1173,7 +1491,10 @@ def _score_text_block(
     lexical_score = (0.75 * coverage) + (0.25 * density)
     blended = max(0.0, min(1.0, (0.8 * lexical_score) + (0.2 * rank_score)))
     if isinstance(query_profile, dict) and query_profile.get("result_intent"):
-        blended = max(0.0, min(1.0, blended + _result_intent_section_bonus(text)))
+        bonus = _result_intent_section_bonus(text)
+        if _result_clause_complete(text):
+            bonus += 0.28
+        blended = max(0.0, min(1.0, blended + bonus))
     return unique_hits, total_hits, round(blended, 4)
 
 
@@ -1816,7 +2137,10 @@ def _build_segment_snippets(
                 "path": row["path"] if isinstance(row, sqlite3.Row) else row.get("path"),
                 "start": int(row["start_offset"] if isinstance(row, sqlite3.Row) else row.get("start_offset") or 0),
                 "end": int(row["end_offset"] if isinstance(row, sqlite3.Row) else row.get("end_offset") or 0),
-                "hit_index": int(row["start_offset"] if isinstance(row, sqlite3.Row) else row.get("start_offset") or 0),
+                "hit_index": int(
+                    row["start_offset"] if isinstance(row, sqlite3.Row) else row.get("start_offset") or 0
+                )
+                + _best_hit_index(content, terms),
                 "score": blended,
                 "text": content,
                 "label": label,
@@ -1944,6 +2268,11 @@ def _query_web_evidence_store_segmented(
         if deduped_snippets
         else snippets[:final_limit]
     )
+    final_snippets, expansion_meta = _annotate_and_expand_snippets(
+        final_snippets,
+        scope_artifact_count=len(searched_artifact_ids),
+        query_profile=query_profile,
+    )
     coverage_after_merge = _count_focus_coverage(
         final_snippets,
         focus_targets=focus_targets,
@@ -1999,6 +2328,7 @@ def _query_web_evidence_store_segmented(
         "focus_dropped_low_score": focus_dropped_low_score,
         "query_compaction_applied": bool((query_profile or {}).get("compaction_applied")),
         "title_overlap_dropped": int((query_profile or {}).get("title_overlap_dropped") or 0),
+        **expansion_meta,
         **dedupe_meta,
     }
 
@@ -2056,6 +2386,8 @@ def query_web_evidence_store(
             "focus_dropped_low_score": 0,
             "dedupe_cluster_count": 0,
             "snippets_dropped_overlap": 0,
+            "expanded_context_count": 0,
+            "truncation_trust_hits": 0,
         }
 
     db_path = chat_dir / "web_evidence.sqlite"
@@ -2092,6 +2424,8 @@ def query_web_evidence_store(
             "focus_dropped_low_score": 0,
             "dedupe_cluster_count": 0,
             "snippets_dropped_overlap": 0,
+            "expanded_context_count": 0,
+            "truncation_trust_hits": 0,
         }
 
     bounded_top_k = max(1, min(20, int(top_k or 6)))
@@ -2153,7 +2487,8 @@ def query_web_evidence_store(
                             "path": path,
                             "start": int(chunk.get("start") or 0),
                             "end": int(chunk.get("end") or 0),
-                            "hit_index": int(chunk.get("start") or 0),
+                            "hit_index": int(chunk.get("start") or 0)
+                            + _best_hit_index(str(chunk.get("text") or ""), terms),
                             "score": chunk_score,
                             "text": str(chunk.get("text") or ""),
                             "chunked": True,
@@ -2175,7 +2510,8 @@ def query_web_evidence_store(
                                 "path": path,
                                 "start": int(chunk.get("start") or 0),
                                 "end": int(chunk.get("end") or 0),
-                                "hit_index": int(chunk.get("start") or 0),
+                                "hit_index": int(chunk.get("start") or 0)
+                                + _best_hit_index(str(chunk.get("text") or ""), terms),
                                 "score": round(rank_score, 4),
                                 "text": str(chunk.get("text") or ""),
                                 "chunked": True,
@@ -2311,6 +2647,11 @@ def query_web_evidence_store(
         wide_used = True
 
     snippets = wide if wide_used and wide else narrow
+    snippets, expansion_meta = _annotate_and_expand_snippets(
+        snippets,
+        scope_artifact_count=len(searched_artifact_ids),
+        query_profile=query_profile,
+    )
     evidence_strength = _classify_evidence_strength(snippets)
     suggested_next_action = _suggest_next_action(
         searched_artifact_count=len(searched_artifact_ids),
@@ -2357,4 +2698,5 @@ def query_web_evidence_store(
         "snippets_dropped_overlap": 0,
         "query_compaction_applied": bool(query_profile.get("compaction_applied")),
         "title_overlap_dropped": int(query_profile.get("title_overlap_dropped") or 0),
+        **expansion_meta,
     }

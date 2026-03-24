@@ -289,6 +289,24 @@ NAMED_PRIMARY_ENTITY_PATTERNS = (
     re.compile(r"\b(NCT\d{8}|PMC\d+)\b", re.IGNORECASE),
     re.compile(r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b", re.IGNORECASE),
 )
+INCONCLUSIVE_SIGNAL_CUES = {
+    "not statistically significant",
+    "non-significant",
+    "nonsignificant",
+    "inconclusive",
+    "low certainty",
+    "limited evidence",
+    "insufficient evidence",
+    "confidence interval",
+}
+CI_RANGE_RE = re.compile(
+    r"(?:95%\s*)?(?:confidence interval|ci)[^0-9\-−–—+]*([\-−–—+]?\d+(?:\.\d+)?)\s*(?:to|,|–|—|-)\s*([\-−–—+]?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+P_VALUE_RE = re.compile(
+    r"\bp\s*(=|>=|>|≤|<=|<)\s*([0-9]*\.?[0-9]+)\b",
+    re.IGNORECASE,
+)
 
 
 def normalize_research_guided_mode(value: Any) -> bool:
@@ -848,6 +866,10 @@ def build_initial_state(objective: Any) -> dict[str, Any]:
         "same_family_conflict_count": 0,
         "query_rewrite_count": 0,
         "low_novelty_query_count": 0,
+        "truncation_trust_hits": 0,
+        "pdf_extract_failed_count": 0,
+        "conservative_sufficiency_triggered": False,
+        "cautious_answer_allowed": False,
         "evidence_query_history": [],
         "emitted_rewrite_scopes": [],
         "goal_query_rewrite_counts": {},
@@ -1223,6 +1245,11 @@ def _basis_summary(
             f"single-source-family conflict in {kind_text} for {resolution_type} "
             f"question '{question}', without enough independent corroboration"
         )
+    if goal.get("resolution_basis") == "conservative_sufficiency" and supporting:
+        return (
+            f"{kind_text} reported quantitative but inconclusive evidence for '{question}', "
+            "which is enough for a cautious answer but not for verified-fact framing"
+        )
     if supporting:
         if coverage_requirement == "strict" and snippet_only:
             return (
@@ -1262,6 +1289,12 @@ def _limitations_for_goal(
     coverage_pending = _normalize_text(goal.get("coverage_pending_reason") or "")
     if coverage_pending:
         limitations.append(coverage_pending)
+    elif goal.get("resolution_basis") == "conservative_sufficiency":
+        missing = _missing_required_probes(goal)
+        if missing:
+            limitations.append(
+                "coverage remained incomplete: " + ", ".join(_humanize_probe_kind(item) for item in missing)
+            )
     if goal.get("coverage_requirement") == "strict":
         full_text_support = any(
             str(record.get("content_depth") or "") == "full_text"
@@ -1516,6 +1549,108 @@ def _coverage_pending_reason(goal: dict[str, Any]) -> str:
     )
 
 
+def _normalize_numeric_text(value: Any) -> str:
+    return (
+        str(value or "")
+        .replace("−", "-")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace(" ", " ")
+    )
+
+
+def _confidence_interval_crosses_null(text: Any) -> bool:
+    normalized = _normalize_numeric_text(text)
+    match = CI_RANGE_RE.search(normalized)
+    if not match:
+        return False
+    try:
+        lower = float(match.group(1))
+        upper = float(match.group(2))
+    except Exception:
+        return False
+    return (lower <= 0 <= upper) or (upper <= 0 <= lower)
+
+
+def _p_value_is_non_significant(text: Any) -> bool:
+    normalized = _normalize_numeric_text(text).lower()
+    match = P_VALUE_RE.search(normalized)
+    if not match:
+        return False
+    operator = str(match.group(1) or "").strip()
+    try:
+        value = float(match.group(2))
+    except Exception:
+        return False
+    if operator in {"=", ">=", ">", "≤", "<=", "<"}:
+        if operator in {"=", ">=", ">"}:
+            return value >= 0.05
+    return False
+
+
+def _record_is_inconclusive_or_weak(record: dict[str, Any]) -> bool:
+    preview = _normalize_numeric_text(record.get("text_preview") or "").lower()
+    if not preview:
+        return False
+    if _confidence_interval_crosses_null(preview):
+        return True
+    if _p_value_is_non_significant(preview):
+        return True
+    return any(cue in preview for cue in INCONCLUSIVE_SIGNAL_CUES)
+
+
+def _goal_requests_evidence_strength(goal: dict[str, Any]) -> bool:
+    question = _normalize_text(goal.get("question") or "").lower()
+    return any(term in question for term in STRICT_EVIDENCE_REQUIREMENT_CUES | {"verified facts"})
+
+
+def _goal_has_conservative_sufficiency(
+    goal: dict[str, Any],
+    *,
+    supporting: list[dict[str, Any]],
+    opposing: list[dict[str, Any]],
+    internally_mixed: list[dict[str, Any]],
+) -> bool:
+    if not _normalize_bool(goal.get("is_strict")):
+        return False
+    if not _goal_requests_evidence_strength(goal):
+        return False
+
+    contract = goal.get("acceptance_contract") or {}
+    allowed_classes = set(contract.get("allowed_evidence_classes") or [])
+    qualifying_support = [
+        record
+        for record in supporting
+        if str(record.get("evidence_class") or "") in allowed_classes
+        and str(record.get("source_role") or "") not in {"secondary_summary", "mirror_or_index"}
+        and str(record.get("value_bucket") or "") in {"high", "medium"}
+        and not record.get("blocked")
+    ]
+    if not qualifying_support:
+        return False
+    if _goal_contract_satisfied(goal, qualifying_support):
+        return False
+
+    weak_signal = any(_record_is_inconclusive_or_weak(record) for record in qualifying_support)
+    if not weak_signal:
+        return False
+
+    strong_positive_opposition = any(
+        str(record.get("value_bucket") or "") == "high"
+        and not _record_is_inconclusive_or_weak(record)
+        for record in opposing
+    )
+    if strong_positive_opposition:
+        return False
+
+    mixed_support_conflict = any(
+        _record_is_inconclusive_or_weak(item.get("support_record") or {})
+        or _record_is_inconclusive_or_weak(item.get("oppose_record") or {})
+        for item in internally_mixed
+    )
+    return weak_signal or mixed_support_conflict
+
+
 def _goal_budget_exhausted(state: dict[str, Any]) -> bool:
     return len(state.get("unique_query_fingerprints") or []) >= int(
         state.get("max_unique_queries") or 0
@@ -1557,10 +1692,28 @@ def _resolve_goal(goal: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str
     has_single_family_conflict_only = bool(internally_mixed) and not (
         supporting or opposing
     )
+    conservative_sufficiency = _goal_has_conservative_sufficiency(
+        updated,
+        supporting=supporting,
+        opposing=opposing,
+        internally_mixed=internally_mixed,
+    )
+    if conservative_sufficiency and not updated.get("disconfirmation_outcome"):
+        attempts = updated.get("disconfirmation_attempts") or []
+        if any(attempt.get("found") for attempt in attempts):
+            updated["disconfirmation_outcome"] = "found"
+        elif any(attempt.get("meaningful") for attempt in attempts):
+            updated["disconfirmation_outcome"] = "not_found_under_budgeted_probe"
+        else:
+            updated["disconfirmation_outcome"] = "not_meaningfully_tested"
 
     if strict_coverage_pending and state.get("blocked_access_count"):
         updated["status"] = GOAL_STATUS_INSUFFICIENT
         updated["resolution_basis"] = "blocked_access"
+    elif conservative_sufficiency:
+        updated["status"] = GOAL_STATUS_INSUFFICIENT
+        updated["resolution_basis"] = "conservative_sufficiency"
+        updated["coverage_pending_reason"] = ""
     elif strict_coverage_pending and _goal_budget_exhausted(state):
         updated["status"] = GOAL_STATUS_INSUFFICIENT
         updated["resolution_basis"] = "budget_exhausted_before_resolution"
@@ -1721,7 +1874,7 @@ def _build_query_rewrite_instruction(goal_questions: list[str]) -> str:
         f"{joined_goals}. Rewrite the next query_web_evidence call as a short retrieval phrase. "
         "Preserve the proposition, population, outcome, and one discriminator. "
         "Remove rhetorical glue and copied sentences. Prefer an outcome phrase, significance phrase, conclusion phrase, or subgroup phrase. "
-        "If possible, widen artifact scope before drilling further."
+        "If the current snippet is truncated but contains a usable result clause, stay with the same source and ask for more context around that hit instead of abandoning it."
     )
 
 
@@ -1831,6 +1984,7 @@ def _refresh_resolutions(state: dict[str, Any]) -> dict[str, Any]:
     updated_props: list[dict[str, Any]] = []
     note_lines: list[str] = []
     same_family_conflict_count = 0
+    conservative_sufficiency_triggered = False
 
     for goal in state.get("goals") or []:
         next_goal, changed = _resolve_goal(goal, state)
@@ -1885,12 +2039,20 @@ def _refresh_resolutions(state: dict[str, Any]) -> dict[str, Any]:
                 note_lines.append(
                     f"Goal '{next_goal.get('question')}' still has pending coverage: {next_goal.get('coverage_pending_reason')}."
                 )
+            if next_goal.get("resolution_basis") == "conservative_sufficiency":
+                note_lines.append(
+                    f"Goal '{next_goal.get('question')}' can now be answered cautiously from the current quantitative evidence. Keep the conclusion conservative and include the remaining limitations."
+                )
+        if next_goal.get("resolution_basis") == "conservative_sufficiency":
+            conservative_sufficiency_triggered = True
         updated_goals.append(next_goal)
         updated_props.append(next_prop)
 
     state["goals"] = updated_goals
     state["working_propositions"] = updated_props
     state["same_family_conflict_count"] = same_family_conflict_count
+    state["conservative_sufficiency_triggered"] = conservative_sufficiency_triggered
+    state["cautious_answer_allowed"] = conservative_sufficiency_triggered
     all_terminal = all(
         goal.get("status") in TERMINAL_GOAL_STATUSES
         and goal.get("resolution_basis")
@@ -2025,6 +2187,12 @@ def register_tool_event(
                 "unsupported_binary",
                 "document_extract_failed",
             } or (parsed.get("mode") == "store" and content_chars <= 0)
+            if parsed.get("status") == "document_extract_failed" and (
+                _normalize_text(parsed.get("resource_kind") or "") == "pdf"
+                or _normalize_text(parsed.get("content_type") or "") == "application/pdf"
+                or _normalize_text(url).lower().endswith("/pdf")
+            ):
+                updated["pdf_extract_failed_count"] = int(updated.get("pdf_extract_failed_count") or 0) + 1
             page_quality = _normalize_text(parsed.get("page_quality") or "")
             counts_as_strong = (
                 _normalize_bool(parsed.get("counts_as_strong_source"))
@@ -2094,6 +2262,15 @@ def register_tool_event(
         snippets = parsed.get("snippets") or []
         if not snippets and str(parsed.get("status") or "") == "not_found":
             updated["negative_signal_count"] = int(updated.get("negative_signal_count") or 0) + 1
+        trustable_truncated_hits = int(parsed.get("truncation_trust_hits") or 0)
+        if not trustable_truncated_hits:
+            trustable_truncated_hits = sum(
+                1
+                for snippet in snippets
+                if isinstance(snippet, dict) and _normalize_bool(snippet.get("truncation_trust_hint"))
+            )
+        if trustable_truncated_hits:
+            updated["truncation_trust_hits"] = int(updated.get("truncation_trust_hits") or 0) + trustable_truncated_hits
 
         artifact_scope_ids = [
             _normalize_text(value)
@@ -2197,6 +2374,12 @@ def register_tool_event(
                     goal.setdefault("oppose_ids", []).append(evidence_id)
                 elif _context_fit(goal, text) == "weak":
                     goal.setdefault("orthogonal_ids", [])
+
+        if trustable_truncated_hits:
+            _append_pending_note(
+                updated,
+                "A truncated evidence window can still be usable if it already contains a complete result clause. Use the result already found or request more context around that hit; do not abandon the source solely because the window is clipped.",
+            )
 
     updated = _refresh_resolutions(updated)
     if normalized_tool_name == "query_web_evidence":
@@ -2394,9 +2577,22 @@ def build_research_repair_instruction(
                 missing_items.append(pending)
         if missing_items:
             lines.append("Missing coverage items: " + "; ".join(missing_items[:2]) + ".")
-        lines.append(
-            "Continue only if you can close the missing coverage cleanly in this turn. Otherwise answer cautiously and avoid verified-fact framing."
-        )
+        if int(state.get("truncation_trust_hits") or 0) > 0:
+            lines.append(
+                "A recent evidence query already returned a usable truncated result clause. Use that result or ask for more context around the same hit; do not abandon the source solely because the window was clipped."
+            )
+        if int(state.get("pdf_extract_failed_count") or 0) > 0:
+            lines.append(
+                "Do not rely on the failed PDF extraction path. Prefer an already usable stored HTML/article source if one exists."
+            )
+        if _normalize_bool(state.get("cautious_answer_allowed")):
+            lines.append(
+                "You may answer cautiously from the current evidence. Keep the conclusion conservative, avoid verified-fact framing, and include the remaining limitations."
+            )
+        else:
+            lines.append(
+                "Continue only if you can close the missing coverage cleanly in this turn. Otherwise answer cautiously and avoid verified-fact framing."
+            )
         return " ".join(lines).strip()
 
     verifier_result = verifier_result or {}
@@ -2565,9 +2761,13 @@ def build_research_snapshot(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "same_family_conflict_count": int(state.get("same_family_conflict_count") or 0),
         "query_rewrite_count": int(state.get("query_rewrite_count") or 0),
         "low_novelty_query_count": int(state.get("low_novelty_query_count") or 0),
+        "truncation_trust_hits": int(state.get("truncation_trust_hits") or 0),
+        "pdf_extract_failed_count": int(state.get("pdf_extract_failed_count") or 0),
         "page_quality_counts": copy.deepcopy(state.get("page_quality_counts") or {}),
         "stop_reason": state.get("stop_reason"),
         "ready_to_answer": bool(state.get("ready_to_answer")),
+        "conservative_sufficiency_triggered": bool(state.get("conservative_sufficiency_triggered")),
+        "cautious_answer_allowed": bool(state.get("cautious_answer_allowed")),
         "post_draft_gate_triggered": bool(state.get("post_draft_gate_triggered")),
         "repair_pass_count": int(state.get("repair_pass_count") or 0),
         "incomplete_reason": _normalize_text(state.get("incomplete_reason") or ""),
@@ -2595,9 +2795,13 @@ def build_runtime_summary(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "same_family_conflict_count": snapshot.get("same_family_conflict_count"),
         "query_rewrite_count": snapshot.get("query_rewrite_count"),
         "low_novelty_query_count": snapshot.get("low_novelty_query_count"),
+        "truncation_trust_hits": snapshot.get("truncation_trust_hits"),
+        "pdf_extract_failed_count": snapshot.get("pdf_extract_failed_count"),
         "page_quality_counts": snapshot.get("page_quality_counts"),
         "stop_reason": snapshot.get("stop_reason"),
         "ready_to_answer": snapshot.get("ready_to_answer"),
+        "conservative_sufficiency_triggered": snapshot.get("conservative_sufficiency_triggered"),
+        "cautious_answer_allowed": snapshot.get("cautious_answer_allowed"),
         "post_draft_gate_triggered": snapshot.get("post_draft_gate_triggered"),
         "repair_pass_count": snapshot.get("repair_pass_count"),
         "incomplete_reason": snapshot.get("incomplete_reason"),

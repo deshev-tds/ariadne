@@ -642,6 +642,18 @@ def _research_guided_transition_payload(
         previous_summary.get("same_family_conflict_count") or 0
     ):
         event_name = "same_family_conflict_adjudicated"
+    elif int(next_summary.get("truncation_trust_hits") or 0) > int(
+        previous_summary.get("truncation_trust_hits") or 0
+    ):
+        event_name = "evidence_context_expanded"
+    elif int(next_summary.get("pdf_extract_failed_count") or 0) > int(
+        previous_summary.get("pdf_extract_failed_count") or 0
+    ):
+        event_name = "pdf_extract_failed"
+    elif next_summary.get("cautious_answer_allowed") and not previous_summary.get(
+        "cautious_answer_allowed"
+    ):
+        event_name = "cautious_answer_allowed"
     elif sum(
         int((next_summary.get("page_quality_counts") or {}).get(key) or 0)
         for key in ("thin_shell", "challenge_or_antibot", "generic_index")
