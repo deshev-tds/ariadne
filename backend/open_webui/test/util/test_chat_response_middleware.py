@@ -2615,6 +2615,21 @@ async def test_non_streaming_chat_response_blocks_unready_research_guided_draft(
 
     response = {
         "choices": [{"message": {"content": "Confident final answer."}}],
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "r-1",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "hidden"}],
+            },
+            {
+                "type": "message",
+                "id": "msg-1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Confident final answer."}],
+            },
+        ],
         "usage": {"completion_tokens": 1},
     }
 
@@ -2630,6 +2645,7 @@ async def test_non_streaming_chat_response_blocks_unready_research_guided_draft(
     assert (
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["repair_pass_count"] == 1
     )
+    assert saved_payload["output"][0]["type"] == "reasoning"
 
 
 @pytest.mark.asyncio
@@ -2744,6 +2760,21 @@ async def test_non_streaming_chat_response_caps_research_guided_draft_when_verif
 
     response = {
         "choices": [{"message": {"content": "**Verified facts:** This is settled."}}],
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "r-1",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "hidden"}],
+            },
+            {
+                "type": "message",
+                "id": "msg-1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "**Verified facts:** This is settled."}],
+            },
+        ],
         "usage": {"completion_tokens": 1},
     }
 
@@ -2757,6 +2788,7 @@ async def test_non_streaming_chat_response_caps_research_guided_draft_when_verif
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["verifier_verdict"]
         == "cap"
     )
+    assert saved_payload["output"][0]["type"] == "reasoning"
 
 
 @pytest.mark.asyncio
@@ -2904,6 +2936,21 @@ async def test_non_streaming_chat_response_revises_then_allows_research_guided_d
 
     response = {
         "choices": [{"message": {"content": "Evidence is verified and settled."}}],
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "r-1",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "hidden"}],
+            },
+            {
+                "type": "message",
+                "id": "msg-1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Evidence is verified and settled."}],
+            },
+        ],
         "usage": {"completion_tokens": 1},
     }
 
@@ -2920,6 +2967,7 @@ async def test_non_streaming_chat_response_revises_then_allows_research_guided_d
     assert (
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["repair_pass_count"] == 1
     )
+    assert saved_payload["output"][0]["type"] == "reasoning"
 
 
 @pytest.mark.asyncio

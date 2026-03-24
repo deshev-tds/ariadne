@@ -6644,7 +6644,29 @@ def _parse_research_guided_verifier_output(raw_output: str) -> dict[str, Any]:
     }
 
 
-def _research_guided_output_message(content: str) -> list[dict[str, Any]]:
+def _research_guided_output_message(
+    content: str,
+    *,
+    base_output: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, Any]]:
+    if isinstance(base_output, list) and base_output:
+        output_copy = copy.deepcopy(base_output)
+        for item in reversed(output_copy):
+            if item.get("type") == "message" and item.get("role") == "assistant":
+                item["status"] = "completed"
+                item["content"] = [{"type": "output_text", "text": content}]
+                return output_copy
+        output_copy.append(
+            {
+                "type": "message",
+                "id": output_id("msg"),
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content}],
+            }
+        )
+        return output_copy
+
     return [
         {
             "type": "message",
@@ -6937,9 +6959,10 @@ async def _run_research_guided_repair_pass(
         )
         if not draft:
             return None
-        response_output = response_data.get("output")
-        if not response_output:
-            response_output = _research_guided_output_message(draft)
+        response_output = _research_guided_output_message(
+            draft,
+            base_output=output,
+        )
         return draft, response_output
     except Exception:
         return None
@@ -7013,7 +7036,7 @@ async def _apply_research_guided_output_policy(
             )
             incomplete_state = _research_guided_state_from_metadata(metadata) or state or {}
             content = build_research_incomplete_block(incomplete_state)
-            output = _research_guided_output_message(content)
+            output = _research_guided_output_message(content, base_output=output)
             return content, output
 
     state = _research_guided_state_from_metadata(metadata)
@@ -7133,7 +7156,7 @@ async def _apply_research_guided_output_policy(
         )
         incomplete_state = _research_guided_state_from_metadata(metadata) or state or {}
         content = build_research_incomplete_block(incomplete_state)
-        output = _research_guided_output_message(content)
+        output = _research_guided_output_message(content, base_output=output)
         return content, output
 
     _append_research_guided_event(
@@ -7146,7 +7169,7 @@ async def _apply_research_guided_output_policy(
         },
     )
     content = build_research_capped_block(_research_guided_state_from_metadata(metadata) or state)
-    output = _research_guided_output_message(content)
+    output = _research_guided_output_message(content, base_output=output)
     return content, output
 
 
