@@ -624,8 +624,35 @@ def _research_guided_transition_payload(
     event_name = default_event
     if next_summary.get("ready_to_answer") and not previous_summary.get("ready_to_answer"):
         event_name = "ready_to_answer"
+    elif int(next_summary.get("query_rewrite_count") or 0) > int(
+        previous_summary.get("query_rewrite_count") or 0
+    ):
+        event_name = "query_rewrite_triggered"
+    elif int(next_summary.get("family_alias_count") or 0) > int(
+        previous_summary.get("family_alias_count") or 0
+    ):
+        event_name = "family_alias_collapse"
+    elif int(next_summary.get("same_family_conflict_count") or 0) > int(
+        previous_summary.get("same_family_conflict_count") or 0
+    ):
+        event_name = "same_family_conflict_adjudicated"
     elif next_summary.get("phase") != previous_summary.get("phase"):
         event_name = "phase_changed"
+    else:
+        previous_goals = previous_summary.get("goal_statuses") or []
+        next_goals = next_summary.get("goal_statuses") or []
+        if any(
+            isinstance(next_goal, dict)
+            and str(next_goal.get("coverage_pending_reason") or "").strip()
+            and str(next_goal.get("coverage_pending_reason") or "").strip()
+            != str(
+                (previous_goals[index] or {}).get("coverage_pending_reason")
+                if index < len(previous_goals) and isinstance(previous_goals[index], dict)
+                else ""
+            ).strip()
+            for index, next_goal in enumerate(next_goals)
+        ):
+            event_name = "strict_goal_coverage_pending"
 
     payload = {
         "event": event_name,
@@ -639,6 +666,7 @@ def _research_guided_transition_payload(
             payload["goal_id"] = first_goal.get("goal_id")
             payload["goal_status"] = first_goal.get("status")
             payload["resolution_basis"] = first_goal.get("resolution_basis")
+            payload["coverage_pending_reason"] = first_goal.get("coverage_pending_reason")
     labels = next_summary.get("candidate_claim_labels") or []
     if labels:
         payload["label"] = labels[0]

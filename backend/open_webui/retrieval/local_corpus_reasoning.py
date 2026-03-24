@@ -1225,33 +1225,105 @@ def _axis_score(problem_frame: dict[str, Any], axis_config: dict[str, Any]) -> f
 
 
 def _build_axis_query(problem_frame: dict[str, Any], axis_id: str, axis_config: dict[str, Any]) -> str:
-    parts: list[str] = []
-    spine_surface = list(problem_frame.get("retrieval_spine_surface") or [])
-    spine_canonical = list(problem_frame.get("retrieval_spine_canonical") or [])
-    if spine_surface or spine_canonical:
-        parts.extend(spine_surface)
-        parts.extend(spine_canonical)
-    else:
-        parts.extend(problem_frame.get("retrieval_terms_surface") or [])
-        parts.extend(problem_frame.get("retrieval_terms_canonical") or [])
-        parts.extend(problem_frame.get("retrieval_entities") or problem_frame.get("entities") or [])
-        parts.extend(
-            problem_frame.get("retrieval_observations") or problem_frame.get("observations") or []
+    def _has_relation_core(value: str) -> bool:
+        return any(
+            _stem_like(token) in _RELATION_OR_MECHANISM_CORE_STEMS
+            for token in _content_tokens(_span_tokens(corpus._normalize_text(value)))
         )
-    parts.extend((axis_config.get("literal_terms") or [])[:4])
-    if problem_frame.get("risk_flags") and axis_id in {"dangerous_causes", "red_flags", "safety_risks"}:
-        parts.extend(problem_frame.get("risk_flags") or [])
 
-    seen: set[str] = set()
-    ordered_parts: list[str] = []
-    for part in parts:
-        normalized = corpus._normalize_text(part)
-        lowered = normalized.lower()
-        if normalized and lowered not in seen:
-            seen.add(lowered)
-            ordered_parts.append(normalized)
-    if ordered_parts:
-        return " ".join(ordered_parts[:14]).strip()
+    def _candidate_phrases() -> list[str]:
+        spine_surface = list(problem_frame.get("retrieval_spine_surface") or [])[:6]
+        spine_canonical = list(problem_frame.get("retrieval_spine_canonical") or [])[:6]
+        if spine_surface or spine_canonical:
+            candidates = spine_surface + spine_canonical
+        else:
+            fallback: list[str] = []
+            fallback.extend((problem_frame.get("retrieval_terms_surface") or [])[:4])
+            fallback.extend((problem_frame.get("retrieval_terms_canonical") or [])[:4])
+            fallback.extend((problem_frame.get("retrieval_entities") or problem_frame.get("entities") or [])[:3])
+            fallback.extend(
+                (problem_frame.get("retrieval_observations") or problem_frame.get("observations") or [])[:2]
+            )
+            candidates = fallback
+        relation_first = [value for value in candidates if _has_relation_core(value)]
+        non_relation = [value for value in candidates if value not in relation_first]
+        return relation_first + non_relation
+
+    def _compact_phrase(value: str) -> str:
+        normalized = corpus._normalize_text(value)
+        compacted = _compact_projection_span(normalized) or _trim_context_edges(normalized)
+        if not compacted:
+            compacted = normalized
+        content_tokens = _content_tokens(_span_tokens(compacted))
+        if not content_tokens:
+            return ""
+        return corpus._normalize_text(" ".join(content_tokens[:5]))
+
+    phrases: list[str] = []
+    phrases.extend(_candidate_phrases())
+    phrases.extend((axis_config.get("literal_terms") or [])[:2])
+    if problem_frame.get("risk_flags") and axis_id in {"dangerous_causes", "red_flags", "safety_risks"}:
+        phrases.extend((problem_frame.get("risk_flags") or [])[:2])
+
+    seen_canonical: set[str] = set()
+    seen_stem_sets: list[set[str]] = []
+    selected_phrases: list[str] = []
+
+    for phrase in phrases:
+        compacted = _compact_phrase(phrase)
+        if not compacted:
+            continue
+        canonical = _canonicalize_span(compacted)
+        if not canonical or canonical in seen_canonical:
+            continue
+        stems = {
+            _stem_like(token)
+            for token in _content_tokens(_span_tokens(compacted))
+            if _stem_like(token)
+        }
+        if not stems:
+            continue
+        if any(
+            len(stems & existing) / max(len(stems | existing), 1) >= 0.75
+            for existing in seen_stem_sets
+        ):
+            continue
+        seen_canonical.add(canonical)
+        seen_stem_sets.append(stems)
+        selected_phrases.append(compacted)
+        if len(selected_phrases) >= 5:
+            break
+
+    if selected_phrases and not any(_has_relation_core(value) for value in selected_phrases):
+        for phrase in phrases:
+            compacted = _compact_phrase(phrase)
+            if compacted and _has_relation_core(compacted):
+                if compacted in selected_phrases:
+                    selected_phrases = [compacted] + [
+                        value for value in selected_phrases if value != compacted
+                    ]
+                else:
+                    selected_phrases = [compacted, *selected_phrases[:4]]
+                break
+
+    if selected_phrases:
+        query_phrases: list[str] = []
+        token_count = 0
+        for phrase in selected_phrases:
+            phrase_tokens = _content_tokens(_span_tokens(phrase))
+            if not phrase_tokens:
+                continue
+            remaining = 14 - token_count
+            if remaining <= 0:
+                break
+            if len(phrase_tokens) > remaining:
+                if not query_phrases:
+                    query_phrases.append(" ".join(phrase_tokens[:remaining]).strip())
+                break
+            query_phrases.append(" ".join(phrase_tokens).strip())
+            token_count += len(phrase_tokens)
+        if query_phrases:
+            return " ".join(query_phrases).strip()
 
     fallback_parts = (
         problem_frame.get("retrieval_spine_surface")
@@ -1264,8 +1336,17 @@ def _build_axis_query(problem_frame: dict[str, Any], axis_id: str, axis_config: 
         or []
     )
     if fallback_parts:
-        return " ".join(fallback_parts[:6]).strip()
-    return problem_frame.get("query", "")
+        compacted_fallback = [_compact_phrase(value) for value in fallback_parts[:4]]
+        compacted_fallback = [value for value in compacted_fallback if value]
+        if compacted_fallback:
+            return " ".join(
+                dict.fromkeys(
+                    token
+                    for phrase in compacted_fallback
+                    for token in _content_tokens(_span_tokens(phrase))
+                )
+            ).strip()
+    return _compact_phrase(problem_frame.get("query", "")) or problem_frame.get("query", "")
 
 
 def plan_local_corpus_axes(

@@ -736,6 +736,8 @@ def test_normalize_workflow_saved_payload_includes_research_snapshot():
                         "status": "supported",
                         "resolution_basis": "contract_satisfied",
                         "disconfirmation_outcome": "not_found_under_budgeted_probe",
+                        "coverage_pending_reason": "",
+                        "probe_budget": {"required": {}, "observed": {}},
                     }
                 ],
                 "working_propositions": [
@@ -746,6 +748,10 @@ def test_normalize_workflow_saved_payload_includes_research_snapshot():
                 "duplicate_fetch_count": 0,
                 "negative_signal_count": 0,
                 "blocked_access_count": 0,
+                "family_alias_count": 1,
+                "same_family_conflict_count": 0,
+                "query_rewrite_count": 1,
+                "low_novelty_query_count": 2,
                 "stop_reason": "all_primary_goals_resolved",
                 "ready_to_answer": True,
             },
@@ -754,6 +760,10 @@ def test_normalize_workflow_saved_payload_includes_research_snapshot():
 
     assert normalized["research_snapshot"]["present"] is True
     assert normalized["research_snapshot"]["phase"] == "final_response"
+    assert normalized["research_snapshot"]["goal_statuses"][0]["required_probe_summary"] == {}
+    assert normalized["research_snapshot"]["goal_statuses"][0]["observed_probe_summary"] == {}
+    assert normalized["research_snapshot"]["family_alias_count"] == 1
+    assert normalized["research_snapshot"]["query_rewrite_count"] == 1
 
 
 def test_build_workflow_capture_packet_uses_research_guided_state_as_capture_reason():
@@ -773,6 +783,8 @@ def test_build_workflow_capture_packet_uses_research_guided_state_as_capture_rea
                         "status": "supported",
                         "resolution_basis": "contract_satisfied",
                         "disconfirmation_outcome": "not_found_under_budgeted_probe",
+                        "coverage_pending_reason": "",
+                        "probe_budget": {"required": {}, "observed": {}},
                     }
                 ],
                 "working_propositions": [],
@@ -785,6 +797,121 @@ def test_build_workflow_capture_packet_uses_research_guided_state_as_capture_rea
     assert packet is not None
     assert packet["research_snapshot"]["present"] is True
     assert packet["capture_reasons"] == ["research_guided_state"]
+
+
+def test_build_workflow_capture_packet_includes_research_snapshot_debug_fields():
+    packet = middleware._build_workflow_capture_packet(
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "params": {"working_mode": "science"},
+        },
+        saved_payload={
+            "content": "Grounded answer",
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "research",
+                "goals": [
+                    {
+                        "goal_id": "goal-1",
+                        "status": "open",
+                        "resolution_basis": "",
+                        "disconfirmation_outcome": "",
+                        "coverage_pending_reason": "required coverage probes still missing: broader fallback",
+                        "probe_budget": {
+                            "required": {
+                                "target_aligned": True,
+                                "disconfirming": True,
+                                "strong_source": True,
+                                "broader_fallback": True,
+                            },
+                            "observed": {
+                                "target_aligned": 1,
+                                "disconfirming": 1,
+                                "strong_source": 1,
+                                "broader_fallback": 0,
+                            },
+                        },
+                    }
+                ],
+                "working_propositions": [{"state": "leaning_mixed"}],
+                "candidate_claims": [],
+                "family_alias_count": 2,
+                "same_family_conflict_count": 1,
+                "query_rewrite_count": 1,
+                "low_novelty_query_count": 3,
+                "ready_to_answer": False,
+            },
+        },
+    )
+
+    assert packet is not None
+    snapshot = packet["research_snapshot"]
+    assert snapshot["goal_statuses"][0]["coverage_pending_reason"] == (
+        "required coverage probes still missing: broader fallback"
+    )
+    assert snapshot["goal_statuses"][0]["required_probe_summary"]["broader_fallback"] is True
+    assert snapshot["goal_statuses"][0]["observed_probe_summary"]["broader_fallback"] == 0
+    assert snapshot["family_alias_count"] == 2
+    assert snapshot["same_family_conflict_count"] == 1
+    assert snapshot["query_rewrite_count"] == 1
+    assert snapshot["low_novelty_query_count"] == 3
+
+
+def test_research_guided_transition_payload_surfaces_specific_runtime_events():
+    previous = {
+        "phase": "research",
+        "ready_to_answer": False,
+        "goals": [
+            {
+                "goal_id": "goal-1",
+                "status": "open",
+                "resolution_basis": "",
+                "disconfirmation_outcome": "",
+                "coverage_pending_reason": "",
+                "probe_budget": {"required": {}, "observed": {}},
+            }
+        ],
+        "working_propositions": [],
+        "candidate_claims": [],
+        "family_alias_count": 0,
+        "same_family_conflict_count": 0,
+        "query_rewrite_count": 0,
+        "low_novelty_query_count": 0,
+    }
+    next_state = {
+        **previous,
+        "goals": [
+            {
+                "goal_id": "goal-1",
+                "status": "open",
+                "resolution_basis": "",
+                "disconfirmation_outcome": "",
+                "coverage_pending_reason": "required coverage probes still missing: broader fallback",
+                "probe_budget": {
+                    "required": {"broader_fallback": True},
+                    "observed": {"broader_fallback": 0},
+                },
+            }
+        ],
+    }
+
+    payload = middleware._research_guided_transition_payload(previous, next_state)
+    assert payload["event"] == "strict_goal_coverage_pending"
+    assert payload["coverage_pending_reason"] == (
+        "required coverage probes still missing: broader fallback"
+    )
+
+    aliased = {**next_state, "family_alias_count": 1}
+    payload = middleware._research_guided_transition_payload(next_state, aliased)
+    assert payload["event"] == "family_alias_collapse"
+
+    conflicted = {**aliased, "same_family_conflict_count": 1}
+    payload = middleware._research_guided_transition_payload(aliased, conflicted)
+    assert payload["event"] == "same_family_conflict_adjudicated"
+
+    rewritten = {**conflicted, "query_rewrite_count": 1}
+    payload = middleware._research_guided_transition_payload(conflicted, rewritten)
+    assert payload["event"] == "query_rewrite_triggered"
 
 
 def test_capture_workflow_packet_is_chat_scoped(monkeypatch, tmp_path):

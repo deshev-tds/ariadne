@@ -75,6 +75,7 @@ from open_webui.utils.web_evidence_store import (
     resolve_web_evidence_retrieval_mode,
     store_web_page,
 )
+from open_webui.utils.research_guided import extract_identifier_hints
 
 log = logging.getLogger(__name__)
 
@@ -1069,6 +1070,11 @@ async def fetch_url(
             inferred_title = (title or "").strip()
             if not inferred_title:
                 inferred_title = (urlparse(url).netloc or url).strip()
+            identifier_hints = extract_identifier_hints(
+                title=inferred_title,
+                url=url,
+                text=content,
+            )
 
             pointer = await asyncio.to_thread(
                 store_web_page,
@@ -1093,6 +1099,8 @@ async def fetch_url(
                 "chat_id": chat_id,
                 "message_id": message_id,
             }
+            if identifier_hints:
+                pointer["identifier_hints"] = identifier_hints
             return json.dumps(pointer, ensure_ascii=False)
 
         if selected_mode != "content":

@@ -783,6 +783,41 @@ def test_plan_axes_prefers_retrieval_spine_for_mechanism_prompt(local_corpus_fix
     assert "fibrillation certain individuals what" not in axis_queries
 
 
+def test_build_axis_query_compacts_glue_heavy_surface():
+    problem_frame = {
+        "retrieval_spine_surface": [
+            "does ibuprofen help acute ankle sprain",
+            "help acute ankle sprain while waiting for a GP appointment",
+        ],
+        "retrieval_spine_canonical": [
+            "ibuprofen acute ankle sprain pain relief",
+        ],
+        "retrieval_terms_surface": [
+            "does ibuprofen help acute ankle sprain while waiting",
+        ],
+        "retrieval_terms_canonical": [
+            "ibuprofen acute ankle sprain",
+        ],
+        "retrieval_entities": ["ibuprofen", "acute ankle sprain"],
+        "retrieval_observations": ["while waiting for GP advice"],
+        "risk_flags": [],
+        "query": "help acute ankle sprain does ibuprofen help acute ankle sprain while waiting for a GP appointment",
+    }
+    axis_config = {"literal_terms": ["pain relief", "dose", "effectiveness"]}
+
+    query = local_corpus_reasoning._build_axis_query(
+        problem_frame,
+        "management_guidance",
+        axis_config,
+    ).lower()
+
+    assert "while waiting" not in query
+    assert "gp appointment" not in query
+    assert "ibuprofen" in query
+    assert "ankle" in query and "sprain" in query
+    assert len(query.split()) <= 14
+
+
 def test_collect_axis_evidence_groups_results_by_axis(local_corpus_fixture):
     problem_frame = local_corpus_reasoning.frame_local_corpus_problem(
         query="hypertension management threshold and treatment workup",

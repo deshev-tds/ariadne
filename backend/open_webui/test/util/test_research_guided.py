@@ -169,7 +169,10 @@ def test_research_guided_strict_goal_rejects_single_snippet_meta_source():
     state = research_guided.register_tool_event(
         state,
         tool_name="query_web_evidence",
-        tool_params={"query": "strong evidence blue-light blocking glasses sleep latency adults"},
+        tool_params={
+            "query": "evening blue light blocking glasses improve sleep latency adults strong evidence",
+            "artifact_ids": ["art-meta"],
+        },
         tool_result={
             "status": "ok",
             "searched_artifact_count": 1,
@@ -185,11 +188,290 @@ def test_research_guided_strict_goal_rejects_single_snippet_meta_source():
     )
 
     goal = state["goals"][0]
-    assert goal["status"] != research_guided.GOAL_STATUS_SUPPORTED
-    assert state["candidate_claims"]
-    assert (
-        state["candidate_claims"][0]["label"]
-        != research_guided.CLAIM_LABEL_VERIFIED
+    assert goal["status"] == research_guided.GOAL_STATUS_OPEN
+    assert goal["coverage_pending_reason"]
+    assert state["ready_to_answer"] is False
+    assert state["candidate_claims"] == []
+
+
+def test_research_guided_strict_goal_conflict_before_broader_fallback_stays_open():
+    state = research_guided.build_initial_state(
+        "Based on recent human studies and reviews, is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?"
+    )
+
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="fetch_url",
+        tool_params={"url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/", "mode": "store"},
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-meta",
+            "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/",
+            "domain": "pmc.ncbi.nlm.nih.gov",
+            "title": "Systematic review and meta-analysis of blue-light blocking glasses",
+            "content_chars": 1800,
+            "identifier_hints": {
+                "pmcid": "PMC12668929",
+                "doi": "10.3389/fneur.2025.1699303",
+            },
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={"query": "blue-light blocking glasses sleep latency adults meta analysis significance"},
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 1,
+            "searched_domains": ["pmc.ncbi.nlm.nih.gov"],
+            "snippets": [
+                {
+                    "artifact_id": "art-meta",
+                    "domain": "pmc.ncbi.nlm.nih.gov",
+                    "text": "The pooled effect on sleep onset latency was directionally favorable.",
+                }
+            ],
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={
+            "query": "blue-light blocking glasses sleep latency adults meta analysis not statistically significant"
+        },
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 1,
+            "searched_domains": ["pmc.ncbi.nlm.nih.gov"],
+            "snippets": [
+                {
+                    "artifact_id": "art-meta",
+                    "domain": "pmc.ncbi.nlm.nih.gov",
+                    "text": "The pooled effect on sleep onset latency was not statistically significant.",
+                }
+            ],
+        },
+    )
+
+    goal = state["goals"][0]
+    proposition = state["working_propositions"][0]
+    assert goal["status"] == research_guided.GOAL_STATUS_OPEN
+    assert "broader fallback" in goal["coverage_pending_reason"]
+    assert proposition["state"] == "leaning_mixed"
+    assert state["same_family_conflict_count"] == 1
+    assert state["ready_to_answer"] is False
+    assert state["candidate_claims"] == []
+
+
+def test_research_guided_family_aliases_collapse_article_mirrors():
+    state = research_guided.build_initial_state(
+        "What evidence exists for whether evening blue light changes circadian phase?"
+    )
+
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="fetch_url",
+        tool_params={"url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/", "mode": "store"},
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-pmc",
+            "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12668929/",
+            "domain": "pmc.ncbi.nlm.nih.gov",
+            "title": "Blue-light blocking glasses systematic review",
+            "content_chars": 1800,
+            "identifier_hints": {
+                "pmcid": "PMC12668929",
+                "doi": "10.3389/fneur.2025.1699303",
+            },
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="fetch_url",
+        tool_params={
+            "url": "https://www.frontiersin.org/journals/neurology/articles/10.3389/fneur.2025.1699303/full",
+            "mode": "store",
+        },
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-frontiers",
+            "url": "https://www.frontiersin.org/journals/neurology/articles/10.3389/fneur.2025.1699303/full",
+            "domain": "frontiersin.org",
+            "title": "Blue-light blocking glasses systematic review",
+            "content_chars": 1800,
+            "identifier_hints": {
+                "doi": "10.3389/fneur.2025.1699303/full",
+            },
+        },
+    )
+
+    stored = {item["artifact_id"]: item for item in state["stored_artifacts"]}
+    assert stored["art-pmc"]["canonical_family_id"] == "doi:10.3389/fneur.2025.1699303"
+    assert stored["art-frontiers"]["canonical_family_id"] == "doi:10.3389/fneur.2025.1699303"
+    assert state["family_alias_count"] >= 1
+
+
+def test_research_guided_same_family_conflict_does_not_terminalize_mixed():
+    state = research_guided.build_initial_state(
+        "What evidence exists for whether evening blue light changes circadian phase?"
+    )
+
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="search_web",
+        tool_params={"query": "evening blue light circadian phase trial adults"},
+        tool_result=[{"link": "https://example.org/paper"}],
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="search_web",
+        tool_params={"query": "evening blue light circadian phase not statistically significant adults"},
+        tool_result=[{"link": "https://example.org/null"}],
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="fetch_url",
+        tool_params={"url": "https://doi.org/10.1000/example-doi", "mode": "store"},
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-1",
+            "url": "https://doi.org/10.1000/example-doi",
+            "domain": "doi.org",
+            "title": "Randomized human trial on evening blue light and circadian phase",
+            "content_chars": 2200,
+            "identifier_hints": {"doi": "10.1000/example-doi"},
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={"query": "evening blue light circadian phase trial adults"},
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 2,
+            "searched_domains": ["doi.org", "pmc.ncbi.nlm.nih.gov"],
+            "snippets": [
+                {
+                    "artifact_id": "art-1",
+                    "domain": "doi.org",
+                    "text": "Randomized human trial data suggest evening blue light shifted circadian phase markers.",
+                }
+            ],
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={"query": "evening blue light circadian phase not statistically significant adults"},
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 2,
+            "searched_domains": ["doi.org", "pmc.ncbi.nlm.nih.gov"],
+            "snippets": [
+                {
+                    "artifact_id": "art-1",
+                    "domain": "doi.org",
+                    "text": "The same trial reported no statistically significant shift in the pooled circadian phase outcome.",
+                }
+            ],
+        },
+    )
+
+    goal = state["goals"][0]
+    assert goal["status"] == research_guided.GOAL_STATUS_INSUFFICIENT
+    assert goal["resolution_basis"] == "budgeted_high_value_search_exhausted"
+    assert state["same_family_conflict_count"] == 1
+
+
+def test_research_guided_low_novelty_queries_trigger_bounded_rewrite_note():
+    state = research_guided.build_initial_state(
+        "Based on recent human studies and reviews, is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?"
+    )
+
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="fetch_url",
+        tool_params={"url": "https://example.org/meta", "mode": "store"},
+        tool_result={
+            "status": "stored",
+            "mode": "store",
+            "artifact_id": "art-meta",
+            "url": "https://example.org/meta",
+            "domain": "example.org",
+            "title": "Systematic review and meta-analysis of blue-light blocking glasses",
+            "content_chars": 1800,
+            "identifier_hints": {"doi": "10.1000/meta-doi"},
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={
+            "query": "evening blue light blocking glasses sleep latency adults meta analysis significance",
+            "artifact_ids": ["art-meta"],
+        },
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 1,
+            "searched_domains": ["example.org"],
+            "snippets": [
+                {
+                    "artifact_id": "art-meta",
+                    "domain": "example.org",
+                    "text": "The pooled effect on sleep onset latency was directionally favorable.",
+                }
+            ],
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={
+            "query": "evening blue light blocking glasses sleep latency adults meta analysis conclusion significance",
+            "artifact_ids": ["art-meta"],
+        },
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 1,
+            "searched_domains": ["example.org"],
+            "snippets": [
+                {
+                    "artifact_id": "art-meta",
+                    "domain": "example.org",
+                    "text": "The conclusion remained directionally favorable but limited.",
+                }
+            ],
+        },
+    )
+    state = research_guided.register_tool_event(
+        state,
+        tool_name="query_web_evidence",
+        tool_params={
+            "query": "evening blue light blocking glasses sleep latency adults meta analysis significance conclusion",
+            "artifact_ids": ["art-meta"],
+        },
+        tool_result={
+            "status": "ok",
+            "searched_artifact_count": 1,
+            "searched_domains": ["example.org"],
+            "snippets": [
+                {
+                    "artifact_id": "art-meta",
+                    "domain": "example.org",
+                    "text": "The same review discussed significance in the conclusion section.",
+                }
+            ],
+        },
+    )
+
+    assert state["low_novelty_query_count"] >= 1
+    assert state["query_rewrite_count"] == 1
+    assert "Rewrite the next query_web_evidence call as a short retrieval phrase." in (
+        state["pending_system_note"]
     )
 
 

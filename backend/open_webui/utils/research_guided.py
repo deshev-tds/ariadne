@@ -17,6 +17,9 @@ RESEARCH_GUIDED_MAX_CLAIMS_PER_GOAL = 2
 RESEARCH_GUIDED_DEFAULT_MAX_UNIQUE_QUERIES = 8
 RESEARCH_GUIDED_DEFAULT_MAX_UNIQUE_FETCHES = 6
 RESEARCH_STATUS_MARKER = "### Research Status"
+RESEARCH_GUIDED_QUERY_OVERLAP_THRESHOLD = 0.6
+RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_SCOPE = 1
+RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_GOAL = 2
 
 GOAL_STATUS_OPEN = "open"
 GOAL_STATUS_SUPPORTED = "supported"
@@ -206,10 +209,29 @@ GENERAL_STOPWORDS = {
 }
 
 DOI_RE = re.compile(r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", re.IGNORECASE)
-PMID_RE = re.compile(r"/pubmed/(\d+)|[?&]term=(\d+)\[pmid\]", re.IGNORECASE)
-PMCID_RE = re.compile(r"/articles/(PMC\d+)", re.IGNORECASE)
+PMID_RE = re.compile(
+    r"/pubmed/(\d+)|[?&]term=(\d+)\[pmid\]|\bPMID:\s*(\d+)\b",
+    re.IGNORECASE,
+)
+PMCID_RE = re.compile(r"/articles/(PMC\d+)|\b(PMC\d+)\b", re.IGNORECASE)
 ARXIV_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/([A-Za-z0-9.\-]+)", re.IGNORECASE)
 NCT_RE = re.compile(r"\b(NCT\d{8})\b", re.IGNORECASE)
+DOI_SUFFIX_TRIMS = (
+    "/full",
+    "/abstract",
+    "/pdf",
+    "/epdf",
+    "/xml",
+)
+FAMILY_PRECEDENCE = {
+    "doi:": 0,
+    "pmcid:": 1,
+    "pmid:": 2,
+    "arxiv:": 3,
+    "nct:": 4,
+    "url:": 5,
+    "unresolved:": 6,
+}
 
 
 def normalize_research_guided_mode(value: Any) -> bool:
@@ -284,6 +306,82 @@ def query_fingerprint(value: Any) -> str:
     if not normalized:
         return ""
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _family_precedence_key(family_id: str) -> tuple[int, int, str]:
+    normalized = str(family_id or "").strip()
+    for prefix, rank in FAMILY_PRECEDENCE.items():
+        if normalized.startswith(prefix):
+            return (rank, len(normalized), normalized)
+    return (len(FAMILY_PRECEDENCE), len(normalized), normalized)
+
+
+def _normalize_doi(value: Any) -> str:
+    doi = _normalize_text(value)
+    if not doi:
+        return ""
+    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.IGNORECASE)
+    doi = re.sub(r"^doi:\s*", "", doi, flags=re.IGNORECASE)
+    doi = doi.split("?", 1)[0].split("#", 1)[0].strip()
+    doi = doi.rstrip(").,;:]}>\"'")
+    lowered = doi.lower()
+    trimmed = True
+    while trimmed:
+        trimmed = False
+        for suffix in DOI_SUFFIX_TRIMS:
+            if lowered.endswith(suffix):
+                doi = doi[: -len(suffix)].rstrip("/")
+                lowered = doi.lower()
+                trimmed = True
+    return doi.lower()
+
+
+def extract_identifier_hints(
+    *,
+    title: str = "",
+    url: str = "",
+    text: str = "",
+) -> dict[str, str]:
+    combined = " ".join(
+        filter(None, [_normalize_text(title), _normalize_text(url), _normalize_text(text)])
+    )
+    doi_match = DOI_RE.search(combined)
+    pmid_match = PMID_RE.search(combined)
+    pmcid_match = PMCID_RE.search(combined)
+    arxiv_match = ARXIV_RE.search(combined)
+    nct_match = NCT_RE.search(combined)
+    return {
+        "doi": _normalize_doi(doi_match.group(1)) if doi_match else "",
+        "pmid": next(
+            (
+                group
+                for group in (pmid_match.groups() if pmid_match else ())
+                if group and str(group).strip()
+            ),
+            "",
+        ),
+        "pmcid": next(
+            (
+                str(group).upper()
+                for group in (pmcid_match.groups() if pmcid_match else ())
+                if group and str(group).strip()
+            ),
+            "",
+        ),
+        "arxiv": arxiv_match.group(1).lower() if arxiv_match else "",
+        "nct": nct_match.group(1).upper() if nct_match else "",
+    }
+
+
+def _normalize_identifier_hints(identifier_hints: Optional[dict[str, str]]) -> dict[str, str]:
+    hints = dict(identifier_hints or {})
+    return {
+        "doi": _normalize_doi(hints.get("doi")),
+        "pmid": _normalize_text(hints.get("pmid")),
+        "pmcid": _normalize_text(hints.get("pmcid")).upper(),
+        "arxiv": _normalize_text(hints.get("arxiv")).lower(),
+        "nct": _normalize_text(hints.get("nct")).upper(),
+    }
 
 
 def is_research_guided_turn_eligible(
@@ -534,6 +632,14 @@ def build_initial_state(objective: Any) -> dict[str, Any]:
         "duplicate_fetch_count": 0,
         "negative_signal_count": 0,
         "blocked_access_count": 0,
+        "family_aliases": {},
+        "family_alias_count": 0,
+        "same_family_conflict_count": 0,
+        "query_rewrite_count": 0,
+        "low_novelty_query_count": 0,
+        "evidence_query_history": [],
+        "emitted_rewrite_scopes": [],
+        "goal_query_rewrite_counts": {},
         "ready_to_answer": False,
         "stop_reason": "",
         "max_unique_queries": RESEARCH_GUIDED_DEFAULT_MAX_UNIQUE_QUERIES,
@@ -587,41 +693,94 @@ def _probe_budget_complete(goal: dict[str, Any]) -> bool:
     return True
 
 
-def _parse_title_and_url_identifiers(title: str, url: str) -> dict[str, str]:
-    combined = " ".join(filter(None, [_normalize_text(title), _normalize_text(url)]))
-    doi_match = DOI_RE.search(combined)
-    pmid_match = PMID_RE.search(combined)
-    pmcid_match = PMCID_RE.search(combined)
-    arxiv_match = ARXIV_RE.search(combined)
-    nct_match = NCT_RE.search(combined)
-    return {
-        "doi": doi_match.group(1).lower() if doi_match else "",
-        "pmid": next((group for group in (pmid_match.groups() if pmid_match else ()) if group), ""),
-        "pmcid": pmcid_match.group(1).upper() if pmcid_match else "",
-        "arxiv": arxiv_match.group(1).lower() if arxiv_match else "",
-        "nct": nct_match.group(1).upper() if nct_match else "",
-    }
-
-
-def derive_evidence_family_id(*, url: str, title: str = "") -> str:
-    identifiers = _parse_title_and_url_identifiers(title, url)
-    if identifiers["doi"]:
-        return f"doi:{identifiers['doi']}"
-    if identifiers["pmid"]:
-        return f"pmid:{identifiers['pmid']}"
-    if identifiers["pmcid"]:
-        return f"pmcid:{identifiers['pmcid']}"
-    if identifiers["arxiv"]:
-        return f"arxiv:{identifiers['arxiv']}"
-    if identifiers["nct"]:
-        return f"nct:{identifiers['nct']}"
+def _family_ids_from_hints(
+    identifier_hints: dict[str, str],
+    *,
+    url: str,
+    title: str = "",
+) -> list[str]:
+    family_ids: list[str] = []
+    for key in ("doi", "pmcid", "pmid", "arxiv", "nct"):
+        value = str(identifier_hints.get(key) or "").strip()
+        if value:
+            family_ids.append(f"{key}:{value}")
 
     canonical = canonicalize_url(url)
-    if "/articles/pmc" in canonical.lower():
-        return canonical.lower()
     if canonical:
-        return f"url:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
-    return f"unresolved:{hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]}"
+        family_ids.append(f"url:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}")
+    elif title:
+        family_ids.append(f"unresolved:{hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]}")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for family_id in family_ids:
+        if family_id and family_id not in seen:
+            seen.add(family_id)
+            deduped.append(family_id)
+    return deduped
+
+
+def _follow_family_alias(alias_map: dict[str, str], family_id: str) -> str:
+    current = str(family_id or "").strip()
+    seen: set[str] = set()
+    while current and current not in seen:
+        seen.add(current)
+        next_id = str(alias_map.get(current) or "").strip()
+        if not next_id or next_id == current:
+            break
+        current = next_id
+    return current
+
+
+def _preferred_family_id(family_ids: list[str]) -> str:
+    if not family_ids:
+        return ""
+    return sorted((_normalize_text(item) for item in family_ids if _normalize_text(item)), key=_family_precedence_key)[0]
+
+
+def _resolve_family_id(
+    state: dict[str, Any],
+    *,
+    url: str,
+    title: str = "",
+    text: str = "",
+    identifier_hints: Optional[dict[str, str]] = None,
+) -> tuple[str, dict[str, str]]:
+    hints = _normalize_identifier_hints(identifier_hints)
+    if not hints:
+        hints = extract_identifier_hints(title=title, url=url, text=text)
+    candidate_ids = _family_ids_from_hints(hints, url=url, title=title)
+    alias_map = state.setdefault("family_aliases", {})
+    resolved_ids = [_follow_family_alias(alias_map, family_id) for family_id in candidate_ids]
+    preferred = _preferred_family_id([*candidate_ids, *resolved_ids])
+    if not preferred:
+        preferred = f"unresolved:{hashlib.sha256(_normalize_text(title or url).encode('utf-8')).hexdigest()[:16]}"
+
+    added_aliases = 0
+    for family_id in {item for item in [*candidate_ids, *resolved_ids] if item and item != preferred}:
+        current = _follow_family_alias(alias_map, family_id)
+        if current != preferred:
+            alias_map[family_id] = preferred
+            added_aliases += 1
+    if added_aliases:
+        state["family_alias_count"] = int(state.get("family_alias_count") or 0) + added_aliases
+    return preferred, hints
+
+
+def derive_evidence_family_id(
+    *,
+    url: str,
+    title: str = "",
+    text: str = "",
+    identifier_hints: Optional[dict[str, str]] = None,
+) -> str:
+    hints = dict(identifier_hints or {}) or extract_identifier_hints(
+        title=title,
+        url=url,
+        text=text,
+    )
+    family_ids = _family_ids_from_hints(hints, url=url, title=title)
+    return _preferred_family_id(family_ids)
 
 
 def derive_evidence_role(*, domain: str, title: str, url: str) -> str:
@@ -713,10 +872,21 @@ def _append_evidence_record(
     text: str,
     content_depth: str = "unknown",
     blocked: bool = False,
+    identifier_hints: Optional[dict[str, str]] = None,
+    canonical_family_id: str = "",
 ) -> str:
     evidence_role = derive_evidence_role(domain=domain, title=title, url=url)
     evidence_class = derive_evidence_class(role=evidence_role, title=title, url=url)
-    family_id = derive_evidence_family_id(url=url, title=title)
+    family_id = _normalize_text(canonical_family_id)
+    normalized_hints = _normalize_identifier_hints(identifier_hints)
+    if not family_id:
+        family_id, normalized_hints = _resolve_family_id(
+            state,
+            url=url,
+            title=title,
+            text=text,
+            identifier_hints=normalized_hints,
+        )
     evidence_id = f"ev_{uuid4().hex[:12]}"
     record = {
         "evidence_id": evidence_id,
@@ -725,6 +895,7 @@ def _append_evidence_record(
         "source_ref": {"title": title, "url": url, "domain": domain},
         "canonical_url": canonicalize_url(url),
         "evidence_family_id": family_id,
+        "identifier_hints": normalized_hints,
         "evidence_class": evidence_class,
         "stance": stance,
         "directness": _directness_for_class(evidence_class),
@@ -765,7 +936,13 @@ def _record_disconfirmation_attempt(goal: dict[str, Any], query: str, *, found: 
         goal["disconfirmation_outcome"] = "found"
 
 
-def _basis_summary(goal: dict[str, Any], supporting: list[dict[str, Any]], opposing: list[dict[str, Any]]) -> str:
+def _basis_summary(
+    goal: dict[str, Any],
+    supporting: list[dict[str, Any]],
+    opposing: list[dict[str, Any]],
+    internally_mixed: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    internally_mixed = internally_mixed or []
     evidence_kinds = []
     for record in supporting[:2]:
         kind = str(record.get("evidence_class") or "").replace("_", " ")
@@ -781,31 +958,73 @@ def _basis_summary(goal: dict[str, Any], supporting: list[dict[str, Any]], oppos
     question = _normalize_text(goal.get("question") or "")
     resolution_type = str(goal.get("resolution_type") or "").replace("_", " ")
     coverage_requirement = str(goal.get("coverage_requirement") or "normal")
+    support_family_count = len(
+        {
+            str(record.get("evidence_family_id") or "").strip()
+            for record in supporting
+            if str(record.get("evidence_family_id") or "").strip()
+        }
+    )
+    oppose_family_count = len(
+        {
+            str(record.get("evidence_family_id") or "").strip()
+            for record in opposing
+            if str(record.get("evidence_family_id") or "").strip()
+        }
+    )
     snippet_only = supporting and all(
         str(record.get("content_depth") or "") in {"snippet", "summary"}
         for record in supporting
     )
     if supporting and opposing:
-        return f"mixed {kind_text} for {resolution_type} question '{question}', limited to conflicting retrieved source families"
+        return (
+            f"mixed {kind_text} across {support_family_count + oppose_family_count} "
+            f"independent source families for {resolution_type} question '{question}'"
+        )
+    if internally_mixed:
+        return (
+            f"single-source-family conflict in {kind_text} for {resolution_type} "
+            f"question '{question}', without enough independent corroboration"
+        )
     if supporting:
         if coverage_requirement == "strict" and snippet_only:
-            return f"supported only by {kind_text} from snippet/summary-level evidence for '{question}', without enough independent corroboration"
-        return f"supported by {kind_text} for '{question}', limited to evidence retrieved in this turn"
+            return (
+                f"supported only by {kind_text} across {support_family_count} source "
+                f"families from snippet/summary-level evidence for '{question}', without enough independent corroboration"
+            )
+        return (
+            f"supported by {kind_text} across {support_family_count} independent "
+            f"source families for '{question}', limited to evidence retrieved in this turn"
+        )
     if opposing:
-        return f"opposed by {kind_text} for '{question}', limited to evidence retrieved in this turn"
+        return (
+            f"opposed by {kind_text} across {oppose_family_count} independent "
+            f"source families for '{question}', limited to evidence retrieved in this turn"
+        )
     return f"no qualifying evidence for '{question}' under the bounded retrieval budget"
 
 
-def _limitations_for_goal(goal: dict[str, Any], supporting: list[dict[str, Any]], opposing: list[dict[str, Any]]) -> list[str]:
+def _limitations_for_goal(
+    goal: dict[str, Any],
+    supporting: list[dict[str, Any]],
+    opposing: list[dict[str, Any]],
+    internally_mixed: Optional[list[dict[str, Any]]] = None,
+) -> list[str]:
+    internally_mixed = internally_mixed or []
     limitations: list[str] = []
     if goal.get("status") == GOAL_STATUS_MIXED:
         limitations.append("conflicting medium/high-value evidence remains")
+    elif internally_mixed:
+        limitations.append("a single source family contains internally conflicting evidence")
     if goal.get("disconfirmation_outcome") == "not_meaningfully_tested":
         limitations.append("disconfirmation probe was not meaningfully completed")
     if goal.get("resolution_basis") == "blocked_access":
         limitations.append("relevant source access was blocked or empty")
     if goal.get("resolution_basis") == "budget_exhausted_before_resolution":
         limitations.append("bounded search budget ended before clean resolution")
+    coverage_pending = _normalize_text(goal.get("coverage_pending_reason") or "")
+    if coverage_pending:
+        limitations.append(coverage_pending)
     if goal.get("coverage_requirement") == "strict":
         full_text_support = any(
             str(record.get("content_depth") or "") == "full_text"
@@ -818,7 +1037,13 @@ def _limitations_for_goal(goal: dict[str, Any], supporting: list[dict[str, Any]]
     return limitations[:2]
 
 
-def _derive_candidate_claim(goal: dict[str, Any], supporting: list[dict[str, Any]], opposing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _derive_candidate_claim(
+    goal: dict[str, Any],
+    supporting: list[dict[str, Any]],
+    opposing: list[dict[str, Any]],
+    internally_mixed: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, Any]]:
+    internally_mixed = internally_mixed or []
     primary_label = CLAIM_LABEL_UNCERTAIN
     disconfirmation_outcome = str(goal.get("disconfirmation_outcome") or "")
     resolution_basis = str(goal.get("resolution_basis") or "")
@@ -844,8 +1069,13 @@ def _derive_candidate_claim(goal: dict[str, Any], supporting: list[dict[str, Any
             "goal_id": goal.get("goal_id"),
             "text": _normalize_text(goal.get("question") or ""),
             "label": primary_label,
-            "basis_summary": _basis_summary(goal, supporting, opposing),
-            "must_include_limitations": _limitations_for_goal(goal, supporting, opposing),
+            "basis_summary": _basis_summary(goal, supporting, opposing, internally_mixed),
+            "must_include_limitations": _limitations_for_goal(
+                goal,
+                supporting,
+                opposing,
+                internally_mixed,
+            ),
             "support_ids": [item.get("evidence_id") for item in supporting[:4]],
             "oppose_ids": [item.get("evidence_id") for item in opposing[:4]],
         }
@@ -853,22 +1083,24 @@ def _derive_candidate_claim(goal: dict[str, Any], supporting: list[dict[str, Any
     return claims[:RESEARCH_GUIDED_MAX_CLAIMS_PER_GOAL]
 
 
-def _support_and_opposition_for_goal(state: dict[str, Any], goal_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    supporting_by_family: dict[str, dict[str, Any]] = {}
-    opposing_by_family: dict[str, dict[str, Any]] = {}
-
+def _record_rank(record: dict[str, Any]) -> tuple[int, int, int, int]:
     value_rank = {"low": 0, "medium": 1, "high": 2}
     depth_rank = {"summary": 0, "snippet": 1, "unknown": 1, "full_text": 2}
     method_rank = {"low": 0, "medium": 1, "high": 2}
     directness_rank = {"indirect": 0, "direct": 1}
+    return (
+        value_rank.get(str(record.get("value_bucket") or ""), -1),
+        depth_rank.get(str(record.get("content_depth") or ""), -1),
+        method_rank.get(str(record.get("method_strength") or ""), -1),
+        directness_rank.get(str(record.get("directness") or ""), -1),
+    )
 
-    def _record_rank(record: dict[str, Any]) -> tuple[int, int, int, int]:
-        return (
-            value_rank.get(str(record.get("value_bucket") or ""), -1),
-            depth_rank.get(str(record.get("content_depth") or ""), -1),
-            method_rank.get(str(record.get("method_strength") or ""), -1),
-            directness_rank.get(str(record.get("directness") or ""), -1),
-        )
+
+def _adjudicated_family_evidence(
+    state: dict[str, Any],
+    goal_id: str,
+) -> dict[str, list[dict[str, Any]]]:
+    records_by_family: dict[str, dict[str, dict[str, Any]]] = {}
 
     for record in state.get("evidence_ledger") or []:
         if goal_id not in (record.get("goal_ids") or []):
@@ -877,21 +1109,46 @@ def _support_and_opposition_for_goal(state: dict[str, Any], goal_id: str) -> tup
             continue
         if record.get("blocked"):
             continue
-        stance = record.get("stance")
-        family_id = str(record.get("evidence_family_id") or "")
-        if stance == "supports":
-            key = family_id or f"unresolved_support:{record.get('evidence_id')}"
-            existing = supporting_by_family.get(key)
-            if existing is None or _record_rank(record) > _record_rank(existing):
-                supporting_by_family[key] = record
-        elif stance == "opposes":
-            key = family_id or f"unresolved_oppose:{record.get('evidence_id')}"
-            existing = opposing_by_family.get(key)
-            if existing is None or _record_rank(record) > _record_rank(existing):
-                opposing_by_family[key] = record
-    supporting = list(supporting_by_family.values())
-    opposing = list(opposing_by_family.values())
-    return supporting, opposing
+        stance = str(record.get("stance") or "")
+        family_id = str(record.get("evidence_family_id") or "").strip()
+        family_key = family_id or f"unresolved:{record.get('evidence_id')}"
+        family_bucket = records_by_family.setdefault(family_key, {})
+        if stance not in {"supports", "opposes"}:
+            continue
+        existing = family_bucket.get(stance)
+        if existing is None or _record_rank(record) > _record_rank(existing):
+            family_bucket[stance] = record
+
+    supporting: list[dict[str, Any]] = []
+    opposing: list[dict[str, Any]] = []
+    internally_mixed: list[dict[str, Any]] = []
+    for family_id, family_bucket in records_by_family.items():
+        support = family_bucket.get("supports")
+        oppose = family_bucket.get("opposes")
+        if support and oppose:
+            internally_mixed.append(
+                {
+                    "family_id": family_id,
+                    "support_record": support,
+                    "oppose_record": oppose,
+                }
+            )
+            continue
+        if support:
+            supporting.append(support)
+        elif oppose:
+            opposing.append(oppose)
+
+    return {
+        "supports": supporting,
+        "opposes": opposing,
+        "internally_mixed": internally_mixed,
+    }
+
+
+def _support_and_opposition_for_goal(state: dict[str, Any], goal_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    adjudicated = _adjudicated_family_evidence(state, goal_id)
+    return adjudicated["supports"], adjudicated["opposes"]
 
 
 def _goal_support_metrics(goal: dict[str, Any], supporting: list[dict[str, Any]]) -> dict[str, Any]:
@@ -998,11 +1255,46 @@ def _goal_contract_satisfied(goal: dict[str, Any], supporting: list[dict[str, An
     return metrics["high_or_medium_family_count"] >= 2
 
 
+def _missing_required_probes(goal: dict[str, Any]) -> list[str]:
+    budget = goal.get("probe_budget") or {}
+    required = budget.get("required") or {}
+    observed = budget.get("observed") or {}
+    return [
+        key
+        for key, is_required in required.items()
+        if is_required and int(observed.get(key) or 0) <= 0
+    ]
+
+
+def _humanize_probe_kind(value: str) -> str:
+    return str(value or "").replace("_", " ").strip()
+
+
+def _coverage_pending_reason(goal: dict[str, Any]) -> str:
+    missing = _missing_required_probes(goal)
+    if not missing:
+        return ""
+    return "required coverage probes still missing: " + ", ".join(
+        _humanize_probe_kind(item) for item in missing
+    )
+
+
+def _goal_budget_exhausted(state: dict[str, Any]) -> bool:
+    return len(state.get("unique_query_fingerprints") or []) >= int(
+        state.get("max_unique_queries") or 0
+    )
+
+
 def _resolve_goal(goal: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     updated = copy.deepcopy(goal)
-    supporting, opposing = _support_and_opposition_for_goal(state, str(goal.get("goal_id") or ""))
+    adjudicated = _adjudicated_family_evidence(state, str(goal.get("goal_id") or ""))
+    supporting = adjudicated["supports"]
+    opposing = adjudicated["opposes"]
+    internally_mixed = adjudicated["internally_mixed"]
     previous_status = str(goal.get("status") or GOAL_STATUS_OPEN)
     previous_basis = str(goal.get("resolution_basis") or "")
+    previous_pending_reason = str(goal.get("coverage_pending_reason") or "")
+    updated["coverage_pending_reason"] = ""
 
     if not updated.get("disconfirmation_outcome"):
         if any(attempt.get("found") for attempt in updated.get("disconfirmation_attempts") or []):
@@ -1015,7 +1307,30 @@ def _resolve_goal(goal: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str
                 "not_found_under_budgeted_probe" if has_meaningful else "not_meaningfully_tested"
             )
 
-    if supporting and opposing:
+    strict_coverage_pending = (
+        str(updated.get("coverage_requirement") or "normal") == "strict"
+        and not _probe_budget_complete(updated)
+    )
+    if strict_coverage_pending:
+        updated["coverage_pending_reason"] = _coverage_pending_reason(updated)
+
+    has_cross_family_conflict = bool(supporting and opposing) or bool(
+        internally_mixed and (supporting or opposing)
+    )
+    has_single_family_conflict_only = bool(internally_mixed) and not (
+        supporting or opposing
+    )
+
+    if strict_coverage_pending and state.get("blocked_access_count"):
+        updated["status"] = GOAL_STATUS_INSUFFICIENT
+        updated["resolution_basis"] = "blocked_access"
+    elif strict_coverage_pending and _goal_budget_exhausted(state):
+        updated["status"] = GOAL_STATUS_INSUFFICIENT
+        updated["resolution_basis"] = "budget_exhausted_before_resolution"
+    elif strict_coverage_pending:
+        updated["status"] = GOAL_STATUS_OPEN
+        updated["resolution_basis"] = ""
+    elif has_cross_family_conflict:
         updated["status"] = GOAL_STATUS_MIXED
         updated["resolution_basis"] = "contradictory_high_value_evidence"
     elif opposing and not supporting:
@@ -1024,27 +1339,43 @@ def _resolve_goal(goal: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str
     elif _goal_contract_satisfied(updated, supporting):
         updated["status"] = GOAL_STATUS_SUPPORTED
         updated["resolution_basis"] = "contract_satisfied"
+    elif has_single_family_conflict_only and state.get("blocked_access_count"):
+        updated["status"] = GOAL_STATUS_INSUFFICIENT
+        updated["resolution_basis"] = "blocked_access"
+    elif has_single_family_conflict_only and (
+        _probe_budget_complete(updated) or _goal_budget_exhausted(state)
+    ):
+        updated["status"] = GOAL_STATUS_INSUFFICIENT
+        updated["resolution_basis"] = "budgeted_high_value_search_exhausted"
     elif state.get("blocked_access_count"):
         updated["status"] = GOAL_STATUS_INSUFFICIENT
         updated["resolution_basis"] = "blocked_access"
     elif _probe_budget_complete(updated):
         updated["status"] = GOAL_STATUS_INSUFFICIENT
         updated["resolution_basis"] = "budgeted_high_value_search_exhausted"
-    elif (
-        len(state.get("unique_query_fingerprints") or []) >= int(state.get("max_unique_queries") or 0)
-        and not supporting
-    ):
+    elif _goal_budget_exhausted(state) and not supporting:
         updated["status"] = GOAL_STATUS_INSUFFICIENT
         updated["resolution_basis"] = "budget_exhausted_before_resolution"
     else:
         updated["status"] = GOAL_STATUS_OPEN
         updated["resolution_basis"] = ""
 
-    changed = updated["status"] != previous_status or updated["resolution_basis"] != previous_basis
+    changed = (
+        updated["status"] != previous_status
+        or updated["resolution_basis"] != previous_basis
+        or updated.get("coverage_pending_reason") != previous_pending_reason
+    )
     return updated, changed
 
 
-def _update_working_proposition(proposition: dict[str, Any], goal: dict[str, Any], supporting: list[dict[str, Any]], opposing: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+def _update_working_proposition(
+    proposition: dict[str, Any],
+    goal: dict[str, Any],
+    supporting: list[dict[str, Any]],
+    opposing: list[dict[str, Any]],
+    internally_mixed: Optional[list[dict[str, Any]]] = None,
+) -> tuple[dict[str, Any], bool]:
+    internally_mixed = internally_mixed or []
     updated = copy.deepcopy(proposition)
     previous_state = str(proposition.get("state") or "open")
     if goal.get("status") == GOAL_STATUS_SUPPORTED:
@@ -1053,11 +1384,17 @@ def _update_working_proposition(proposition: dict[str, Any], goal: dict[str, Any
         updated["state"] = "leaning_mixed"
     elif goal.get("status") == GOAL_STATUS_NOT_SUPPORTED:
         updated["state"] = "leaning_not_supported"
+    elif internally_mixed or (supporting and opposing):
+        updated["state"] = "leaning_mixed"
+    elif supporting:
+        updated["state"] = "leaning_support"
+    elif opposing:
+        updated["state"] = "leaning_not_supported"
     else:
         updated["state"] = "open"
     updated["support_ids"] = [item.get("evidence_id") for item in supporting[:4]]
     updated["oppose_ids"] = [item.get("evidence_id") for item in opposing[:4]]
-    updated["contradiction_pressure"] = bool(supporting and opposing)
+    updated["contradiction_pressure"] = bool(supporting and opposing) or bool(internally_mixed)
     return updated, updated["state"] != previous_state
 
 
@@ -1065,14 +1402,206 @@ def _set_pending_note(state: dict[str, Any], note: str) -> None:
     state["pending_system_note"] = _normalize_text(note)
 
 
+def _append_pending_note(state: dict[str, Any], note: str) -> None:
+    current = _normalize_text(state.get("pending_system_note") or "")
+    addition = _normalize_text(note)
+    if not addition:
+        return
+    if not current:
+        state["pending_system_note"] = addition
+        return
+    if addition in current:
+        return
+    state["pending_system_note"] = _normalize_text(f"{current} {addition}")
+
+
+def _query_token_overlap(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    union = left | right
+    if not union:
+        return 0.0
+    return len(left & right) / len(union)
+
+
+def _artifact_family_scope(
+    state: dict[str, Any],
+    artifact_ids: list[str],
+) -> tuple[str, ...]:
+    if not artifact_ids:
+        return ()
+    scope: list[str] = []
+    for artifact_id in artifact_ids:
+        artifact = next(
+            (
+                item
+                for item in state.get("stored_artifacts") or []
+                if _normalize_text(item.get("artifact_id") or "") == _normalize_text(artifact_id)
+            ),
+            {},
+        )
+        family_id = _normalize_text(artifact.get("canonical_family_id") or "")
+        if not family_id:
+            family_id, _ = _resolve_family_id(
+                state,
+                url=_normalize_text(artifact.get("url") or ""),
+                title=_normalize_text(artifact.get("title") or ""),
+                identifier_hints=artifact.get("identifier_hints") or {},
+            )
+            if artifact:
+                artifact["canonical_family_id"] = family_id
+        if family_id and family_id not in scope:
+            scope.append(family_id)
+    return tuple(sorted(scope))
+
+
+def _goal_family_count(state: dict[str, Any], goal_id: str) -> int:
+    adjudicated = _adjudicated_family_evidence(state, goal_id)
+    family_ids = {
+        str(record.get("evidence_family_id") or "").strip()
+        for record in adjudicated["supports"] + adjudicated["opposes"]
+        if str(record.get("evidence_family_id") or "").strip()
+    }
+    family_ids |= {
+        str(item.get("family_id") or "").strip()
+        for item in adjudicated["internally_mixed"]
+        if str(item.get("family_id") or "").strip()
+    }
+    return len(family_ids)
+
+
+def _goal_probe_snapshot(goal: dict[str, Any]) -> dict[str, int]:
+    observed = ((goal.get("probe_budget") or {}).get("observed") or {})
+    return {str(key): int(value or 0) for key, value in observed.items()}
+
+
+def _build_query_rewrite_instruction(goal_questions: list[str]) -> str:
+    joined_goals = "; ".join(_normalize_text(item) for item in goal_questions if _normalize_text(item))
+    if joined_goals:
+        joined_goals = f" for goal(s): {joined_goals}"
+    return (
+        "Recent evidence queries are circling the same source family without improving coverage"
+        f"{joined_goals}. Rewrite the next query_web_evidence call as a short retrieval phrase. "
+        "Preserve the proposition, population, outcome, and one discriminator. "
+        "Remove rhetorical glue and copied sentences. Prefer an outcome phrase, significance phrase, conclusion phrase, or subgroup phrase. "
+        "If possible, widen artifact scope before drilling further."
+    )
+
+
+def _maybe_flag_low_novelty_query(
+    state: dict[str, Any],
+    *,
+    query_value: str,
+    family_scope: tuple[str, ...],
+    goal_ids: list[str],
+    searched_artifact_count: int,
+    searched_domains: list[str],
+) -> None:
+    if not query_value or not family_scope or len(family_scope) != 1 or not goal_ids:
+        return
+
+    history = state.setdefault("evidence_query_history", [])
+    tokens = set(_tokenize_terms(query_value))
+    current_entry = {
+        "query": query_value,
+        "query_fp": query_fingerprint(query_value),
+        "query_tokens": sorted(tokens),
+        "family_scope": list(family_scope),
+        "goal_ids": list(goal_ids),
+        "family_counts": {
+            goal_id: _goal_family_count(state, goal_id)
+            for goal_id in goal_ids
+        },
+        "probe_counts": {
+            goal_id: _goal_probe_snapshot(
+                next(
+                    (
+                        goal
+                        for goal in state.get("goals") or []
+                        if goal.get("goal_id") == goal_id
+                    ),
+                    {},
+                )
+            )
+            for goal_id in goal_ids
+        },
+        "searched_artifact_count": int(searched_artifact_count or 0),
+        "searched_domain_count": len(searched_domains or []),
+    }
+
+    prior = next(
+        (
+            entry
+            for entry in reversed(history)
+            if tuple(entry.get("family_scope") or ()) == family_scope
+            and set(entry.get("goal_ids") or []).intersection(goal_ids)
+        ),
+        None,
+    )
+    if prior is not None:
+        overlap = _query_token_overlap(tokens, set(prior.get("query_tokens") or []))
+        family_growth = any(
+            current_entry["family_counts"].get(goal_id, 0)
+            > int((prior.get("family_counts") or {}).get(goal_id) or 0)
+            for goal_id in goal_ids
+        )
+        probe_growth = any(
+            current_entry["probe_counts"].get(goal_id, {}).get("broader_fallback", 0)
+            > int(((prior.get("probe_counts") or {}).get(goal_id) or {}).get("broader_fallback") or 0)
+            for goal_id in goal_ids
+        )
+        scope_growth = (
+            current_entry["searched_artifact_count"] > int(prior.get("searched_artifact_count") or 0)
+            or current_entry["searched_domain_count"] > int(prior.get("searched_domain_count") or 0)
+        )
+        if overlap >= RESEARCH_GUIDED_QUERY_OVERLAP_THRESHOLD and not family_growth and not probe_growth and not scope_growth:
+            state["low_novelty_query_count"] = int(state.get("low_novelty_query_count") or 0) + 1
+            emitted_scopes = set(state.get("emitted_rewrite_scopes") or [])
+            scope_key = "|".join(family_scope)
+            per_goal_counts = state.setdefault("goal_query_rewrite_counts", {})
+            rewrite_allowed = scope_key not in emitted_scopes and any(
+                int(per_goal_counts.get(goal_id) or 0) < RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_GOAL
+                for goal_id in goal_ids
+            )
+            if rewrite_allowed and not state.get("ready_to_answer"):
+                state["query_rewrite_count"] = int(state.get("query_rewrite_count") or 0) + 1
+                state["emitted_rewrite_scopes"] = [
+                    *list(emitted_scopes),
+                    scope_key,
+                ][: RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_SCOPE * RESEARCH_GUIDED_MAX_GOALS]
+                for goal_id in goal_ids:
+                    if int(per_goal_counts.get(goal_id) or 0) < RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_GOAL:
+                        per_goal_counts[goal_id] = int(per_goal_counts.get(goal_id) or 0) + 1
+                questions = [
+                    next(
+                        (
+                            goal.get("question")
+                            for goal in state.get("goals") or []
+                            if goal.get("goal_id") == goal_id
+                        ),
+                        "",
+                    )
+                    for goal_id in goal_ids
+                ]
+                _append_pending_note(state, _build_query_rewrite_instruction(questions))
+
+    history.append(current_entry)
+    state["evidence_query_history"] = history[-12:]
+
+
 def _refresh_resolutions(state: dict[str, Any]) -> dict[str, Any]:
     updated_goals: list[dict[str, Any]] = []
     updated_props: list[dict[str, Any]] = []
     note_lines: list[str] = []
+    same_family_conflict_count = 0
 
     for goal in state.get("goals") or []:
         next_goal, changed = _resolve_goal(goal, state)
-        supporting, opposing = _support_and_opposition_for_goal(state, str(goal.get("goal_id") or ""))
+        adjudicated = _adjudicated_family_evidence(state, str(goal.get("goal_id") or ""))
+        supporting = adjudicated["supports"]
+        opposing = adjudicated["opposes"]
+        internally_mixed = adjudicated["internally_mixed"]
+        same_family_conflict_count += len(internally_mixed)
         proposition = next(
             (item for item in state.get("working_propositions") or [] if item.get("goal_id") == goal.get("goal_id")),
             None,
@@ -1085,16 +1614,27 @@ def _refresh_resolutions(state: dict[str, Any]) -> dict[str, Any]:
             "oppose_ids": [],
             "contradiction_pressure": False,
         }
-        next_prop, prop_changed = _update_working_proposition(proposition, next_goal, supporting, opposing)
+        next_prop, prop_changed = _update_working_proposition(
+            proposition,
+            next_goal,
+            supporting,
+            opposing,
+            internally_mixed,
+        )
         if changed or prop_changed:
             if next_prop["state"] == "leaning_not_supported":
                 note_lines.append(
                     f"Current evidence leans against goal '{next_goal.get('question')}'. Focus on disconfirmation or pivot."
                 )
             elif next_prop["state"] == "leaning_mixed":
-                note_lines.append(
-                    f"Current evidence is mixed for goal '{next_goal.get('question')}'. Look for stronger differentiating evidence."
-                )
+                if next_goal.get("coverage_pending_reason"):
+                    note_lines.append(
+                        f"Current evidence is mixed for goal '{next_goal.get('question')}', but required coverage is still incomplete. Broaden coverage before concluding."
+                    )
+                else:
+                    note_lines.append(
+                        f"Current evidence is mixed for goal '{next_goal.get('question')}'. Look for stronger differentiating evidence."
+                    )
             elif supporting and str(next_goal.get("coverage_requirement") or "normal") == "strict":
                 metrics = _goal_support_metrics(next_goal, supporting)
                 if (
@@ -1104,20 +1644,26 @@ def _refresh_resolutions(state: dict[str, Any]) -> dict[str, Any]:
                     note_lines.append(
                         f"Current evidence for goal '{next_goal.get('question')}' is too narrow. Find additional independent high-value sources before concluding."
                     )
+            if next_goal.get("coverage_pending_reason"):
+                note_lines.append(
+                    f"Goal '{next_goal.get('question')}' still has pending coverage: {next_goal.get('coverage_pending_reason')}."
+                )
         updated_goals.append(next_goal)
         updated_props.append(next_prop)
 
     state["goals"] = updated_goals
     state["working_propositions"] = updated_props
+    state["same_family_conflict_count"] = same_family_conflict_count
     all_terminal = all(
         goal.get("status") in TERMINAL_GOAL_STATUSES
         and goal.get("resolution_basis")
         and goal.get("disconfirmation_outcome")
+        and not goal.get("coverage_pending_reason")
         for goal in updated_goals
     )
     state["ready_to_answer"] = bool(all_terminal)
     if note_lines:
-        _set_pending_note(state, " ".join(note_lines[:2]))
+        _append_pending_note(state, " ".join(note_lines[:2]))
     if all_terminal:
         state["phase"] = "evidence_check"
         state["stop_reason"] = state.get("stop_reason") or "all_primary_goals_resolved"
@@ -1135,6 +1681,10 @@ def register_tool_event(
 ) -> dict[str, Any]:
     updated = copy.deepcopy(state)
     normalized_tool_name = str(tool_name or "").strip()
+    query_family_scope: tuple[str, ...] = ()
+    query_goal_ids: list[str] = []
+    query_scope_artifact_count = 0
+    query_scope_domains: list[str] = []
     parsed = tool_result
     if isinstance(tool_result, str):
         try:
@@ -1231,6 +1781,14 @@ def register_tool_event(
                 updated["blocked_access_count"] = int(updated.get("blocked_access_count") or 0) + 1
                 updated["negative_signal_count"] = int(updated.get("negative_signal_count") or 0) + 1
             if parsed.get("artifact_id"):
+                title = _normalize_text(parsed.get("title") or "")
+                identifier_hints = dict(parsed.get("identifier_hints") or {})
+                canonical_family_id, identifier_hints = _resolve_family_id(
+                    updated,
+                    url=url,
+                    title=title,
+                    identifier_hints=identifier_hints,
+                )
                 updated.setdefault("stored_artifacts", []).append(
                     {
                         "artifact_id": parsed.get("artifact_id"),
@@ -1240,6 +1798,8 @@ def register_tool_event(
                         "blocked": blocked,
                         "mode": parsed.get("mode") or tool_params.get("mode") or "",
                         "content_chars": content_chars,
+                        "identifier_hints": identifier_hints,
+                        "canonical_family_id": canonical_family_id,
                     }
                 )
             if not blocked:
@@ -1253,6 +1813,29 @@ def register_tool_event(
         snippets = parsed.get("snippets") or []
         if not snippets and str(parsed.get("status") or "") == "not_found":
             updated["negative_signal_count"] = int(updated.get("negative_signal_count") or 0) + 1
+
+        artifact_scope_ids = [
+            _normalize_text(value)
+            for value in (
+                tool_params.get("artifact_ids")
+                or parsed.get("searched_artifact_ids")
+                or parsed.get("artifact_ids")
+                or []
+            )
+            if _normalize_text(value)
+        ]
+        if (
+            not artifact_scope_ids
+            and int(parsed.get("searched_artifact_count") or 0) == 1
+            and len(updated.get("stored_artifacts") or []) == 1
+        ):
+            only_artifact = (updated.get("stored_artifacts") or [{}])[0]
+            only_artifact_id = _normalize_text(only_artifact.get("artifact_id") or "")
+            if only_artifact_id:
+                artifact_scope_ids = [only_artifact_id]
+        query_family_scope = _artifact_family_scope(updated, artifact_scope_ids)
+        query_scope_artifact_count = int(parsed.get("searched_artifact_count") or 0)
+        query_scope_domains = list(parsed.get("searched_domains") or [])
 
         searched_domains = parsed.get("searched_domains") or []
         if int(parsed.get("searched_artifact_count") or 0) <= 1 or len(searched_domains) <= 1:
@@ -1268,6 +1851,8 @@ def register_tool_event(
             alignment = _query_alignment(goal, query_value)
             if alignment == "target_aligned":
                 _mark_probe_observed(goal, "target_aligned")
+                if goal.get("goal_id") not in query_goal_ids:
+                    query_goal_ids.append(goal.get("goal_id"))
             elif alignment == "disconfirming":
                 _mark_probe_observed(goal, "disconfirming")
                 _record_disconfirmation_attempt(goal, query_value, found=bool(snippets), meaningful=True)
@@ -1288,6 +1873,8 @@ def register_tool_event(
             url = _normalize_text(artifact.get("url") or "")
             domain = _normalize_text(snippet.get("domain") or artifact.get("domain") or _domain_from_url(url))
             text = _normalize_text(snippet.get("text") or "")
+            identifier_hints = dict(artifact.get("identifier_hints") or {})
+            canonical_family_id = _normalize_text(artifact.get("canonical_family_id") or "")
             content_depth = (
                 "full_text"
                 if str(artifact.get("mode") or "").strip().lower() == "content"
@@ -1307,6 +1894,8 @@ def register_tool_event(
                         domain=domain,
                         text=text,
                         content_depth=content_depth,
+                        identifier_hints=identifier_hints,
+                        canonical_family_id=canonical_family_id,
                     )
                     goal.setdefault("support_ids", []).append(evidence_id)
                 elif alignment == "disconfirming":
@@ -1320,12 +1909,23 @@ def register_tool_event(
                         domain=domain,
                         text=text,
                         content_depth=content_depth,
+                        identifier_hints=identifier_hints,
+                        canonical_family_id=canonical_family_id,
                     )
                     goal.setdefault("oppose_ids", []).append(evidence_id)
                 elif _context_fit(goal, text) == "weak":
                     goal.setdefault("orthogonal_ids", [])
 
     updated = _refresh_resolutions(updated)
+    if normalized_tool_name == "query_web_evidence":
+        _maybe_flag_low_novelty_query(
+            updated,
+            query_value=query_value,
+            family_scope=query_family_scope,
+            goal_ids=[goal_id for goal_id in query_goal_ids if goal_id],
+            searched_artifact_count=query_scope_artifact_count,
+            searched_domains=query_scope_domains,
+        )
     if updated.get("ready_to_answer"):
         updated = finalize_state_for_answer(updated)
         _set_pending_note(
@@ -1418,8 +2018,15 @@ def finalize_state_for_answer(state: dict[str, Any]) -> dict[str, Any]:
     updated = copy.deepcopy(state)
     candidate_claims: list[dict[str, Any]] = []
     for goal in updated.get("goals") or []:
-        supporting, opposing = _support_and_opposition_for_goal(updated, str(goal.get("goal_id") or ""))
-        candidate_claims.extend(_derive_candidate_claim(goal, supporting, opposing))
+        adjudicated = _adjudicated_family_evidence(updated, str(goal.get("goal_id") or ""))
+        candidate_claims.extend(
+            _derive_candidate_claim(
+                goal,
+                adjudicated["supports"],
+                adjudicated["opposes"],
+                adjudicated["internally_mixed"],
+            )
+        )
     updated["candidate_claims"] = candidate_claims
     updated["ready_to_answer"] = bool(candidate_claims) or bool(updated.get("goals"))
     updated["phase"] = "final_response" if updated.get("ready_to_answer") else updated.get("phase")
@@ -1464,6 +2071,13 @@ def build_research_snapshot(state: Optional[dict[str, Any]]) -> dict[str, Any]:
                 "status": goal.get("status"),
                 "resolution_basis": goal.get("resolution_basis"),
                 "disconfirmation_outcome": goal.get("disconfirmation_outcome"),
+                "coverage_pending_reason": goal.get("coverage_pending_reason"),
+                "required_probe_summary": copy.deepcopy(
+                    ((goal.get("probe_budget") or {}).get("required") or {})
+                ),
+                "observed_probe_summary": copy.deepcopy(
+                    ((goal.get("probe_budget") or {}).get("observed") or {})
+                ),
             }
             for goal in goals[:RESEARCH_GUIDED_MAX_GOALS]
         ],
@@ -1476,6 +2090,10 @@ def build_research_snapshot(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "duplicate_fetch_count": int(state.get("duplicate_fetch_count") or 0),
         "negative_signal_count": int(state.get("negative_signal_count") or 0),
         "blocked_access_count": int(state.get("blocked_access_count") or 0),
+        "family_alias_count": int(state.get("family_alias_count") or 0),
+        "same_family_conflict_count": int(state.get("same_family_conflict_count") or 0),
+        "query_rewrite_count": int(state.get("query_rewrite_count") or 0),
+        "low_novelty_query_count": int(state.get("low_novelty_query_count") or 0),
         "stop_reason": state.get("stop_reason"),
         "ready_to_answer": bool(state.get("ready_to_answer")),
     }
@@ -1494,6 +2112,10 @@ def build_runtime_summary(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "duplicate_fetch_count": snapshot.get("duplicate_fetch_count"),
         "negative_signal_count": snapshot.get("negative_signal_count"),
         "blocked_access_count": snapshot.get("blocked_access_count"),
+        "family_alias_count": snapshot.get("family_alias_count"),
+        "same_family_conflict_count": snapshot.get("same_family_conflict_count"),
+        "query_rewrite_count": snapshot.get("query_rewrite_count"),
+        "low_novelty_query_count": snapshot.get("low_novelty_query_count"),
         "stop_reason": snapshot.get("stop_reason"),
         "ready_to_answer": snapshot.get("ready_to_answer"),
     }
