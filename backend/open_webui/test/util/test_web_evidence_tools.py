@@ -166,6 +166,69 @@ def test_query_web_evidence_store_large_artifact_returns_multiple_relevant_chunk
     assert any(snippet.get("chunked") for snippet in queried["snippets"])
 
 
+def test_query_web_evidence_store_single_artifact_compaction_surfaces_result_snippets(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web_store, "AGENTIC_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        web_store.Chats,
+        "get_chat_title_by_id",
+        lambda _chat_id: "Result Intent Test",
+    )
+
+    filler_a = ("blue light blocking glasses sleep latency meta analysis filler " * 180).strip()
+    filler_b = ("methods crossover trial actigraphy outcome filler " * 220).strip()
+    content = (
+        "Abstract\n"
+        "Blue-light blocking glasses are proposed to improve sleep onset latency, "
+        "but evidence is inconsistent in adults.\n\n"
+        f"{filler_a}\n\n"
+        "Materials and methods\n"
+        "This systematic review and meta-analysis evaluated randomized crossover trials.\n\n"
+        f"{filler_b}\n\n"
+        "Results\n"
+        "All three studies provided data for sleep onset latency. "
+        "The pooled mean difference was -4.86 minutes "
+        "(95% confidence interval -20.23 to 10.52), not statistically significant.\n\n"
+        "Conclusion\n"
+        "Current evidence does not support a significant effect.\n"
+    )
+
+    stored = web_store.store_web_page(
+        chat_id="chat-result-intent",
+        message_id="msg-result-intent",
+        url="https://example.org/bbg-meta-analysis",
+        title=(
+            "Efficacy of blue-light blocking glasses on sleep outcomes: "
+            "a systematic review and meta-analysis"
+        ),
+        content=content,
+    )
+
+    queried = web_store.query_web_evidence_store(
+        chat_id="chat-result-intent",
+        message_id="msg-result-intent",
+        query=(
+            "sleep onset latency SOL blue-light blocking glasses "
+            "effect size results meta-analysis"
+        ),
+        artifact_ids=[stored["artifact_id"]],
+        top_k=4,
+        window_chars=320,
+    )
+
+    assert queried["status"] == "ok"
+    assert queried["query_compaction_applied"] is True
+    assert queried["normalized_query"] != queried["query"]
+    top_three = queried["snippets"][:3]
+    assert any(
+        "pooled mean difference" in snippet["text"].lower()
+        or "95% confidence interval" in snippet["text"].lower()
+        or "not statistically significant" in snippet["text"].lower()
+        for snippet in top_three
+    )
+
+
 def test_query_web_evidence_store_segmented_mode_uses_focus_retrieval_for_large_document(
     tmp_path, monkeypatch
 ):

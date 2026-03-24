@@ -35,6 +35,80 @@ MAX_SEGMENT_CHARS = 1600
 SEGMENT_DEDUPE_MAX_SPAN_CHARS = 2200
 SEGMENT_DEDUPE_MAX_GAP_CHARS = 80
 
+SINGLE_ARTIFACT_LOW_SIGNAL_TOKENS = {
+    "adult",
+    "adults",
+    "article",
+    "evidence",
+    "glasses",
+    "human",
+    "meta",
+    "meta-analysis",
+    "paper",
+    "review",
+    "reviews",
+    "source",
+    "sources",
+    "study",
+    "studies",
+    "systematic",
+    "trial",
+    "trials",
+}
+SINGLE_ARTIFACT_RESULT_INTENT_TOKENS = {
+    "effect",
+    "effects",
+    "estimate",
+    "estimates",
+    "confidence",
+    "interval",
+    "intervals",
+    "result",
+    "results",
+    "significant",
+    "significance",
+    "statistically",
+    "pooled",
+    "conclusion",
+    "conclusions",
+    "mean",
+    "difference",
+    "differences",
+    "non-significant",
+    "nonsignificant",
+}
+SINGLE_ARTIFACT_RESULT_EXPANSION_TERMS = [
+    "results",
+    "mean",
+    "difference",
+    "confidence",
+    "interval",
+    "significant",
+    "conclusion",
+]
+RESULT_SECTION_POSITIVE_CUES = (
+    "results",
+    "pooled",
+    "mean difference",
+    "confidence interval",
+    "not statistically significant",
+    "statistically significant",
+    "conclusion",
+    "forest plot",
+)
+RESULT_SECTION_NEGATIVE_CUES = (
+    "background",
+    "objective",
+    "materials and methods",
+    "methods",
+    "study design",
+    "data sources",
+    "searches were performed",
+    "introduction",
+    "keywords",
+    "copyright notice",
+)
+
 
 def normalize_web_evidence_retrieval_mode(value: Any) -> str:
     normalized = str(value or "").strip().lower()
@@ -868,6 +942,95 @@ def _fts_query_terms(query: str) -> list[str]:
     return [token for token in re.findall(r"[\w-]{2,}", (query or "").lower()) if token]
 
 
+def _dedupe_terms_preserve_order(terms: list[str], *, limit: int = 12) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        normalized = str(term or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _single_artifact_query_profile(
+    *,
+    query: str,
+    scope_rows: list[Any],
+) -> dict[str, Any]:
+    raw_terms = _fts_query_terms(query)
+    profile = {
+        "normalized_query": str(query or "").strip(),
+        "normalized_terms": raw_terms,
+        "result_intent": False,
+        "single_artifact_scope": len(scope_rows) == 1,
+        "title_overlap_dropped": 0,
+        "compaction_applied": False,
+    }
+    if len(scope_rows) != 1 or len(raw_terms) < 4:
+        return profile
+
+    row = scope_rows[0]
+    title = ""
+    if isinstance(row, sqlite3.Row):
+        title = str(row["title"] or "")
+    elif isinstance(row, dict):
+        title = str(row.get("title") or "")
+
+    title_terms = set(_fts_query_terms(title))
+    result_intent = any(term in SINGLE_ARTIFACT_RESULT_INTENT_TOKENS for term in raw_terms)
+
+    compact_terms: list[str] = []
+    dropped_overlap = 0
+    for term in raw_terms:
+        if term in SINGLE_ARTIFACT_LOW_SIGNAL_TOKENS:
+            continue
+        if term in title_terms and term not in SINGLE_ARTIFACT_RESULT_INTENT_TOKENS:
+            dropped_overlap += 1
+            continue
+        compact_terms.append(term)
+
+    if result_intent:
+        compact_terms = [
+            term
+            for term in compact_terms
+            if term not in SINGLE_ARTIFACT_RESULT_INTENT_TOKENS
+        ]
+        compact_terms.extend(SINGLE_ARTIFACT_RESULT_EXPANSION_TERMS)
+
+    normalized_terms = _dedupe_terms_preserve_order(compact_terms)
+    if len(normalized_terms) < 3:
+        normalized_terms = raw_terms
+        dropped_overlap = 0
+
+    normalized_query = " ".join(normalized_terms).strip() or str(query or "").strip()
+    profile["normalized_query"] = normalized_query
+    profile["normalized_terms"] = normalized_terms
+    profile["result_intent"] = bool(result_intent)
+    profile["title_overlap_dropped"] = dropped_overlap
+    profile["compaction_applied"] = normalized_query != str(query or "").strip()
+    return profile
+
+
+def _result_intent_section_bonus(text: str) -> float:
+    lowered = str(text or "").lower()
+    if not lowered:
+        return 0.0
+
+    bonus = 0.0
+    positive_hits = sum(1 for cue in RESULT_SECTION_POSITIVE_CUES if cue in lowered)
+    negative_hits = sum(1 for cue in RESULT_SECTION_NEGATIVE_CUES if cue in lowered)
+
+    if positive_hits:
+        bonus += min(0.22, 0.05 * positive_hits)
+    if negative_hits:
+        bonus -= min(0.18, 0.04 * negative_hits)
+    return bonus
+
+
 def _normalize_artifact_ids(values: Optional[list[str]]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
@@ -985,6 +1148,7 @@ def _score_text_block(
     *,
     terms: list[str],
     rank_score: float,
+    query_profile: Optional[dict[str, Any]] = None,
 ) -> tuple[int, int, float]:
     normalized = str(text or "").lower()
     if not normalized:
@@ -1008,6 +1172,8 @@ def _score_text_block(
     density = min(1.0, total_hits / max(1, len(terms) * 2))
     lexical_score = (0.75 * coverage) + (0.25 * density)
     blended = max(0.0, min(1.0, (0.8 * lexical_score) + (0.2 * rank_score)))
+    if isinstance(query_profile, dict) and query_profile.get("result_intent"):
+        blended = max(0.0, min(1.0, blended + _result_intent_section_bonus(text)))
     return unique_hits, total_hits, round(blended, 4)
 
 
@@ -1612,6 +1778,7 @@ def _build_segment_snippets(
     *,
     terms: list[str],
     limit: int,
+    query_profile: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     snippets: list[dict[str, Any]] = []
     for row in rows:
@@ -1635,6 +1802,7 @@ def _build_segment_snippets(
             "\n".join([label, path_text, content]),
             terms=terms,
             rank_score=rank_score,
+            query_profile=query_profile,
         )
         if terms and lexical_hits <= 0:
             continue
@@ -1678,6 +1846,8 @@ def _query_web_evidence_store_segmented(
     chat_id: str,
     message_id: Optional[str],
     query: str,
+    effective_query: Optional[str],
+    query_profile: Optional[dict[str, Any]],
     terms: list[str],
     scope_rows: list[sqlite3.Row],
     missing_artifact_ids: list[str],
@@ -1714,7 +1884,12 @@ def _query_web_evidence_store_segmented(
                 artifact_ids=searched_artifact_ids,
             )
 
-    snippets = _build_segment_snippets(segment_rows, terms=terms, limit=max(top_k, 1))
+    snippets = _build_segment_snippets(
+        segment_rows,
+        terms=terms,
+        limit=max(top_k, 1),
+        query_profile=query_profile,
+    )
     one_shot_quality = _classify_evidence_strength(snippets)
     coverage_before_merge = _count_focus_coverage(
         snippets,
@@ -1740,7 +1915,12 @@ def _query_web_evidence_store_segmented(
                     artifact_ids=searched_artifact_ids,
                     limit=6,
                 )
-                clause_snippets = _build_segment_snippets(rows, terms=composite_terms, limit=2)
+                clause_snippets = _build_segment_snippets(
+                    rows,
+                    terms=composite_terms,
+                    limit=2,
+                    query_profile=query_profile,
+                )
                 focus_candidates += len(clause_snippets)
                 admitted_for_clause = False
                 for snippet in clause_snippets:
@@ -1786,6 +1966,7 @@ def _query_web_evidence_store_segmented(
     return {
         "status": "ok",
         "query": query,
+        "normalized_query": effective_query or query,
         "chat_id": chat_id,
         "message_id": str(message_id or ""),
         "scope_mode": "implicit_current_message",
@@ -1816,6 +1997,8 @@ def _query_web_evidence_store_segmented(
         "focus_candidates": focus_candidates,
         "focus_admitted": focus_admitted,
         "focus_dropped_low_score": focus_dropped_low_score,
+        "query_compaction_applied": bool((query_profile or {}).get("compaction_applied")),
+        "title_overlap_dropped": int((query_profile or {}).get("title_overlap_dropped") or 0),
         **dedupe_meta,
     }
 
@@ -1911,7 +2094,6 @@ def query_web_evidence_store(
             "snippets_dropped_overlap": 0,
         }
 
-    terms = _fts_query_terms(query)
     bounded_top_k = max(1, min(20, int(top_k or 6)))
     bounded_window_chars = max(120, min(2000, int(window_chars or 320)))
     bounded_wide_top_k = max(bounded_top_k, min(30, int(wide_top_k or 10)))
@@ -1958,6 +2140,7 @@ def query_web_evidence_store(
                         chunk.get("text", ""),
                         terms=terms,
                         rank_score=rank_score,
+                        query_profile=query_profile,
                     )
                     if terms and chunk_unique_hits <= 0:
                         continue
@@ -2020,6 +2203,7 @@ def query_web_evidence_store(
                 content,
                 terms=terms,
                 rank_score=rank_score,
+                query_profile=query_profile,
             )
             snippets.append(
                 {
@@ -2058,6 +2242,12 @@ def query_web_evidence_store(
             message_id=message_id,
             artifact_ids=normalized_artifact_ids,
         )
+        query_profile = _single_artifact_query_profile(
+            query=query,
+            scope_rows=scope_rows,
+        )
+        effective_query = str(query_profile.get("normalized_query") or query or "").strip()
+        terms = list(query_profile.get("normalized_terms") or _fts_query_terms(effective_query))
         searched_artifact_ids = [
             str(row["artifact_id"] or "") for row in scope_rows if str(row["artifact_id"] or "")
         ]
@@ -2068,12 +2258,15 @@ def query_web_evidence_store(
                 if str(row["domain"] or "").strip()
             }
         )
+        single_artifact_direct_scan = bool(query_profile.get("single_artifact_scope"))
         if normalized_retrieval_mode == WEB_EVIDENCE_RETRIEVAL_MODE_SEGMENTED:
             return _query_web_evidence_store_segmented(
                 db_path=db_path,
                 chat_id=normalized_chat_id,
                 message_id=message_id,
                 query=query,
+                effective_query=effective_query,
+                query_profile=query_profile,
                 terms=terms,
                 scope_rows=scope_rows,
                 missing_artifact_ids=missing_artifact_ids,
@@ -2083,13 +2276,17 @@ def query_web_evidence_store(
             ) | {
                 "scope_mode": scope_mode,
             }
-        narrow_rows, fts_enabled = _query_fts_rows(
-            conn,
-            chat_id=normalized_chat_id,
-            terms=terms,
-            artifact_ids=searched_artifact_ids,
-            limit=max(bounded_top_k * 2, bounded_top_k),
-        )
+        if single_artifact_direct_scan:
+            narrow_rows = scope_rows[:1]
+            fts_enabled = True
+        else:
+            narrow_rows, fts_enabled = _query_fts_rows(
+                conn,
+                chat_id=normalized_chat_id,
+                terms=terms,
+                artifact_ids=searched_artifact_ids,
+                limit=max(bounded_top_k * 2, bounded_top_k),
+            )
 
     narrow = build_snippets(narrow_rows, limit=bounded_top_k, window=bounded_window_chars)
     weak = len(narrow) < min(2, bounded_top_k) or max(
@@ -2099,14 +2296,17 @@ def query_web_evidence_store(
     wide: list[dict[str, Any]] = []
     wide_used = False
     if widen_if_weak and weak:
-        with _sqlite_conn(db_path) as conn:
-            rows, _ = _query_fts_rows(
-                conn,
-                chat_id=normalized_chat_id,
-                terms=terms,
-                artifact_ids=searched_artifact_ids,
-                limit=max(bounded_wide_top_k * 2, bounded_wide_top_k),
-            )
+        if single_artifact_direct_scan:
+            rows = scope_rows[:1]
+        else:
+            with _sqlite_conn(db_path) as conn:
+                rows, _ = _query_fts_rows(
+                    conn,
+                    chat_id=normalized_chat_id,
+                    terms=terms,
+                    artifact_ids=searched_artifact_ids,
+                    limit=max(bounded_wide_top_k * 2, bounded_wide_top_k),
+                )
         wide = build_snippets(rows, limit=bounded_wide_top_k, window=bounded_wide_window_chars)
         wide_used = True
 
@@ -2122,6 +2322,7 @@ def query_web_evidence_store(
     return {
         "status": "ok",
         "query": query,
+        "normalized_query": effective_query,
         "chat_id": normalized_chat_id,
         "message_id": str(message_id or ""),
         "scope_mode": scope_mode,
@@ -2154,4 +2355,6 @@ def query_web_evidence_store(
         "focus_dropped_low_score": 0,
         "dedupe_cluster_count": 0,
         "snippets_dropped_overlap": 0,
+        "query_compaction_applied": bool(query_profile.get("compaction_applied")),
+        "title_overlap_dropped": int(query_profile.get("title_overlap_dropped") or 0),
     }

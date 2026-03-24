@@ -1930,7 +1930,9 @@ def register_tool_event(
             parsed = tool_result
 
     query_value = _normalize_text(
-        tool_params.get("query")
+        (parsed.get("normalized_query") if isinstance(parsed, dict) else "")
+        or tool_params.get("normalized_query")
+        or tool_params.get("query")
         or tool_params.get("q")
         or (parsed.get("query") if isinstance(parsed, dict) else "")
     )
