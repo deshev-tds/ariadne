@@ -228,6 +228,7 @@
 	$: chatLedgerAgenticEnabled = (params?.ledger_mode ?? null) === 'agentic';
 	$: chatFocusedSearchEnabled = (params?.focused_search_mode ?? false) === true;
 	$: chatDeepResearchEnabled = (params?.deep_research_mode ?? false) === true;
+	$: chatResearchGuidedEnabled = (params?.research_guided_mode ?? false) === true;
 	$: chatWorkingMode = CHAT_WORKING_MODES.includes(params?.working_mode ?? '')
 		? params.working_mode
 		: ['auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
@@ -304,6 +305,16 @@
 			webSearchEnabled = false;
 		} else {
 			nextParams.deep_research_mode = false;
+		}
+		params = nextParams;
+	};
+
+	const setChatResearchGuidedEnabled = (enabled: boolean) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		if (enabled) {
+			nextParams.research_guided_mode = true;
+		} else {
+			nextParams.research_guided_mode = false;
 		}
 		params = nextParams;
 	};
@@ -522,6 +533,9 @@
 						const nextParams = getDefaultChatParams();
 						if (typeof input.deepResearchEnabled === 'boolean') {
 							nextParams.deep_research_mode = input.deepResearchEnabled;
+						}
+						if (typeof input.researchGuidedEnabled === 'boolean') {
+							nextParams.research_guided_mode = input.researchGuidedEnabled;
 						}
 						if (
 							typeof input.workingMode === 'string' &&
@@ -1083,6 +1097,9 @@
 						const nextParams = getDefaultChatParams();
 						if (typeof input.deepResearchEnabled === 'boolean') {
 							nextParams.deep_research_mode = input.deepResearchEnabled;
+						}
+						if (typeof input.researchGuidedEnabled === 'boolean') {
+							nextParams.research_guided_mode = input.researchGuidedEnabled;
 						}
 						if (
 							typeof input.workingMode === 'string' &&
@@ -3271,6 +3288,8 @@
 									{setChatFocusedSearchEnabled}
 									deepResearchEnabled={chatDeepResearchEnabled}
 									{setChatDeepResearchEnabled}
+									researchGuidedEnabled={chatResearchGuidedEnabled}
+									{setChatResearchGuidedEnabled}
 									workingMode={chatWorkingMode}
 									{setChatWorkingMode}
 									localCorpusMode={chatLocalCorpusMode}
@@ -3355,6 +3374,8 @@
 									{setChatFocusedSearchEnabled}
 									deepResearchEnabled={chatDeepResearchEnabled}
 									{setChatDeepResearchEnabled}
+									researchGuidedEnabled={chatResearchGuidedEnabled}
+									{setChatResearchGuidedEnabled}
 									workingMode={chatWorkingMode}
 									{setChatWorkingMode}
 									localCorpusMode={chatLocalCorpusMode}

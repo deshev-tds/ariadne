@@ -5,6 +5,7 @@ def test_app_state_registers_deep_research_config_keys():
     config = main_module.app.state.config
 
     assert config.ENABLE_DEEP_RESEARCH in (True, False)
+    assert config.ENABLE_RESEARCH_GUIDED in (True, False)
     assert isinstance(config.DEEP_RESEARCH_SIDECAR_URL, str)
     assert isinstance(config.DEEP_RESEARCH_SIDECAR_USERNAME, str)
     assert isinstance(config.DEEP_RESEARCH_SIDECAR_PASSWORD, str)

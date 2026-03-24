@@ -185,6 +185,20 @@ from open_webui.utils.offsec_guided import (
     resolve_guided_state_from_messages,
     should_block_command_payload,
 )
+from open_webui.utils.research_guided import (
+    RESEARCH_GUIDED_RUNTIME_EVENT_CAP,
+    RESEARCH_GUIDED_STATE_KEY,
+    RESEARCH_STATUS_MARKER,
+    build_entry_prompt as build_research_guided_entry_prompt,
+    build_research_snapshot,
+    build_research_status_block,
+    build_runtime_summary as build_research_guided_runtime_summary,
+    build_initial_state as build_research_guided_initial_state,
+    consume_pending_system_note as consume_research_guided_pending_note,
+    is_research_guided_turn_eligible,
+    normalize_research_guided_mode,
+    register_tool_event as register_research_guided_tool_event,
+)
 
 
 from open_webui.config import (
@@ -512,6 +526,152 @@ def _offsec_guided_save_payload(metadata: dict[str, Any] | None) -> dict[str, An
     return {GUIDED_STATE_KEY: state} if isinstance(state, dict) else {}
 
 
+def _research_guided_state_from_metadata(
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+    state = metadata.get(RESEARCH_GUIDED_STATE_KEY)
+    if isinstance(state, dict):
+        return copy.deepcopy(state)
+    return None
+
+
+def _set_research_guided_state(
+    metadata: dict[str, Any] | None,
+    state: dict[str, Any] | None,
+) -> None:
+    if not isinstance(metadata, dict):
+        return
+    if isinstance(state, dict):
+        metadata[RESEARCH_GUIDED_STATE_KEY] = copy.deepcopy(state)
+    else:
+        metadata.pop(RESEARCH_GUIDED_STATE_KEY, None)
+
+
+def _research_guided_save_payload(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    state = _research_guided_state_from_metadata(metadata)
+    return {RESEARCH_GUIDED_STATE_KEY: state} if isinstance(state, dict) else {}
+
+
+def _append_research_guided_event(
+    metadata: dict[str, Any] | None,
+    payload: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return None
+
+    params = metadata.get("params", {}) if isinstance(metadata.get("params"), dict) else {}
+    debug_enabled = _is_debug_flag_enabled(params.get("debug_tool_journey"))
+    tap_enabled = runtime_telemetry.is_enabled()
+
+    event = {
+        "ts": int(time.time()),
+        **copy.deepcopy(payload),
+    }
+
+    if tap_enabled:
+        runtime_telemetry.record(
+            kind="research",
+            payload=event,
+            chat_id=metadata.get("chat_id"),
+            message_id=metadata.get("message_id"),
+            user_id=metadata.get("user_id"),
+            model_id=metadata.get("model_id"),
+        )
+
+    if not debug_enabled:
+        return None
+
+    telemetry = metadata.setdefault(
+        "research_guided_telemetry",
+        {
+            "enabled": True,
+            "chat_id": metadata.get("chat_id"),
+            "message_id": metadata.get("message_id"),
+            "events": [],
+            "capped": False,
+            "started_at": int(time.time()),
+        },
+    )
+    events = telemetry.get("events")
+    if not isinstance(events, list):
+        events = []
+        telemetry["events"] = events
+
+    if len(events) >= RESEARCH_GUIDED_RUNTIME_EVENT_CAP:
+        telemetry["capped"] = True
+        return None
+
+    debug_event = {**event, "index": len(events)}
+    events.append(debug_event)
+    return debug_event
+
+
+def _research_guided_transition_payload(
+    previous_state: dict[str, Any] | None,
+    next_state: dict[str, Any] | None,
+    *,
+    default_event: str = "state_updated",
+) -> dict[str, Any] | None:
+    previous_summary = build_research_guided_runtime_summary(previous_state)
+    next_summary = build_research_guided_runtime_summary(next_state)
+    if previous_summary == next_summary:
+        return None
+
+    event_name = default_event
+    if next_summary.get("ready_to_answer") and not previous_summary.get("ready_to_answer"):
+        event_name = "ready_to_answer"
+    elif next_summary.get("phase") != previous_summary.get("phase"):
+        event_name = "phase_changed"
+
+    payload = {
+        "event": event_name,
+        **next_summary,
+    }
+
+    goal_statuses = next_summary.get("goal_statuses") or []
+    if goal_statuses:
+        first_goal = goal_statuses[0]
+        if isinstance(first_goal, dict):
+            payload["goal_id"] = first_goal.get("goal_id")
+            payload["goal_status"] = first_goal.get("status")
+            payload["resolution_basis"] = first_goal.get("resolution_basis")
+    labels = next_summary.get("candidate_claim_labels") or []
+    if labels:
+        payload["label"] = labels[0]
+    return payload
+
+
+def _maybe_append_research_status_to_output(
+    *,
+    content: str,
+    output: list[dict[str, Any]],
+    metadata: dict[str, Any] | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    state = _research_guided_state_from_metadata(metadata)
+    block = build_research_status_block(state)
+    if not block or RESEARCH_STATUS_MARKER in str(content or ""):
+        return content, output
+
+    output_copy = copy.deepcopy(output or [])
+    output_copy.append(
+        {
+            "type": "message",
+            "id": output_id("msg"),
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": f"\n\n{block}"}],
+        }
+    )
+    combined_content = str(content or "").rstrip()
+    if combined_content:
+        combined_content = f"{combined_content}\n\n{block}"
+    else:
+        combined_content = block
+    return combined_content, output_copy
+
+
 def _truncate_workflow_diary_text(value: Any, max_chars: int) -> str:
     text = str(value or "").strip()
     if len(text) <= max_chars:
@@ -729,6 +889,10 @@ def _workflow_diary_offsec_snapshot(saved_payload: dict[str, Any]) -> dict[str, 
     }
 
 
+def _workflow_diary_research_snapshot(saved_payload: dict[str, Any]) -> dict[str, Any]:
+    return build_research_snapshot(saved_payload.get(RESEARCH_GUIDED_STATE_KEY))
+
+
 def _normalize_workflow_saved_payload(
     *,
     metadata: dict[str, Any] | None,
@@ -780,6 +944,7 @@ def _normalize_workflow_saved_payload(
             ),
         },
         "offsec_snapshot": _workflow_diary_offsec_snapshot(saved_payload),
+        "research_snapshot": _workflow_diary_research_snapshot(saved_payload),
     }
 
 
@@ -788,12 +953,15 @@ def _workflow_capture_reasons(normalized_snapshot: dict[str, Any]) -> Optional[l
     assistant_snapshot = normalized_snapshot.get("assistant_snapshot") or {}
     telemetry_presence = normalized_snapshot.get("telemetry_presence") or {}
     offsec_snapshot = normalized_snapshot.get("offsec_snapshot") or {}
+    research_snapshot = normalized_snapshot.get("research_snapshot") or {}
 
     strong_reasons: list[str] = []
     if int(tooling.get("tool_call_count") or 0) > 0 and tooling.get("source") == "output":
         strong_reasons.append("tool_calls_in_output")
     if offsec_snapshot.get("present"):
         strong_reasons.append("offsec_guided_state")
+    if research_snapshot.get("present"):
+        strong_reasons.append("research_guided_state")
 
     weak_reasons: list[str] = []
     if assistant_snapshot.get("termination_cause") is not None:
@@ -1439,14 +1607,17 @@ def _build_tool_continuation_messages(
     form_data_messages: list[dict[str, Any]],
     output: list[dict[str, Any]],
     narration_instruction: str | None = None,
+    research_instruction: str | None = None,
 ) -> list[dict[str, Any]]:
     messages = [
         *copy.deepcopy(form_data_messages),
         *convert_output_to_messages(output, raw=True),
     ]
-    if narration_instruction:
+    for instruction in (narration_instruction, research_instruction):
+        if not instruction:
+            continue
         messages = add_or_update_system_message(
-            narration_instruction,
+            instruction,
             messages,
             append=True,
         )
@@ -5197,6 +5368,22 @@ async def chat_completion_tools_handler(
         ):
             await _emit_tool_journey_event(metadata, event_emitter, research_event)
 
+        research_guided_previous = _research_guided_state_from_metadata(metadata)
+        if isinstance(research_guided_previous, dict):
+            research_guided_next = register_research_guided_tool_event(
+                research_guided_previous,
+                tool_name=tool_function_name,
+                tool_params=tool_function_params,
+                tool_result=tool_result,
+            )
+            _set_research_guided_state(metadata, research_guided_next)
+            transition_payload = _research_guided_transition_payload(
+                research_guided_previous,
+                research_guided_next,
+            )
+            if transition_payload:
+                _append_research_guided_event(metadata, transition_payload)
+
         if event_emitter:
             await terminal_event_handler(
                 tool_function_name,
@@ -7443,6 +7630,7 @@ def apply_params_to_form_data(form_data, model):
         "ledger_mode": str,
         "working_mode": str,
         "focused_search_mode": bool,
+        "research_guided_mode": bool,
         "local_corpus_mode": str,
         "web_evidence_retrieval_mode": str,
         "system": str,
@@ -8568,6 +8756,43 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     append=True,
                 )
 
+    research_guided_enabled = bool(
+        getattr(request.app.state.config, "ENABLE_RESEARCH_GUIDED", False)
+    )
+    research_guided_mode = normalize_research_guided_mode(
+        params.get("research_guided_mode")
+    )
+    research_guided_web_lane = bool(
+        (features or {}).get("web_search") or (features or {}).get("focused_search")
+    )
+    research_guided_eligible, research_guided_reason = (
+        is_research_guided_turn_eligible(
+            latest_user_text=latest_user_text,
+            working_mode=working_mode,
+            research_guided_mode=research_guided_enabled and research_guided_mode,
+            web_evidence_enabled=research_guided_web_lane,
+            deep_research_enabled=bool((features or {}).get("deep_research")),
+        )
+    )
+    metadata["research_guided_ineligible_reason"] = research_guided_reason
+    if research_guided_eligible and not exact_tool_output_replay:
+        research_guided_state = build_research_guided_initial_state(latest_user_text)
+        _set_research_guided_state(metadata, research_guided_state)
+        form_data["messages"] = add_or_update_system_message(
+            build_research_guided_entry_prompt(research_guided_state),
+            form_data["messages"],
+            append=True,
+        )
+        _append_research_guided_event(
+            metadata,
+            {
+                "event": "initialized",
+                **build_research_guided_runtime_summary(research_guided_state),
+            },
+        )
+    else:
+        _set_research_guided_state(metadata, None)
+
     # Check if file context extraction is enabled for this model (default True)
     file_context_enabled = (
         model.get("info", {}).get("meta", {}).get("capabilities") or {}
@@ -9349,6 +9574,20 @@ async def non_streaming_chat_response_handler(response, ctx):
         if _is_debug_flag_enabled(metadata.get("params", {}).get("debug_tool_journey"))
         else None
     )
+    research_telemetry = (
+        metadata.get("research_guided_telemetry")
+        if (
+            _is_debug_flag_enabled(metadata.get("params", {}).get("debug_tool_journey"))
+            or runtime_telemetry.is_enabled()
+        )
+        else None
+    )
+    if research_telemetry is None and runtime_telemetry.is_enabled():
+        research_state = _research_guided_state_from_metadata(metadata)
+        if isinstance(research_state, dict):
+            research_telemetry = {
+                "summary": build_research_guided_runtime_summary(research_state)
+            }
     prompt_telemetry = (
         get_prompt_telemetry(request, metadata)
         if is_prompt_telemetry_enabled(metadata)
@@ -9356,6 +9595,8 @@ async def non_streaming_chat_response_handler(response, ctx):
     )
     if isinstance(tool_journey_telemetry, dict):
         tool_journey_telemetry["completed_at"] = int(time.time())
+    if isinstance(research_telemetry, dict):
+        research_telemetry["completed_at"] = int(time.time())
 
     if token_telemetry:
         response_data["tokenTelemetry"] = token_telemetry
@@ -9365,6 +9606,8 @@ async def non_streaming_chat_response_handler(response, ctx):
         response_data["memoryTelemetry"] = memory_telemetry
     if tool_journey_telemetry:
         response_data["toolJourneyTelemetry"] = tool_journey_telemetry
+    if research_telemetry:
+        response_data["researchTelemetry"] = research_telemetry
     if prompt_telemetry:
         response_data["promptTelemetry"] = prompt_telemetry
 
@@ -9383,6 +9626,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                 {
                     "error": {"content": error},
                     **_offsec_guided_save_payload(metadata),
+                    **_research_guided_save_payload(metadata),
                     **({"promptTelemetry": prompt_telemetry} if prompt_telemetry else {}),
                 },
             )
@@ -9424,6 +9668,14 @@ async def non_streaming_chat_response_handler(response, ctx):
                             "content": [{"type": "output_text", "text": content}],
                         }
                     ]
+
+                content, response_output = _maybe_append_research_status_to_output(
+                    content=content,
+                    output=response_output,
+                    metadata=metadata,
+                )
+                response_data["choices"][0]["message"]["content"] = content
+                response_data["output"] = response_output
 
                 turn_recap = build_turn_recap(
                     response_output,
@@ -9469,6 +9721,11 @@ async def non_streaming_chat_response_handler(response, ctx):
                                     else {}
                                 ),
                                 **(
+                                    {"researchTelemetry": research_telemetry}
+                                    if research_telemetry
+                                    else {}
+                                ),
+                                **(
                                     {"promptTelemetry": prompt_telemetry}
                                     if prompt_telemetry
                                     else {}
@@ -9484,6 +9741,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                     "content": content,
                     "output": response_output,
                     **_offsec_guided_save_payload(metadata),
+                    **_research_guided_save_payload(metadata),
                     **({"tokenTelemetry": token_telemetry} if token_telemetry else {}),
                     **({"tokenBranch": token_branch} if token_branch else {}),
                     **(
@@ -10923,6 +11181,27 @@ async def streaming_chat_response_handler(response, ctx):
                                 metadata, event_emitter, research_event
                             )
 
+                        research_guided_previous = _research_guided_state_from_metadata(
+                            metadata
+                        )
+                        if isinstance(research_guided_previous, dict):
+                            research_guided_next = register_research_guided_tool_event(
+                                research_guided_previous,
+                                tool_name=tool_function_name,
+                                tool_params=tool_function_params,
+                                tool_result=tool_result,
+                            )
+                            _set_research_guided_state(metadata, research_guided_next)
+                            transition_payload = _research_guided_transition_payload(
+                                research_guided_previous,
+                                research_guided_next,
+                            )
+                            if transition_payload:
+                                _append_research_guided_event(
+                                    metadata,
+                                    transition_payload,
+                                )
+
                         research_state = _research_turn_state(metadata) or {}
                         if (
                             not research_loop_blocked
@@ -11170,10 +11449,20 @@ async def streaming_chat_response_handler(response, ctx):
                             metadata.get("tool_narration_state", {}),
                             completed_tool_phases,
                         )
+                        research_instruction = None
+                        research_guided_state = _research_guided_state_from_metadata(
+                            metadata
+                        )
+                        if isinstance(research_guided_state, dict):
+                            research_instruction = consume_research_guided_pending_note(
+                                research_guided_state
+                            )
+                            _set_research_guided_state(metadata, research_guided_state)
                         continuation_messages = _build_tool_continuation_messages(
                             form_data["messages"],
                             output,
                             narration_instruction=narration_instruction,
+                            research_instruction=research_instruction,
                         )
                         new_form_data = {
                             **form_data,
@@ -11522,6 +11811,24 @@ async def streaming_chat_response_handler(response, ctx):
                     )
                     else None
                 )
+                research_telemetry = (
+                    metadata.get("research_guided_telemetry")
+                    if (
+                        _is_debug_flag_enabled(
+                            metadata.get("params", {}).get("debug_tool_journey")
+                        )
+                        or runtime_telemetry.is_enabled()
+                    )
+                    else None
+                )
+                if research_telemetry is None and runtime_telemetry.is_enabled():
+                    research_state = _research_guided_state_from_metadata(metadata)
+                    if isinstance(research_state, dict):
+                        research_telemetry = {
+                            "summary": build_research_guided_runtime_summary(
+                                research_state
+                            )
+                        }
                 prompt_telemetry = (
                     get_prompt_telemetry(request, metadata)
                     if is_prompt_telemetry_enabled(metadata)
@@ -11529,9 +11836,16 @@ async def streaming_chat_response_handler(response, ctx):
                 )
                 if isinstance(tool_journey_telemetry, dict):
                     tool_journey_telemetry["completed_at"] = int(time.time())
+                if isinstance(research_telemetry, dict):
+                    research_telemetry["completed_at"] = int(time.time())
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
                 finalized_content = _finalize_completed_reasoning_details(
                     serialize_output(output)
+                )
+                finalized_content, output = _maybe_append_research_status_to_output(
+                    content=finalized_content,
+                    output=output,
+                    metadata=metadata,
                 )
                 turn_recap = build_turn_recap(
                     output,
@@ -11556,6 +11870,11 @@ async def streaming_chat_response_handler(response, ctx):
                     **(
                         {"toolJourneyTelemetry": tool_journey_telemetry}
                         if tool_journey_telemetry
+                        else {}
+                    ),
+                    **(
+                        {"researchTelemetry": research_telemetry}
+                        if research_telemetry
                         else {}
                     ),
                     **(
@@ -11584,6 +11903,7 @@ async def streaming_chat_response_handler(response, ctx):
                     "content": finalized_content,
                     "output": output,
                     **_offsec_guided_save_payload(metadata),
+                    **_research_guided_save_payload(metadata),
                     **({"usage": usage} if usage else {}),
                     **({"tokenTelemetry": token_telemetry} if token_telemetry else {}),
                     **({"tokenBranch": token_branch} if token_branch else {}),
@@ -11621,8 +11941,12 @@ async def streaming_chat_response_handler(response, ctx):
                     or termination_cause
                     or turn_recap
                     or _offsec_guided_state_from_metadata(metadata)
+                    or _research_guided_state_from_metadata(metadata)
                 ):
-                    update_payload = _offsec_guided_save_payload(metadata)
+                    update_payload = {
+                        **_offsec_guided_save_payload(metadata),
+                        **_research_guided_save_payload(metadata),
+                    }
                     if usage:
                         update_payload["usage"] = usage
                     if token_telemetry:
@@ -11651,10 +11975,10 @@ async def streaming_chat_response_handler(response, ctx):
                         await post_webhook(
                             request.app.state.WEBUI_NAME,
                             webhook_url,
-                            f"{title} - {request.app.state.config.WEBUI_URL}/c/{metadata['chat_id']}\n\n{content}",
+                            f"{title} - {request.app.state.config.WEBUI_URL}/c/{metadata['chat_id']}\n\n{finalized_content}",
                             {
                                 "action": "chat",
-                                "message": content,
+                                "message": finalized_content,
                                 "title": title,
                                 "url": f"{request.app.state.config.WEBUI_URL}/c/{metadata['chat_id']}",
                             },
@@ -11685,6 +12009,7 @@ async def streaming_chat_response_handler(response, ctx):
                             ),
                             "output": output,
                             **_offsec_guided_save_payload(metadata),
+                            **_research_guided_save_payload(metadata),
                             "terminationCause": termination_cause,
                         },
                     )

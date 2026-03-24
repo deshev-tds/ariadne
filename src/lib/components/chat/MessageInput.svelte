@@ -151,6 +151,8 @@
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
 	export let deepResearchEnabled = false;
 	export let setChatDeepResearchEnabled: (enabled: boolean) => void = () => {};
+	export let researchGuidedEnabled = false;
+	export let setChatResearchGuidedEnabled: (enabled: boolean) => void = () => {};
 	export let workingMode: WorkingMode = 'general';
 	export let setChatWorkingMode: (mode: WorkingMode) => void = () => {};
 	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
@@ -215,6 +217,7 @@
 		webSearchEnabled,
 		codeInterpreterEnabled,
 		deepResearchEnabled,
+		researchGuidedEnabled,
 		workingMode,
 		localCorpusMode,
 		oldChatsSearchEnabled
@@ -558,6 +561,12 @@
 		(atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).length === 1 &&
 		$config?.features?.enable_deep_research &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.deep_research);
+
+	let showResearchGuidedButton = false;
+	$: showResearchGuidedButton =
+		workingMode === 'science' &&
+		showWebSearchButton &&
+		Boolean($config?.features?.enable_research_guided);
 
 	let showImageGenerationButton = false;
 	$: showImageGenerationButton =
@@ -1896,6 +1905,31 @@
 													}}
 												>
 													<DocumentChartBar className="size-4.5" strokeWidth="1.75" />
+												</button>
+											</Tooltip>
+										{/if}
+										{#if showResearchGuidedButton}
+											<Tooltip
+												content={researchGuidedEnabled
+													? $i18n.t('Research-guided science mode is enabled for this chat')
+													: $i18n.t('Enable research-guided science mode for this chat')}
+												placement="top"
+											>
+												<button
+													type="button"
+													id="research-guided-toggle-button"
+													aria-label={$i18n.t('Research-guided science mode')}
+													aria-pressed={researchGuidedEnabled}
+													class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {researchGuidedEnabled
+														? 'text-blue-700 bg-blue-100/80 hover:bg-blue-200/80 dark:text-blue-200 dark:bg-blue-700/20 dark:hover:bg-blue-700/30'
+														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+													on:click={async () => {
+														setChatResearchGuidedEnabled(!researchGuidedEnabled);
+														await tick();
+														document.getElementById('chat-input')?.focus();
+													}}
+												>
+													<Sparkles className="size-4.5" strokeWidth="1.75" />
 												</button>
 											</Tooltip>
 										{/if}

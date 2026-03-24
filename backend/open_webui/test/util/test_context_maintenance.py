@@ -238,6 +238,22 @@ def test_history_message_to_llm_messages_prefers_turn_recap_when_present():
     ]
 
 
+def test_history_message_to_llm_messages_strips_research_guided_state_from_visible_message():
+    message = {
+        "id": "a4",
+        "role": "assistant",
+        "content": "Visible answer.",
+        "research_guided_state": {
+            "phase": "final_response",
+            "candidate_claims": [{"label": "verified_fact"}],
+        },
+    }
+
+    llm_messages = context_maintenance.history_message_to_llm_messages(message)
+
+    assert llm_messages == [{"role": "assistant", "content": "Visible answer."}]
+
+
 def test_resolve_runtime_model_reference_uses_base_model_metadata():
     base_model = {
         "id": "Step-3.5-Flash-Ablitirated.i1-IQ4_XS",

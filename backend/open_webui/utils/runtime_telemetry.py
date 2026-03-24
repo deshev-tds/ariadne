@@ -137,6 +137,23 @@ def _normalize_runtime_event(kind: str, payload: Any) -> dict[str, Any]:
             "entries": entries[-4:],
         }
 
+    if kind == "research":
+        data = payload if isinstance(payload, dict) else {}
+        return {
+            "phase": data.get("phase"),
+            "event": data.get("event"),
+            "goal_id": data.get("goal_id"),
+            "goal_status": data.get("goal_status"),
+            "resolution_basis": data.get("resolution_basis"),
+            "label": data.get("label"),
+            "ready_to_answer": bool(data.get("ready_to_answer", False)),
+            "duplicate_query_count": data.get("duplicate_query_count"),
+            "duplicate_fetch_count": data.get("duplicate_fetch_count"),
+            "negative_signal_count": data.get("negative_signal_count"),
+            "blocked_access_count": data.get("blocked_access_count"),
+            "stop_reason": data.get("stop_reason"),
+        }
+
     return {"preview": _truncate_text(payload)}
 
 
@@ -282,6 +299,7 @@ class RuntimeTelemetryTap:
                 "task_kinds": [],
                 "operations": [],
                 "memory": None,
+                "research": None,
                 "prompt_entry_count": 0,
             }
             self._message_summaries[key] = summary
@@ -323,6 +341,9 @@ class RuntimeTelemetryTap:
 
         elif event.get("kind") == "memory":
             summary["memory"] = copy.deepcopy(payload)
+
+        elif event.get("kind") == "research":
+            summary["research"] = copy.deepcopy(payload)
 
         elif event.get("kind") == "prompt":
             summary["prompt_entry_count"] = int(payload.get("entry_count", 0) or 0)

@@ -75,6 +75,7 @@ class RuntimeTelemetryMessageSummary(BaseModel):
     task_kinds: list[str] = Field(default_factory=list)
     operations: list[str] = Field(default_factory=list)
     memory: Optional[dict[str, Any]] = None
+    research: Optional[dict[str, Any]] = None
     prompt_entry_count: int = 0
 
 

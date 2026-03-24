@@ -70,3 +70,29 @@ def test_runtime_telemetry_tracks_memory_payloads_by_message():
     assert snapshot["recent_messages"][0]["memory"]["working_memory"]["summary_included"] is True
     assert snapshot["recent_messages"][0]["memory"]["recall"]["triggered"] is True
     assert snapshot["recent_messages"][0]["memory"]["ledger"]["injected"] is True
+
+
+def test_runtime_telemetry_tracks_research_payloads_by_message():
+    tap = RuntimeTelemetryTap()
+    tap.start()
+
+    tap.record(
+        kind="research",
+        chat_id="chat-3",
+        message_id="msg-3",
+        payload={
+            "phase": "evidence_check",
+            "event": "ready_to_answer",
+            "goal_status": "supported",
+            "resolution_basis": "contract_satisfied",
+            "label": "verified_fact",
+            "ready_to_answer": True,
+            "duplicate_query_count": 1,
+        },
+    )
+
+    snapshot = tap.snapshot(limit=10)
+
+    assert snapshot["kind_counts"]["research"] == 1
+    assert snapshot["recent_messages"][0]["research"]["event"] == "ready_to_answer"
+    assert snapshot["recent_messages"][0]["research"]["label"] == "verified_fact"

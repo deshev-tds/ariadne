@@ -3387,6 +3387,12 @@ ENABLE_DEEP_RESEARCH = PersistentConfig(
     os.getenv("ENABLE_DEEP_RESEARCH", "False").lower() == "true",
 )
 
+ENABLE_RESEARCH_GUIDED = PersistentConfig(
+    "ENABLE_RESEARCH_GUIDED",
+    "rag.research.guided.enable",
+    os.getenv("ENABLE_RESEARCH_GUIDED", "False").lower() == "true",
+)
+
 DEEP_RESEARCH_SIDECAR_URL = PersistentConfig(
     "DEEP_RESEARCH_SIDECAR_URL",
     "deep_research.sidecar_url",

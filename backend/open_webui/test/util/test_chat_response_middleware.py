@@ -718,6 +718,75 @@ def test_build_workflow_capture_packet_uses_turn_recap_fallback_when_output_miss
     assert packet["capture_reasons"] == ["offsec_guided_state", "turn_recap_present"]
 
 
+def test_normalize_workflow_saved_payload_includes_research_snapshot():
+    normalized = middleware._normalize_workflow_saved_payload(
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "params": {"working_mode": "science"},
+        },
+        saved_payload={
+            "content": "Grounded answer",
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "final_response",
+                "domain_profile": "general_science",
+                "goals": [
+                    {
+                        "goal_id": "goal-1",
+                        "status": "supported",
+                        "resolution_basis": "contract_satisfied",
+                        "disconfirmation_outcome": "not_found_under_budgeted_probe",
+                    }
+                ],
+                "working_propositions": [
+                    {"state": "leaning_support"},
+                ],
+                "candidate_claims": [{"label": "verified_fact"}],
+                "duplicate_query_count": 1,
+                "duplicate_fetch_count": 0,
+                "negative_signal_count": 0,
+                "blocked_access_count": 0,
+                "stop_reason": "all_primary_goals_resolved",
+                "ready_to_answer": True,
+            },
+        },
+    )
+
+    assert normalized["research_snapshot"]["present"] is True
+    assert normalized["research_snapshot"]["phase"] == "final_response"
+
+
+def test_build_workflow_capture_packet_uses_research_guided_state_as_capture_reason():
+    packet = middleware._build_workflow_capture_packet(
+        metadata={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "params": {"working_mode": "science"},
+        },
+        saved_payload={
+            "content": "Grounded answer",
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "final_response",
+                "goals": [
+                    {
+                        "goal_id": "goal-1",
+                        "status": "supported",
+                        "resolution_basis": "contract_satisfied",
+                        "disconfirmation_outcome": "not_found_under_budgeted_probe",
+                    }
+                ],
+                "working_propositions": [],
+                "candidate_claims": [{"label": "verified_fact"}],
+                "ready_to_answer": True,
+            },
+        },
+    )
+
+    assert packet is not None
+    assert packet["research_snapshot"]["present"] is True
+    assert packet["capture_reasons"] == ["research_guided_state"]
+
+
 def test_capture_workflow_packet_is_chat_scoped(monkeypatch, tmp_path):
     monkeypatch.setattr(
         middleware,
@@ -1238,6 +1307,7 @@ def test_apply_params_strips_ledger_mode_from_openai_payload():
         "params": {
             "ledger_mode": "agentic",
             "working_mode": "science",
+            "research_guided_mode": True,
             "local_corpus_mode": "prefer",
             "temperature": 0.2,
         }
@@ -1248,6 +1318,7 @@ def test_apply_params_strips_ledger_mode_from_openai_payload():
 
     assert "ledger_mode" not in result
     assert "working_mode" not in result
+    assert "research_guided_mode" not in result
     assert "local_corpus_mode" not in result
     assert result["temperature"] == 0.2
 
@@ -1257,6 +1328,7 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
         "params": {
             "ledger_mode": "agentic",
             "working_mode": "science",
+            "research_guided_mode": True,
             "local_corpus_mode": "prefer",
             "temperature": 0.2,
         }
@@ -1268,6 +1340,7 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
     assert result["options"].get("temperature") == 0.2
     assert "ledger_mode" not in result["options"]
     assert "working_mode" not in result["options"]
+    assert "research_guided_mode" not in result["options"]
     assert "local_corpus_mode" not in result["options"]
 
 
@@ -1955,11 +2028,254 @@ def test_build_tool_continuation_messages_uses_temporary_system_append():
         form_messages,
         output,
         narration_instruction="phase guidance",
+        research_instruction="research guidance",
     )
 
     assert "phase guidance" in messages[0]["content"]
+    assert "research guidance" in messages[0]["content"]
     assert "phase guidance" not in form_messages[0]["content"]
     assert messages[-1]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_process_chat_payload_injects_research_guided_prompt_for_science_turn(
+    monkeypatch,
+):
+    request = _build_request(enable_local_corpus=False)
+    request.app.state.config.ENABLE_RESEARCH_GUIDED = True
+    user = SimpleNamespace(id="user-1")
+    metadata = {
+        "params": {
+            "function_calling": "native",
+            "working_mode": "science",
+            "local_corpus_mode": "auto",
+            "research_guided_mode": True,
+        },
+        "features": {"web_search": True, "focused_search": False, "deep_research": False},
+    }
+    form_data = {
+        "model": "demo-model",
+        "features": {"web_search": True, "focused_search": False, "deep_research": False},
+        "messages": [
+            {
+                "role": "user",
+                "content": "What evidence exists for whether evening blue light changes circadian phase?",
+            }
+        ],
+    }
+    model = {
+        "id": "demo-model",
+        "info": {"meta": {"capabilities": {"builtin_tools": False, "file_context": False}}},
+    }
+
+    monkeypatch.setattr(
+        middleware,
+        "apply_global_cache_prompt",
+        lambda current_form_data, _model, _enabled: current_form_data,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_recall_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_context_maintenance_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+
+    async def _noop_ledger(**kwargs):
+        return kwargs["messages"], {}
+
+    async def _noop_pipeline(_request, current_form_data, _user, _models):
+        return current_form_data
+
+    async def _noop_filters(**kwargs):
+        return kwargs["form_data"], {}
+
+    monkeypatch.setattr(middleware, "maybe_apply_ledger", _noop_ledger)
+    monkeypatch.setattr(middleware, "process_pipeline_inlet_filter", _noop_pipeline)
+    monkeypatch.setattr(middleware, "get_sorted_filter_ids", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Functions.get_functions_by_ids",
+        lambda _ids: [],
+    )
+    monkeypatch.setattr(middleware, "process_filter_functions", _noop_filters)
+
+    updated_form_data, updated_metadata, _events = await middleware.process_chat_payload(
+        request,
+        form_data,
+        user,
+        metadata,
+        model,
+    )
+
+    system_message = next(
+        (message for message in updated_form_data["messages"] if message.get("role") == "system"),
+        None,
+    )
+
+    assert system_message is not None
+    assert "research-guided loop" in system_message["content"]
+    assert isinstance(updated_metadata[middleware.RESEARCH_GUIDED_STATE_KEY], dict)
+    assert updated_metadata[middleware.RESEARCH_GUIDED_STATE_KEY]["phase"] == "plan"
+
+
+@pytest.mark.asyncio
+async def test_process_chat_payload_bypasses_research_guided_for_bali_travel_turn(
+    monkeypatch,
+):
+    request = _build_request(enable_local_corpus=False)
+    request.app.state.config.ENABLE_RESEARCH_GUIDED = True
+    user = SimpleNamespace(id="user-1")
+    metadata = {
+        "params": {
+            "function_calling": "native",
+            "working_mode": "science",
+            "local_corpus_mode": "auto",
+            "research_guided_mode": True,
+        },
+        "features": {"web_search": True, "focused_search": False, "deep_research": False},
+    }
+    form_data = {
+        "model": "demo-model",
+        "features": {"web_search": True, "focused_search": False, "deep_research": False},
+        "messages": [{"role": "user", "content": "Where should I go for drinks in Bali today?"}],
+    }
+    model = {
+        "id": "demo-model",
+        "info": {"meta": {"capabilities": {"builtin_tools": False, "file_context": False}}},
+    }
+
+    monkeypatch.setattr(
+        middleware,
+        "apply_global_cache_prompt",
+        lambda current_form_data, _model, _enabled: current_form_data,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_chat_recall_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        middleware,
+        "_resolve_context_maintenance_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+
+    async def _noop_ledger(**kwargs):
+        return kwargs["messages"], {}
+
+    async def _noop_pipeline(_request, current_form_data, _user, _models):
+        return current_form_data
+
+    async def _noop_filters(**kwargs):
+        return kwargs["form_data"], {}
+
+    monkeypatch.setattr(middleware, "maybe_apply_ledger", _noop_ledger)
+    monkeypatch.setattr(middleware, "process_pipeline_inlet_filter", _noop_pipeline)
+    monkeypatch.setattr(middleware, "get_sorted_filter_ids", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Functions.get_functions_by_ids",
+        lambda _ids: [],
+    )
+    monkeypatch.setattr(middleware, "process_filter_functions", _noop_filters)
+
+    updated_form_data, updated_metadata, _events = await middleware.process_chat_payload(
+        request,
+        form_data,
+        user,
+        metadata,
+        model,
+    )
+
+    system_message = next(
+        (message for message in updated_form_data["messages"] if message.get("role") == "system"),
+        None,
+    )
+
+    assert system_message is None or "research-guided loop" not in str(system_message["content"])
+    assert middleware.RESEARCH_GUIDED_STATE_KEY not in updated_metadata
+    assert updated_metadata["research_guided_ineligible_reason"] == "non_science_query"
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_chat_response_appends_research_status_block(monkeypatch):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Test Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {},
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "final_response",
+                "ready_to_answer": True,
+                "candidate_claims": [
+                    {
+                        "text": "Evening blue-light effects remain uncertain under ordinary device use",
+                        "label": "reasonable_inference",
+                        "basis_summary": "supported by direct empirical evidence for circadian proxy outcomes, not field outcomes",
+                        "must_include_limitations": ["no patient-relevant downstream outcome evidence"],
+                    }
+                ],
+            },
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    response = {
+        "choices": [{"message": {"content": "Grounded answer"}}],
+        "output": [
+            {
+                "id": "msg-1",
+                "status": "completed",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Grounded answer"}],
+            },
+        ],
+        "usage": {"completion_tokens": 1},
+    }
+
+    await non_streaming_chat_response_handler(response, ctx)
+
+    saved_payload = saved_messages[0][2]
+    assert "### Research Status" in saved_payload["content"]
+    assert saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["ready_to_answer"] is True
 
 
 @pytest.mark.asyncio

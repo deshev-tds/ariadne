@@ -306,6 +306,7 @@ from open_webui.config import (
     YOUTUBE_LOADER_PROXY_URL,
     # Deep Research
     ENABLE_DEEP_RESEARCH,
+    ENABLE_RESEARCH_GUIDED,
     DEEP_RESEARCH_SIDECAR_URL,
     DEEP_RESEARCH_SIDECAR_USERNAME,
     DEEP_RESEARCH_SIDECAR_PASSWORD,
@@ -1142,6 +1143,7 @@ app.state.config.YOUTUBE_LOADER_LANGUAGE = YOUTUBE_LOADER_LANGUAGE
 app.state.config.YOUTUBE_LOADER_PROXY_URL = YOUTUBE_LOADER_PROXY_URL
 
 app.state.config.ENABLE_DEEP_RESEARCH = ENABLE_DEEP_RESEARCH
+app.state.config.ENABLE_RESEARCH_GUIDED = ENABLE_RESEARCH_GUIDED
 app.state.config.DEEP_RESEARCH_SIDECAR_URL = DEEP_RESEARCH_SIDECAR_URL
 app.state.config.DEEP_RESEARCH_SIDECAR_USERNAME = DEEP_RESEARCH_SIDECAR_USERNAME
 app.state.config.DEEP_RESEARCH_SIDECAR_PASSWORD = DEEP_RESEARCH_SIDECAR_PASSWORD
@@ -2015,6 +2017,9 @@ async def chat_completion(
                 "ledger_mode": ledger_mode,
                 "working_mode": working_mode,
                 "local_corpus_mode": local_corpus_mode,
+                "research_guided_mode": bool(
+                    form_data.get("params", {}).get("research_guided_mode")
+                ),
                 "debug_memory_telemetry": bool(
                     form_data.get("params", {}).get("debug_memory_telemetry")
                 ),
@@ -2772,6 +2777,9 @@ async def get_app_config(request: Request):
                     "enable_notes": app.state.config.ENABLE_NOTES,
                     "enable_deep_research": getattr(
                         app.state.config, "ENABLE_DEEP_RESEARCH", False
+                    ),
+                    "enable_research_guided": getattr(
+                        app.state.config, "ENABLE_RESEARCH_GUIDED", False
                     ),
                     "enable_web_search": app.state.config.ENABLE_WEB_SEARCH,
                     "enable_code_execution": app.state.config.ENABLE_CODE_EXECUTION,

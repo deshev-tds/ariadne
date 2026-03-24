@@ -112,6 +112,10 @@ def test_preserve_server_owned_message_fields_keeps_turn_recap_and_telemetry():
     existing["history"]["messages"]["assistant-1"]["tokenTelemetry"] = {
         "tokens": [1, 2, 3]
     }
+    existing["history"]["messages"]["assistant-1"]["research_guided_state"] = {
+        "phase": "final_response",
+        "ready_to_answer": True,
+    }
 
     incoming = _build_chat_payload()
     preserved = _preserve_server_owned_message_fields(existing, incoming)
@@ -120,6 +124,7 @@ def test_preserve_server_owned_message_fields_keeps_turn_recap_and_telemetry():
     assert assistant["turn_recap"]["version"] == 1
     assert assistant["usage"]["prompt_tokens"] == 42
     assert assistant["tokenTelemetry"]["tokens"] == [1, 2, 3]
+    assert assistant["research_guided_state"]["phase"] == "final_response"
 
 
 def test_preserve_server_owned_message_fields_does_not_override_explicit_client_value():

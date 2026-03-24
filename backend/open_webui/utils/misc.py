@@ -789,7 +789,17 @@ def history_message_to_llm_messages(
         visible_message = {
             key: value
             for key, value in message.items()
-            if key not in {"id", "parentId", "childrenIds", "files", "output", "turn_recap"}
+            if key
+            not in {
+                "id",
+                "parentId",
+                "childrenIds",
+                "files",
+                "output",
+                "turn_recap",
+                "offsec_guided_state",
+                "research_guided_state",
+            }
         }
         sanitized_visible_message = sanitize_historical_message_for_llm(visible_message)
         if _historical_content_has_value(sanitized_visible_message.get("content")):
@@ -806,7 +816,17 @@ def history_message_to_llm_messages(
     clean_message = {
         key: value
         for key, value in message.items()
-        if key not in {"id", "parentId", "childrenIds", "files", "output", "turn_recap"}
+        if key
+        not in {
+            "id",
+            "parentId",
+            "childrenIds",
+            "files",
+            "output",
+            "turn_recap",
+            "offsec_guided_state",
+            "research_guided_state",
+        }
     }
     return [
         sanitize_historical_message_for_llm(

@@ -60,6 +60,7 @@ SERVER_OWNED_MESSAGE_FIELDS = {
     "terminationCause",
     "turn_recap",
     "offsec_guided_state",
+    "research_guided_state",
 }
 
 

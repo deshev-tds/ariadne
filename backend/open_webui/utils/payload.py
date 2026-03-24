@@ -76,6 +76,7 @@ def remove_open_webui_params(params: dict) -> dict:
         "stream_delta_chunk_size": int,
         "function_calling": str,
         "reasoning_tags": list,
+        "research_guided_mode": bool,
         "web_evidence_retrieval_mode": str,
         "system": str,
     }
