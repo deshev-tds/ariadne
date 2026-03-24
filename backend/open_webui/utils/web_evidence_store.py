@@ -1084,11 +1084,8 @@ def _annotate_and_expand_snippets(
     if not snippets:
         return [], {"expanded_context_count": 0, "truncation_trust_hits": 0}
 
-    tight_scope = int(scope_artifact_count or 0) > 0 and int(scope_artifact_count or 0) <= 2
     text_cache: dict[str, str] = {}
-    expanded_context_count = 0
     truncation_trust_hits = 0
-    expansions_by_artifact: dict[str, int] = {}
     annotated: list[dict[str, Any]] = []
 
     for snippet in snippets:
@@ -1113,39 +1110,13 @@ def _annotate_and_expand_snippets(
         updated["effective_window_chars"] = max(0, raw_end - raw_start)
         updated["expansion_anchor_start"] = int(updated.get("hit_index") or raw_start)
 
-        should_expand = (
-            tight_scope
-            and expansions_by_artifact.get(artifact_id, 0) <= 0
-            and _snippet_should_expand(updated, query_profile=query_profile)
-        )
-        if content and should_expand:
-            new_start, new_end, expanded_text = _expand_context_window(
-                content,
-                start=raw_start,
-                end=raw_end,
-                anchor_index=int(updated.get("hit_index") or raw_start),
-            )
-            if expanded_text and (new_start != raw_start or new_end != raw_end):
-                updated["start"] = new_start
-                updated["end"] = new_end
-                updated["text"] = expanded_text
-                updated["expanded_context_applied"] = True
-                updated["effective_window_chars"] = new_end - new_start
-                updated["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
-                updated["result_clause_complete"] = _result_clause_complete(expanded_text)
-                updated["truncation_trust_hint"] = bool(
-                    updated["result_clause_complete"] and updated["snippet_truncated"]
-                )
-                expanded_context_count += 1
-                expansions_by_artifact[artifact_id] = expansions_by_artifact.get(artifact_id, 0) + 1
-
         if updated["truncation_trust_hint"]:
             truncation_trust_hits += 1
         annotated.append(updated)
 
     merged = _merge_expanded_snippets(annotated, text_cache=text_cache)
     return merged, {
-        "expanded_context_count": expanded_context_count,
+        "expanded_context_count": 0,
         "truncation_trust_hits": truncation_trust_hits,
     }
 
@@ -1266,6 +1237,141 @@ def _concept_should_expand(
     return bool(str(snippet.get("text") or ""))
 
 
+def _expand_top_snippet_after_ranking(
+    snippets: list[dict[str, Any]],
+    *,
+    scope_artifact_count: int,
+    query_profile: Optional[dict[str, Any]] = None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if not snippets:
+        return [], {"expanded_context_count": 0, "truncation_trust_hits": 0}
+    tight_scope = int(scope_artifact_count or 0) > 0 and int(scope_artifact_count or 0) <= 2
+    if not tight_scope:
+        return list(snippets), {
+            "expanded_context_count": 0,
+            "truncation_trust_hits": sum(
+                1 for snippet in snippets if _normalize_bool(snippet.get("truncation_trust_hint"))
+            ),
+        }
+
+    updated_snippets = [dict(snippet) for snippet in snippets]
+    top = updated_snippets[0]
+    if _snippet_should_expand(top, query_profile=query_profile):
+        path = str(top.get("path") or "")
+        content = _read_artifact_text(path) if path else ""
+        content = content or str(top.get("text") or "")
+        raw_start = int(top.get("start") or 0)
+        raw_end = int(top.get("end") or 0)
+        if content:
+            new_start, new_end, expanded_text = _expand_context_window(
+                content,
+                start=raw_start,
+                end=raw_end,
+                anchor_index=int(top.get("hit_index") or raw_start),
+            )
+            if expanded_text and (new_start != raw_start or new_end != raw_end):
+                top["start"] = new_start
+                top["end"] = new_end
+                top["text"] = expanded_text
+                top["expanded_context_applied"] = True
+                top["effective_window_chars"] = new_end - new_start
+                top["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
+                top["result_clause_complete"] = _result_clause_complete(expanded_text)
+                top["truncation_trust_hint"] = bool(
+                    top["result_clause_complete"] and top["snippet_truncated"]
+                )
+                top["expansion_anchor_start"] = int(top.get("hit_index") or raw_start)
+                updated_snippets[0] = top
+                return updated_snippets, {
+                    "expanded_context_count": 1,
+                    "truncation_trust_hits": sum(
+                        1
+                        for snippet in updated_snippets
+                        if _normalize_bool(snippet.get("truncation_trust_hint"))
+                    ),
+                }
+
+    return updated_snippets, {
+        "expanded_context_count": 0,
+        "truncation_trust_hits": sum(
+            1 for snippet in updated_snippets if _normalize_bool(snippet.get("truncation_trust_hint"))
+        ),
+    }
+
+
+def _expand_top_snippet_after_ranking_concept(
+    snippets: list[dict[str, Any]],
+    *,
+    scope_artifact_count: int,
+    query_profile: Optional[dict[str, Any]],
+    artifact_contexts: dict[str, dict[str, Any]],
+    base_meta: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not snippets:
+        return [], dict(base_meta or {})
+    tight_scope = int(scope_artifact_count or 0) > 0 and int(scope_artifact_count or 0) <= CONCEPT_ALIGNMENT_ARTIFACT_SCOPE_MAX
+    updated_snippets = [dict(snippet) for snippet in snippets]
+    expanded_context_count = 0
+    if tight_scope and _concept_should_expand(updated_snippets[0]):
+        top = updated_snippets[0]
+        artifact_id = str(top.get("artifact_id") or "")
+        context = artifact_contexts.get(artifact_id) or {}
+        alias_registry = dict(context.get("alias_registry") or {})
+        path = str(top.get("path") or context.get("path") or "")
+        content = str(context.get("content") or "")
+        if not content and path:
+            content = _read_artifact_text(path)
+        content = content or str(top.get("text") or "")
+        raw_start = int(top.get("start") or 0)
+        raw_end = int(top.get("end") or 0)
+        if content:
+            new_start, new_end, expanded_text = _expand_context_window(
+                content,
+                start=raw_start,
+                end=raw_end,
+                anchor_index=int(top.get("hit_index") or raw_start),
+            )
+            if expanded_text and (new_start != raw_start or new_end != raw_end):
+                top["start"] = new_start
+                top["end"] = new_end
+                top["text"] = expanded_text
+                top["expanded_context_applied"] = True
+                top["effective_window_chars"] = new_end - new_start
+                top["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
+                top.update(
+                    _concept_alignment_for_text(
+                        text=expanded_text,
+                        target_concepts=list((query_profile or {}).get("target_concepts") or []),
+                        alias_registry=alias_registry,
+                    )
+                )
+                top["result_clause_complete"] = _concept_result_clause_complete(expanded_text)
+                top["truncation_trust_hint"] = bool(
+                    top["snippet_truncated"]
+                    and top["result_clause_complete"]
+                    and str(top.get("alignment_strength") or "none") in {"exact", "strong"}
+                )
+                top["expansion_anchor_start"] = int(top.get("hit_index") or raw_start)
+                updated_snippets[0] = top
+                expanded_context_count = 1
+
+    updated_meta = dict(base_meta or {})
+    updated_meta["expanded_context_count"] = expanded_context_count
+    updated_meta["truncation_trust_hits"] = sum(
+        1 for snippet in updated_snippets if _normalize_bool(snippet.get("truncation_trust_hint"))
+    )
+    updated_meta["concept_aligned_trust_hits"] = sum(
+        1
+        for snippet in updated_snippets
+        if str(snippet.get("alignment_strength") or "none") in {"exact", "strong"}
+        and _normalize_bool(snippet.get("result_clause_complete"))
+    )
+    updated_meta["adjacent_outcome_conflict_count"] = sum(
+        1 for snippet in updated_snippets if _normalize_bool(snippet.get("adjacent_outcome_conflict"))
+    )
+    return updated_snippets, updated_meta
+
+
 def _annotate_and_expand_snippets_concept(
     snippets: list[dict[str, Any]],
     *,
@@ -1285,14 +1391,11 @@ def _annotate_and_expand_snippets_concept(
             "alias_confidence_summary": {"high": 0, "medium": 0, "low": 0, "ambiguous": 0},
         }
 
-    tight_scope = int(scope_artifact_count or 0) > 0 and int(scope_artifact_count or 0) <= CONCEPT_ALIGNMENT_ARTIFACT_SCOPE_MAX
     text_cache: dict[str, str] = {
         str(context.get("path") or ""): str(context.get("content") or "")
         for context in artifact_contexts.values()
         if str(context.get("path") or "")
     }
-    expansions_by_artifact: dict[str, int] = {}
-    expanded_context_count = 0
     annotated: list[dict[str, Any]] = []
     alias_summary = {"high": 0, "medium": 0, "low": 0, "ambiguous": 0}
     for context in artifact_contexts.values():
@@ -1332,41 +1435,6 @@ def _annotate_and_expand_snippets_concept(
             and str(updated.get("alignment_strength") or "none") in {"exact", "strong"}
         )
 
-        should_expand = (
-            tight_scope
-            and expansions_by_artifact.get(artifact_id, 0) <= 0
-            and _concept_should_expand(updated)
-        )
-        if content and should_expand:
-            new_start, new_end, expanded_text = _expand_context_window(
-                content,
-                start=raw_start,
-                end=raw_end,
-                anchor_index=int(updated.get("hit_index") or raw_start),
-            )
-            if expanded_text and (new_start != raw_start or new_end != raw_end):
-                updated["start"] = new_start
-                updated["end"] = new_end
-                updated["text"] = expanded_text
-                updated["expanded_context_applied"] = True
-                updated["effective_window_chars"] = new_end - new_start
-                updated["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
-                updated.update(
-                    _concept_alignment_for_text(
-                        text=expanded_text,
-                        target_concepts=list((query_profile or {}).get("target_concepts") or []),
-                        alias_registry=alias_registry,
-                    )
-                )
-                updated["result_clause_complete"] = _concept_result_clause_complete(expanded_text)
-                updated["truncation_trust_hint"] = bool(
-                    updated["snippet_truncated"]
-                    and updated["result_clause_complete"]
-                    and str(updated.get("alignment_strength") or "none") in {"exact", "strong"}
-                )
-                expanded_context_count += 1
-                expansions_by_artifact[artifact_id] = expansions_by_artifact.get(artifact_id, 0) + 1
-
         annotated.append(updated)
 
     merged = _merge_expanded_snippets(annotated, text_cache=text_cache)
@@ -1389,7 +1457,7 @@ def _annotate_and_expand_snippets_concept(
         1 for snippet in reranked if _normalize_bool(snippet.get("adjacent_outcome_conflict"))
     )
     return reranked, {
-        "expanded_context_count": expanded_context_count,
+        "expanded_context_count": 0,
         "truncation_trust_hits": truncation_trust_hits,
         "concept_aligned_trust_hits": concept_aligned_trust_hits,
         "adjacent_outcome_conflict_count": adjacent_outcome_conflict_count,
@@ -3273,7 +3341,12 @@ def _query_web_evidence_store_segmented_legacy(
         if deduped_snippets
         else snippets[:final_limit]
     )
-    final_snippets, expansion_meta = _annotate_and_expand_snippets(
+    final_snippets, _annotation_meta = _annotate_and_expand_snippets(
+        final_snippets,
+        scope_artifact_count=len(searched_artifact_ids),
+        query_profile=query_profile,
+    )
+    final_snippets, expansion_meta = _expand_top_snippet_after_ranking(
         final_snippets,
         scope_artifact_count=len(searched_artifact_ids),
         query_profile=query_profile,
@@ -3454,6 +3527,13 @@ def _query_web_evidence_store_segmented_concept(
         aligned_snippets,
         focus_targets=focus_targets,
         limit=final_limit,
+    )
+    final_snippets, concept_meta = _expand_top_snippet_after_ranking_concept(
+        final_snippets,
+        scope_artifact_count=len(searched_artifact_ids),
+        query_profile=query_profile,
+        artifact_contexts=artifact_contexts,
+        base_meta=concept_meta,
     )
     coverage_after_merge = _count_focus_coverage(
         final_snippets,
@@ -3903,13 +3983,25 @@ def query_web_evidence_store(
             embedding_function=embedding_function,
         )
         snippets = snippets[:bounded_top_k]
+        snippets, expansion_meta = _expand_top_snippet_after_ranking_concept(
+            snippets,
+            scope_artifact_count=len(searched_artifact_ids),
+            query_profile=active_query_profile,
+            artifact_contexts=artifact_contexts,
+            base_meta=expansion_meta,
+        )
         evidence_strength = _classify_evidence_strength_concept(snippets)
         suggested_next_action = _suggest_next_action_concept(
             searched_artifact_count=len(searched_artifact_ids),
             snippets=snippets,
         )
     else:
-        snippets, expansion_meta = _annotate_and_expand_snippets(
+        snippets, _annotation_meta = _annotate_and_expand_snippets(
+            snippets,
+            scope_artifact_count=len(searched_artifact_ids),
+            query_profile=active_query_profile,
+        )
+        snippets, expansion_meta = _expand_top_snippet_after_ranking(
             snippets,
             scope_artifact_count=len(searched_artifact_ids),
             query_profile=active_query_profile,
