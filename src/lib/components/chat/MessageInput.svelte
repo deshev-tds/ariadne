@@ -370,20 +370,6 @@
 	const getWorkingModeStatusText = (mode: WorkingMode): string =>
 		`${getWorkingModeLabel(mode)} mode is active for this chat`;
 
-	const isTouchDevice = () =>
-		typeof window !== 'undefined' &&
-		('ontouchstart' in window || navigator.maxTouchPoints > 0 || navigator.msMaxTouchPoints > 0);
-
-	const restoreChatInputFocus = async () => {
-		await tick();
-
-		if ($mobile || isTouchDevice()) {
-			return;
-		}
-
-		document.getElementById('chat-input')?.focus();
-	};
-
 	const replaceVariables = (variables: Record<string, any>) => {
 		console.log('Replacing variables:', variables);
 
@@ -1605,9 +1591,7 @@
 							</div>
 
 							<div class=" flex justify-between mt-0.5 mb-2.5 mx-0.5 max-w-full" dir="ltr">
-								<div
-									class="ml-1 self-end flex flex-wrap items-center content-end flex-1 min-w-0 max-w-[80%] gap-y-1"
-								>
+								<div class="ml-1 self-end flex items-center flex-1 max-w-[80%]">
 									<InputMenu
 										bind:files
 										selectedModels={atSelectedModel ? [atSelectedModel.id] : selectedModels}
@@ -1653,7 +1637,12 @@
 											}
 										}}
 										{onUpload}
-										onClose={restoreChatInputFocus}
+										onClose={async () => {
+											await tick();
+
+											const chatInput = document.getElementById('chat-input');
+											chatInput?.focus();
+										}}
 									>
 										<div
 											id="input-menu-button"
@@ -1687,7 +1676,12 @@
 												showValvesModal = true;
 												integrationsMenuCloseOnOutsideClick = false;
 											}}
-											onClose={restoreChatInputFocus}
+											onClose={async () => {
+												await tick();
+
+												const chatInput = document.getElementById('chat-input');
+												chatInput?.focus();
+											}}
 										>
 											<div
 												id="integration-menu-button"
@@ -1698,7 +1692,7 @@
 										</IntegrationsMenu>
 									{/if}
 
-									<div class="ml-1 flex flex-wrap gap-1.5">
+									<div class="ml-1 flex gap-1.5">
 										<Tooltip
 											content={thinkingEnabled
 												? $i18n.t('Thinking mode is enabled for this chat')
@@ -1715,7 +1709,8 @@
 													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 												on:click={async () => {
 													setChatThinkingEnabled(!thinkingEnabled);
-													await restoreChatInputFocus();
+													await tick();
+													document.getElementById('chat-input')?.focus();
 												}}
 											>
 												<LightBulb className="size-4.5" strokeWidth="1.75" />
@@ -1737,7 +1732,8 @@
 													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 												on:click={async () => {
 													setChatLedgerAgenticEnabled(!ledgerAgenticEnabled);
-													await restoreChatInputFocus();
+													await tick();
+													document.getElementById('chat-input')?.focus();
 												}}
 											>
 												<CommandLine className="size-4.5" strokeWidth="1.75" />
@@ -1747,17 +1743,20 @@
 											bind:show={showWorkingModeMenu}
 											on:change={async (e) => {
 												if (e.detail === false) {
-													await restoreChatInputFocus();
+													await tick();
+													document.getElementById('chat-input')?.focus();
 												}
 											}}
 										>
-											<Tooltip content={getWorkingModeStatusText(workingMode)} placement="top">
+											<Tooltip
+												content={getWorkingModeStatusText(workingMode)}
+												placement="top"
+											>
 												<button
 													type="button"
 													id="working-mode-button"
 													aria-label="Working mode"
-													class="rounded-full h-8 min-w-[4.5rem] px-2.5 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors text-[11px] font-semibold uppercase tracking-[0.08em] {workingMode ===
-													'offsec'
+													class="rounded-full h-8 min-w-[4.5rem] px-2.5 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors text-[11px] font-semibold uppercase tracking-[0.08em] {workingMode === 'offsec'
 														? 'text-orange-700 bg-orange-100/80 hover:bg-orange-200/80 dark:text-orange-200 dark:bg-orange-700/20 dark:hover:bg-orange-700/30'
 														: workingMode === 'science'
 															? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
@@ -1781,7 +1780,8 @@
 															on:click={async () => {
 																setChatWorkingMode(option.value);
 																showWorkingModeMenu = false;
-																await restoreChatInputFocus();
+																await tick();
+																document.getElementById('chat-input')?.focus();
 															}}
 														>
 															<div class="flex items-center gap-2 text-sm font-medium">
@@ -1815,8 +1815,7 @@
 												id="local-corpus-mode-button"
 												aria-label={$i18n.t('Local corpus mode')}
 												aria-pressed={localCorpusMode !== 'off'}
-												class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {localCorpusMode ===
-												'prefer'
+												class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {localCorpusMode === 'prefer'
 													? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
 													: localCorpusMode === 'auto'
 														? 'text-sky-700 bg-sky-100/80 hover:bg-sky-200/80 dark:text-sky-200 dark:bg-sky-700/20 dark:hover:bg-sky-700/30'
@@ -1829,7 +1828,8 @@
 																? 'prefer'
 																: 'off';
 													setChatLocalCorpusMode(nextMode);
-													await restoreChatInputFocus();
+													await tick();
+													document.getElementById('chat-input')?.focus();
 												}}
 											>
 												<BookOpen className="size-4.5" strokeWidth="1.75" />
@@ -1851,7 +1851,8 @@
 													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 												on:click={async () => {
 													setChatOldChatsSearchEnabled(!oldChatsSearchEnabled);
-													await restoreChatInputFocus();
+													await tick();
+													document.getElementById('chat-input')?.focus();
 												}}
 											>
 												<ChatBubbles className="size-4.5" strokeWidth="1.75" />
@@ -1874,7 +1875,8 @@
 														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 													on:click={async () => {
 														setChatFocusedSearchEnabled(!focusedSearchEnabled);
-														await restoreChatInputFocus();
+														await tick();
+														document.getElementById('chat-input')?.focus();
 													}}
 												>
 													<GlobeAlt className="size-4.5" strokeWidth="1.75" />
@@ -1898,7 +1900,8 @@
 														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 													on:click={async () => {
 														setChatDeepResearchEnabled(!deepResearchEnabled);
-														await restoreChatInputFocus();
+														await tick();
+														document.getElementById('chat-input')?.focus();
 													}}
 												>
 													<DocumentChartBar className="size-4.5" strokeWidth="1.75" />
@@ -1922,7 +1925,8 @@
 														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 													on:click={async () => {
 														setChatResearchGuidedEnabled(!researchGuidedEnabled);
-														await restoreChatInputFocus();
+														await tick();
+														document.getElementById('chat-input')?.focus();
 													}}
 												>
 													<Sparkles className="size-4.5" strokeWidth="1.75" />
@@ -1932,7 +1936,7 @@
 									</div>
 
 									{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves}
-										<div class="ml-1 flex flex-wrap gap-1.5">
+										<div class="ml-1 flex gap-1.5">
 											<Tooltip content={$i18n.t('Valves')} placement="top">
 												<button
 													type="button"
@@ -1950,7 +1954,7 @@
 										</div>
 									{/if}
 
-									<div class="ml-1 flex flex-wrap gap-1.5">
+									<div class="ml-1 flex gap-1.5">
 										{#if (selectedToolIds ?? []).length > 0}
 											<Tooltip
 												content={$i18n.t('{{COUNT}} Available Tools', {
