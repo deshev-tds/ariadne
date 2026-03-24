@@ -186,6 +186,7 @@ from open_webui.utils.offsec_guided import (
     should_block_command_payload,
 )
 from open_webui.utils.research_guided import (
+    CLAIM_LABEL_VERIFIED,
     RESEARCH_GUIDED_RUNTIME_EVENT_CAP,
     RESEARCH_GUIDED_STATE_KEY,
     RESEARCH_STATUS_MARKER,
@@ -195,6 +196,7 @@ from open_webui.utils.research_guided import (
     build_runtime_summary as build_research_guided_runtime_summary,
     build_initial_state as build_research_guided_initial_state,
     consume_pending_system_note as consume_research_guided_pending_note,
+    finalize_state_for_completed_turn as finalize_research_guided_state_for_completed_turn,
     is_research_guided_turn_eligible,
     normalize_research_guided_mode,
     register_tool_event as register_research_guided_tool_event,
@@ -670,6 +672,77 @@ def _maybe_append_research_status_to_output(
     else:
         combined_content = block
     return combined_content, output_copy
+
+
+def _strip_runtime_detail_blocks(content: Any) -> Any:
+    if not isinstance(content, str) or "<details" not in content:
+        return content
+
+    stripped = re.sub(
+        r'<details\b(?=[^>]*\btype="reasoning")[^>]*>.*?</details>\s*',
+        "",
+        content,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    stripped = re.sub(
+        r'<details\b(?=[^>]*\btype="tool_calls")[^>]*>.*?</details>\s*',
+        "",
+        stripped,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    stripped = re.sub(r"</?think>", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped)
+    return stripped.strip()
+
+
+def _align_research_guided_claim_headings(
+    content: Any,
+    state: dict[str, Any] | None,
+) -> Any:
+    if not isinstance(content, str) or not isinstance(state, dict):
+        return content
+
+    labels = {
+        str(claim.get("label") or "")
+        for claim in (state.get("candidate_claims") or [])
+        if isinstance(claim, dict)
+    }
+    if labels and CLAIM_LABEL_VERIFIED not in labels:
+        content = re.sub(
+            r"^\*\*Verified facts:\*\*",
+            "**Current evidence:**",
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    return content
+
+
+def _reconcile_research_guided_completion(
+    metadata: dict[str, Any] | None,
+    *,
+    content: Any,
+) -> Any:
+    state = _research_guided_state_from_metadata(metadata)
+    if not isinstance(state, dict):
+        return content
+
+    visible_content = _strip_runtime_detail_blocks(content)
+    next_state = finalize_research_guided_state_for_completed_turn(
+        state,
+        visible_answer_present=bool(re.sub(r"\s+", " ", str(visible_content or "")).strip()),
+    )
+    _set_research_guided_state(metadata, next_state)
+
+    transition_payload = _research_guided_transition_payload(
+        state,
+        next_state,
+        default_event="completion_finalized",
+    )
+    if transition_payload:
+        _append_research_guided_event(metadata, transition_payload)
+
+    return _align_research_guided_claim_headings(visible_content, next_state)
 
 
 def _truncate_workflow_diary_text(value: Any, max_chars: int) -> str:
@@ -9652,6 +9725,10 @@ async def non_streaming_chat_response_handler(response, ctx):
             content = _finalize_completed_reasoning_details(
                 response_data["choices"][0]["message"]["content"]
             )
+            content = _reconcile_research_guided_completion(
+                metadata,
+                content=content,
+            )
             response_data["choices"][0]["message"]["content"] = content
 
             if content:
@@ -9674,6 +9751,21 @@ async def non_streaming_chat_response_handler(response, ctx):
                     output=response_output,
                     metadata=metadata,
                 )
+                if research_telemetry is None and runtime_telemetry.is_enabled():
+                    research_state = _research_guided_state_from_metadata(metadata)
+                    if isinstance(research_state, dict):
+                        research_telemetry = {
+                            "summary": build_research_guided_runtime_summary(
+                                research_state
+                            )
+                        }
+                elif isinstance(research_telemetry, dict):
+                    research_state = _research_guided_state_from_metadata(metadata)
+                    if isinstance(research_state, dict):
+                        research_telemetry["summary"] = (
+                            build_research_guided_runtime_summary(research_state)
+                        )
+                        research_telemetry["completed_at"] = int(time.time())
                 response_data["choices"][0]["message"]["content"] = content
                 response_data["output"] = response_output
 
@@ -11804,6 +11896,12 @@ async def streaming_chat_response_handler(response, ctx):
                     if metadata.get("params", {}).get("debug_memory_telemetry")
                     else None
                 )
+                finalized_content = _reconcile_research_guided_completion(
+                    metadata,
+                    content=_finalize_completed_reasoning_details(
+                        serialize_output(output)
+                    ),
+                )
                 tool_journey_telemetry = (
                     metadata.get("tool_journey_telemetry")
                     if _is_debug_flag_enabled(
@@ -11839,9 +11937,6 @@ async def streaming_chat_response_handler(response, ctx):
                 if isinstance(research_telemetry, dict):
                     research_telemetry["completed_at"] = int(time.time())
                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
-                finalized_content = _finalize_completed_reasoning_details(
-                    serialize_output(output)
-                )
                 finalized_content, output = _maybe_append_research_status_to_output(
                     content=finalized_content,
                     output=output,

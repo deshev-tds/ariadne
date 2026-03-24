@@ -2279,6 +2279,114 @@ async def test_non_streaming_chat_response_appends_research_status_block(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_non_streaming_chat_response_finalizes_research_guided_turn_and_strips_reasoning(
+    monkeypatch,
+):
+    saved_messages = []
+
+    def _save_message(chat_id, message_id, payload):
+        saved_messages.append((chat_id, message_id, payload))
+        return None
+
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.upsert_message_to_chat_by_id_and_message_id",
+        _save_message,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Chats.get_chat_title_by_id",
+        lambda _chat_id: "Research Chat",
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.Users.is_user_active",
+        lambda _user_id: True,
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.middleware.background_tasks_handler",
+        lambda _ctx: asyncio.sleep(0),
+    )
+
+    ctx = {
+        "request": SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    WEBUI_NAME="Open WebUI",
+                    config=SimpleNamespace(WEBUI_URL="https://example.test"),
+                )
+            )
+        ),
+        "user": SimpleNamespace(id="user-1"),
+        "metadata": {
+            "chat_id": "chat-1",
+            "message_id": "message-1",
+            "params": {},
+            middleware.RESEARCH_GUIDED_STATE_KEY: {
+                "phase": "research",
+                "ready_to_answer": False,
+                "goals": [
+                    {
+                        "goal_id": "goal-1",
+                        "question": "Is there strong evidence that evening blue-light-blocking glasses improve sleep latency in adults?",
+                        "status": "supported",
+                        "resolution_basis": "contract_satisfied",
+                        "disconfirmation_outcome": "",
+                    }
+                ],
+                "working_propositions": [],
+                "candidate_claims": [],
+                "evidence_ledger": [
+                    {
+                        "evidence_id": "ev-1",
+                        "goal_ids": ["goal-1"],
+                        "evidence_family_id": "doi:10.1000/example-doi",
+                        "evidence_class": "systematic_synthesis",
+                        "stance": "supports",
+                        "directness": "direct",
+                        "value_bucket": "high",
+                        "context_fit": "strong",
+                        "blocked": False,
+                    }
+                ],
+            },
+        },
+        "events": [],
+        "event_emitter": None,
+        "form_data": {"messages": [{"role": "user", "content": "hello"}]},
+        "tasks": None,
+    }
+
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        '<details type="reasoning" done="true"><summary>Thought</summary>internal</details>\n'
+                        "**Verified facts:**\n- The evidence is favorable but limited."
+                    )
+                }
+            }
+        ],
+        "usage": {"completion_tokens": 1},
+    }
+
+    await non_streaming_chat_response_handler(response, ctx)
+
+    saved_payload = saved_messages[0][2]
+    assert '<details type="reasoning"' not in saved_payload["content"]
+    assert "**Current evidence:**" in saved_payload["content"]
+    assert "### Research Status" in saved_payload["content"]
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["phase"]
+        == "final_response"
+    )
+    assert (
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["candidate_claims"][0][
+            "label"
+        ]
+        == "reasonable_inference"
+    )
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_tools_handler_injects_default_selector_guidance(
     monkeypatch,
 ):

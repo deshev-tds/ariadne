@@ -4,7 +4,7 @@ import copy
 import hashlib
 import json
 import re
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -33,6 +33,17 @@ WORKING_PROPOSITION_STATES = {
     "leaning_support",
     "leaning_mixed",
     "leaning_not_supported",
+}
+TERMINAL_GOAL_STATUSES = {
+    GOAL_STATUS_SUPPORTED,
+    GOAL_STATUS_MIXED,
+    GOAL_STATUS_NOT_SUPPORTED,
+    GOAL_STATUS_INSUFFICIENT,
+}
+TERMINAL_DISCONFIRMATION_OUTCOMES = {
+    "found",
+    "not_found_under_budgeted_probe",
+    "not_meaningfully_tested",
 }
 
 SCIENTIFIC_EVIDENCE_CUES = {
@@ -92,6 +103,34 @@ SCIENTIFIC_DOMAIN_TERMS = {
     "spectrum",
     "theorem",
     "wavelength",
+}
+
+STRICT_EVIDENCE_REQUIREMENT_CUES = {
+    "strong evidence",
+    "robust evidence",
+    "well established",
+    "consensus",
+    "clinically meaningful",
+    "placebo-controlled",
+    "placebo controlled",
+    "meta-analysis",
+    "meta analysis",
+    "systematic review",
+    "human studies and reviews",
+    "recent human studies",
+    "larger studies",
+}
+
+DISCONFIRMATION_QUERY_CUES = {
+    "counterevidence",
+    "counter-evidence",
+    "null",
+    "no effect",
+    "no meaningful",
+    "not statistically significant",
+    "insufficient evidence",
+    "fails to support",
+    "does not support",
 }
 
 NON_SCIENCE_BYPASS_TERMS = {
@@ -357,6 +396,13 @@ def _contract_for_resolution_type(resolution_type: str) -> dict[str, Any]:
     return contract
 
 
+def _coverage_requirement_for_objective(objective: str) -> str:
+    normalized = _normalize_text(objective).lower()
+    if any(term in normalized for term in STRICT_EVIDENCE_REQUIREMENT_CUES):
+        return "strict"
+    return "normal"
+
+
 def _probe_budget_for_resolution_type(resolution_type: str) -> dict[str, Any]:
     require_strong_source = resolution_type in {"comparison", "magnitude", "recommendation", "causal", "fact"}
     return {
@@ -389,6 +435,7 @@ def _build_primary_goal(objective: str, *, goal_index: int = 1) -> dict[str, Any
         "question": question,
         "priority": "primary",
         "resolution_type": resolution_type,
+        "coverage_requirement": _coverage_requirement_for_objective(objective),
         "acceptance_contract": _contract_for_resolution_type(resolution_type),
         "status": GOAL_STATUS_OPEN,
         "resolution_basis": "",
@@ -511,10 +558,13 @@ def build_entry_prompt(state: dict[str, Any]) -> str:
 
 
 def _query_alignment(goal: dict[str, Any], query: str) -> str:
-    tokens = set(_tokenize_terms(query))
+    normalized_query = _normalize_text(query).lower()
+    tokens = set(_tokenize_terms(normalized_query))
     goal_terms = set(goal.get("goal_terms") or [])
     disconfirmation_terms = set(goal.get("disconfirmation_terms") or [])
-    if tokens & disconfirmation_terms:
+    if tokens & disconfirmation_terms or any(
+        cue in normalized_query for cue in DISCONFIRMATION_QUERY_CUES
+    ):
         return "disconfirming"
     if tokens & goal_terms:
         return "target_aligned"
@@ -616,14 +666,26 @@ def _directness_for_class(evidence_class: str) -> str:
     return "direct"
 
 
-def _value_bucket_for_class(evidence_class: str, role: str, blocked: bool) -> str:
+def _value_bucket_for_class(
+    evidence_class: str,
+    role: str,
+    blocked: bool,
+    *,
+    content_depth: str = "unknown",
+) -> str:
     if blocked:
         return "low"
-    if evidence_class in {"systematic_synthesis", "guideline"}:
-        return "high"
-    if evidence_class in {"direct_empirical", "observational"}:
-        return "medium"
     if role in {"mirror_or_index", "secondary_summary"}:
+        return "low"
+    if evidence_class in {"systematic_synthesis", "guideline", "canonical_reference"}:
+        if content_depth == "full_text":
+            return "high"
+        if content_depth == "snippet":
+            return "medium"
+        return "low"
+    if evidence_class in {"direct_empirical", "observational"}:
+        if content_depth in {"full_text", "snippet", "unknown"}:
+            return "medium"
         return "low"
     return "low"
 
@@ -649,6 +711,7 @@ def _append_evidence_record(
     url: str,
     domain: str,
     text: str,
+    content_depth: str = "unknown",
     blocked: bool = False,
 ) -> str:
     evidence_role = derive_evidence_role(domain=domain, title=title, url=url)
@@ -667,11 +730,18 @@ def _append_evidence_record(
         "directness": _directness_for_class(evidence_class),
         "method_strength": "high" if evidence_class in {"systematic_synthesis", "guideline"} else "medium" if evidence_class in {"direct_empirical", "observational"} else "low",
         "context_fit": "weak",
-        "value_bucket": _value_bucket_for_class(evidence_class, evidence_role, blocked),
+        "content_depth": content_depth if content_depth in {"full_text", "snippet", "summary", "unknown"} else "unknown",
+        "value_bucket": "low",
         "limitations": [],
         "blocked": blocked,
         "text_preview": _normalize_text(text)[:220],
     }
+    record["value_bucket"] = _value_bucket_for_class(
+        record.get("evidence_class") or "",
+        record.get("source_role") or evidence_role,
+        blocked,
+        content_depth=str(record.get("content_depth") or "unknown"),
+    )
     if blocked:
         record["limitations"].append("access_blocked_or_empty")
     for goal in state.get("goals") or []:
@@ -710,9 +780,16 @@ def _basis_summary(goal: dict[str, Any], supporting: list[dict[str, Any]], oppos
     kind_text = ", ".join(evidence_kinds[:2]) or "retrieved evidence"
     question = _normalize_text(goal.get("question") or "")
     resolution_type = str(goal.get("resolution_type") or "").replace("_", " ")
+    coverage_requirement = str(goal.get("coverage_requirement") or "normal")
+    snippet_only = supporting and all(
+        str(record.get("content_depth") or "") in {"snippet", "summary"}
+        for record in supporting
+    )
     if supporting and opposing:
         return f"mixed {kind_text} for {resolution_type} question '{question}', limited to conflicting retrieved source families"
     if supporting:
+        if coverage_requirement == "strict" and snippet_only:
+            return f"supported only by {kind_text} from snippet/summary-level evidence for '{question}', without enough independent corroboration"
         return f"supported by {kind_text} for '{question}', limited to evidence retrieved in this turn"
     if opposing:
         return f"opposed by {kind_text} for '{question}', limited to evidence retrieved in this turn"
@@ -729,6 +806,13 @@ def _limitations_for_goal(goal: dict[str, Any], supporting: list[dict[str, Any]]
         limitations.append("relevant source access was blocked or empty")
     if goal.get("resolution_basis") == "budget_exhausted_before_resolution":
         limitations.append("bounded search budget ended before clean resolution")
+    if goal.get("coverage_requirement") == "strict":
+        full_text_support = any(
+            str(record.get("content_depth") or "") == "full_text"
+            for record in supporting
+        )
+        if supporting and not full_text_support:
+            limitations.append("support relied on snippet/summary evidence rather than full-text corroboration")
     if not supporting and not opposing:
         limitations.append("no qualifying evidence was found under the bounded probe budget")
     return limitations[:2]
@@ -736,8 +820,19 @@ def _limitations_for_goal(goal: dict[str, Any], supporting: list[dict[str, Any]]
 
 def _derive_candidate_claim(goal: dict[str, Any], supporting: list[dict[str, Any]], opposing: list[dict[str, Any]]) -> list[dict[str, Any]]:
     primary_label = CLAIM_LABEL_UNCERTAIN
+    disconfirmation_outcome = str(goal.get("disconfirmation_outcome") or "")
+    resolution_basis = str(goal.get("resolution_basis") or "")
     if goal.get("status") == GOAL_STATUS_SUPPORTED:
-        primary_label = CLAIM_LABEL_VERIFIED
+        if disconfirmation_outcome == "not_meaningfully_tested":
+            primary_label = CLAIM_LABEL_INFERENCE
+        elif resolution_basis in {
+            "blocked_access",
+            "budgeted_high_value_search_exhausted",
+            "budget_exhausted_before_resolution",
+        }:
+            primary_label = CLAIM_LABEL_INFERENCE
+        else:
+            primary_label = CLAIM_LABEL_VERIFIED
     elif goal.get("status") in {GOAL_STATUS_MIXED, GOAL_STATUS_INSUFFICIENT}:
         primary_label = CLAIM_LABEL_INFERENCE if supporting else CLAIM_LABEL_UNCERTAIN
     elif goal.get("status") == GOAL_STATUS_NOT_SUPPORTED:
@@ -759,10 +854,22 @@ def _derive_candidate_claim(goal: dict[str, Any], supporting: list[dict[str, Any
 
 
 def _support_and_opposition_for_goal(state: dict[str, Any], goal_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    supporting: list[dict[str, Any]] = []
-    opposing: list[dict[str, Any]] = []
-    seen_support_families: set[str] = set()
-    seen_oppose_families: set[str] = set()
+    supporting_by_family: dict[str, dict[str, Any]] = {}
+    opposing_by_family: dict[str, dict[str, Any]] = {}
+
+    value_rank = {"low": 0, "medium": 1, "high": 2}
+    depth_rank = {"summary": 0, "snippet": 1, "unknown": 1, "full_text": 2}
+    method_rank = {"low": 0, "medium": 1, "high": 2}
+    directness_rank = {"indirect": 0, "direct": 1}
+
+    def _record_rank(record: dict[str, Any]) -> tuple[int, int, int, int]:
+        return (
+            value_rank.get(str(record.get("value_bucket") or ""), -1),
+            depth_rank.get(str(record.get("content_depth") or ""), -1),
+            method_rank.get(str(record.get("method_strength") or ""), -1),
+            directness_rank.get(str(record.get("directness") or ""), -1),
+        )
+
     for record in state.get("evidence_ledger") or []:
         if goal_id not in (record.get("goal_ids") or []):
             continue
@@ -773,18 +880,75 @@ def _support_and_opposition_for_goal(state: dict[str, Any], goal_id: str) -> tup
         stance = record.get("stance")
         family_id = str(record.get("evidence_family_id") or "")
         if stance == "supports":
-            if family_id and family_id in seen_support_families:
-                continue
-            if family_id:
-                seen_support_families.add(family_id)
-            supporting.append(record)
+            key = family_id or f"unresolved_support:{record.get('evidence_id')}"
+            existing = supporting_by_family.get(key)
+            if existing is None or _record_rank(record) > _record_rank(existing):
+                supporting_by_family[key] = record
         elif stance == "opposes":
-            if family_id and family_id in seen_oppose_families:
-                continue
-            if family_id:
-                seen_oppose_families.add(family_id)
-            opposing.append(record)
+            key = family_id or f"unresolved_oppose:{record.get('evidence_id')}"
+            existing = opposing_by_family.get(key)
+            if existing is None or _record_rank(record) > _record_rank(existing):
+                opposing_by_family[key] = record
+    supporting = list(supporting_by_family.values())
+    opposing = list(opposing_by_family.values())
     return supporting, opposing
+
+
+def _goal_support_metrics(goal: dict[str, Any], supporting: list[dict[str, Any]]) -> dict[str, Any]:
+    qualifying = list(supporting)
+    qualifying_families = {
+        str(record.get("evidence_family_id") or "").strip()
+        for record in qualifying
+        if str(record.get("evidence_family_id") or "").strip()
+        and not str(record.get("evidence_family_id") or "").startswith("unresolved:")
+    }
+    high_or_medium = [
+        record
+        for record in qualifying
+        if str(record.get("value_bucket") or "") in {"high", "medium"}
+    ]
+    high_or_medium_families = {
+        str(record.get("evidence_family_id") or "").strip()
+        for record in high_or_medium
+        if str(record.get("evidence_family_id") or "").strip()
+        and not str(record.get("evidence_family_id") or "").startswith("unresolved:")
+    }
+    full_text_families = {
+        str(record.get("evidence_family_id") or "").strip()
+        for record in high_or_medium
+        if str(record.get("content_depth") or "") == "full_text"
+        and str(record.get("evidence_family_id") or "").strip()
+        and not str(record.get("evidence_family_id") or "").startswith("unresolved:")
+    }
+    snippet_only_families = set()
+    for family_id in high_or_medium_families:
+        family_records = [
+            record
+            for record in high_or_medium
+            if str(record.get("evidence_family_id") or "").strip() == family_id
+        ]
+        if family_records and all(
+            str(record.get("content_depth") or "") in {"snippet", "summary"}
+            for record in family_records
+        ):
+            snippet_only_families.add(family_id)
+    systematic_or_guideline_families = {
+        str(record.get("evidence_family_id") or "").strip()
+        for record in high_or_medium
+        if str(record.get("evidence_class") or "")
+        in {"systematic_synthesis", "guideline", "canonical_reference"}
+        and str(record.get("evidence_family_id") or "").strip()
+        and not str(record.get("evidence_family_id") or "").startswith("unresolved:")
+    }
+    return {
+        "qualifying_count": len(qualifying),
+        "independent_family_count": len(qualifying_families),
+        "high_or_medium_family_count": len(high_or_medium_families),
+        "full_text_family_count": len(full_text_families),
+        "snippet_only_family_count": len(snippet_only_families),
+        "systematic_or_guideline_family_count": len(systematic_or_guideline_families),
+        "has_only_snippet_or_summary_support": bool(high_or_medium_families) and high_or_medium_families == snippet_only_families,
+    }
 
 
 def _goal_contract_satisfied(goal: dict[str, Any], supporting: list[dict[str, Any]]) -> bool:
@@ -810,25 +974,28 @@ def _goal_contract_satisfied(goal: dict[str, Any], supporting: list[dict[str, An
     ]
     if not high_or_medium:
         return False
+    metrics = _goal_support_metrics(goal, high_or_medium)
 
     resolution_type = str(goal.get("resolution_type") or "")
     if resolution_type == "mechanism":
         return True
 
+    if str(goal.get("coverage_requirement") or "normal") == "strict":
+        return (
+            metrics["high_or_medium_family_count"] >= 2
+            and metrics["full_text_family_count"] >= 1
+            and not metrics["has_only_snippet_or_summary_support"]
+        )
+
     if any(
         str(record.get("evidence_class") or "")
         in {"systematic_synthesis", "guideline", "canonical_reference"}
+        and str(record.get("value_bucket") or "") == "high"
         for record in high_or_medium
     ):
         return True
 
-    unique_families = {
-        str(record.get("evidence_family_id") or "").strip()
-        for record in high_or_medium
-        if str(record.get("evidence_family_id") or "").strip()
-        and not str(record.get("evidence_family_id") or "").startswith("unresolved:")
-    }
-    return len(unique_families) >= 2
+    return metrics["high_or_medium_family_count"] >= 2
 
 
 def _resolve_goal(goal: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -928,18 +1095,22 @@ def _refresh_resolutions(state: dict[str, Any]) -> dict[str, Any]:
                 note_lines.append(
                     f"Current evidence is mixed for goal '{next_goal.get('question')}'. Look for stronger differentiating evidence."
                 )
+            elif supporting and str(next_goal.get("coverage_requirement") or "normal") == "strict":
+                metrics = _goal_support_metrics(next_goal, supporting)
+                if (
+                    metrics["high_or_medium_family_count"] < 2
+                    or metrics["full_text_family_count"] < 1
+                ):
+                    note_lines.append(
+                        f"Current evidence for goal '{next_goal.get('question')}' is too narrow. Find additional independent high-value sources before concluding."
+                    )
         updated_goals.append(next_goal)
         updated_props.append(next_prop)
 
     state["goals"] = updated_goals
     state["working_propositions"] = updated_props
     all_terminal = all(
-        goal.get("status") in {
-            GOAL_STATUS_SUPPORTED,
-            GOAL_STATUS_MIXED,
-            GOAL_STATUS_NOT_SUPPORTED,
-            GOAL_STATUS_INSUFFICIENT,
-        }
+        goal.get("status") in TERMINAL_GOAL_STATUSES
         and goal.get("resolution_basis")
         and goal.get("disconfirmation_outcome")
         for goal in updated_goals
@@ -1024,6 +1195,7 @@ def register_tool_event(
                             url=url,
                             domain=domain,
                             text=title,
+                            content_depth="summary",
                         )
                         goal.setdefault("support_ids", []).append(evidence_id)
                     elif alignment == "disconfirming":
@@ -1036,6 +1208,7 @@ def register_tool_event(
                             url=url,
                             domain=domain,
                             text=title,
+                            content_depth="summary",
                         )
                         goal.setdefault("oppose_ids", []).append(evidence_id)
 
@@ -1065,8 +1238,16 @@ def register_tool_event(
                         "domain": parsed.get("domain") or _domain_from_url(url),
                         "title": parsed.get("title") or "",
                         "blocked": blocked,
+                        "mode": parsed.get("mode") or tool_params.get("mode") or "",
+                        "content_chars": content_chars,
                     }
                 )
+            if not blocked:
+                title = _normalize_text(parsed.get("title") or "")
+                combined_text = " ".join(filter(None, [title, url]))
+                for goal in updated.get("goals") or []:
+                    if _context_fit(goal, combined_text) != "weak":
+                        _mark_probe_observed(goal, "strong_source")
 
     elif normalized_tool_name == "query_web_evidence" and isinstance(parsed, dict):
         snippets = parsed.get("snippets") or []
@@ -1078,6 +1259,10 @@ def register_tool_event(
             for goal in updated.get("goals") or []:
                 if _query_alignment(goal, query_value) == "target_aligned":
                     goal["probe_budget"]["required"]["broader_fallback"] = True
+        else:
+            for goal in updated.get("goals") or []:
+                if _query_alignment(goal, query_value) == "target_aligned":
+                    _mark_probe_observed(goal, "broader_fallback")
 
         for goal in updated.get("goals") or []:
             alignment = _query_alignment(goal, query_value)
@@ -1103,6 +1288,12 @@ def register_tool_event(
             url = _normalize_text(artifact.get("url") or "")
             domain = _normalize_text(snippet.get("domain") or artifact.get("domain") or _domain_from_url(url))
             text = _normalize_text(snippet.get("text") or "")
+            content_depth = (
+                "full_text"
+                if str(artifact.get("mode") or "").strip().lower() == "content"
+                and int(artifact.get("content_chars") or 0) > 0
+                else "snippet"
+            )
             for goal in updated.get("goals") or []:
                 alignment = _query_alignment(goal, query_value or text)
                 if alignment == "target_aligned":
@@ -1115,6 +1306,7 @@ def register_tool_event(
                         url=url,
                         domain=domain,
                         text=text,
+                        content_depth=content_depth,
                     )
                     goal.setdefault("support_ids", []).append(evidence_id)
                 elif alignment == "disconfirming":
@@ -1127,6 +1319,7 @@ def register_tool_event(
                         url=url,
                         domain=domain,
                         text=text,
+                        content_depth=content_depth,
                     )
                     goal.setdefault("oppose_ids", []).append(evidence_id)
                 elif _context_fit(goal, text) == "weak":
@@ -1139,6 +1332,49 @@ def register_tool_event(
             updated,
             build_ready_to_answer_instruction(updated),
         )
+    return updated
+
+
+def _coerce_disconfirmation_outcomes_for_completed_turn(state: dict[str, Any]) -> dict[str, Any]:
+    updated = copy.deepcopy(state)
+    for goal in updated.get("goals") or []:
+        if goal.get("status") not in TERMINAL_GOAL_STATUSES:
+            continue
+        if not goal.get("resolution_basis"):
+            continue
+        if goal.get("disconfirmation_outcome") in TERMINAL_DISCONFIRMATION_OUTCOMES:
+            continue
+
+        attempts = goal.get("disconfirmation_attempts") or []
+        if any(attempt.get("found") for attempt in attempts):
+            goal["disconfirmation_outcome"] = "found"
+        elif any(attempt.get("meaningful") for attempt in attempts):
+            goal["disconfirmation_outcome"] = "not_found_under_budgeted_probe"
+        else:
+            goal["disconfirmation_outcome"] = "not_meaningfully_tested"
+    return updated
+
+
+def finalize_state_for_completed_turn(
+    state: dict[str, Any],
+    *,
+    visible_answer_present: bool = False,
+) -> dict[str, Any]:
+    updated = copy.deepcopy(state)
+    if updated.get("ready_to_answer"):
+        if updated.get("candidate_claims"):
+            updated["phase"] = "final_response"
+            updated["stop_reason"] = updated.get("stop_reason") or "all_primary_goals_resolved"
+            return updated
+        return finalize_state_for_answer(updated)
+
+    if not visible_answer_present:
+        return updated
+
+    updated = _coerce_disconfirmation_outcomes_for_completed_turn(updated)
+    updated = _refresh_resolutions(updated)
+    if updated.get("ready_to_answer"):
+        return finalize_state_for_answer(updated)
     return updated
 
 
