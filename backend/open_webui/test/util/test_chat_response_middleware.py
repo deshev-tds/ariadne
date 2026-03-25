@@ -2422,7 +2422,7 @@ async def test_non_streaming_chat_response_appends_research_status_block(monkeyp
     await non_streaming_chat_response_handler(response, ctx)
 
     saved_payload = saved_messages[0][2]
-    assert "### Research Status" in saved_payload["content"]
+    assert "### Research Status" not in saved_payload["content"]
     assert saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["ready_to_answer"] is True
 
 
@@ -2520,8 +2520,8 @@ async def test_non_streaming_chat_response_finalizes_research_guided_turn_and_st
 
     saved_payload = saved_messages[0][2]
     assert '<details type="reasoning"' not in saved_payload["content"]
-    assert "**Current evidence:**" in saved_payload["content"]
-    assert "### Research Status" in saved_payload["content"]
+    assert "**Verified facts:**" in saved_payload["content"]
+    assert "### Research Status" not in saved_payload["content"]
     assert (
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["phase"]
         == "final_response"
@@ -2657,8 +2657,9 @@ async def test_non_streaming_chat_response_blocks_unready_research_guided_draft(
     await non_streaming_chat_response_handler(response, ctx)
 
     saved_payload = saved_messages[0][2]
-    assert middleware.RESEARCH_INCOMPLETE_MARKER in saved_payload["content"]
+    assert saved_payload["content"] == "Confident final answer."
     assert "### Research Status" not in saved_payload["content"]
+    assert middleware.RESEARCH_INCOMPLETE_MARKER not in saved_payload["content"]
     assert (
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["incomplete_reason"]
         == "unresolved_research"
@@ -2806,13 +2807,13 @@ async def test_non_streaming_chat_response_uses_cautious_fallback_when_unresolve
     saved_payload = saved_messages[0][2]
     assert middleware.RESEARCH_INCOMPLETE_MARKER not in saved_payload["content"]
     assert "There is not strong evidence" in saved_payload["content"]
+    assert "### Research Status" not in saved_payload["content"]
     assert (
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["incomplete_reason"]
         == "unresolved_research"
     )
     assert (
-        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["phase"]
-        == "final_response"
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["repair_pass_count"] == 1
     )
 
 
@@ -2982,15 +2983,14 @@ async def test_non_streaming_chat_response_uses_machine_cautious_fallback_when_r
 
     saved_payload = saved_messages[0][2]
     assert middleware.RESEARCH_INCOMPLETE_MARKER not in saved_payload["content"]
-    assert "**Current evidence:**" in saved_payload["content"]
-    assert "broader fallback" in saved_payload["content"].lower()
+    assert saved_payload["content"] == "Confident final answer."
+    assert "### Research Status" not in saved_payload["content"]
     assert (
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["incomplete_reason"]
         == "unresolved_research"
     )
     assert (
-        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["phase"]
-        == "final_response"
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["repair_pass_count"] == 1
     )
 
 
@@ -3150,7 +3150,8 @@ async def test_non_streaming_chat_response_allows_cautious_research_guided_answe
 
     saved_payload = saved_messages[0][2]
     assert middleware.RESEARCH_INCOMPLETE_MARKER not in saved_payload["content"]
-    assert "### Research Status" in saved_payload["content"]
+    assert "### Research Status" not in saved_payload["content"]
+    assert "**Verified facts:**" in saved_payload["content"]
     assert saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["ready_to_answer"] is True
     assert (
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["cautious_answer_allowed"]
@@ -3189,26 +3190,8 @@ async def test_non_streaming_chat_response_caps_research_guided_draft_when_verif
         lambda _ctx: asyncio.sleep(0),
     )
 
-    async def fake_generate_chat_completion(_request, form_data=None, **_kwargs):
-        if form_data.get("metadata", {}).get("task") == "research_guided_verifier":
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "verdict": "cap",
-                                    "reasons": ["draft overstates the evidence strength"],
-                                    "instructions": [],
-                                    "unsupported_claims": [],
-                                    "missing_limitations": [],
-                                }
-                            )
-                        }
-                    }
-                ]
-            }
-        raise AssertionError("unexpected repair pass")
+    async def fake_generate_chat_completion(*_args, **_kwargs):
+        raise AssertionError("verifier path should be bypassed")
 
     monkeypatch.setattr(
         "open_webui.utils.middleware.generate_chat_completion",
@@ -3295,12 +3278,11 @@ async def test_non_streaming_chat_response_caps_research_guided_draft_when_verif
     await non_streaming_chat_response_handler(response, ctx)
 
     saved_payload = saved_messages[0][2]
-    assert "**Current evidence:**" in saved_payload["content"]
-    assert "### Research Status" in saved_payload["content"]
-    assert "This is settled." not in saved_payload["content"]
+    assert saved_payload["content"] == "**Verified facts:** This is settled."
+    assert "### Research Status" not in saved_payload["content"]
     assert (
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["verifier_verdict"]
-        == "cap"
+        == ""
     )
     assert saved_payload["output"][0]["type"] == "reasoning"
 
@@ -3332,58 +3314,8 @@ async def test_non_streaming_chat_response_revises_then_allows_research_guided_d
         lambda _ctx: asyncio.sleep(0),
     )
 
-    verifier_calls = {"count": 0}
-
-    async def fake_generate_chat_completion(_request, form_data=None, **_kwargs):
-        task = form_data.get("metadata", {}).get("task")
-        if task == "research_guided_verifier":
-            verifier_calls["count"] += 1
-            if verifier_calls["count"] == 1:
-                return {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": json.dumps(
-                                    {
-                                        "verdict": "revise",
-                                        "reasons": ["missing a required limitation"],
-                                        "instructions": ["state that the evidence is not verified"],
-                                        "unsupported_claims": [],
-                                        "missing_limitations": [
-                                            "support relied on snippet/summary evidence rather than full-text corroboration"
-                                        ],
-                                    }
-                                )
-                            }
-                        }
-                    ]
-                }
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "verdict": "allow",
-                                    "reasons": [],
-                                    "instructions": [],
-                                    "unsupported_claims": [],
-                                    "missing_limitations": [],
-                                }
-                            )
-                        }
-                    }
-                ]
-            }
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "content": "The evidence is suggestive but not verified, and the support relied on snippet/summary evidence rather than full-text corroboration."
-                    }
-                }
-            ]
-        }
+    async def fake_generate_chat_completion(*_args, **_kwargs):
+        raise AssertionError("verifier path should be bypassed")
 
     monkeypatch.setattr(
         "open_webui.utils.middleware.generate_chat_completion",
@@ -3471,15 +3403,15 @@ async def test_non_streaming_chat_response_revises_then_allows_research_guided_d
     await non_streaming_chat_response_handler(response, ctx)
 
     saved_payload = saved_messages[0][2]
-    assert "suggestive but not verified" in saved_payload["content"]
-    assert "### Research Status" in saved_payload["content"]
+    assert saved_payload["content"] == "Evidence is verified and settled."
+    assert "### Research Status" not in saved_payload["content"]
     assert middleware.RESEARCH_INCOMPLETE_MARKER not in saved_payload["content"]
     assert (
         saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["verifier_verdict"]
-        == "allow"
+        == ""
     )
     assert (
-        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["repair_pass_count"] == 1
+        saved_payload[middleware.RESEARCH_GUIDED_STATE_KEY]["repair_pass_count"] == 0
     )
     assert saved_payload["output"][0]["type"] == "reasoning"
 

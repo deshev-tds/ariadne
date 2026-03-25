@@ -286,7 +286,8 @@ def test_research_guided_trustable_truncated_result_allows_cautious_exit():
     assert state["candidate_claims"]
     assert state["candidate_claims"][0]["label"] == research_guided.CLAIM_LABEL_INFERENCE
     repair = research_guided.build_research_repair_instruction(state, mode="unresolved")
-    assert "use that result or ask for more context around the same hit" in repair.lower()
+    assert "research coverage is still incomplete" in repair.lower()
+    assert "reasonable inference" in repair.lower()
 
 
 def test_research_guided_single_family_inconclusive_review_does_not_trigger_conservative_exit_without_breadth():
@@ -373,8 +374,6 @@ def test_research_guided_tracks_concept_alignment_and_same_source_refine_signal(
     assert state["semantic_rerank_used"] is True
     assert state["semantic_rerank_candidate_count"] == 4
     assert state["alias_confidence_summary"]["high"] == 1
-    repair = research_guided.build_research_repair_instruction(state, mode="unresolved")
-    assert "exact or strong outcome-aligned evidence" in repair.lower()
 
 
 def test_research_guided_strict_goal_conflict_before_broader_fallback_stays_open():
@@ -495,6 +494,8 @@ def test_research_guided_family_aliases_collapse_article_mirrors():
     assert stored["art-pmc"]["canonical_family_id"] == "doi:10.3389/fneur.2025.1699303"
     assert stored["art-frontiers"]["canonical_family_id"] == "doi:10.3389/fneur.2025.1699303"
     assert state["family_alias_count"] >= 1
+    repair = research_guided.build_research_repair_instruction(state, mode="unresolved")
+    assert "same evidence family" in repair.lower()
 
 
 def test_research_guided_same_family_conflict_does_not_terminalize_mixed():

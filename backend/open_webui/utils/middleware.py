@@ -706,29 +706,7 @@ def _maybe_append_research_status_to_output(
     output: list[dict[str, Any]],
     metadata: dict[str, Any] | None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    state = _research_guided_state_from_metadata(metadata)
-    if RESEARCH_INCOMPLETE_MARKER in str(content or ""):
-        return content, output
-    block = build_research_status_block(state)
-    if not block or RESEARCH_STATUS_MARKER in str(content or ""):
-        return content, output
-
-    output_copy = copy.deepcopy(output or [])
-    output_copy.append(
-        {
-            "type": "message",
-            "id": output_id("msg"),
-            "status": "completed",
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": f"\n\n{block}"}],
-        }
-    )
-    combined_content = str(content or "").rstrip()
-    if combined_content:
-        combined_content = f"{combined_content}\n\n{block}"
-    else:
-        combined_content = block
-    return combined_content, output_copy
+    return content, output
 
 
 def _strip_runtime_detail_blocks(content: Any) -> Any:
@@ -756,22 +734,6 @@ def _align_research_guided_claim_headings(
     content: Any,
     state: dict[str, Any] | None,
 ) -> Any:
-    if not isinstance(content, str) or not isinstance(state, dict):
-        return content
-
-    labels = {
-        str(claim.get("label") or "")
-        for claim in (state.get("candidate_claims") or [])
-        if isinstance(claim, dict)
-    }
-    if labels and CLAIM_LABEL_VERIFIED not in labels:
-        content = re.sub(
-            r"^\*\*Verified facts:\*\*",
-            "**Current evidence:**",
-            content,
-            count=1,
-            flags=re.MULTILINE,
-        )
     return content
 
 
@@ -6956,7 +6918,11 @@ async def _run_research_guided_repair_pass(
     _append_research_guided_event(
         metadata,
         {
-            "event": "repair_pass_started",
+            "event": (
+                "soft_nudge_started"
+                if repair_kind == "unresolved_research"
+                else "repair_pass_started"
+            ),
             "repair_kind": repair_kind,
             "repair_pass_count": state["repair_pass_count"],
             "ready_to_answer": bool(state.get("ready_to_answer")),
@@ -7024,8 +6990,6 @@ async def _apply_research_guided_output_policy(
                 "incomplete_reason": "unresolved_research",
             },
         )
-        fallback_content: str | None = None
-        fallback_output: list[dict[str, Any]] | None = None
         repair_instruction = build_research_repair_instruction(state, mode="unresolved")
         repaired = await _run_research_guided_repair_pass(
             request,
@@ -7047,203 +7011,44 @@ async def _apply_research_guided_output_policy(
             if isinstance(state, dict) and state.get("ready_to_answer"):
                 state["incomplete_reason"] = ""
                 _set_research_guided_state(metadata, state)
-                content = repaired_content
-                output = repaired_output
-            else:
-                if repaired_content:
-                    fallback_content = repaired_content
-                    fallback_output = repaired_output
-                state = _research_guided_state_from_metadata(metadata) or state
-        else:
-            state = _research_guided_state_from_metadata(metadata) or state
-
-        if not isinstance(state, dict) or not state.get("ready_to_answer"):
-            if fallback_content and fallback_output is not None:
-                if isinstance(state, dict):
-                    state["incomplete_reason"] = "unresolved_research"
-                    state["phase"] = "final_response"
-                    state["stop_reason"] = state.get("stop_reason") or "unresolved_research_cautious_answer"
-                    _set_research_guided_state(metadata, state)
-                _append_research_guided_event(
-                    metadata,
-                    {
-                        "event": "research_cautious_fallback_persisted",
-                        "incomplete_reason": "unresolved_research",
-                        "ready_to_answer": False,
-                    },
-                )
-                return fallback_content, fallback_output
-            cautious_machine_block = (
-                build_research_cautious_fallback_block(state)
-                if isinstance(state, dict)
-                else ""
-            )
-            if cautious_machine_block:
-                if isinstance(state, dict):
-                    state["incomplete_reason"] = "unresolved_research"
-                    state["phase"] = "final_response"
-                    state["stop_reason"] = state.get("stop_reason") or "unresolved_research_cautious_answer"
-                    _set_research_guided_state(metadata, state)
-                _append_research_guided_event(
-                    metadata,
-                    {
-                        "event": "research_cautious_machine_fallback_persisted",
-                        "incomplete_reason": "unresolved_research",
-                        "ready_to_answer": False,
-                    },
-                )
-                cautious_output = _research_guided_output_message(
-                    cautious_machine_block,
-                    base_output=output,
-                )
-                return cautious_machine_block, cautious_output
-            if isinstance(state, dict):
-                state["incomplete_reason"] = "unresolved_research"
-                _set_research_guided_state(metadata, state)
             _append_research_guided_event(
                 metadata,
                 {
-                    "event": "research_incomplete_persisted",
+                    "event": "soft_nudge_completed",
+                    "ready_to_answer": bool(
+                        isinstance(state, dict) and state.get("ready_to_answer")
+                    ),
+                    "incomplete_reason": (
+                        "" if isinstance(state, dict) and state.get("ready_to_answer")
+                        else "unresolved_research"
+                    ),
+                },
+            )
+            return repaired_content, repaired_output
+        else:
+            state = _research_guided_state_from_metadata(metadata) or state
+            _append_research_guided_event(
+                metadata,
+                {
+                    "event": "soft_nudge_failed_fell_back_to_model_draft",
                     "incomplete_reason": "unresolved_research",
                     "ready_to_answer": False,
                 },
             )
-            incomplete_state = _research_guided_state_from_metadata(metadata) or state or {}
-            content = build_research_incomplete_block(incomplete_state)
-            output = _research_guided_output_message(content, base_output=output)
             return content, output
 
     state = _research_guided_state_from_metadata(metadata)
     if not isinstance(state, dict):
         return content, output
-
-    verifier_enabled = bool(
-        getattr(request.app.state.config, "ENABLE_RESEARCH_GUIDED_VERIFIER", False)
-    )
-    if not (verifier_enabled and state_has_strict_goals(state) and state.get("ready_to_answer")):
-        return content, output
-
-    state["verifier_enabled"] = True
+    state["verifier_enabled"] = False
+    state["verifier_verdict"] = ""
+    state["verifier_reasons"] = []
+    state["verifier_latency_ms"] = 0
+    state["verifier_unsupported_claims"] = []
+    state["verifier_missing_limitations"] = []
+    if state.get("ready_to_answer"):
+        state["incomplete_reason"] = ""
     _set_research_guided_state(metadata, state)
-    verifier_started = time.monotonic()
-    verifier_result = await _run_research_guided_micro_verifier(
-        request,
-        user=user,
-        active_model_id=active_model_id,
-        state=state,
-        draft_answer=content,
-    )
-    verifier_latency_ms = int((time.monotonic() - verifier_started) * 1000)
-    state = _research_guided_state_from_metadata(metadata) or state
-    if isinstance(state, dict):
-        state["verifier_enabled"] = True
-        state["verifier_verdict"] = verifier_result.get("verdict") or ""
-        state["verifier_reasons"] = verifier_result.get("reasons") or []
-        state["verifier_latency_ms"] = verifier_latency_ms
-        state["verifier_unsupported_claims"] = verifier_result.get("unsupported_claims") or []
-        state["verifier_missing_limitations"] = verifier_result.get("missing_limitations") or []
-        _set_research_guided_state(metadata, state)
-
-    verdict = verifier_result.get("verdict") or "cap"
-    if verdict == "allow":
-        state = _research_guided_state_from_metadata(metadata) or state
-        if isinstance(state, dict):
-            state["incomplete_reason"] = ""
-            _set_research_guided_state(metadata, state)
-        _append_research_guided_event(
-            metadata,
-            {
-                "event": "verifier_allow",
-                "verifier_verdict": "allow",
-                "verifier_latency_ms": verifier_latency_ms,
-                "ready_to_answer": True,
-            },
-        )
-        return content, output
-
-    if verdict == "revise":
-        _append_research_guided_event(
-            metadata,
-            {
-                "event": "verifier_revise",
-                "verifier_verdict": "revise",
-                "verifier_latency_ms": verifier_latency_ms,
-                "ready_to_answer": True,
-            },
-        )
-        repair_instruction = build_research_repair_instruction(
-            state,
-            mode="alignment",
-            verifier_result=verifier_result,
-        )
-        repaired = await _run_research_guided_repair_pass(
-            request,
-            user=user,
-            metadata=metadata,
-            form_data=form_data,
-            active_model_id=active_model_id,
-            output=output,
-            instruction=repair_instruction,
-            repair_kind="failed_answer_alignment",
-        )
-        if repaired is not None:
-            revised_content, revised_output = repaired
-            revised_content = _reconcile_research_guided_completion(
-                metadata,
-                content=revised_content,
-            )
-            second_result = await _run_research_guided_micro_verifier(
-                request,
-                user=user,
-                active_model_id=active_model_id,
-                state=_research_guided_state_from_metadata(metadata) or state,
-                draft_answer=revised_content,
-            )
-            if second_result.get("verdict") == "allow":
-                state = _research_guided_state_from_metadata(metadata) or state
-                if isinstance(state, dict):
-                    state["verifier_verdict"] = "allow"
-                    state["verifier_reasons"] = second_result.get("reasons") or []
-                    state["incomplete_reason"] = ""
-                    _set_research_guided_state(metadata, state)
-                _append_research_guided_event(
-                    metadata,
-                    {
-                        "event": "verifier_allow",
-                        "verifier_verdict": "allow",
-                        "ready_to_answer": True,
-                    },
-                )
-                return revised_content, revised_output
-
-        state = _research_guided_state_from_metadata(metadata) or state
-        if isinstance(state, dict):
-            state["incomplete_reason"] = "failed_answer_alignment"
-            _set_research_guided_state(metadata, state)
-        _append_research_guided_event(
-            metadata,
-            {
-                "event": "research_incomplete_persisted",
-                "incomplete_reason": "failed_answer_alignment",
-                "ready_to_answer": True,
-            },
-        )
-        incomplete_state = _research_guided_state_from_metadata(metadata) or state or {}
-        content = build_research_incomplete_block(incomplete_state)
-        output = _research_guided_output_message(content, base_output=output)
-        return content, output
-
-    _append_research_guided_event(
-        metadata,
-        {
-            "event": "verifier_cap",
-            "verifier_verdict": "cap",
-            "verifier_latency_ms": verifier_latency_ms,
-            "ready_to_answer": True,
-        },
-    )
-    content = build_research_capped_block(_research_guided_state_from_metadata(metadata) or state)
-    output = _research_guided_output_message(content, base_output=output)
     return content, output
 
 

@@ -2552,9 +2552,6 @@ def build_ready_to_answer_instruction(state: dict[str, Any]) -> str:
             lines.append(
                 f"- {claim.get('text')} :: {claim.get('label')} :: {claim.get('basis_summary')}"
             )
-    lines.append(
-        f"The final user-visible answer will include a machine-owned '{RESEARCH_STATUS_MARKER.replace('### ', '')}' appendix."
-    )
     return "\n".join(lines).strip()
 
 
@@ -2676,6 +2673,81 @@ def build_research_incomplete_block(state: Optional[dict[str, Any]]) -> str:
     return "\n".join(lines).strip()
 
 
+def _truncate_nudge_source_label(value: Any, *, max_chars: int = 72) -> str:
+    text = _normalize_text(value)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3].rstrip()}..."
+
+
+def _family_dedupe_note_for_nudge(state: dict[str, Any]) -> str:
+    alias_map = state.get("family_aliases") or {}
+    if not isinstance(alias_map, dict) or not alias_map:
+        return ""
+
+    grouped_sources: dict[str, list[str]] = {}
+
+    for artifact in state.get("stored_artifacts") or []:
+        if not isinstance(artifact, dict):
+            continue
+        title = _normalize_text(artifact.get("title") or "")
+        url = _normalize_text(artifact.get("url") or "")
+        identifier_hints = dict(artifact.get("identifier_hints") or {})
+        family_id = _normalize_text(artifact.get("canonical_family_id") or "")
+        if not family_id:
+            family_id = derive_evidence_family_id(
+                url=url,
+                title=title,
+                identifier_hints=identifier_hints,
+            )
+        family_id = _follow_family_alias(alias_map, family_id)
+        if not family_id:
+            continue
+        label = _truncate_nudge_source_label(title or url)
+        if not label:
+            continue
+        grouped_sources.setdefault(family_id, [])
+        if label not in grouped_sources[family_id]:
+            grouped_sources[family_id].append(label)
+
+    for raw_url, raw_title in (state.get("search_result_titles") or {}).items():
+        url = _normalize_text(raw_url)
+        title = _normalize_text(raw_title)
+        if not url:
+            continue
+        family_id = _follow_family_alias(
+            alias_map,
+            derive_evidence_family_id(url=url, title=title),
+        )
+        if not family_id:
+            continue
+        label = _truncate_nudge_source_label(title or url)
+        if not label:
+            continue
+        grouped_sources.setdefault(family_id, [])
+        if label not in grouped_sources[family_id]:
+            grouped_sources[family_id].append(label)
+
+    duplicate_groups = [
+        labels[:2]
+        for labels in grouped_sources.values()
+        if len(labels) >= 2
+    ]
+    if duplicate_groups:
+        rendered = [" / ".join(group) for group in duplicate_groups[:2]]
+        return (
+            "These sources collapse to the same evidence family, so do not count them as "
+            f"independent support: {'; '.join(rendered)}."
+        )
+
+    if int(state.get("family_alias_count") or 0) > 0:
+        return (
+            "Some fetched or searched URLs collapse to the same evidence family. "
+            "Do not count mirror hosts or alternate URLs as independent support."
+        )
+    return ""
+
+
 def build_research_repair_instruction(
     state: Optional[dict[str, Any]],
     *,
@@ -2687,10 +2759,10 @@ def build_research_repair_instruction(
     lines: list[str] = []
     if mode == "unresolved":
         lines.append(
-            "Do not finalize the answer yet. The research-guided gate blocked the draft because the evidence state is not ready."
+            "Research coverage is still incomplete against the current plan, but you may finish the answer now."
         )
         lines.append(
-            "Do not narrate your search process or tool attempts. Either close the missing coverage immediately, or answer the user now with a cautious, evidence-bounded conclusion from the evidence already found."
+            "Do not narrate your search process or tool attempts. Calibrate the tone to the evidence actually covered in this turn."
         )
         missing_items: list[str] = []
         for goal in state.get("goals") or []:
@@ -2698,31 +2770,13 @@ def build_research_repair_instruction(
             if pending:
                 missing_items.append(pending)
         if missing_items:
-            lines.append("Missing coverage items: " + "; ".join(missing_items[:2]) + ".")
-        if int(state.get("truncation_trust_hits") or 0) > 0:
-            lines.append(
-                "A recent evidence query already returned a usable truncated result clause. Use that result or ask for more context around the same hit; do not abandon the source solely because the window was clipped."
-            )
-        if int(state.get("concept_aligned_trust_hits") or 0) > 0:
-            lines.append(
-                "A recent evidence query already returned exact or strong outcome-aligned evidence in the current source. Use that evidence line or its expanded context before trying a broader search."
-            )
-        elif int(state.get("adjacent_outcome_conflict_count") or 0) > 0:
-            lines.append(
-                "Recent evidence queries found nearby numeric clauses for adjacent outcomes. Refine within the same source for the exact target concept before answering."
-            )
-        if int(state.get("pdf_extract_failed_count") or 0) > 0:
-            lines.append(
-                "Do not rely on the failed PDF extraction path. Prefer an already usable stored HTML/article source if one exists."
-            )
-        if _normalize_bool(state.get("cautious_answer_allowed")):
-            lines.append(
-                "You may answer cautiously from the current evidence. Keep the conclusion conservative, avoid verified-fact framing, and include the remaining limitations."
-            )
-        else:
-            lines.append(
-                "If you cannot close the missing coverage cleanly in this turn, stop searching and answer cautiously now. Separate directly supported findings from reasonable inference, mention the remaining uncertainty, and avoid verified-fact framing."
-            )
+            lines.append("Missing coverage probes: " + "; ".join(missing_items[:2]) + ".")
+        dedupe_note = _family_dedupe_note_for_nudge(state)
+        if dedupe_note:
+            lines.append(dedupe_note)
+        lines.append(
+            "Keep directly supported findings as verified facts only where warranted, use reasonable inference for extrapolation or speculation, and make material limitations explicit."
+        )
         return " ".join(lines).strip()
 
     verifier_result = verifier_result or {}
