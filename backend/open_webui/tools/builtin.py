@@ -113,6 +113,19 @@ SCHOLARLY_MIRROR_DOMAIN_TOKENS = {
     "bmj.com",
 }
 
+
+def _should_force_concept_alignment(metadata: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    if isinstance(metadata.get(RESEARCH_GUIDED_STATE_KEY), dict):
+        return True
+
+    params = metadata.get("params", {}) or {}
+    working_mode = str(params.get("working_mode") or "").strip().lower()
+    if working_mode == "science":
+        return True
+    return bool(params.get("research_guided_mode"))
+
 # =============================================================================
 # TIME UTILITIES
 # =============================================================================
@@ -1367,7 +1380,7 @@ async def query_web_evidence(
         )
         concept_alignment_enabled = bool(
             getattr(config, "ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT", False)
-        )
+        ) or _should_force_concept_alignment(__metadata__)
         embedding_function = getattr(
             getattr(getattr(__request__, "app", None), "state", None),
             "EMBEDDING_FUNCTION",
@@ -1420,6 +1433,17 @@ async def query_web_evidence(
                         "hit-centered local section we return for this source. If you need a "
                         "different part of the same source, issue a more specific query rather "
                         "than increasing `window_chars`."
+                    )
+                elif returned_context_kind == "focus_support_excerpt":
+                    payload["agent_context_notice"] = (
+                        "The top result is a curated excerpt centered on the exact evidence-bearing "
+                        "span, with minimal nearby support context. Treat the quoted text as a "
+                        "selected excerpt rather than the full section."
+                    )
+                elif returned_context_kind == "full_table_block":
+                    payload["agent_context_notice"] = (
+                        "The top result is the full local table block around the matched evidence. "
+                        "Use the table as-is rather than assuming surrounding prose was included."
                     )
                 else:
                     payload["agent_context_notice"] = (

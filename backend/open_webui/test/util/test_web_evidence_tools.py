@@ -490,13 +490,19 @@ def test_query_web_evidence_store_segmented_concept_alignment_prefers_exact_outc
     assert queried["concept_alignment_serving_path"] == "concept"
     assert queried["suggested_next_action"] == "answer_with_current_evidence"
     top = queried["snippets"][0]
+    assert queried["returned_context_kind"] == web_store.WEB_EVIDENCE_RETURNED_CONTEXT_FOCUS_EXCERPT
+    assert top["text"].startswith('"...\n')
+    assert top["text"].endswith('\n..."')
     assert "-4.86" in top["text"]
     assert top["alignment_strength"] in {"exact", "strong"}
     assert queried["concept_aligned_trust_hits"] >= 1
-    assert any(
-        "-0.61" in snippet["text"] and not snippet.get("truncation_trust_hint")
-        for snippet in queried["snippets"]
+    excerpt_body = top["text"][5:-5].strip()
+    assert (
+        len(web_store._split_sentences_with_offsets(excerpt_body))
+        <= web_store.FOCUS_SUPPORT_MAX_SENTENCES
     )
+    assert "-0.61" in top["text"]
+    assert "No significant effects were found for SE" in top["text"]
 
 
 def test_query_web_evidence_store_segmented_concept_alignment_uses_table_caption_linkage(
@@ -537,9 +543,14 @@ def test_query_web_evidence_store_segmented_concept_alignment_uses_table_caption
 
     assert queried["status"] == "ok"
     top = queried["snippets"][0]
+    assert queried["returned_context_kind"] == web_store.WEB_EVIDENCE_RETURNED_CONTEXT_FULL_TABLE
     assert top["alignment_strength"] in {"strong", "exact"}
     assert top["alignment_evidence"] in {"table_caption_row", "adjacent_sentence", "same_sentence"}
     assert queried["suggested_next_action"] == "answer_with_current_evidence"
+    assert "Table 2. Sleep onset latency (SOL) pooled outcome" in top["text"]
+    assert "Metric | MD | 95% interval | p" in top["text"]
+    assert "Pooled result | -4.86 | -20.23 to 10.52 | 0.54" in top["text"]
+    assert "Comparator row | -1.47 | -14.94 to 11.99 | 0.83" in top["text"]
 
 
 def test_query_web_evidence_store_segmented_shadow_diff_runs_when_concept_path_is_shadow(
@@ -586,7 +597,7 @@ def test_query_web_evidence_store_segmented_shadow_diff_runs_when_concept_path_i
     assert queried["concept_alignment_shadow"]["shadow_top_hit"][0] == stored["artifact_id"]
 
 
-def test_query_web_evidence_store_shadow_conflict_downgrades_agent_guidance(
+def test_query_web_evidence_store_shadow_conflict_stays_debug_only(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(web_store, "AGENTIC_ARTIFACTS_DIR", tmp_path)
@@ -627,13 +638,9 @@ def test_query_web_evidence_store_shadow_conflict_downgrades_agent_guidance(
 
     assert queried["status"] == "ok"
     assert queried["concept_alignment_shadow"]["ran"] is True
-    assert queried["exact_target_match_found"] is False
-    assert queried["agent_guidance"] == "refine_within_same_source"
-    assert queried["suggested_next_action"] == "refine_within_same_source"
-    assert queried["truncation_trust_hits"] == 0
-    assert queried["serving_confidence_downgraded"] is True
-    assert "shadow_action_disagreement" in queried["agent_guidance_reason_codes"]
-    assert all(not snippet.get("truncation_trust_hint") for snippet in queried["snippets"])
+    assert queried["exact_target_match_found"] is None
+    assert queried["agent_guidance_reason_codes"] == []
+    assert queried["serving_confidence_downgraded"] is False
 
 
 def test_query_web_evidence_store_segmented_mode_uses_focus_retrieval_for_large_document(
@@ -1079,6 +1086,55 @@ async def test_query_web_evidence_tool_passes_concept_alignment_flag(monkeypatch
             concept_alignment_enabled=True,
         ),
         __metadata__={"chat_id": "chat-1", "message_id": "msg-1"},
+    )
+    payload = json.loads(output)
+
+    assert captured["concept_alignment_enabled"] is True
+    assert payload["concept_alignment_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_query_web_evidence_tool_forces_concept_alignment_for_science_turn(
+    monkeypatch,
+):
+    captured = {}
+
+    monkeypatch.setattr(
+        builtin_tools,
+        "query_web_evidence_store",
+        lambda **kwargs: captured.update(kwargs) or {
+            "status": "ok",
+            "query": kwargs["query"],
+            "chat_id": kwargs["chat_id"],
+            "message_id": kwargs["message_id"],
+            "scope_mode": "implicit_current_message",
+            "searched_artifact_count": 1,
+            "searched_artifact_ids": ["wp_1"],
+            "searched_domains": ["example.org"],
+            "missing_artifact_ids": [],
+            "evidence_strength": "adequate",
+            "suggested_next_action": "answer_with_current_evidence",
+            "snippets": [],
+            "narrow_count": 0,
+            "wide_count": 0,
+            "wide_pass_used": False,
+            "fts_enabled": True,
+            "retrieval_mode_effective": kwargs.get("retrieval_mode"),
+            "concept_alignment_enabled": kwargs.get("concept_alignment_enabled"),
+        },
+    )
+
+    output = await builtin_tools.query_web_evidence(
+        query="sleep onset latency",
+        __request__=_request_with_retrieval_mode(
+            "segmented_confidence_gated",
+            concept_alignment_enabled=False,
+        ),
+        __metadata__={
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "params": {"working_mode": "science"},
+        },
     )
     payload = json.loads(output)
 

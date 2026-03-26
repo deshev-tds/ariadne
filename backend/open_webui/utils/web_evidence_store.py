@@ -28,6 +28,8 @@ WEB_EVIDENCE_CONTEXT_MODE_VALUES = {
     WEB_EVIDENCE_CONTEXT_MODE_LOCAL_SECTION,
     WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE,
 }
+WEB_EVIDENCE_RETURNED_CONTEXT_FOCUS_EXCERPT = "focus_support_excerpt"
+WEB_EVIDENCE_RETURNED_CONTEXT_FULL_TABLE = "full_table_block"
 
 LARGE_ARTIFACT_CHARS_THRESHOLD = 8000
 LARGE_ARTIFACT_CHUNK_CHARS = 1600
@@ -47,6 +49,7 @@ CONCEPT_ALIGNMENT_TABLE_BLOCK_RADIUS = 3
 CONCEPT_ALIGNMENT_SEMANTIC_SHORTLIST = 8
 CONCEPT_ALIGNMENT_AMBIGUOUS_SCORE_GAP = 0.08
 CONCEPT_ALIGNMENT_ARTIFACT_SCOPE_MAX = 3
+FOCUS_SUPPORT_MAX_SENTENCES = 6
 
 QUERY_STOPWORDS = {
     "a",
@@ -795,6 +798,213 @@ def _table_like_lines(text: str) -> list[dict[str, Any]]:
     return lines
 
 
+def _raw_lines_with_offsets(text: str) -> list[dict[str, Any]]:
+    lines: list[dict[str, Any]] = []
+    cursor = 0
+    normalized = _normalize_numeric_text(text)
+    for raw_line in normalized.splitlines(keepends=True):
+        end = cursor + len(raw_line)
+        stripped = raw_line.rstrip("\n")
+        trimmed = stripped.strip()
+        lines.append(
+            {
+                "text": stripped,
+                "trimmed": trimmed,
+                "start": cursor,
+                "end": end,
+                "blank": not trimmed,
+                "table_like": bool(TABLE_LIKE_ROW_RE.search(raw_line)),
+                "caption_like": bool(CAPTION_LINE_RE.match(trimmed)),
+                "footnote_like": bool(FOOTNOTE_LINE_RE.match(trimmed)),
+            }
+        )
+        cursor = end
+    if cursor < len(normalized):
+        tail = normalized[cursor:]
+        trimmed = tail.strip()
+        lines.append(
+            {
+                "text": tail,
+                "trimmed": trimmed,
+                "start": cursor,
+                "end": len(normalized),
+                "blank": not trimmed,
+                "table_like": bool(TABLE_LIKE_ROW_RE.search(tail)),
+                "caption_like": bool(CAPTION_LINE_RE.match(trimmed)),
+                "footnote_like": bool(FOOTNOTE_LINE_RE.match(trimmed)),
+            }
+        )
+    return lines
+
+
+def _line_index_for_offset(lines: list[dict[str, Any]], offset: int) -> int:
+    if not lines:
+        return 0
+    bounded = max(0, int(offset or 0))
+    for idx, line in enumerate(lines):
+        if int(line.get("start", 0) or 0) <= bounded < int(line.get("end", 0) or 0):
+            return idx
+    if bounded >= int(lines[-1].get("end", 0) or 0):
+        return len(lines) - 1
+    return 0
+
+
+def _sentence_index_for_offset(sentences: list[dict[str, Any]], offset: int) -> int:
+    if not sentences:
+        return 0
+    bounded = max(0, int(offset or 0))
+    for idx, sentence in enumerate(sentences):
+        if int(sentence.get("start", 0) or 0) <= bounded < int(sentence.get("end", 0) or 0):
+            return idx
+    if bounded >= int(sentences[-1].get("end", 0) or 0):
+        return len(sentences) - 1
+    return 0
+
+
+def _sentence_has_conclusion_cue(text: str) -> bool:
+    lowered = _normalize_text_span(text)
+    if not lowered:
+        return False
+    conclusion_cues = (
+        "conclusion",
+        "conclusions",
+        "concluded",
+        "does not support",
+        "do not support",
+        "did not support",
+        "no significant effect",
+        "no significant effects",
+        "not support significant effects",
+        "evidence remains inconclusive",
+        "inconclusive",
+        "may provide",
+        "may improve",
+        "suggest",
+        "suggests",
+    )
+    return any(cue in lowered for cue in conclusion_cues)
+
+
+def _format_curated_prose_excerpt(text: str) -> str:
+    body = str(text or "").strip()
+    if not body:
+        return ""
+    return f'"...\n{body}\n..."'
+
+
+def _extract_full_table_block(
+    *,
+    content: str,
+    anchor_index: int,
+) -> Optional[dict[str, Any]]:
+    lines = _raw_lines_with_offsets(content)
+    if not lines:
+        return None
+
+    anchor_line_idx = _line_index_for_offset(lines, anchor_index)
+    table_idx = None
+    for radius in range(0, CONCEPT_ALIGNMENT_TABLE_BLOCK_RADIUS + 3):
+        for candidate_idx in (anchor_line_idx - radius, anchor_line_idx + radius):
+            if candidate_idx < 0 or candidate_idx >= len(lines):
+                continue
+            line = lines[candidate_idx]
+            if line.get("table_like") or line.get("caption_like") or line.get("footnote_like"):
+                table_idx = candidate_idx
+                break
+        if table_idx is not None:
+            break
+    if table_idx is None:
+        return None
+
+    start_idx = table_idx
+    while start_idx > 0 and not lines[start_idx - 1].get("blank"):
+        start_idx -= 1
+    end_idx = table_idx
+    while end_idx + 1 < len(lines) and not lines[end_idx + 1].get("blank"):
+        end_idx += 1
+
+    block_start = int(lines[start_idx].get("start", 0) or 0)
+    block_end = int(lines[end_idx].get("end", 0) or 0)
+    block_text = str(content[block_start:block_end] or "").strip()
+    if not block_text:
+        return None
+    return {
+        "start": block_start,
+        "end": block_end,
+        "text": block_text,
+        "returned_context_kind": WEB_EVIDENCE_RETURNED_CONTEXT_FULL_TABLE,
+    }
+
+
+def _extract_focus_support_excerpt(
+    *,
+    content: str,
+    raw_start: int,
+    raw_end: int,
+    anchor_index: int,
+    target_concepts: list[str],
+    alias_registry: dict[str, dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    sentences = _split_sentences_with_offsets(content)
+    if not sentences:
+        return None
+
+    anchor_sentence_idx = _sentence_index_for_offset(sentences, anchor_index)
+    candidate_indices = [
+        idx
+        for idx, sentence in enumerate(sentences)
+        if not (
+            int(sentence.get("end", 0) or 0) <= int(raw_start or 0)
+            or int(sentence.get("start", 0) or 0) >= int(raw_end or 0)
+        )
+    ]
+    if not candidate_indices:
+        candidate_indices = [
+            idx
+            for idx in range(
+                max(0, anchor_sentence_idx - 3),
+                min(len(sentences), anchor_sentence_idx + 4),
+            )
+        ]
+
+    def _score_sentence(idx: int) -> tuple[Any, ...]:
+        sentence_text = str(sentences[idx].get("text") or "")
+        alignment = _concept_alignment_for_text(
+            text=sentence_text,
+            target_concepts=target_concepts,
+            alias_registry=alias_registry,
+        )
+        return (
+            ALIGNMENT_STRENGTH_ORDER.get(
+                str(alignment.get("alignment_strength") or "none"),
+                0,
+            ),
+            int(_concept_result_clause_complete(sentence_text)),
+            int(_sentence_has_conclusion_cue(sentence_text)),
+            int(not _normalize_bool(alignment.get("adjacent_outcome_conflict"))),
+            -abs(idx - anchor_sentence_idx),
+        )
+
+    best_idx = max(candidate_indices, key=_score_sentence)
+    start_idx = max(0, best_idx - 2)
+    end_idx = min(len(sentences), start_idx + FOCUS_SUPPORT_MAX_SENTENCES)
+    if end_idx - start_idx < FOCUS_SUPPORT_MAX_SENTENCES:
+        start_idx = max(0, end_idx - FOCUS_SUPPORT_MAX_SENTENCES)
+
+    excerpt_start = int(sentences[start_idx].get("start", 0) or 0)
+    excerpt_end = int(sentences[end_idx - 1].get("end", 0) or 0)
+    excerpt_text = str(content[excerpt_start:excerpt_end] or "").strip()
+    if not excerpt_text:
+        return None
+    return {
+        "start": excerpt_start,
+        "end": excerpt_end,
+        "text": _format_curated_prose_excerpt(excerpt_text),
+        "raw_text": excerpt_text,
+        "returned_context_kind": WEB_EVIDENCE_RETURNED_CONTEXT_FOCUS_EXCERPT,
+    }
+
+
 def _line_alignment_from_neighborhood(
     *,
     line_index: int,
@@ -1391,6 +1601,8 @@ def _expand_top_snippet_after_ranking_concept(
         content = content or str(top.get("text") or "")
         raw_start = int(top.get("start") or 0)
         raw_end = int(top.get("end") or 0)
+        anchor_index = int(top.get("hit_index") or raw_start)
+        target_concepts = list((query_profile or {}).get("target_concepts") or [])
         if content:
             if (
                 normalized_context_mode == WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE
@@ -1405,45 +1617,90 @@ def _expand_top_snippet_after_ranking_concept(
                 top.update(
                     _concept_alignment_for_text(
                         text=top["text"],
-                        target_concepts=list((query_profile or {}).get("target_concepts") or []),
+                        target_concepts=target_concepts,
                         alias_registry=alias_registry,
                     )
                 )
                 top["result_clause_complete"] = _concept_result_clause_complete(top["text"])
                 top["truncation_trust_hint"] = False
-                top["expansion_anchor_start"] = int(top.get("hit_index") or raw_start)
+                top["expansion_anchor_start"] = anchor_index
                 updated_snippets[0] = top
                 expanded_context_count = 1
             else:
-                new_start, new_end, expanded_text = _expand_context_window(
-                    content,
-                    start=raw_start,
-                    end=raw_end,
-                    anchor_index=int(top.get("hit_index") or raw_start),
+                focus_context = _extract_full_table_block(
+                    content=content,
+                    anchor_index=anchor_index,
+                ) or _extract_focus_support_excerpt(
+                    content=content,
+                    raw_start=raw_start,
+                    raw_end=raw_end,
+                    anchor_index=anchor_index,
+                    target_concepts=target_concepts,
+                    alias_registry=alias_registry,
                 )
-                if expanded_text and (new_start != raw_start or new_end != raw_end):
-                    top["start"] = new_start
-                    top["end"] = new_end
-                    top["text"] = expanded_text
+                if focus_context:
+                    raw_focus_text = str(
+                        focus_context.get("raw_text")
+                        or focus_context.get("text")
+                        or ""
+                    )
+                    top["start"] = int(focus_context.get("start", raw_start) or raw_start)
+                    top["end"] = int(focus_context.get("end", raw_end) or raw_end)
+                    top["text"] = str(focus_context.get("text") or raw_focus_text)
                     top["expanded_context_applied"] = True
-                    top["effective_window_chars"] = new_end - new_start
-                    top["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
+                    top["effective_window_chars"] = max(0, top["end"] - top["start"])
+                    top["snippet_truncated"] = bool(top["start"] > 0 or top["end"] < len(content))
+                    top["focus_context_kind"] = str(
+                        focus_context.get("returned_context_kind") or ""
+                    )
                     top.update(
                         _concept_alignment_for_text(
-                            text=expanded_text,
-                            target_concepts=list((query_profile or {}).get("target_concepts") or []),
+                            text=raw_focus_text,
+                            target_concepts=target_concepts,
                             alias_registry=alias_registry,
                         )
                     )
-                    top["result_clause_complete"] = _concept_result_clause_complete(expanded_text)
+                    top["result_clause_complete"] = _concept_result_clause_complete(
+                        raw_focus_text
+                    )
                     top["truncation_trust_hint"] = bool(
                         top["snippet_truncated"]
                         and top["result_clause_complete"]
                         and str(top.get("alignment_strength") or "none") in {"exact", "strong"}
                     )
-                    top["expansion_anchor_start"] = int(top.get("hit_index") or raw_start)
+                    top["expansion_anchor_start"] = anchor_index
                     updated_snippets[0] = top
                     expanded_context_count = 1
+                else:
+                    new_start, new_end, expanded_text = _expand_context_window(
+                        content,
+                        start=raw_start,
+                        end=raw_end,
+                        anchor_index=anchor_index,
+                    )
+                    if expanded_text and (new_start != raw_start or new_end != raw_end):
+                        top["start"] = new_start
+                        top["end"] = new_end
+                        top["text"] = expanded_text
+                        top["expanded_context_applied"] = True
+                        top["effective_window_chars"] = new_end - new_start
+                        top["snippet_truncated"] = bool(new_start > 0 or new_end < len(content))
+                        top.update(
+                            _concept_alignment_for_text(
+                                text=expanded_text,
+                                target_concepts=target_concepts,
+                                alias_registry=alias_registry,
+                            )
+                        )
+                        top["result_clause_complete"] = _concept_result_clause_complete(expanded_text)
+                        top["truncation_trust_hint"] = bool(
+                            top["snippet_truncated"]
+                            and top["result_clause_complete"]
+                            and str(top.get("alignment_strength") or "none") in {"exact", "strong"}
+                        )
+                        top["expansion_anchor_start"] = anchor_index
+                        updated_snippets[0] = top
+                        expanded_context_count = 1
 
     updated_meta = dict(base_meta or {})
     updated_meta["expanded_context_count"] = expanded_context_count
@@ -1459,11 +1716,18 @@ def _expand_top_snippet_after_ranking_concept(
     updated_meta["adjacent_outcome_conflict_count"] = sum(
         1 for snippet in updated_snippets if _normalize_bool(snippet.get("adjacent_outcome_conflict"))
     )
-    updated_meta["returned_context_kind"] = (
-        "full_article"
-        if normalized_context_mode == WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE and expanded_context_count
-        else ("hit_centered_local_section" if expanded_context_count else "ranked_snippets")
-    )
+    top_entry = (updated_snippets or [{}])[0]
+    focus_context_kind = str(top_entry.get("focus_context_kind") or "")
+    if normalized_context_mode == WEB_EVIDENCE_CONTEXT_MODE_FULL_ARTICLE and expanded_context_count:
+        updated_meta["returned_context_kind"] = "full_article"
+    elif expanded_context_count and focus_context_kind == WEB_EVIDENCE_RETURNED_CONTEXT_FOCUS_EXCERPT:
+        updated_meta["returned_context_kind"] = WEB_EVIDENCE_RETURNED_CONTEXT_FOCUS_EXCERPT
+    elif expanded_context_count and focus_context_kind == WEB_EVIDENCE_RETURNED_CONTEXT_FULL_TABLE:
+        updated_meta["returned_context_kind"] = WEB_EVIDENCE_RETURNED_CONTEXT_FULL_TABLE
+    else:
+        updated_meta["returned_context_kind"] = (
+            "hit_centered_local_section" if expanded_context_count else "ranked_snippets"
+        )
     return updated_snippets, updated_meta
 
 
@@ -1645,7 +1909,15 @@ def _apply_agent_guidance_overlay(
         isinstance(snippet, dict) and "alignment_strength" in snippet
         for snippet in (payload.get("snippets") or [])
     )
-    if not shadow_ran and not serving_has_alignment:
+    shadow_diff = (
+        _build_concept_alignment_shadow_diff(
+            serving_payload=serving_payload,
+            shadow_payload=shadow_payload,
+        )
+        if shadow_ran
+        else {"ran": False}
+    )
+    if not serving_has_alignment:
         payload["target_outcomes"] = target_outcomes
         payload["exact_target_match_found"] = None
         payload["best_hit_is_adjacent_outcome"] = False
@@ -1657,22 +1929,10 @@ def _apply_agent_guidance_overlay(
         payload["agent_guidance_reason_codes"] = []
         payload["serving_confidence_downgraded"] = False
         payload["serving_confidence_reason"] = []
-        payload.setdefault("concept_alignment_shadow", {"ran": False})
+        payload["concept_alignment_shadow"] = shadow_diff
         return payload
-    diagnostic_payload = (
-        payload
-        if serving_logic == "concept" or serving_has_alignment
-        else (shadow_payload if shadow_ran else payload)
-    )
+    diagnostic_payload = payload
     diagnostic_snippets = list((diagnostic_payload or {}).get("snippets") or [])
-    shadow_diff = (
-        _build_concept_alignment_shadow_diff(
-            serving_payload=serving_payload,
-            shadow_payload=shadow_payload,
-        )
-        if shadow_ran
-        else {"ran": False}
-    )
 
     exact_target_match_found = any(
         str(snippet.get("alignment_strength") or "none") in {"exact", "strong"}
@@ -1696,11 +1956,6 @@ def _apply_agent_guidance_overlay(
         guidance_reason_codes.append("best_hit_adjacent_outcome_conflict")
     if serving_logic != "concept" and shadow_diff.get("top_hit_changed"):
         guidance_reason_codes.append("shadow_top_hit_disagreement")
-    if (
-        serving_logic != "concept"
-        and shadow_diff.get("serving_next_action") != shadow_diff.get("shadow_next_action")
-    ):
-        guidance_reason_codes.append("shadow_action_disagreement")
 
     guidance = "use_current_evidence" if exact_target_match_found else "refine_within_same_source"
     downgraded = guidance != "use_current_evidence"
@@ -1760,6 +2015,8 @@ def _payload_window_notice(
     updated["repeat_window_increase_wont_help"] = returned_context_kind in {
         "hit_centered_local_section",
         "full_article",
+        WEB_EVIDENCE_RETURNED_CONTEXT_FOCUS_EXCERPT,
+        WEB_EVIDENCE_RETURNED_CONTEXT_FULL_TABLE,
     }
     return updated
 
