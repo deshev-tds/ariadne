@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import open_webui.utils.context_maintenance as context_maintenance
+import open_webui.utils.misc as misc
 from open_webui.utils.context_maintenance import (
     build_aggregate_context_window_preview,
     build_summary_message,
@@ -92,6 +93,49 @@ def test_render_preview_prompt_includes_roles_and_content():
     assert "ship the ring" in rendered
 
 
+def test_history_message_to_llm_messages_uses_hygienic_replay(monkeypatch):
+    monkeypatch.setattr(misc, "ENABLE_HISTORY_REASONING_REPLAY", False)
+    monkeypatch.setattr(misc, "HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS", 24)
+
+    message = {
+        "id": "a2",
+        "role": "assistant",
+        "output": [
+            {
+                "type": "reasoning",
+                "content": [
+                    {"type": "output_text", "text": "private chain of thought"}
+                ],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "search_web",
+                "arguments": '{"q":"bari"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": [{"type": "input_text", "text": "tool-result " * 40}],
+            },
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "concise answer"}],
+            },
+        ],
+    }
+
+    llm_messages = context_maintenance.history_message_to_llm_messages(message)
+
+    assert [item["role"] for item in llm_messages] == ["assistant", "tool", "assistant"]
+    assert all("<think>" not in str(item.get("content") or "") for item in llm_messages)
+    assert "[historical tool output truncated for context replay]" in llm_messages[1][
+        "content"
+    ]
+    assert "tool-result tool-result" in llm_messages[1]["content"]
+    assert "tool-result tool-result tool-result tool-result" not in llm_messages[1][
+        "content"
+    ]
 def test_build_summary_prompt_requests_structured_state_snapshot():
     prompt = build_summary_prompt(transcript="user: hi", max_tokens=512)
 

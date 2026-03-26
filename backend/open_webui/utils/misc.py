@@ -13,9 +13,25 @@ import mimeparse
 
 
 import collections.abc
-from open_webui.env import CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE
+from open_webui.env import (
+    CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE,
+    ENABLE_HISTORY_REASONING_REPLAY,
+    HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS,
+)
 
 log = logging.getLogger(__name__)
+
+_HISTORICAL_REASONING_DETAILS_RE = re.compile(
+    r'<details\b(?=[^>]*\btype="reasoning")[\s\S]*?</details>',
+    re.IGNORECASE,
+)
+_HISTORICAL_REASONING_TAG_RES = [
+    re.compile(rf"<{tag}>\s*[\s\S]*?\s*</{tag}>", re.IGNORECASE)
+    for tag in ("think", "thinking", "reason", "reasoning", "thought")
+]
+_HISTORICAL_TOOL_OUTPUT_TRUNCATION_PREFIX = (
+    "[historical tool output truncated for context replay]"
+)
 
 
 def deep_update(d, u):
@@ -273,6 +289,137 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
     flush_pending()
 
     return messages
+
+
+def _strip_historical_reasoning_text(text_value: str) -> str:
+    if not isinstance(text_value, str):
+        return text_value
+
+    stripped = _HISTORICAL_REASONING_DETAILS_RE.sub("", text_value)
+    for pattern in _HISTORICAL_REASONING_TAG_RES:
+        stripped = pattern.sub("", stripped)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped)
+    return stripped.strip()
+
+
+def _truncate_historical_tool_output_for_replay(
+    text_value: str,
+    *,
+    max_chars: int,
+) -> str:
+    if not isinstance(text_value, str):
+        text_value = str(text_value)
+
+    if max_chars < 0 or len(text_value) <= max_chars:
+        return text_value
+
+    preview = text_value[: max(0, max_chars)]
+    omitted_chars = max(0, len(text_value) - len(preview))
+
+    header = (
+        f"{_HISTORICAL_TOOL_OUTPUT_TRUNCATION_PREFIX}\n"
+        f"original_chars: {len(text_value)}\n"
+        f"preview_chars: {len(preview)}\n"
+        f"omitted_chars: {omitted_chars}"
+    )
+    if not preview:
+        return header
+
+    suffix = (
+        f"\n...[context replay truncated, {omitted_chars} chars omitted]"
+        if omitted_chars > 0
+        else ""
+    )
+    return f"{header}\n\npreview:\n{preview}{suffix}"
+
+
+def _sanitize_historical_message_content(
+    content: object,
+    *,
+    strip_reasoning: bool = False,
+    tool_output_max_chars: int | None = None,
+) -> object:
+    if isinstance(content, str):
+        value = content
+        if strip_reasoning:
+            value = _strip_historical_reasoning_text(value)
+        if tool_output_max_chars is not None:
+            value = _truncate_historical_tool_output_for_replay(
+                value,
+                max_chars=tool_output_max_chars,
+            )
+        return value
+
+    if isinstance(content, list):
+        out = []
+        for item in content:
+            if isinstance(item, dict):
+                updated = dict(item)
+                if "text" in updated:
+                    updated["text"] = _sanitize_historical_message_content(
+                        updated.get("text"),
+                        strip_reasoning=strip_reasoning,
+                        tool_output_max_chars=tool_output_max_chars,
+                    )
+                elif "content" in updated:
+                    updated["content"] = _sanitize_historical_message_content(
+                        updated.get("content"),
+                        strip_reasoning=strip_reasoning,
+                        tool_output_max_chars=tool_output_max_chars,
+                    )
+                out.append(updated)
+            elif isinstance(item, str):
+                out.append(
+                    _sanitize_historical_message_content(
+                        item,
+                        strip_reasoning=strip_reasoning,
+                        tool_output_max_chars=tool_output_max_chars,
+                    )
+                )
+            else:
+                out.append(item)
+        return out
+
+    if isinstance(content, dict):
+        updated = dict(content)
+        if "text" in updated:
+            updated["text"] = _sanitize_historical_message_content(
+                updated.get("text"),
+                strip_reasoning=strip_reasoning,
+                tool_output_max_chars=tool_output_max_chars,
+            )
+        elif "content" in updated:
+            updated["content"] = _sanitize_historical_message_content(
+                updated.get("content"),
+                strip_reasoning=strip_reasoning,
+                tool_output_max_chars=tool_output_max_chars,
+            )
+        return updated
+
+    return content
+
+
+def sanitize_historical_message_for_llm(message: dict) -> dict:
+    sanitized = dict(message)
+    role = str(sanitized.get("role") or "")
+
+    if role == "assistant" and not ENABLE_HISTORY_REASONING_REPLAY:
+        sanitized["content"] = _sanitize_historical_message_content(
+            sanitized.get("content"),
+            strip_reasoning=True,
+        )
+    elif role == "tool":
+        sanitized["content"] = _sanitize_historical_message_content(
+            sanitized.get("content"),
+            tool_output_max_chars=HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS,
+        )
+
+    return sanitized
+
+
+def convert_output_to_history_messages(output: list) -> list[dict]:
+    messages = convert_output_to_messages(output, raw=ENABLE_HISTORY_REASONING_REPLAY)
+    return [sanitize_historical_message_for_llm(message) for message in messages]
 
 
 def get_last_user_message(messages: list[dict]) -> Optional[str]:

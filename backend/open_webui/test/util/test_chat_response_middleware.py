@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+import open_webui.utils.misc as misc
 import open_webui.utils.middleware as middleware
 from open_webui.utils.middleware import (
     apply_params_to_form_data,
@@ -29,7 +30,63 @@ def _build_request(
                 )
             )
         )
-    )
+)
+
+
+def test_process_messages_with_output_omits_history_reasoning_and_caps_tool_output(
+    monkeypatch,
+):
+    monkeypatch.setattr(misc, "ENABLE_HISTORY_REASONING_REPLAY", False)
+    monkeypatch.setattr(misc, "HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS", 32)
+
+    messages = [
+        {
+            "role": "assistant",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "output_text", "text": "private scratchpad"}],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "search_web",
+                    "arguments": '{"q":"bari"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": [{"type": "input_text", "text": "X" * 200}],
+                },
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Final answer"}],
+                },
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "Before\n"
+                '<details type="reasoning" done="true"><summary>Thought</summary>hidden</details>\n'
+                "After"
+            ),
+        },
+    ]
+
+    processed = middleware.process_messages_with_output(messages)
+
+    assert len(processed) == 4
+    assert processed[0]["role"] == "assistant"
+    assert processed[0]["tool_calls"][0]["function"]["name"] == "search_web"
+    assert "<think>" not in (processed[0].get("content") or "")
+    assert processed[1]["role"] == "tool"
+    assert "[historical tool output truncated for context replay]" in processed[1]["content"]
+    assert "omitted_chars" in processed[1]["content"]
+    assert "X" * 33 not in processed[1]["content"]
+    assert processed[2]["content"] == "Final answer"
+    assert "details type=\"reasoning\"" not in processed[3]["content"]
+    assert processed[3]["content"] == "Before\n\nAfter"
 
 
 @pytest.mark.asyncio

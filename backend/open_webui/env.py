@@ -460,6 +460,23 @@ else:
     except Exception:
         TERMINAL_TOOL_RESULT_PREVIEW_CHARS = 2000
 
+ENABLE_HISTORY_REASONING_REPLAY = (
+    os.environ.get("ENABLE_HISTORY_REASONING_REPLAY", "False").lower() == "true"
+)
+
+HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS = os.environ.get(
+    "HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS", "1200"
+)
+if HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS == "":
+    HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS = 1200
+else:
+    try:
+        HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS = int(
+            HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS
+        )
+    except Exception:
+        HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS = 1200
+
 ENABLE_QUERIES_CACHE = os.environ.get("ENABLE_QUERIES_CACHE", "False").lower() == "true"
 
 RAG_SYSTEM_CONTEXT = os.environ.get("RAG_SYSTEM_CONTEXT", "False").lower() == "true"
