@@ -18,9 +18,6 @@ RESEARCH_GUIDED_DEFAULT_MAX_UNIQUE_QUERIES = 8
 RESEARCH_GUIDED_DEFAULT_MAX_UNIQUE_FETCHES = 6
 RESEARCH_STATUS_MARKER = "### Research Status"
 RESEARCH_INCOMPLETE_MARKER = "### Research Incomplete"
-RESEARCH_GUIDED_QUERY_OVERLAP_THRESHOLD = 0.6
-RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_SCOPE = 1
-RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_GOAL = 2
 RESEARCH_GUIDED_MAX_VERIFIER_REASONS = 3
 RESEARCH_GUIDED_MAX_VERIFIER_INSTRUCTIONS = 2
 
@@ -864,20 +861,9 @@ def build_initial_state(objective: Any) -> dict[str, Any]:
         "family_aliases": {},
         "family_alias_count": 0,
         "same_family_conflict_count": 0,
-        "query_rewrite_count": 0,
-        "low_novelty_query_count": 0,
-        "truncation_trust_hits": 0,
-        "concept_aligned_trust_hits": 0,
-        "adjacent_outcome_conflict_count": 0,
-        "semantic_rerank_used": False,
-        "semantic_rerank_candidate_count": 0,
-        "alias_confidence_summary": {},
         "pdf_extract_failed_count": 0,
         "conservative_sufficiency_triggered": False,
         "cautious_answer_allowed": False,
-        "evidence_query_history": [],
-        "emitted_rewrite_scopes": [],
-        "goal_query_rewrite_counts": {},
         "ready_to_answer": False,
         "stop_reason": "",
         "post_draft_gate_triggered": False,
@@ -901,9 +887,9 @@ def build_entry_prompt(state: dict[str, Any]) -> str:
         "This science turn is using the research-guided loop.",
         "Stay goals-first. Do not lock in a thesis early.",
         "Use evidence tools to resolve the goals below, and preserve uncertainty when evidence is weak or conflicting.",
-        "Use `search_web` for discovery, then `fetch_url(url, mode=\"store\")` before `query_web_evidence` on a page.",
-        "Search-result source keys like `web:...` are not stored artifacts and do not count as fetched pages.",
-    ]
+        "Use `search_web` for discovery, then `read_web_page(url=...)` once a source looks relevant enough to read.",
+        "Search-result title + snippet are enough to justify reading a promising scientific source.",
+        ]
     if goals:
         lines.append("Primary goals:")
         for goal in goals[:RESEARCH_GUIDED_MAX_GOALS]:
@@ -1124,6 +1110,17 @@ def _context_fit(goal: dict[str, Any], text: str) -> str:
     if overlap >= 1:
         return "partial"
     return "weak"
+
+
+def _text_suggests_disconfirmation(goal: dict[str, Any], text: str) -> bool:
+    normalized = _normalize_text(text).lower()
+    if not normalized:
+        return False
+    if any(cue in normalized for cue in DISCONFIRMATION_QUERY_CUES):
+        return True
+    tokens = set(_tokenize_terms(normalized))
+    disconfirmation_terms = set(goal.get("disconfirmation_terms") or [])
+    return bool(tokens & disconfirmation_terms)
 
 
 def _append_evidence_record(
@@ -1823,180 +1820,6 @@ def _append_pending_note(state: dict[str, Any], note: str) -> None:
     state["pending_system_note"] = _normalize_text(f"{current} {addition}")
 
 
-def _query_token_overlap(left: set[str], right: set[str]) -> float:
-    if not left or not right:
-        return 0.0
-    union = left | right
-    if not union:
-        return 0.0
-    return len(left & right) / len(union)
-
-
-def _artifact_family_scope(
-    state: dict[str, Any],
-    artifact_ids: list[str],
-) -> tuple[str, ...]:
-    if not artifact_ids:
-        return ()
-    scope: list[str] = []
-    for artifact_id in artifact_ids:
-        artifact = next(
-            (
-                item
-                for item in state.get("stored_artifacts") or []
-                if _normalize_text(item.get("artifact_id") or "") == _normalize_text(artifact_id)
-            ),
-            {},
-        )
-        family_id = _normalize_text(artifact.get("canonical_family_id") or "")
-        if not family_id:
-            family_id, _ = _resolve_family_id(
-                state,
-                url=_normalize_text(artifact.get("url") or ""),
-                title=_normalize_text(artifact.get("title") or ""),
-                identifier_hints=artifact.get("identifier_hints") or {},
-            )
-            if artifact:
-                artifact["canonical_family_id"] = family_id
-        if family_id and family_id not in scope:
-            scope.append(family_id)
-    return tuple(sorted(scope))
-
-
-def _goal_family_count(state: dict[str, Any], goal_id: str) -> int:
-    adjudicated = _adjudicated_family_evidence(state, goal_id)
-    family_ids = {
-        str(record.get("evidence_family_id") or "").strip()
-        for record in adjudicated["supports"] + adjudicated["opposes"]
-        if str(record.get("evidence_family_id") or "").strip()
-    }
-    family_ids |= {
-        str(item.get("family_id") or "").strip()
-        for item in adjudicated["internally_mixed"]
-        if str(item.get("family_id") or "").strip()
-    }
-    return len(family_ids)
-
-
-def _goal_probe_snapshot(goal: dict[str, Any]) -> dict[str, int]:
-    observed = ((goal.get("probe_budget") or {}).get("observed") or {})
-    return {str(key): int(value or 0) for key, value in observed.items()}
-
-
-def _build_query_rewrite_instruction(goal_questions: list[str]) -> str:
-    joined_goals = "; ".join(_normalize_text(item) for item in goal_questions if _normalize_text(item))
-    if joined_goals:
-        joined_goals = f" for goal(s): {joined_goals}"
-    return (
-        "Recent evidence queries are circling the same source family without improving coverage"
-        f"{joined_goals}. Rewrite the next query_web_evidence call as a short retrieval phrase. "
-        "Preserve the proposition, population, outcome, and one discriminator. "
-        "Remove rhetorical glue and copied sentences. Prefer an outcome phrase, significance phrase, conclusion phrase, or subgroup phrase. "
-        "If the current snippet is truncated but contains a usable result clause, stay with the same source and ask for more context around that hit instead of abandoning it."
-    )
-
-
-def _maybe_flag_low_novelty_query(
-    state: dict[str, Any],
-    *,
-    query_value: str,
-    family_scope: tuple[str, ...],
-    goal_ids: list[str],
-    searched_artifact_count: int,
-    searched_domains: list[str],
-) -> None:
-    if not query_value or not family_scope or len(family_scope) != 1 or not goal_ids:
-        return
-
-    history = state.setdefault("evidence_query_history", [])
-    tokens = set(_tokenize_terms(query_value))
-    current_entry = {
-        "query": query_value,
-        "query_fp": query_fingerprint(query_value),
-        "query_tokens": sorted(tokens),
-        "family_scope": list(family_scope),
-        "goal_ids": list(goal_ids),
-        "family_counts": {
-            goal_id: _goal_family_count(state, goal_id)
-            for goal_id in goal_ids
-        },
-        "probe_counts": {
-            goal_id: _goal_probe_snapshot(
-                next(
-                    (
-                        goal
-                        for goal in state.get("goals") or []
-                        if goal.get("goal_id") == goal_id
-                    ),
-                    {},
-                )
-            )
-            for goal_id in goal_ids
-        },
-        "searched_artifact_count": int(searched_artifact_count or 0),
-        "searched_domain_count": len(searched_domains or []),
-    }
-
-    prior = next(
-        (
-            entry
-            for entry in reversed(history)
-            if tuple(entry.get("family_scope") or ()) == family_scope
-            and set(entry.get("goal_ids") or []).intersection(goal_ids)
-        ),
-        None,
-    )
-    if prior is not None:
-        overlap = _query_token_overlap(tokens, set(prior.get("query_tokens") or []))
-        family_growth = any(
-            current_entry["family_counts"].get(goal_id, 0)
-            > int((prior.get("family_counts") or {}).get(goal_id) or 0)
-            for goal_id in goal_ids
-        )
-        probe_growth = any(
-            current_entry["probe_counts"].get(goal_id, {}).get("broader_fallback", 0)
-            > int(((prior.get("probe_counts") or {}).get(goal_id) or {}).get("broader_fallback") or 0)
-            for goal_id in goal_ids
-        )
-        scope_growth = (
-            current_entry["searched_artifact_count"] > int(prior.get("searched_artifact_count") or 0)
-            or current_entry["searched_domain_count"] > int(prior.get("searched_domain_count") or 0)
-        )
-        if overlap >= RESEARCH_GUIDED_QUERY_OVERLAP_THRESHOLD and not family_growth and not probe_growth and not scope_growth:
-            state["low_novelty_query_count"] = int(state.get("low_novelty_query_count") or 0) + 1
-            emitted_scopes = set(state.get("emitted_rewrite_scopes") or [])
-            scope_key = "|".join(family_scope)
-            per_goal_counts = state.setdefault("goal_query_rewrite_counts", {})
-            rewrite_allowed = scope_key not in emitted_scopes and any(
-                int(per_goal_counts.get(goal_id) or 0) < RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_GOAL
-                for goal_id in goal_ids
-            )
-            if rewrite_allowed and not state.get("ready_to_answer"):
-                state["query_rewrite_count"] = int(state.get("query_rewrite_count") or 0) + 1
-                state["emitted_rewrite_scopes"] = [
-                    *list(emitted_scopes),
-                    scope_key,
-                ][: RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_SCOPE * RESEARCH_GUIDED_MAX_GOALS]
-                for goal_id in goal_ids:
-                    if int(per_goal_counts.get(goal_id) or 0) < RESEARCH_GUIDED_MAX_QUERY_REWRITES_PER_GOAL:
-                        per_goal_counts[goal_id] = int(per_goal_counts.get(goal_id) or 0) + 1
-                questions = [
-                    next(
-                        (
-                            goal.get("question")
-                            for goal in state.get("goals") or []
-                            if goal.get("goal_id") == goal_id
-                        ),
-                        "",
-                    )
-                    for goal_id in goal_ids
-                ]
-                _append_pending_note(state, _build_query_rewrite_instruction(questions))
-
-    history.append(current_entry)
-    state["evidence_query_history"] = history[-12:]
-
-
 def _refresh_resolutions(state: dict[str, Any]) -> dict[str, Any]:
     updated_goals: list[dict[str, Any]] = []
     updated_props: list[dict[str, Any]] = []
@@ -2098,10 +1921,6 @@ def register_tool_event(
 ) -> dict[str, Any]:
     updated = copy.deepcopy(state)
     normalized_tool_name = str(tool_name or "").strip()
-    query_family_scope: tuple[str, ...] = ()
-    query_goal_ids: list[str] = []
-    query_scope_artifact_count = 0
-    query_scope_domains: list[str] = []
     parsed = tool_result
     if isinstance(tool_result, str):
         try:
@@ -2117,7 +1936,7 @@ def register_tool_event(
         or (parsed.get("query") if isinstance(parsed, dict) else "")
     )
     query_fp = query_fingerprint(query_value)
-    if query_fp and normalized_tool_name in {"search_web", "web_research_strong", "query_web_evidence"}:
+    if query_fp and normalized_tool_name in {"search_web", "web_research_strong"}:
         if query_fp in (updated.get("unique_query_fingerprints") or []):
             updated["duplicate_query_count"] = int(updated.get("duplicate_query_count") or 0) + 1
         else:
@@ -2324,129 +2143,51 @@ def register_tool_event(
                     if counts_as_strong:
                         _mark_probe_observed(goal, "strong_source")
 
-    elif normalized_tool_name == "query_web_evidence" and isinstance(parsed, dict):
-        snippets = parsed.get("snippets") or []
-        if not snippets and str(parsed.get("status") or "") == "not_found":
+    elif normalized_tool_name == "read_web_page" and isinstance(parsed, dict):
+        if str(parsed.get("status") or "") != "ok":
             updated["negative_signal_count"] = int(updated.get("negative_signal_count") or 0) + 1
-        trustable_truncated_hits = int(parsed.get("truncation_trust_hits") or 0)
-        if not trustable_truncated_hits:
-            trustable_truncated_hits = sum(
-                1
-                for snippet in snippets
-                if isinstance(snippet, dict) and _normalize_bool(snippet.get("truncation_trust_hint"))
-            )
-        if trustable_truncated_hits:
-            updated["truncation_trust_hits"] = int(updated.get("truncation_trust_hits") or 0) + trustable_truncated_hits
-        concept_aligned_hits = int(parsed.get("concept_aligned_trust_hits") or 0)
-        if concept_aligned_hits:
-            updated["concept_aligned_trust_hits"] = int(
-                updated.get("concept_aligned_trust_hits") or 0
-            ) + concept_aligned_hits
-        adjacent_outcome_conflicts = int(parsed.get("adjacent_outcome_conflict_count") or 0)
-        if adjacent_outcome_conflicts:
-            updated["adjacent_outcome_conflict_count"] = int(
-                updated.get("adjacent_outcome_conflict_count") or 0
-            ) + adjacent_outcome_conflicts
-        if _normalize_bool(parsed.get("semantic_rerank_used")):
-            updated["semantic_rerank_used"] = True
-        semantic_rerank_candidates = int(parsed.get("semantic_rerank_candidate_count") or 0)
-        if semantic_rerank_candidates:
-            updated["semantic_rerank_candidate_count"] = int(
-                updated.get("semantic_rerank_candidate_count") or 0
-            ) + semantic_rerank_candidates
-        alias_confidence_summary = dict(parsed.get("alias_confidence_summary") or {})
-        if alias_confidence_summary:
-            merged_alias_summary = dict(updated.get("alias_confidence_summary") or {})
-            for key, value in alias_confidence_summary.items():
-                merged_alias_summary[str(key)] = int(merged_alias_summary.get(str(key)) or 0) + int(value or 0)
-            updated["alias_confidence_summary"] = merged_alias_summary
+        artifact_id = _normalize_text(parsed.get("artifact_id") or tool_params.get("artifact_id") or "")
+        artifact = next(
+            (
+                item
+                for item in updated.get("stored_artifacts") or []
+                if _normalize_text(item.get("artifact_id") or "") == artifact_id
+            ),
+            {},
+        )
+        title = _normalize_text(
+            parsed.get("title")
+            or artifact.get("title")
+            or _search_result_title_for_url(updated, parsed.get("url") or tool_params.get("url") or "")
+        )
+        url = _normalize_text(parsed.get("url") or artifact.get("url") or tool_params.get("url") or "")
+        domain = _normalize_text(parsed.get("domain") or artifact.get("domain") or _domain_from_url(url))
+        text = _normalize_text(parsed.get("text") or "")
+        identifier_hints = dict(
+            parsed.get("identifier_hints")
+            or artifact.get("identifier_hints")
+            or {}
+        )
+        canonical_family_id = _normalize_text(artifact.get("canonical_family_id") or "")
+        artifact_source_role = _normalize_text(artifact.get("evidence_role") or "")
+        read_as_full_document = bool(parsed.get("whole_document_returned")) or bool(parsed.get("done"))
+        content_depth = "full_text" if read_as_full_document else "snippet"
 
-        artifact_scope_ids = [
-            _normalize_text(value)
-            for value in (
-                tool_params.get("artifact_ids")
-                or parsed.get("searched_artifact_ids")
-                or parsed.get("artifact_ids")
-                or []
-            )
-            if _normalize_text(value)
-        ]
-        if (
-            not artifact_scope_ids
-            and int(parsed.get("searched_artifact_count") or 0) == 1
-            and len(updated.get("stored_artifacts") or []) == 1
-        ):
-            only_artifact = (updated.get("stored_artifacts") or [{}])[0]
-            only_artifact_id = _normalize_text(only_artifact.get("artifact_id") or "")
-            if only_artifact_id:
-                artifact_scope_ids = [only_artifact_id]
-        query_family_scope = _artifact_family_scope(updated, artifact_scope_ids)
-        query_scope_artifact_count = int(parsed.get("searched_artifact_count") or 0)
-        query_scope_domains = list(parsed.get("searched_domains") or [])
-
-        searched_domains = parsed.get("searched_domains") or []
-        if int(parsed.get("searched_artifact_count") or 0) <= 1 or len(searched_domains) <= 1:
+        if text:
             for goal in updated.get("goals") or []:
-                if _query_alignment(goal, query_value) == "target_aligned":
-                    goal["probe_budget"]["required"]["broader_fallback"] = True
-        else:
-            for goal in updated.get("goals") or []:
-                if _query_alignment(goal, query_value) == "target_aligned":
-                    _mark_probe_observed(goal, "broader_fallback")
-
-        for goal in updated.get("goals") or []:
-            alignment = _query_alignment(goal, query_value)
-            if alignment == "target_aligned":
+                fit = _context_fit(goal, " ".join(filter(None, [title, text])))
+                if fit == "weak":
+                    continue
                 _mark_probe_observed(goal, "target_aligned")
-                if goal.get("goal_id") not in query_goal_ids:
-                    query_goal_ids.append(goal.get("goal_id"))
-            elif alignment == "disconfirming":
-                _mark_probe_observed(goal, "disconfirming")
-                _record_disconfirmation_attempt(goal, query_value, found=bool(snippets), meaningful=True)
-
-        for snippet in snippets[:8]:
-            if not isinstance(snippet, dict):
-                continue
-            artifact_id = _normalize_text(snippet.get("artifact_id") or "")
-            artifact = next(
-                (
-                    item
-                    for item in updated.get("stored_artifacts") or []
-                    if _normalize_text(item.get("artifact_id") or "") == artifact_id
-                ),
-                {},
-            )
-            title = _normalize_text(artifact.get("title") or "")
-            url = _normalize_text(artifact.get("url") or "")
-            domain = _normalize_text(snippet.get("domain") or artifact.get("domain") or _domain_from_url(url))
-            text = _normalize_text(snippet.get("text") or "")
-            identifier_hints = dict(artifact.get("identifier_hints") or {})
-            canonical_family_id = _normalize_text(artifact.get("canonical_family_id") or "")
-            artifact_source_role = _normalize_text(artifact.get("evidence_role") or "")
-            content_depth = (
-                "full_text"
-                if str(artifact.get("mode") or "").strip().lower() == "content"
-                and int(artifact.get("content_chars") or 0) > 0
-                else "snippet"
-            )
-            for goal in updated.get("goals") or []:
-                alignment = _query_alignment(goal, query_value or text)
-                if alignment == "target_aligned":
-                    evidence_id = _append_evidence_record(
-                        updated,
-                        goal_ids=[goal.get("goal_id")],
-                        stance="supports",
-                        source_role=artifact_source_role,
-                        title=title,
-                        url=url,
-                        domain=domain,
-                        text=text,
-                        content_depth=content_depth,
-                        identifier_hints=identifier_hints,
-                        canonical_family_id=canonical_family_id,
+                _mark_probe_observed(goal, "strong_source")
+                if _text_suggests_disconfirmation(goal, text):
+                    _mark_probe_observed(goal, "disconfirming")
+                    _record_disconfirmation_attempt(
+                        goal,
+                        f"read:{title or url}",
+                        found=True,
+                        meaningful=True,
                     )
-                    goal.setdefault("support_ids", []).append(evidence_id)
-                elif alignment == "disconfirming":
                     evidence_id = _append_evidence_record(
                         updated,
                         goal_ids=[goal.get("goal_id")],
@@ -2461,25 +2202,23 @@ def register_tool_event(
                         canonical_family_id=canonical_family_id,
                     )
                     goal.setdefault("oppose_ids", []).append(evidence_id)
-                elif _context_fit(goal, text) == "weak":
-                    goal.setdefault("orthogonal_ids", [])
-
-        if trustable_truncated_hits:
-            _append_pending_note(
-                updated,
-                "A truncated evidence window can still be usable if it already contains a complete result clause. Use the result already found or request more context around that hit; do not abandon the source solely because the window is clipped.",
-            )
+                else:
+                    evidence_id = _append_evidence_record(
+                        updated,
+                        goal_ids=[goal.get("goal_id")],
+                        stance="supports",
+                        source_role=artifact_source_role,
+                        title=title,
+                        url=url,
+                        domain=domain,
+                        text=text,
+                        content_depth=content_depth,
+                        identifier_hints=identifier_hints,
+                        canonical_family_id=canonical_family_id,
+                    )
+                    goal.setdefault("support_ids", []).append(evidence_id)
 
     updated = _refresh_resolutions(updated)
-    if normalized_tool_name == "query_web_evidence":
-        _maybe_flag_low_novelty_query(
-            updated,
-            query_value=query_value,
-            family_scope=query_family_scope,
-            goal_ids=[goal_id for goal_id in query_goal_ids if goal_id],
-            searched_artifact_count=query_scope_artifact_count,
-            searched_domains=query_scope_domains,
-        )
     if updated.get("ready_to_answer"):
         updated = finalize_state_for_answer(updated)
         _set_pending_note(
@@ -2943,14 +2682,6 @@ def build_research_snapshot(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "blocked_access_count": int(state.get("blocked_access_count") or 0),
         "family_alias_count": int(state.get("family_alias_count") or 0),
         "same_family_conflict_count": int(state.get("same_family_conflict_count") or 0),
-        "query_rewrite_count": int(state.get("query_rewrite_count") or 0),
-        "low_novelty_query_count": int(state.get("low_novelty_query_count") or 0),
-        "truncation_trust_hits": int(state.get("truncation_trust_hits") or 0),
-        "concept_aligned_trust_hits": int(state.get("concept_aligned_trust_hits") or 0),
-        "adjacent_outcome_conflict_count": int(state.get("adjacent_outcome_conflict_count") or 0),
-        "semantic_rerank_used": bool(state.get("semantic_rerank_used")),
-        "semantic_rerank_candidate_count": int(state.get("semantic_rerank_candidate_count") or 0),
-        "alias_confidence_summary": copy.deepcopy(state.get("alias_confidence_summary") or {}),
         "pdf_extract_failed_count": int(state.get("pdf_extract_failed_count") or 0),
         "page_quality_counts": copy.deepcopy(state.get("page_quality_counts") or {}),
         "stop_reason": state.get("stop_reason"),
@@ -2982,14 +2713,6 @@ def build_runtime_summary(state: Optional[dict[str, Any]]) -> dict[str, Any]:
         "blocked_access_count": snapshot.get("blocked_access_count"),
         "family_alias_count": snapshot.get("family_alias_count"),
         "same_family_conflict_count": snapshot.get("same_family_conflict_count"),
-        "query_rewrite_count": snapshot.get("query_rewrite_count"),
-        "low_novelty_query_count": snapshot.get("low_novelty_query_count"),
-        "truncation_trust_hits": snapshot.get("truncation_trust_hits"),
-        "concept_aligned_trust_hits": snapshot.get("concept_aligned_trust_hits"),
-        "adjacent_outcome_conflict_count": snapshot.get("adjacent_outcome_conflict_count"),
-        "semantic_rerank_used": snapshot.get("semantic_rerank_used"),
-        "semantic_rerank_candidate_count": snapshot.get("semantic_rerank_candidate_count"),
-        "alias_confidence_summary": snapshot.get("alias_confidence_summary"),
         "pdf_extract_failed_count": snapshot.get("pdf_extract_failed_count"),
         "page_quality_counts": snapshot.get("page_quality_counts"),
         "stop_reason": snapshot.get("stop_reason"),

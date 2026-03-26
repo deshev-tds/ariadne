@@ -771,8 +771,6 @@ def test_normalize_workflow_saved_payload_includes_research_snapshot():
                 "blocked_access_count": 0,
                 "family_alias_count": 1,
                 "same_family_conflict_count": 0,
-                "query_rewrite_count": 1,
-                "low_novelty_query_count": 2,
                 "stop_reason": "all_primary_goals_resolved",
                 "ready_to_answer": True,
             },
@@ -784,7 +782,7 @@ def test_normalize_workflow_saved_payload_includes_research_snapshot():
     assert normalized["research_snapshot"]["goal_statuses"][0]["required_probe_summary"] == {}
     assert normalized["research_snapshot"]["goal_statuses"][0]["observed_probe_summary"] == {}
     assert normalized["research_snapshot"]["family_alias_count"] == 1
-    assert normalized["research_snapshot"]["query_rewrite_count"] == 1
+    assert "query_rewrite_count" not in normalized["research_snapshot"]
 
 
 def test_build_workflow_capture_packet_uses_research_guided_state_as_capture_reason():
@@ -858,8 +856,6 @@ def test_build_workflow_capture_packet_includes_research_snapshot_debug_fields()
                 "candidate_claims": [],
                 "family_alias_count": 2,
                 "same_family_conflict_count": 1,
-                "query_rewrite_count": 1,
-                "low_novelty_query_count": 3,
                 "ready_to_answer": False,
             },
         },
@@ -874,8 +870,8 @@ def test_build_workflow_capture_packet_includes_research_snapshot_debug_fields()
     assert snapshot["goal_statuses"][0]["observed_probe_summary"]["broader_fallback"] == 0
     assert snapshot["family_alias_count"] == 2
     assert snapshot["same_family_conflict_count"] == 1
-    assert snapshot["query_rewrite_count"] == 1
-    assert snapshot["low_novelty_query_count"] == 3
+    assert "query_rewrite_count" not in snapshot
+    assert "low_novelty_query_count" not in snapshot
 
 
 def test_research_guided_transition_payload_surfaces_specific_runtime_events():
@@ -896,8 +892,6 @@ def test_research_guided_transition_payload_surfaces_specific_runtime_events():
         "candidate_claims": [],
         "family_alias_count": 0,
         "same_family_conflict_count": 0,
-        "query_rewrite_count": 0,
-        "low_novelty_query_count": 0,
     }
     next_state = {
         **previous,
@@ -930,9 +924,7 @@ def test_research_guided_transition_payload_surfaces_specific_runtime_events():
     payload = middleware._research_guided_transition_payload(aliased, conflicted)
     assert payload["event"] == "same_family_conflict_adjudicated"
 
-    rewritten = {**conflicted, "query_rewrite_count": 1}
-    payload = middleware._research_guided_transition_payload(conflicted, rewritten)
-    assert payload["event"] == "query_rewrite_triggered"
+    assert middleware._research_guided_transition_payload(conflicted, conflicted) is None
 
 
 def test_capture_workflow_packet_is_chat_scoped(monkeypatch, tmp_path):
@@ -4204,24 +4196,19 @@ def test_web_research_strong_citation_source_prefers_citation_items():
     assert metadata[0]["source"] == "https://citation.example/b"
 
 
-def test_query_web_evidence_citation_source_uses_snippets():
+def test_read_web_page_citation_source_uses_returned_text():
     tool_result = {
-        "snippets": [
-            {
-                "title": "Evidence A",
-                "url": "https://example.org/a",
-                "text": "Window around match",
-                "artifact_id": "wp_1",
-                "domain": "example.org",
-                "start": 10,
-                "end": 42,
-                "score": 0.91,
-            }
-        ]
+        "title": "Evidence A",
+        "url": "https://example.org/a",
+        "text": "Window around match",
+        "artifact_id": "wp_1",
+        "domain": "example.org",
+        "range_start_token": 10,
+        "range_end_token": 42,
     }
 
     sources = middleware.get_citation_source_from_tool_result(
-        "query_web_evidence",
+        "read_web_page",
         {},
         tool_result,
     )
@@ -4231,6 +4218,7 @@ def test_query_web_evidence_citation_source_uses_snippets():
     assert len(metadata) == 1
     assert metadata[0]["source"] == "https://example.org/a"
     assert metadata[0]["artifact_id"] == "wp_1"
+    assert metadata[0]["range_start_token"] == 10
 
 
 def test_local_corpus_retrieve_evidence_citation_source_groups_by_book():
@@ -4528,7 +4516,7 @@ async def test_non_streaming_chat_response_normalizes_final_reasoning_details(mo
     assert 'done="true"' in result["choices"][0]["message"]["content"]
 
 
-def test_update_research_turn_state_triggers_breaker_on_stagnant_weak_evidence():
+def test_update_research_turn_state_records_reading_progress():
     metadata = {"chat_id": "chat-1", "message_id": "msg-1"}
 
     middleware._update_research_turn_state(
@@ -4551,129 +4539,45 @@ def test_update_research_turn_state_triggers_breaker_on_stagnant_weak_evidence()
     )
     middleware._update_research_turn_state(
         metadata,
-        tool_name="query_web_evidence",
+        tool_name="read_web_page",
         tool_params={},
         tool_result={
             "status": "ok",
-            "snippets": [],
-            "scope_mode": "implicit_current_message",
-            "searched_artifact_count": 1,
-            "evidence_strength": "weak",
-            "suggested_next_action": "refine_query",
-        },
-    )
-    middleware._update_research_turn_state(
-        metadata,
-        tool_name="query_web_evidence",
-        tool_params={},
-        tool_result={
-            "status": "ok",
-            "snippets": [],
-            "scope_mode": "implicit_current_message",
-            "searched_artifact_count": 1,
-            "evidence_strength": "weak",
-            "suggested_next_action": "refine_query",
-        },
-    )
-
-    state = middleware._research_turn_state(metadata)
-    assert state["weak_evidence_streak"] == 2
-    assert state["research_loop_breaker_triggered"] is True
-    assert state["research_loop_breaker_reason"] == "repeated_weak_evidence"
-
-
-def test_update_research_turn_state_does_not_trigger_breaker_when_artifact_scope_grows():
-    metadata = {"chat_id": "chat-1", "message_id": "msg-1"}
-
-    middleware._update_research_turn_state(
-        metadata,
-        tool_name="query_web_evidence",
-        tool_params={},
-        tool_result={
-            "status": "ok",
-            "snippets": [],
-            "scope_mode": "implicit_current_message",
-            "searched_artifact_count": 2,
-            "evidence_strength": "weak",
-            "suggested_next_action": "refine_query",
-        },
-    )
-    middleware._update_research_turn_state(
-        metadata,
-        tool_name="query_web_evidence",
-        tool_params={},
-        tool_result={
-            "status": "ok",
-            "snippets": [],
-            "scope_mode": "implicit_current_message",
-            "searched_artifact_count": 3,
-            "evidence_strength": "weak",
-            "suggested_next_action": "refine_query",
-        },
-    )
-
-    state = middleware._research_turn_state(metadata)
-    assert state["weak_evidence_streak"] == 1
-    assert state["research_loop_breaker_triggered"] is False
-
-
-def test_update_research_turn_state_marks_empty_fetches_in_breaker_reason():
-    metadata = {"chat_id": "chat-1", "message_id": "msg-1"}
-
-    middleware._update_research_turn_state(
-        metadata,
-        tool_name="fetch_url",
-        tool_params={"mode": "store"},
-        tool_result={
-            "status": "stored",
-            "mode": "store",
             "artifact_id": "art-1",
             "domain": "example.com",
-            "content_chars": 0,
+            "estimated_tokens": 800,
+            "whole_document_returned": True,
+            "done": True,
+            "cursor_present": False,
         },
     )
+
+    state = middleware._research_turn_state(metadata)
+    assert state["recent_artifact_count"] == 1
+    assert state["tool_calls"][-1]["tool"] == "read_web_page"
+    assert state["tool_calls"][-1]["whole_document_returned"] is True
+
+
+def test_update_research_turn_state_keeps_fetch_tracking_without_query_loop_state():
+    metadata = {"chat_id": "chat-1", "message_id": "msg-1"}
+
     middleware._update_research_turn_state(
         metadata,
         tool_name="fetch_url",
-        tool_params={"mode": "store"},
+        tool_params={},
         tool_result={
             "status": "stored",
             "mode": "store",
             "artifact_id": "art-2",
+            "url": "https://example.org/paper",
             "domain": "example.org",
             "content_chars": 0,
         },
     )
-    middleware._update_research_turn_state(
-        metadata,
-        tool_name="query_web_evidence",
-        tool_params={},
-        tool_result={
-            "status": "ok",
-            "snippets": [],
-            "scope_mode": "implicit_current_message",
-            "searched_artifact_count": 2,
-            "evidence_strength": "weak",
-            "suggested_next_action": "refine_query",
-        },
-    )
-    middleware._update_research_turn_state(
-        metadata,
-        tool_name="query_web_evidence",
-        tool_params={},
-        tool_result={
-            "status": "ok",
-            "snippets": [],
-            "scope_mode": "implicit_current_message",
-            "searched_artifact_count": 2,
-            "evidence_strength": "weak",
-            "suggested_next_action": "refine_query",
-        },
-    )
 
     state = middleware._research_turn_state(metadata)
-    assert state["empty_fetch_streak"] == 2
-    assert state["research_loop_breaker_reason"] == "repeated_weak_evidence_with_empty_fetches"
+    assert state["empty_fetch_streak"] == 1
+    assert "evidence_queries" not in state
 
 
 def test_tool_name_alias_maps_notes_research_strong():

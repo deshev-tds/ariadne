@@ -565,8 +565,8 @@ That matters more on local setups than it first appears. Prompt budget is finite
 At a high level, the current web path now behaves more like this:
 
 1. use `search_web` as the default discovery lane for open-world topics
-2. fetch concrete pages in `store` mode when they are likely to be queried as evidence
-3. run `query_web_evidence` over the exact current turn's stored artifacts when compact evidence is needed
+2. use `read_web_page(url=...)` once a concrete page looks relevant enough to read
+3. continue with `read_web_page(cursor=...)` when a scientific source is too large for one pass
 4. escalate to `web_research_strong` only as a hardening pass when discovery quality, provenance, contradiction, or risk sensitivity requires it
 5. stop once the evidence quality or coverage is good enough, instead of continuing mechanically
 6. surface planner status, evidence diagnostics, and fallback information so the path is inspectable
@@ -660,78 +660,30 @@ Middleware citation extraction for this tool now prefers `citation_items` and fa
 
 Numeric score remains available for diagnostics, but is no longer a default public confidence ornament.
 
-### Exact-Turn Web Evidence
+### Exact-Turn Web Reading
 
-`fetch_url(mode="store")` and `query_web_evidence` now have a stricter contract.
+`fetch_url(mode="store")` and `read_web_page` now have a cleaner contract.
 
 - `store` mode writes per-chat artifacts and returns pointer metadata only
-- if `query_web_evidence` is called without explicit `artifact_ids`, it searches only the stored web artifacts from the exact current `(chat_id, message_id)` turn
-- there is no chat-wide "recent-ish" fallback
-- empty evidence is diagnostic, not silent; the payload now reports scope mode, searched artifacts/domains, evidence strength, and a suggested next action
+- `read_web_page(url=...)` treats search result title + snippet as sufficient admission to start reading a promising source
+- `read_web_page(cursor=...)` continues deterministic contiguous slabs over the same stored artifact
+- there is no secondary local query loop between discovery and close reading
 
-That makes the `fetch -> evidence query` handoff much less ghostly. If the model gets empty evidence now, it has a precise reason instead of a vague absence.
+That makes the `search -> read` handoff less ghostly. Once a paper looks relevant, the model can read it directly instead of guessing the right local query string just to access already selected context.
 
-### Toggleable Large-Document Evidence Retrieval
+### Deterministic Large-Document Reading
 
-The next web-retrieval problem was different in shape. Once exact-turn storage became reliable, another failure mode became more visible:
+Large single-page documents are still a prompt-budget problem, but the reading surface is now simpler:
 
-- some sources are not ordinary articles, but very large single-page or single-file documents
-- examples include long `lex.bg` law pages, regulatory PDFs, drug labels, manuals, and specs
-- on those documents, plain one-shot lexical retrieval over a giant stored text blob can be fast, but quietly facet-incomplete
-- the expensive escape hatch, `fetch_url(mode="content")`, is often more reliable precisely because the model gets to read the whole thing - but that is also where prompt budget and latency start to get ugly
+- short sources are returned whole when they fit
+- large sources are returned as contiguous token slabs
+- slab continuation uses a small overlap so the model can keep local continuity without re-reading everything
 
-The resulting design pressure was straightforward: improve the `store -> query_web_evidence` path for large structured documents without pretending the new path is infallible and without removing the old baseline that already works reasonably well in many chats.
+The important shift is architectural:
 
-That is why Ariadne now has two explicit web-evidence retrieval modes for stored artifacts:
-
-- `legacy_store_retrieval`
-  - the current stable baseline
-  - exact-turn artifact scope
-  - current chunk-aware evidence snippets
-- `segmented_confidence_gated`
-  - the newer large-document path
-  - extractor-native structure first, weak structural hints second, plain chunk fallback last
-  - bounded segment retrieval with coverage rescue for compound questions when one-shot evidence is likely too one-sided
-
-The important thing here is not the name of the new mode, but the operating discipline behind it.
-
-It does **not** try to build a grand per-discipline scaffold for law, medicine, policy, or manuals. The retrieval unit changes by document shape, not by domain taxonomy. If a source yields useful structure, Ariadne indexes bounded segments with labels/path context and queries those. If the extracted structure looks weak or noisy, the system falls back inside the same mode to chunk-style retrieval instead of pretending a fake hierarchy exists.
-
-That confidence gate matters because parser optimism is expensive. Large-document retrieval is full of traps:
-
-- broken PDF line wraps
-- boilerplate-heavy HTML
-- heading-like text that is not really a heading
-- duplicated labels
-- OCR-ish garbage
-- inline legal references that look like section starts if you are careless
-
-So the segmented mode is deliberately not "structured always". It is "use structure when the extracted shape looks trustworthy; otherwise behave much closer to the older chunk-aware path".
-
-This is also why the feature is operator-toggleable instead of silently replacing the old behavior.
-
-- admins can set the global default in `Admin Settings -> Web Search`
-- individual chats can override it from chat controls
-- the default remains `legacy_store_retrieval` until the newer path proves itself broadly enough
-
-That toggle exists for two reasons:
-
-- practical A/B testing on real prompts and real local runtimes
-- fast operational fallback when the newer path misbehaves on an ugly document
-
-One detail is easy to miss but operationally important: this toggle affects only the stored-evidence path.
-
-- it applies to `fetch_url(mode="store") -> query_web_evidence`
-- it does **not** affect `fetch_url(mode="content")`
-
-So if a model chooses to read a fetched page directly into context, the retrieval-mode toggle is irrelevant for that turn. The new mode only matters when the model stores artifacts locally and later asks for bounded evidence over them.
-
-The motivating cases are concrete:
-
-- on a long `lex.bg` law page, the newer mode tries to retrieve bounded, locally meaningful segments instead of treating the entire law as one flat blob
-- on a document like the Mounjaro FDA label, it can recover the right warning / contraindications / dosage regions without forcing a full-document dump into prompt context
-
-And if that structure-aware path turns out not to be trustworthy for a particular source, the operator can flip the chat back to `legacy_store_retrieval` without disabling the whole web-evidence lane.
+- retrieval is for discovery
+- deterministic reading is for shortlisted sources
+- stored artifacts remain useful, but no longer feed a query-specific snippet tool
 
 ### Background Source Diary
 

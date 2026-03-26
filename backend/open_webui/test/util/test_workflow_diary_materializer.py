@@ -152,7 +152,7 @@ def test_materialize_workflow_diary_research_web_packet_with_source_diary(tmp_pa
         packet=_packet(
             chat_id=chat_id,
             message_id=message_id,
-            tool_names=["search_web", "query_web_evidence"],
+            tool_names=["search_web", "read_web_page"],
             tool_call_count=2,
             turn_recap_present=True,
         ),
@@ -353,7 +353,7 @@ def test_materialize_workflow_diary_is_idempotent(tmp_path):
         packet=_packet(
             chat_id=chat_id,
             message_id=message_id,
-            tool_names=["search_web", "query_web_evidence"],
+            tool_names=["search_web", "read_web_page"],
             tool_call_count=2,
         ),
     )

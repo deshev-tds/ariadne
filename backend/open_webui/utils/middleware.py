@@ -302,7 +302,7 @@ TOOL_NARRATION_TOOL_PHASES = {
     "local_corpus_assess_evidence": "evidence_check",
     "web_research_strong": "evidence_gathering",
     "search_strong_sources": "evidence_gathering",
-    "query_web_evidence": "evidence_gathering",
+    "read_web_page": "evidence_gathering",
     "fetch_url": "evidence_gathering",
     "search_web": "evidence_gathering",
 }
@@ -376,7 +376,7 @@ DEFAULT_SELECTOR_RETRIEVAL_TOOL_NAMES = {
     "search_web",
     "web_research_strong",
     "search_strong_sources",
-    "query_web_evidence",
+    "read_web_page",
     "fetch_url",
     "query_knowledge_files",
     "search_knowledge_files",
@@ -3005,7 +3005,7 @@ def get_citation_source_from_tool_result(
         "search_strong_sources",
         "web_research_strong",
         "notes_research_strong",
-        "query_web_evidence",
+        "read_web_page",
         "offsec_consult",
         "offsec_retrieve_evidence",
         "local_corpus_list_domains",
@@ -3104,40 +3104,34 @@ def get_citation_source_from_tool_result(
                     "metadata": metadata,
                 }
             ]
-        elif tool_name == "query_web_evidence":
+        elif tool_name == "read_web_page":
             payload = tool_result if isinstance(tool_result, dict) else {}
-            snippets = payload.get("snippets", []) if isinstance(payload, dict) else []
-            documents = []
-            metadata = []
-            for snippet in snippets:
-                if not isinstance(snippet, dict):
-                    continue
-                link = snippet.get("url", "")
-                text = snippet.get("text", "")
-                if not link or not text:
-                    continue
-                title = snippet.get("title", "") or link
-                documents.append(f"{title}\n{text}")
-                metadata.append(
-                    {
-                        "source": link,
-                        "name": title,
-                        "url": link,
-                        "artifact_id": snippet.get("artifact_id"),
-                        "domain": snippet.get("domain"),
-                        "start": snippet.get("start"),
-                        "end": snippet.get("end"),
-                        "score": snippet.get("score"),
-                    }
-                )
+            link = str(payload.get("url") or "").strip()
+            text = str(payload.get("text") or "").strip()
+            title = str(payload.get("title") or link).strip()
+            if not link or not text:
+                return []
             return [
                 {
                     "source": {
-                        "name": "query_web_evidence",
-                        "id": "query_web_evidence",
+                        "name": "read_web_page",
+                        "id": "read_web_page",
                     },
-                    "document": documents,
-                    "metadata": metadata,
+                    "document": [f"{title}\n{text}"],
+                    "metadata": [
+                        {
+                            "source": link,
+                            "name": title,
+                            "url": link,
+                            "artifact_id": payload.get("artifact_id"),
+                            "domain": payload.get("domain"),
+                            "range_start_token": payload.get("range_start_token"),
+                            "range_end_token": payload.get("range_end_token"),
+                            "whole_document_returned": payload.get("whole_document_returned"),
+                            "done": payload.get("done"),
+                            "cursor_present": payload.get("cursor_present"),
+                        }
+                    ],
                 }
             ]
         elif tool_name == "offsec_consult":
@@ -3454,7 +3448,6 @@ RESEARCH_LOOP_BREAKER_TOOL_NAMES = {
     "search_web",
     "web_research_strong",
     "fetch_url",
-    "query_web_evidence",
     *NOTES_LOOKUP_TOOL_NAMES,
 }
 TOOL_NAME_ALIASES = {
@@ -3540,14 +3533,8 @@ def _research_turn_state(metadata: Optional[dict[str, Any]]) -> Optional[dict[st
             "strong_hardening_reason": None,
             "strong_hardening_improved_bundle": None,
             "broad_fallback_after_strong": False,
-            "evidence_empty_after_fetch": False,
-            "evidence_scope_mode": None,
             "recent_artifact_count": 0,
             "empty_fetch_streak": 0,
-            "weak_evidence_streak": 0,
-            "research_loop_breaker_triggered": False,
-            "research_loop_breaker_reason": None,
-            "evidence_queries": [],
         },
     )
 
@@ -3632,15 +3619,15 @@ def _build_research_tool_trace_entry(
         entry["status"] = parsed_result.get("status")
         entry["artifact_id"] = parsed_result.get("artifact_id")
         entry["domain"] = parsed_result.get("domain")
-        entry["retrieval_mode_effective"] = parsed_result.get("retrieval_mode_effective")
-    elif tool_name == "query_web_evidence" and isinstance(parsed_result, dict):
+        entry["page_quality"] = parsed_result.get("page_quality")
+    elif tool_name == "read_web_page" and isinstance(parsed_result, dict):
         entry["status"] = parsed_result.get("status")
-        entry["scope_mode"] = parsed_result.get("scope_mode")
-        entry["evidence_strength"] = parsed_result.get("evidence_strength")
-        entry["suggested_next_action"] = parsed_result.get("suggested_next_action")
-        entry["snippets"] = len(parsed_result.get("snippets") or [])
-        entry["searched_artifact_count"] = parsed_result.get("searched_artifact_count")
-        entry["retrieval_mode_effective"] = parsed_result.get("retrieval_mode_effective")
+        entry["artifact_id"] = parsed_result.get("artifact_id")
+        entry["domain"] = parsed_result.get("domain")
+        entry["estimated_tokens"] = parsed_result.get("estimated_tokens")
+        entry["whole_document_returned"] = parsed_result.get("whole_document_returned")
+        entry["done"] = parsed_result.get("done")
+        entry["cursor_present"] = parsed_result.get("cursor_present")
     return entry
 
 
@@ -3652,7 +3639,7 @@ def _update_research_turn_state(
     tool_result: Any,
 ) -> list[dict[str, Any]]:
     canonical_name = TOOL_NAME_ALIASES.get(tool_name, tool_name)
-    if canonical_name not in {"search_web", "web_research_strong", "fetch_url", "query_web_evidence"}:
+    if canonical_name not in {"search_web", "web_research_strong", "fetch_url", "read_web_page"}:
         return []
 
     state = _research_turn_state(metadata)
@@ -3754,78 +3741,25 @@ def _update_research_turn_state(
                 )
                 state["recent_artifact_count"] = len(state.get("stored_artifacts") or [])
 
-    elif canonical_name == "query_web_evidence" and isinstance(parsed, dict):
-        snippets = parsed.get("snippets") or []
-        artifact_count = int(parsed.get("searched_artifact_count") or 0)
-        previous_query = (state.get("evidence_queries") or [])[-1] if state.get("evidence_queries") else None
-        weak_evidence = (
-            len(snippets) == 0
-            and parsed.get("evidence_strength") == "weak"
-            and parsed.get("suggested_next_action")
-            in {"refine_query", "broaden_discovery", "fetch_more"}
-        )
-        if weak_evidence:
-            previous_weak = bool(
-                previous_query
-                and previous_query.get("evidence_strength") == "weak"
-                and int(previous_query.get("snippets") or 0) == 0
+    elif canonical_name == "read_web_page" and isinstance(parsed, dict):
+        if str(parsed.get("status") or "") == "ok":
+            state["recent_artifact_count"] = max(
+                int(state.get("recent_artifact_count") or 0),
+                1,
             )
-            previous_artifact_count = int(
-                (previous_query or {}).get("searched_artifact_count") or 0
-            )
-            if previous_weak and artifact_count <= previous_artifact_count:
-                state["weak_evidence_streak"] = int(
-                    state.get("weak_evidence_streak") or 0
-                ) + 1
-            else:
-                state["weak_evidence_streak"] = 1
-        else:
-            state["weak_evidence_streak"] = 0
-        state["evidence_scope_mode"] = parsed.get("scope_mode")
-        state["recent_artifact_count"] = artifact_count
-        state["evidence_empty_after_fetch"] = bool(
-            state.get("stored_artifacts") and len(snippets) == 0
-        )
-        state.setdefault("evidence_queries", []).append(
-            {
-                "query": parsed.get("query"),
-                "scope_mode": parsed.get("scope_mode"),
-                "searched_artifact_count": artifact_count,
-                "searched_artifact_ids": parsed.get("searched_artifact_ids") or [],
-                "searched_domains": parsed.get("searched_domains") or [],
-                "missing_artifact_ids": parsed.get("missing_artifact_ids") or [],
-                "evidence_strength": parsed.get("evidence_strength"),
-                "suggested_next_action": parsed.get("suggested_next_action"),
-                "snippets": len(snippets),
-            }
-        )
         events.append(
             {
-                "phase": "research_evidence_diagnostics",
+                "phase": "research_reading_progress",
                 "research_discovery_lane": state.get("research_discovery_lane"),
                 "strong_hardening_triggered": bool(state.get("strong_hardening_triggered")),
                 "strong_hardening_reason": state.get("strong_hardening_reason"),
-                "evidence_empty_after_fetch": bool(state.get("evidence_empty_after_fetch")),
-                "evidence_scope_mode": parsed.get("scope_mode"),
-                "recent_artifact_count": artifact_count,
-                "retrieval_mode_effective": parsed.get("retrieval_mode_effective"),
-                "structured_index_used": bool(parsed.get("structured_index_used", False)),
-                "focus_retrieval_used": bool(parsed.get("focus_retrieval_used", False)),
-                "fallback_chunk_mode": bool(parsed.get("fallback_chunk_mode", False)),
+                "recent_artifact_count": state.get("recent_artifact_count"),
+                "estimated_tokens": parsed.get("estimated_tokens"),
+                "whole_document_returned": bool(parsed.get("whole_document_returned")),
+                "done": bool(parsed.get("done")),
+                "cursor_present": bool(parsed.get("cursor_present")),
             }
         )
-        if (
-            not state.get("research_loop_breaker_triggered")
-            and int(state.get("weak_evidence_streak") or 0)
-            >= RESEARCH_WEAK_EVIDENCE_STREAK_LIMIT
-        ):
-            reason = (
-                "repeated_weak_evidence_with_empty_fetches"
-                if int(state.get("empty_fetch_streak") or 0) >= 2
-                else "repeated_weak_evidence"
-            )
-            state["research_loop_breaker_triggered"] = True
-            state["research_loop_breaker_reason"] = reason
 
     return events
 
@@ -3851,30 +3785,17 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
             "fallback_reason": parsed.get("fallback_reason"),
         }
 
-    if tool_name == "query_web_evidence" and isinstance(parsed, dict):
+    if tool_name == "read_web_page" and isinstance(parsed, dict):
         return {
             "status": parsed.get("status"),
-            "snippets": len(parsed.get("snippets") or []),
-            "narrow_count": parsed.get("narrow_count"),
-            "wide_count": parsed.get("wide_count"),
-            "wide_pass_used": bool(parsed.get("wide_pass_used", False)),
-            "weak_narrow_evidence": bool(parsed.get("weak_narrow_evidence", False)),
-            "scope_mode": parsed.get("scope_mode"),
-            "searched_artifact_count": parsed.get("searched_artifact_count"),
-            "evidence_strength": parsed.get("evidence_strength"),
-            "suggested_next_action": parsed.get("suggested_next_action"),
-            "retrieval_mode_effective": parsed.get("retrieval_mode_effective"),
-            "retrieval_mode_source": parsed.get("retrieval_mode_source"),
-            "structured_index_used": bool(parsed.get("structured_index_used", False)),
-            "focus_retrieval_used": bool(parsed.get("focus_retrieval_used", False)),
-            "fallback_chunk_mode": bool(parsed.get("fallback_chunk_mode", False)),
-            "coverage_before_merge": parsed.get("coverage_before_merge"),
-            "coverage_after_merge": parsed.get("coverage_after_merge"),
-            "focus_count": parsed.get("focus_count"),
-            "focus_admitted": parsed.get("focus_admitted"),
-            "focus_dropped_low_score": parsed.get("focus_dropped_low_score"),
-            "dedupe_cluster_count": parsed.get("dedupe_cluster_count"),
-            "snippets_dropped_overlap": parsed.get("snippets_dropped_overlap"),
+            "artifact_id": parsed.get("artifact_id"),
+            "estimated_tokens": parsed.get("estimated_tokens"),
+            "document_estimated_tokens": parsed.get("document_estimated_tokens"),
+            "range_start_token": parsed.get("range_start_token"),
+            "range_end_token": parsed.get("range_end_token"),
+            "whole_document_returned": bool(parsed.get("whole_document_returned", False)),
+            "done": bool(parsed.get("done", False)),
+            "cursor_present": bool(parsed.get("cursor_present", False)),
         }
 
     if tool_name == "local_corpus_retrieve_evidence" and isinstance(parsed, dict):
@@ -4195,7 +4116,7 @@ def _build_research_loop_breaker_result(
     state: Optional[dict[str, Any]],
     *,
     blocked: bool = False,
-    tool_name: str = "query_web_evidence",
+    tool_name: str = "read_web_page",
 ) -> str:
     research_state = state or {}
     reason = str(research_state.get("research_loop_breaker_reason") or "repeated_weak_evidence")
@@ -9462,7 +9383,7 @@ def _build_source_diary_context(
 
     web_tool_used = any(
         str((entry or {}).get("tool") or "")
-        in {"search_web", "web_research_strong", "fetch_url", "query_web_evidence"}
+        in {"search_web", "web_research_strong", "fetch_url", "read_web_page"}
         for entry in tool_calls
     )
     if not web_tool_used:
@@ -9513,7 +9434,6 @@ def _build_source_diary_context(
             for item in stored_artifacts
             if str(item.get("artifact_id") or "").strip()
         ],
-        "query_web_evidence_diagnostics": copy.deepcopy(state.get("evidence_queries") or []),
         "citation_sources": source_entries,
     }
 
@@ -11770,7 +11690,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 "search_web",
                                 "web_research_strong",
                                 "search_strong_sources",
-                                "query_web_evidence",
+                                "read_web_page",
                                 "fetch_url",
                                 "view_knowledge_file",
                                 "query_knowledge_files",

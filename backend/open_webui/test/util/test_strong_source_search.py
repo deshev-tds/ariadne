@@ -172,7 +172,7 @@ async def test_search_strong_sources_tool_returns_telemetry_schema(monkeypatch):
     payload = json.loads(output)
 
     assert payload["phase"] == "completed"
-    assert payload["next_action"] in {"answer", "fetch_and_query_evidence"}
+    assert payload["next_action"] in {"answer", "read_selected_sources"}
     assert payload["local_phase_executed"] is True
     assert payload["brave_fallback_used"] is False
 
@@ -1391,7 +1391,7 @@ async def test_search_auto_recovers_session_when_domain_selection_inputs_present
     )
 
     assert payload["phase"] == "completed"
-    assert payload["next_action"] in {"answer", "fetch_and_query_evidence"}
+    assert payload["next_action"] in {"answer", "read_selected_sources"}
     assert payload["selected_categories"] == ["science"]
     assert payload["selected_domains"] == ["local.docs"]
     assert payload["search_session_id"].startswith("fss_")

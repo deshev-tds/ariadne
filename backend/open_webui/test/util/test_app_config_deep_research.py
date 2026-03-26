@@ -12,4 +12,3 @@ def test_app_state_registers_deep_research_config_keys():
     assert isinstance(config.DEEP_RESEARCH_POLL_INTERVAL_MS, int)
     assert isinstance(config.DEEP_RESEARCH_TIMEOUT_SECONDS, int)
     assert isinstance(config.DEEP_RESEARCH_EXPORT_FORMAT, str)
-    assert config.ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT in (True, False)

@@ -34,7 +34,7 @@ RESEARCH_EXACT_TOOLS = {
     "web_research_strong",
     "search_strong_sources",
     "fetch_url",
-    "query_web_evidence",
+    "read_web_page",
 }
 OFFSEC_TOOLS = {
     "offsec_consult",

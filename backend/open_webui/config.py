@@ -2233,7 +2233,7 @@ Your task is to choose and return the correct tool(s) from the list of available
 - Return only the JSON object, without any additional text or explanation.
 - Use `search_web` as the default first-step discovery tool for open-world web research.
 - Use `web_research_strong` only as a second-pass hardening tool when the user explicitly asks for stronger/trusted verification, broad results look mixed or contradictory, or the final answer depends on important numeric/date/risk claims.
-- Use `fetch_url(mode="store")` for pages you intend to query with `query_web_evidence`, and use `fetch_url` only after selecting concrete URLs.
+- Use `read_web_page(url=...)` as the primary scientific reading tool once a web result looks relevant enough to read, and use `fetch_url(mode="store")` only when you need low-level persistence before reading.
 - Optimize for minimum tool turns and minimum repeated loops.
 - Start with the smallest sufficient tool plan (usually one call), then stop as soon as evidence is adequate.
 - Do not repeat the same tool with near-identical parameters unless the previous result explicitly indicates insufficiency.
@@ -3719,25 +3719,6 @@ WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS = PersistentConfig(
     "rag.web.search.evidence_saturation.judge_max_input_chars",
     int(os.getenv("WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS", "16000")),
 )
-
-WEB_EVIDENCE_RETRIEVAL_MODE = PersistentConfig(
-    "WEB_EVIDENCE_RETRIEVAL_MODE",
-    "rag.web.evidence.retrieval_mode",
-    os.getenv("WEB_EVIDENCE_RETRIEVAL_MODE", "legacy_store_retrieval"),
-)
-
-WEB_EVIDENCE_CONTEXT_MODE = PersistentConfig(
-    "WEB_EVIDENCE_CONTEXT_MODE",
-    "rag.web.evidence.context_mode",
-    os.getenv("WEB_EVIDENCE_CONTEXT_MODE", "local_section"),
-)
-
-ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT = PersistentConfig(
-    "ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT",
-    "rag.web.search.evidence_concept_alignment.enable",
-    os.getenv("ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT", "False").lower() == "true",
-)
-
 
 WEB_LOADER_ENGINE = PersistentConfig(
     "WEB_LOADER_ENGINE",

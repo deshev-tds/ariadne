@@ -72,9 +72,8 @@ from open_webui.models.memories import Memories
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.utils.sanitize import sanitize_code
 from open_webui.utils.web_evidence_store import (
-    resolve_web_evidence_context_mode,
-    query_web_evidence_store,
-    resolve_web_evidence_retrieval_mode,
+    find_stored_web_artifact,
+    read_stored_web_page,
     store_web_page,
 )
 from open_webui.utils.research_guided import (
@@ -112,19 +111,177 @@ SCHOLARLY_MIRROR_DOMAIN_TOKENS = {
     "thelancet.com",
     "bmj.com",
 }
+def _request_config(request: Optional[Request]) -> Any:
+    return getattr(getattr(getattr(request, "app", None), "state", None), "config", None)
 
 
-def _should_force_concept_alignment(metadata: Optional[dict[str, Any]]) -> bool:
-    if not isinstance(metadata, dict):
-        return False
-    if isinstance(metadata.get(RESEARCH_GUIDED_STATE_KEY), dict):
-        return True
+def _read_token_encoding_name(request: Optional[Request]) -> str:
+    config = _request_config(request)
+    value = str(getattr(config, "TIKTOKEN_ENCODING_NAME", "") or "").strip()
+    return value or "cl100k_base"
 
-    params = metadata.get("params", {}) or {}
-    working_mode = str(params.get("working_mode") or "").strip().lower()
-    if working_mode == "science":
-        return True
-    return bool(params.get("research_guided_mode"))
+
+def _stored_artifact_pointer_from_row(
+    row: dict[str, Any],
+    *,
+    mode: str = "store",
+    reused_existing_artifact: bool = False,
+) -> dict[str, Any]:
+    return {
+        "status": "stored",
+        "mode": mode,
+        "artifact_id": row.get("artifact_id"),
+        "chat_id": row.get("chat_id"),
+        "message_id": row.get("message_id"),
+        "url": row.get("url"),
+        "canonical_url": row.get("canonical_url"),
+        "domain": row.get("domain"),
+        "title": row.get("title"),
+        "path": row.get("path"),
+        "fetched_at": row.get("fetched_at"),
+        "content_chars": row.get("content_chars"),
+        "sha256": row.get("sha256"),
+        "segment_indexed": True,
+        "available_to": "read_web_page",
+        "reused_existing_artifact": reused_existing_artifact,
+    }
+
+
+async def _ensure_stored_web_page_artifact(
+    *,
+    url: str,
+    title: Optional[str],
+    __request__: Request,
+    __metadata__: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    chat_id = str((__metadata__ or {}).get("chat_id") or "").strip()
+    message_id = str((__metadata__ or {}).get("message_id") or "").strip()
+    if not chat_id:
+        return {
+            "error": "chat_id missing in metadata for store mode",
+            "mode": "store",
+            "url": url,
+        }
+
+    existing = await asyncio.to_thread(
+        find_stored_web_artifact,
+        chat_id=chat_id,
+        url=url,
+        message_id=message_id,
+    )
+    if existing:
+        pointer = _stored_artifact_pointer_from_row(
+            existing,
+            reused_existing_artifact=True,
+        )
+        pointer["resolved_title"] = str(existing.get("title") or "").strip()
+        pointer["title_source"] = "stored_artifact"
+        pointer["page_quality"] = ""
+        pointer["counts_as_strong_source"] = True
+        return pointer
+
+    search_result_title = ""
+    research_state = (__metadata__ or {}).get(RESEARCH_GUIDED_STATE_KEY) or {}
+    if isinstance(research_state, dict):
+        title_registry = research_state.get("search_result_titles") or {}
+        canonical_url = canonicalize_url(url)
+        search_result_title = str(
+            title_registry.get(canonical_url)
+            or title_registry.get(str(url or ""))
+            or ""
+        ).strip()
+
+    content, docs, fetch_meta = await asyncio.to_thread(get_content_from_url, __request__, url)
+    fetch_meta = fetch_meta if isinstance(fetch_meta, dict) else {}
+    if fetch_meta.get("status") in {"unsupported_binary", "document_extract_failed"}:
+        fetch_meta["mode"] = "store"
+        return fetch_meta
+
+    content_source = str(fetch_meta.get("content_source") or "primary_loader")
+    resource_kind = fetch_meta.get("resource_kind")
+    content_type = fetch_meta.get("content_type")
+    binary_handling = fetch_meta.get("binary_handling")
+    extraction_engine = fetch_meta.get("extraction_engine")
+    if docs:
+        first_doc = docs[0]
+        metadata = first_doc.metadata if hasattr(first_doc, "metadata") else {}
+        if isinstance(metadata, dict):
+            if metadata.get("loader_fallback"):
+                content_source = str(metadata.get("loader_fallback"))
+            resource_kind = resource_kind or metadata.get("resource_kind")
+            content_type = content_type or metadata.get("content_type")
+            binary_handling = binary_handling or metadata.get("binary_handling")
+            extraction_engine = extraction_engine or metadata.get("extraction_engine")
+
+    metadata_title_candidates: list[str] = []
+    fetch_meta_title = str(fetch_meta.get("filename") or "").strip()
+    if fetch_meta_title:
+        metadata_title_candidates.append(fetch_meta_title)
+    if docs:
+        first_doc = docs[0]
+        metadata = first_doc.metadata if hasattr(first_doc, "metadata") else {}
+        if isinstance(metadata, dict):
+            for key in (
+                "title",
+                "document_title",
+                "page_title",
+                "og_title",
+                "og:title",
+                "name",
+            ):
+                candidate = str(metadata.get(key) or "").strip()
+                if candidate and candidate not in metadata_title_candidates:
+                    metadata_title_candidates.append(candidate)
+
+    inferred_title, title_source = resolve_stored_title(
+        explicit_title=title,
+        url=url,
+        content=content,
+        metadata_title_candidates=metadata_title_candidates,
+        search_result_title=search_result_title,
+    )
+    page_quality = classify_page_quality(
+        url=url,
+        resolved_title=inferred_title,
+        content=content,
+        content_source=content_source,
+        resource_kind=resource_kind,
+        content_type=content_type,
+        status="stored",
+        content_chars=len(content or ""),
+    )
+    identifier_hints = extract_identifier_hints(
+        title=inferred_title,
+        url=url,
+        text=content,
+    )
+
+    pointer = await asyncio.to_thread(
+        store_web_page,
+        chat_id=chat_id,
+        message_id=message_id,
+        url=url,
+        content=content,
+        title=inferred_title,
+    )
+    pointer["mode"] = "store"
+    pointer["content_source"] = content_source
+    pointer["resource_kind"] = resource_kind
+    pointer["content_type"] = content_type
+    pointer["binary_handling"] = binary_handling
+    pointer["extraction_engine"] = extraction_engine
+    pointer["resolved_title"] = inferred_title
+    pointer["title_source"] = title_source
+    pointer["page_quality"] = page_quality
+    pointer["counts_as_strong_source"] = counts_as_strong_source(page_quality)
+    pointer["retry_recommended"] = page_quality in {
+        "challenge_or_antibot",
+        "thin_shell",
+    }
+    pointer["available_to"] = "read_web_page"
+    if identifier_hints:
+        pointer["identifier_hints"] = identifier_hints
+    return pointer
 
 # =============================================================================
 # TIME UTILITIES
@@ -274,7 +431,6 @@ def _collapse_search_result_mirrors(results: list[Any]) -> list[dict[str, Any]]:
             "snippet": snippet,
             "snippet_is_excerpt": True,
             "full_text_requires_fetch": True,
-            "query_web_evidence_ready": False,
             "evidence_family_candidate": family_candidate,
             "mirror_family_collapsed": False,
             "collapsed_mirror_count": 1,
@@ -324,10 +480,9 @@ async def search_web(
     Search result snippets are excerpts, not full-page content.
     For research turns, the expected choreography is:
     - `search_web` for discovery
-    - `fetch_url(url, mode="store")` for any page you want to inspect locally
-    - `query_web_evidence(...)` only after a page has been fetched/stored
-    Do not pass `owui_key="web:..."` source keys from search results into
-    `query_web_evidence`; they are source references, not stored artifact IDs.
+    - `read_web_page(url=...)` once a result looks relevant enough to read
+    Search result title + snippet are enough to decide whether to try reading a page.
+    Do not require a secondary local query loop before reading a promising scientific source.
     Keep calls concise:
     - Prefer one high-quality query first.
     - Avoid repeated near-identical queries.
@@ -450,9 +605,8 @@ async def web_research_strong(
     - Follow returned `next_action` instead of improvising extra loops.
     - Do not automatically bounce back and forth between broad and focused search.
     - Stop searching when evidence is adequate.
-    If payload returns `next_action=fetch_and_query_evidence`, store target pages via
-    `fetch_url(mode="store")` and then call `query_web_evidence` for compact snippets
-    from the current assistant turn's stored pages.
+    If payload returns `next_action=read_selected_sources`, read the recommended URLs via
+    `read_web_page(url=...)` rather than bouncing through an extra local query loop.
 
     :param query: User question or search objective
     :param mode: list_categories | list_domains | search (default: search)
@@ -1137,12 +1291,12 @@ async def fetch_url(
     Fetch and extract the main text content from a web page URL.
     Supports two modes:
     - content (default): returns extracted content text (legacy behavior)
-    - store: stores normalized content as per-chat artifact + local FTS index, and
-      returns pointer metadata only (no raw page dump)
+    - store: stores normalized content as a per-chat artifact for later deterministic
+      reading, and returns pointer metadata only (no raw page dump)
 
-    For research turns, prefer `mode="store"` when you expect to call
-    `query_web_evidence` next. Stored pages become available to
-    `query_web_evidence` for the same `(chat_id, message_id)` assistant turn.
+    For science turns, prefer `read_web_page(url=...)` as the primary reading tool.
+    `fetch_url(mode="store")` remains a low-level persistence primitive when you want
+    to store a page explicitly before reading it in slabs.
 
     :param url: The URL to fetch content from
     :param mode: content | store
@@ -1153,30 +1307,20 @@ async def fetch_url(
         return json.dumps({"error": "Request context not available"})
 
     try:
-        config = getattr(getattr(getattr(__request__, "app", None), "state", None), "config", None)
-        retrieval_mode, retrieval_mode_source = resolve_web_evidence_retrieval_mode(
-            config_or_path=config,
-            metadata=__metadata__,
-        )
-        search_result_title = ""
-        research_state = (__metadata__ or {}).get(RESEARCH_GUIDED_STATE_KEY) or {}
-        if isinstance(research_state, dict):
-            title_registry = research_state.get("search_result_titles") or {}
-            canonical_url = canonicalize_url(url)
-            search_result_title = str(
-                title_registry.get(canonical_url)
-                or title_registry.get(str(url or ""))
-                or ""
-            ).strip()
-        content, docs, fetch_meta = await asyncio.to_thread(
-            get_content_from_url, __request__, url
-        )
         selected_mode = (mode or "content").strip().lower()
+        if selected_mode == "store":
+            pointer = await _ensure_stored_web_page_artifact(
+                url=url,
+                title=title,
+                __request__=__request__,
+                __metadata__=__metadata__,
+            )
+            return json.dumps(pointer, ensure_ascii=False)
+
+        content, docs, fetch_meta = await asyncio.to_thread(get_content_from_url, __request__, url)
         fetch_meta = fetch_meta if isinstance(fetch_meta, dict) else {}
         if fetch_meta.get("status") in {"unsupported_binary", "document_extract_failed"}:
             fetch_meta["mode"] = selected_mode
-            fetch_meta["retrieval_mode_effective"] = retrieval_mode
-            fetch_meta["retrieval_mode_source"] = retrieval_mode_source
             return json.dumps(fetch_meta, ensure_ascii=False)
 
         content_source = str(fetch_meta.get("content_source") or "primary_loader")
@@ -1194,96 +1338,6 @@ async def fetch_url(
                 content_type = content_type or metadata.get("content_type")
                 binary_handling = binary_handling or metadata.get("binary_handling")
                 extraction_engine = extraction_engine or metadata.get("extraction_engine")
-
-        if selected_mode == "store":
-            chat_id = str((__metadata__ or {}).get("chat_id") or "").strip()
-            message_id = str((__metadata__ or {}).get("message_id") or "").strip()
-            if not chat_id:
-                return json.dumps(
-                    {
-                        "error": "chat_id missing in metadata for store mode",
-                        "mode": "store",
-                        "url": url,
-                    },
-                    ensure_ascii=False,
-                )
-
-            metadata_title_candidates: list[str] = []
-            fetch_meta_title = str(fetch_meta.get("filename") or "").strip()
-            if fetch_meta_title:
-                metadata_title_candidates.append(fetch_meta_title)
-            if docs:
-                first_doc = docs[0]
-                metadata = first_doc.metadata if hasattr(first_doc, "metadata") else {}
-                if isinstance(metadata, dict):
-                    for key in (
-                        "title",
-                        "document_title",
-                        "page_title",
-                        "og_title",
-                        "og:title",
-                        "name",
-                    ):
-                        candidate = str(metadata.get(key) or "").strip()
-                        if candidate and candidate not in metadata_title_candidates:
-                            metadata_title_candidates.append(candidate)
-
-            inferred_title, title_source = resolve_stored_title(
-                explicit_title=title,
-                url=url,
-                content=content,
-                metadata_title_candidates=metadata_title_candidates,
-                search_result_title=search_result_title,
-            )
-            page_quality = classify_page_quality(
-                url=url,
-                resolved_title=inferred_title,
-                content=content,
-                content_source=content_source,
-                resource_kind=resource_kind,
-                content_type=content_type,
-                status="stored",
-                content_chars=len(content or ""),
-            )
-            identifier_hints = extract_identifier_hints(
-                title=inferred_title,
-                url=url,
-                text=content,
-            )
-
-            pointer = await asyncio.to_thread(
-                store_web_page,
-                chat_id=chat_id,
-                message_id=message_id,
-                url=url,
-                content=content,
-                title=inferred_title,
-                retrieval_mode=retrieval_mode,
-            )
-            pointer["mode"] = "store"
-            pointer["content_source"] = content_source
-            pointer["resource_kind"] = resource_kind
-            pointer["content_type"] = content_type
-            pointer["binary_handling"] = binary_handling
-            pointer["extraction_engine"] = extraction_engine
-            pointer["resolved_title"] = inferred_title
-            pointer["title_source"] = title_source
-            pointer["page_quality"] = page_quality
-            pointer["counts_as_strong_source"] = counts_as_strong_source(page_quality)
-            pointer["retry_recommended"] = page_quality in {
-                "challenge_or_antibot",
-                "thin_shell",
-            }
-            pointer["retrieval_mode_effective"] = retrieval_mode
-            pointer["retrieval_mode_source"] = retrieval_mode_source
-            pointer["available_to"] = "query_web_evidence"
-            pointer["evidence_query_scope"] = {
-                "chat_id": chat_id,
-                "message_id": message_id,
-            }
-            if identifier_hints:
-                pointer["identifier_hints"] = identifier_hints
-            return json.dumps(pointer, ensure_ascii=False)
 
         if selected_mode != "content":
             return json.dumps(
@@ -1305,155 +1359,101 @@ async def fetch_url(
         return json.dumps({"error": str(e)})
 
 
-async def query_web_evidence(
-    query: str,
-    artifact_ids: Optional[list[str]] = None,
-    top_k: int = 6,
-    window_chars: int = 320,
-    widen_if_weak: bool = True,
-    wide_top_k: int = 10,
-    wide_window_chars: int = 640,
+async def read_web_page(
+    url: Optional[str] = None,
+    artifact_id: Optional[str] = None,
+    cursor: Optional[str] = None,
+    max_tokens: Optional[int] = None,
     __request__: Request = None,
     __user__: dict = None,
     __metadata__: dict = None,
 ) -> str:
     """
     WEB SOURCES ONLY.
-    Query per-chat locally stored web artifacts using lexical retrieval (FTS5).
-    Returns either a hit-centered local section or, if configured, the full article
-    for the top-ranked hit. It does not automatically dump all fetched sources.
-    If `artifact_ids` is omitted, this searches stored web artifacts from the current
-    assistant turn only, defined as the exact `(chat_id, message_id)` pair.
-    Only stored artifact IDs are valid here, typically the `artifact_id` returned by
-    `fetch_url(url, mode="store")`. Search-result source keys like `web:...` are not
-    stored artifacts and cannot be queried until the page is fetched/stored.
-    Weak or empty evidence means lexical match was weak or the artifact set was
-    insufficient; it does not automatically mean no relevant pages were fetched.
-    `window_chars` is best-effort only. In segmented retrieval, the tool may return
-    a fixed larger context around the top hit, or the entire article if configured.
-    Repeating the same query with a larger `window_chars` often will not expose more.
-    If the top snippet is insufficient, prefer a more specific query over increasing
-    `window_chars` or re-fetching the same page.
-    Prefer the agent-facing diagnostic fields when present:
-    - `exact_target_match_found`
-    - `best_hit_is_adjacent_outcome`
-    - `agent_guidance`
-    - `window_chars_requested`
-    - `window_chars_effective`
-    - `repeat_window_increase_wont_help`
-    If `agent_guidance=refine_within_same_source`, keep querying the same stored
-    artifact for the exact outcome/claim rather than broadening immediately.
+    Deterministically read a stored web page in contiguous token slabs.
+    Use this as the primary science reading tool after `search_web`.
+    Title + snippet from search results are enough to decide whether to try reading.
 
-    :param query: Evidence query to match against stored web artifacts
-    :param artifact_ids: Optional exact subset of artifact IDs to search
-    :param top_k: Number of snippets for narrow pass (default: 6)
-    :param window_chars: Snippet window chars for narrow pass (default: 320)
-    :param widen_if_weak: Run second wider pass if narrow evidence is weak
-    :param wide_top_k: Number of snippets for wide pass (default: 10)
-    :param wide_window_chars: Snippet window chars for wide pass (default: 640)
-    :return: JSON with snippets and provenance metadata
+    Behavior:
+    - If `url` is provided, the tool reuses an existing stored artifact for this chat
+      when possible, otherwise it fetches, stores, and reads the page.
+    - If `artifact_id` is provided, the tool reads the stored artifact directly.
+    - If `cursor` is provided, the tool returns the next contiguous slab with overlap.
+    - If the document fits within the token budget, the whole document is returned.
+
+    :param url: URL to read (auto-fetch/store if needed)
+    :param artifact_id: Stored artifact id to read directly
+    :param cursor: Opaque cursor returned by a prior read_web_page call
+    :param max_tokens: Optional max token budget for the returned slab
+    :return: JSON with artifact metadata, text, range, and cursor state
     """
     if __request__ is None:
-        return json.dumps({"error": "Request context not available"})
+        return json.dumps({"error": "Request context not available"}, ensure_ascii=False)
 
     chat_id = str((__metadata__ or {}).get("chat_id") or "").strip()
     message_id = str((__metadata__ or {}).get("message_id") or "").strip()
     if not chat_id:
         return json.dumps(
+            {"error": "chat_id missing in metadata for read_web_page"},
+            ensure_ascii=False,
+        )
+
+    requested_url = str(url or "").strip()
+    requested_artifact_id = str(artifact_id or "").strip()
+    requested_cursor = str(cursor or "").strip()
+    if not (requested_url or requested_artifact_id or requested_cursor):
+        return json.dumps(
             {
-                "error": "chat_id missing in metadata for evidence query",
-                "query": query,
-                "snippets": [],
+                "error": "read_web_page requires one of: url, artifact_id, or cursor",
             },
             ensure_ascii=False,
         )
 
     try:
-        config = getattr(getattr(getattr(__request__, "app", None), "state", None), "config", None)
-        retrieval_mode, retrieval_mode_source = resolve_web_evidence_retrieval_mode(
-            config_or_path=config,
-            metadata=__metadata__,
-        )
-        context_mode, context_mode_source = resolve_web_evidence_context_mode(
-            config_or_path=config,
-            metadata=__metadata__,
-        )
-        concept_alignment_enabled = bool(
-            getattr(config, "ENABLE_WEB_EVIDENCE_CONCEPT_ALIGNMENT", False)
-        ) or _should_force_concept_alignment(__metadata__)
-        embedding_function = getattr(
-            getattr(getattr(__request__, "app", None), "state", None),
-            "EMBEDDING_FUNCTION",
-            None,
-        )
-        reranking_function = getattr(
-            getattr(getattr(__request__, "app", None), "state", None),
-            "RERANKING_FUNCTION",
-            None,
-        )
+        effective_artifact_id = requested_artifact_id
+        stored_pointer: dict[str, Any] | None = None
+        if requested_cursor:
+            pass
+        elif requested_url:
+            stored_pointer = await _ensure_stored_web_page_artifact(
+                url=requested_url,
+                title=None,
+                __request__=__request__,
+                __metadata__=__metadata__,
+            )
+            if stored_pointer.get("error") or stored_pointer.get("status") in {
+                "unsupported_binary",
+                "document_extract_failed",
+            }:
+                stored_pointer["mode"] = "read"
+                return json.dumps(stored_pointer, ensure_ascii=False)
+            effective_artifact_id = str(stored_pointer.get("artifact_id") or "").strip()
+
         payload = await asyncio.to_thread(
-            query_web_evidence_store,
+            read_stored_web_page,
             chat_id=chat_id,
+            artifact_id=effective_artifact_id or None,
+            url=requested_url or None,
             message_id=message_id,
-            query=query,
-            artifact_ids=artifact_ids,
-            top_k=top_k,
-            window_chars=window_chars,
-            widen_if_weak=widen_if_weak,
-            wide_top_k=wide_top_k,
-            wide_window_chars=wide_window_chars,
-            retrieval_mode=retrieval_mode,
-            context_mode=context_mode,
-            concept_alignment_enabled=concept_alignment_enabled,
-            embedding_function=embedding_function,
-            reranking_function=reranking_function,
+            cursor=requested_cursor or None,
+            max_tokens=int(max_tokens) if max_tokens is not None else None,
+            encoding_name=_read_token_encoding_name(__request__),
         )
-        if isinstance(payload, dict):
-            payload["retrieval_mode_effective"] = payload.get(
-                "retrieval_mode_effective", retrieval_mode
-            )
-            payload["retrieval_mode_source"] = retrieval_mode_source
-            payload["concept_alignment_enabled"] = bool(
-                payload.get("concept_alignment_enabled", concept_alignment_enabled)
-            )
-            payload["context_mode_effective"] = payload.get(
-                "context_mode_effective", context_mode
-            )
-            payload["context_mode_source"] = context_mode_source
-            if payload.get("snippets"):
-                returned_context_kind = str(payload.get("returned_context_kind") or "ranked_snippets")
-                if returned_context_kind == "full_article":
-                    payload["agent_context_notice"] = (
-                        "The top result is the full article for the best-ranked hit. Increasing "
-                        "`window_chars` will not reveal more from this source."
-                    )
-                elif returned_context_kind == "hit_centered_local_section":
-                    payload["agent_context_notice"] = (
-                        "To avoid overloading context, the top result is already the largest "
-                        "hit-centered local section we return for this source. If you need a "
-                        "different part of the same source, issue a more specific query rather "
-                        "than increasing `window_chars`."
-                    )
-                elif returned_context_kind == "focus_support_excerpt":
-                    payload["agent_context_notice"] = (
-                        "The top result is a curated excerpt centered on the exact evidence-bearing "
-                        "span, with minimal nearby support context. Treat the quoted text as a "
-                        "selected excerpt rather than the full section."
-                    )
-                elif returned_context_kind == "full_table_block":
-                    payload["agent_context_notice"] = (
-                        "The top result is the full local table block around the matched evidence. "
-                        "Use the table as-is rather than assuming surrounding prose was included."
-                    )
-                else:
-                    payload["agent_context_notice"] = (
-                        "These are ranked snippets from the stored source. If the top result "
-                        "is insufficient, refine the query terms before re-fetching the page."
-                    )
+        if stored_pointer:
+            for key in (
+                "resolved_title",
+                "title_source",
+                "page_quality",
+                "counts_as_strong_source",
+                "identifier_hints",
+                "reused_existing_artifact",
+            ):
+                if key in stored_pointer and key not in payload:
+                    payload[key] = stored_pointer.get(key)
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
-        log.exception(f"query_web_evidence error: {e}")
-        return json.dumps({"error": str(e), "query": query}, ensure_ascii=False)
+        log.exception(f"read_web_page error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 # =============================================================================

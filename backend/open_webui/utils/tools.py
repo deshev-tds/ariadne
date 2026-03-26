@@ -70,7 +70,7 @@ from open_webui.tools.builtin import (
     local_corpus_view_table,
     local_corpus_view_figure_metadata,
     fetch_url,
-    query_web_evidence,
+    read_web_page,
     generate_image,
     edit_image,
     execute_code,
@@ -524,7 +524,7 @@ def get_builtin_tools(
             builtin_functions.append(web_research_strong)
         if internet_access_enabled:
             builtin_functions.append(fetch_url)
-            builtin_functions.append(query_web_evidence)
+            builtin_functions.append(read_web_page)
 
     if is_builtin_tool_enabled("local_corpus") and corpus_runtime.science_enabled:
         builtin_functions.extend(
