@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+import functools
+import hashlib
 import json
 import logging
 import re
@@ -8,6 +11,10 @@ import time
 from typing import Any, Optional
 
 import aiohttp
+try:
+    import tiktoken
+except Exception:  # pragma: no cover - optional import guard
+    tiktoken = None
 
 from open_webui.extensions.simon_engine.token_budget import (
     estimate_tokens_from_message,
@@ -105,6 +112,48 @@ TRANSIENT_SUMMARY_KEYWORDS = (
 
 _ACTIVE_MAINTENANCE_JOBS: set[str] = set()
 _ACTIVE_MAINTENANCE_LOCK = asyncio.Lock()
+_PROBE_CACHE_TTL_SECONDS = 3.0
+_PROBE_CACHE_MAX_ENTRIES = 64
+_PREVIEW_TOKEN_CACHE_MAX_ENTRIES = 256
+_LLAMACPP_PROBE_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+_PREVIEW_TOKEN_CACHE: OrderedDict[str, int] = OrderedDict()
+
+
+def _cache_get(
+    cache: OrderedDict[str, Any],
+    key: str,
+    *,
+    ttl_seconds: float | None = None,
+) -> Any:
+    if key not in cache:
+        return None
+
+    value = cache.pop(key)
+    cache[key] = value
+
+    if ttl_seconds is None:
+        return value
+
+    cached_at, payload = value
+    if (time.time() - float(cached_at)) > ttl_seconds:
+        cache.pop(key, None)
+        return None
+
+    return payload
+
+
+def _cache_set(
+    cache: OrderedDict[str, Any],
+    key: str,
+    value: Any,
+    *,
+    max_entries: int,
+    with_timestamp: bool = False,
+) -> None:
+    cache.pop(key, None)
+    cache[key] = (time.time(), value) if with_timestamp else value
+    while len(cache) > max_entries:
+        cache.popitem(last=False)
 
 
 def parse_ctx_size_from_args(args: list[Any] | None) -> Optional[int]:
@@ -206,6 +255,144 @@ def estimate_tokens_from_history_messages(messages: list[dict[str, Any]]) -> int
     return sum(
         estimate_tokens_from_history_message(message) for message in messages or []
     )
+
+
+def _stable_json_dumps(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _flatten_preview_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+            if part_type == "text":
+                text = str(part.get("text") or "")
+                if text:
+                    parts.append(text)
+            elif part_type == "image_url":
+                parts.append("[image]")
+        return "\n".join(parts).strip()
+
+    if isinstance(content, dict):
+        text = content.get("text") or content.get("content") or ""
+        return str(text).strip()
+
+    return ""
+
+
+def render_preview_prompt(messages: list[dict[str, Any]]) -> str:
+    rendered_messages: list[str] = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+
+        role = str(message.get("role") or "assistant")
+        content = _flatten_preview_content(message.get("content"))
+        lines = [f"<|{role}|>"]
+
+        if content:
+            lines.append(content)
+
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            tool_names = [
+                str(call.get("function", {}).get("name") or "")
+                for call in tool_calls
+                if isinstance(call, dict)
+            ]
+            tool_names = [name for name in tool_names if name]
+            if tool_names:
+                lines.append("Tool calls: " + ", ".join(tool_names))
+
+        tool_call_id = message.get("tool_call_id")
+        if tool_call_id:
+            lines.append(f"Tool call id: {tool_call_id}")
+
+        rendered_messages.append("\n".join(lines).strip())
+
+    return "\n\n".join(block for block in rendered_messages if block).strip()
+
+
+@functools.lru_cache(maxsize=8)
+def _get_tiktoken_encoding(encoding_name: str):
+    if tiktoken is None:
+        return None
+
+    try:
+        return tiktoken.get_encoding(encoding_name)
+    except Exception:
+        return None
+
+
+def resolve_preview_tokenizer(
+    request,
+    model: dict[str, Any],
+) -> tuple[str | None, str, str]:
+    encoding_name = str(
+        getattr(request.app.state.config, "TIKTOKEN_ENCODING_NAME", "cl100k_base")
+        or "cl100k_base"
+    )
+    encoding = _get_tiktoken_encoding(encoding_name)
+    if encoding is not None:
+        if model.get("owned_by") == "openai":
+            return encoding_name, "tiktoken", "model_tokenizer"
+        return encoding_name, "tiktoken", "fallback"
+
+    return None, "character_estimate", "approximate"
+
+
+def count_preview_messages_tokens(
+    request,
+    model: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> tuple[int, str, str]:
+    prompt = render_preview_prompt(messages)
+    if not prompt:
+        return 0, "empty", "approximate"
+
+    encoding_name, source, confidence = resolve_preview_tokenizer(request, model)
+    cache_key = hashlib.sha256(
+        "|".join(
+            [
+                str(model.get("id") or ""),
+                str(encoding_name or ""),
+                source,
+                confidence,
+                prompt,
+            ]
+        ).encode("utf-8", "replace")
+    ).hexdigest()
+
+    cached = _cache_get(_PREVIEW_TOKEN_CACHE, cache_key)
+    if cached is not None:
+        return int(cached), source, confidence
+
+    if source == "tiktoken" and encoding_name:
+        encoding = _get_tiktoken_encoding(encoding_name)
+        if encoding is not None:
+            count = len(encoding.encode(prompt))
+            _cache_set(
+                _PREVIEW_TOKEN_CACHE,
+                cache_key,
+                count,
+                max_entries=_PREVIEW_TOKEN_CACHE_MAX_ENTRIES,
+            )
+            return count, source, confidence
+
+    count = estimate_tokens_from_text(prompt)
+    _cache_set(
+        _PREVIEW_TOKEN_CACHE,
+        cache_key,
+        count,
+        max_entries=_PREVIEW_TOKEN_CACHE_MAX_ENTRIES,
+    )
+    return count, source, confidence
 
 
 def history_message_to_llm_messages(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -648,6 +835,23 @@ async def load_llamacpp_probe(
     request,
     model: dict[str, Any],
 ) -> dict[str, Any]:
+    cache_key = _stable_json_dumps(
+        {
+            "model_id": model.get("id"),
+            "url_idx": model.get("urlIdx"),
+            "owned_by": model.get("owned_by"),
+            "ctx_cap": extract_model_ctx_cap(model),
+            "openai_model_id": model.get("openai", {}).get("id"),
+        }
+    )
+    cached = _cache_get(
+        _LLAMACPP_PROBE_CACHE,
+        cache_key,
+        ttl_seconds=_PROBE_CACHE_TTL_SECONDS,
+    )
+    if cached is not None:
+        return dict(cached)
+
     result = {
         "source": "estimate",
         "kv_cache_usage_ratio": None,
@@ -656,15 +860,36 @@ async def load_llamacpp_probe(
     }
 
     if model.get("owned_by") != "openai":
+        _cache_set(
+            _LLAMACPP_PROBE_CACHE,
+            cache_key,
+            dict(result),
+            max_entries=_PROBE_CACHE_MAX_ENTRIES,
+            with_timestamp=True,
+        )
         return result
 
     url_idx = model.get("urlIdx")
     base_urls = getattr(request.app.state.config, "OPENAI_API_BASE_URLS", []) or []
     if url_idx is None or url_idx >= len(base_urls):
+        _cache_set(
+            _LLAMACPP_PROBE_CACHE,
+            cache_key,
+            dict(result),
+            max_entries=_PROBE_CACHE_MAX_ENTRIES,
+            with_timestamp=True,
+        )
         return result
 
     base_url = str(base_urls[url_idx]).rstrip("/")
     if not base_url:
+        _cache_set(
+            _LLAMACPP_PROBE_CACHE,
+            cache_key,
+            dict(result),
+            max_entries=_PROBE_CACHE_MAX_ENTRIES,
+            with_timestamp=True,
+        )
         return result
 
     model_id = model.get("openai", {}).get("id") or model.get("id")
@@ -674,7 +899,8 @@ async def load_llamacpp_probe(
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             try:
                 async with session.get(
-                    f"{base_url}/metrics", params={"model": model_id}
+                    f"{base_url}/metrics",
+                    params={"model": model_id, "autoload": "false"},
                 ) as response:
                     if response.status == 200:
                         metrics = parse_prometheus_metrics(await response.text())
@@ -692,7 +918,8 @@ async def load_llamacpp_probe(
             if result["n_ctx"] is None:
                 try:
                     async with session.get(
-                        f"{base_url}/props", params={"model": model_id}
+                        f"{base_url}/props",
+                        params={"model": model_id, "autoload": "false"},
                     ) as response:
                         if response.status == 200:
                             props = await response.json()
@@ -704,7 +931,8 @@ async def load_llamacpp_probe(
 
             try:
                 async with session.get(
-                    f"{base_url}/slots", params={"model": model_id}
+                    f"{base_url}/slots",
+                    params={"model": model_id, "autoload": "false"},
                 ) as response:
                     if response.status == 200:
                         slots = await response.json()
@@ -725,8 +953,22 @@ async def load_llamacpp_probe(
             except Exception:
                 pass
     except Exception:
+        _cache_set(
+            _LLAMACPP_PROBE_CACHE,
+            cache_key,
+            dict(result),
+            max_entries=_PROBE_CACHE_MAX_ENTRIES,
+            with_timestamp=True,
+        )
         return result
 
+    _cache_set(
+        _LLAMACPP_PROBE_CACHE,
+        cache_key,
+        dict(result),
+        max_entries=_PROBE_CACHE_MAX_ENTRIES,
+        with_timestamp=True,
+    )
     return result
 
 
@@ -1018,6 +1260,163 @@ def build_context_maintenance_payload(
             "summary_included": bool(summary_text),
             "compaction_version": compaction_version,
         },
+    }
+
+
+def build_unmaintained_request_messages(
+    *,
+    system_message: dict[str, Any] | None,
+    history_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if system_message:
+        messages.append(dict(system_message))
+
+    for message in history_messages or []:
+        messages.extend(history_message_to_llm_messages(message))
+
+    return messages
+
+
+async def build_context_window_model_preview(
+    request,
+    *,
+    model: dict[str, Any],
+    system_message: dict[str, Any] | None,
+    history_messages: list[dict[str, Any]],
+    form_data: dict[str, Any],
+    metadata: dict[str, Any],
+    summary_state: dict[str, Any] | None,
+    maintenance_enabled: bool,
+) -> dict[str, Any]:
+    probe = await load_llamacpp_probe(request, model)
+    budgets = resolve_history_budgets(
+        request, model=model, form_data=form_data, metadata=metadata, probe=probe
+    )
+
+    if maintenance_enabled:
+        payload = build_context_maintenance_payload(
+            system_message=system_message,
+            history_messages=history_messages,
+            summary_state=summary_state,
+            budgets=budgets,
+        )
+        request_messages = payload["messages"]
+        summary_active = bool(payload.get("summary_text"))
+        compaction_version = int(
+            (payload.get("telemetry") or {}).get("compaction_version") or 0
+        )
+    else:
+        request_messages = build_unmaintained_request_messages(
+            system_message=system_message,
+            history_messages=history_messages,
+        )
+        summary_active = False
+        compaction_version = 0
+
+    current_request_tokens, token_count_source, token_count_confidence = (
+        count_preview_messages_tokens(request, model, request_messages)
+    )
+    system_request_tokens = 0
+    if request_messages and request_messages[0].get("role") == "system":
+        system_request_tokens, _, _ = count_preview_messages_tokens(
+            request, model, [request_messages[0]]
+        )
+
+    soft_trigger_tokens = None
+    hard_trigger_tokens = None
+    if maintenance_enabled:
+        soft_trigger_tokens = min(
+            int(budgets["live_prompt_cap"]),
+            max(system_request_tokens, 0) + int(budgets["soft_history_budget"]),
+        )
+        hard_trigger_tokens = min(
+            int(budgets["live_prompt_cap"]),
+            max(system_request_tokens, 0) + int(budgets["hard_history_budget"]),
+        )
+
+    return {
+        "model_id": model["id"],
+        "model_name": model.get("name") or model["id"],
+        "live_prompt_cap": int(budgets["live_prompt_cap"]),
+        "live_prompt_cap_source": budgets.get("live_prompt_cap_source") or "default",
+        "current_request_tokens": int(current_request_tokens),
+        "soft_trigger_tokens": soft_trigger_tokens,
+        "hard_trigger_tokens": hard_trigger_tokens,
+        "summary_active": summary_active,
+        "compaction_version": compaction_version,
+        "maintenance_enabled": bool(maintenance_enabled),
+        "token_count_confidence": token_count_confidence,
+        "token_count_source": token_count_source,
+    }
+
+
+def select_limiting_context_window_preview(
+    previews: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not previews:
+        return None
+
+    def sort_key(preview: dict[str, Any]) -> tuple[int, int, int, int]:
+        soft = int(
+            preview.get("soft_trigger_tokens")
+            if preview.get("soft_trigger_tokens") is not None
+            else preview.get("live_prompt_cap") or DEFAULT_CONTEXT_CAP
+        )
+        hard = int(
+            preview.get("hard_trigger_tokens")
+            if preview.get("hard_trigger_tokens") is not None
+            else preview.get("live_prompt_cap") or DEFAULT_CONTEXT_CAP
+        )
+        cap = int(preview.get("live_prompt_cap") or DEFAULT_CONTEXT_CAP)
+        current = int(preview.get("current_request_tokens") or 0)
+        return (soft, hard, cap, current)
+
+    return min(previews, key=sort_key)
+
+
+async def build_aggregate_context_window_preview(
+    request,
+    *,
+    models_map: dict[str, dict[str, Any]],
+    main_model_ids: list[str],
+    system_message: dict[str, Any] | None,
+    history_messages: list[dict[str, Any]],
+    form_data: dict[str, Any],
+    metadata: dict[str, Any],
+    summary_state: dict[str, Any] | None,
+    maintenance_enabled: bool,
+) -> dict[str, Any] | None:
+    previews: list[dict[str, Any]] = []
+
+    for model_id in main_model_ids:
+        model = models_map.get(model_id)
+        if not model:
+            continue
+        previews.append(
+            await build_context_window_model_preview(
+                request,
+                model=model,
+                system_message=system_message,
+                history_messages=history_messages,
+                form_data={**form_data, "model": model_id},
+                metadata=metadata,
+                summary_state=summary_state,
+                maintenance_enabled=maintenance_enabled,
+            )
+        )
+
+    limiting_preview = select_limiting_context_window_preview(previews)
+    if not limiting_preview:
+        return None
+
+    return {
+        **limiting_preview,
+        "limiting_model_id": limiting_preview["model_id"],
+        "limiting_model_name": limiting_preview["model_name"],
+        "active_main_model_ids": [preview["model_id"] for preview in previews],
+        "multi_model": len(previews) > 1,
+        "model_previews": previews,
     }
 
 

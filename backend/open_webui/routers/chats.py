@@ -10,6 +10,11 @@ from fastapi.responses import StreamingResponse
 
 from open_webui.utils.misc import get_message_list
 from open_webui.socket.main import get_event_emitter
+from open_webui.utils.context_maintenance import (
+    build_aggregate_context_window_preview,
+    get_chat_maintenance_state,
+    inject_image_files_into_history,
+)
 from open_webui.models.chats import (
     ChatForm,
     ChatImportForm,
@@ -1077,6 +1082,115 @@ async def update_chat_by_id(
 ############################
 class MessageForm(BaseModel):
     content: str
+
+
+class ContextWindowPreviewForm(BaseModel):
+    chat_id: Optional[str] = None
+    current_message_id: Optional[str] = None
+    main_model_ids: list[str]
+    messages: Optional[list[dict]] = None
+    files: Optional[list[dict]] = None
+    system_message: Optional[str] = None
+    context_maintenance_enabled: bool = True
+
+
+class ContextWindowModelPreviewResponse(BaseModel):
+    model_id: str
+    model_name: str
+    live_prompt_cap: int
+    live_prompt_cap_source: str
+    current_request_tokens: int
+    soft_trigger_tokens: Optional[int] = None
+    hard_trigger_tokens: Optional[int] = None
+    summary_active: bool
+    compaction_version: int
+    maintenance_enabled: bool
+    token_count_confidence: str
+    token_count_source: str
+
+
+class ContextWindowPreviewResponse(ContextWindowModelPreviewResponse):
+    limiting_model_id: str
+    limiting_model_name: str
+    active_main_model_ids: list[str]
+    multi_model: bool
+    model_previews: list[ContextWindowModelPreviewResponse]
+
+
+@router.post("/preview/context-window", response_model=ContextWindowPreviewResponse)
+async def preview_context_window(
+    request: Request,
+    form_data: ContextWindowPreviewForm,
+    user=Depends(get_verified_user),
+    db: Session = Depends(get_session),
+):
+    model_ids = [model_id for model_id in form_data.main_model_ids if model_id]
+    if not model_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one main model id is required.",
+        )
+
+    current_chat_id = form_data.chat_id
+    history_messages: list[dict] = []
+    summary_state: dict | None = None
+
+    if current_chat_id and not current_chat_id.startswith("local:"):
+        chat = Chats.get_chat_by_id_and_user_id(current_chat_id, user.id, db=db)
+        if not chat:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
+        current_message_id = (
+            form_data.current_message_id
+            or chat.chat.get("history", {}).get("currentId")
+            or None
+        )
+        if current_message_id:
+            history_messages = inject_image_files_into_history(
+                get_message_list(
+                    chat.chat.get("history", {}).get("messages", {}) or {},
+                    current_message_id,
+                )
+            )
+
+        if form_data.context_maintenance_enabled:
+            summary_state = get_chat_maintenance_state(current_chat_id)
+    else:
+        history_messages = inject_image_files_into_history(form_data.messages or [])
+
+    history_messages = [
+        dict(message)
+        for message in history_messages
+        if isinstance(message, dict)
+        and message.get("role") in {"user", "assistant", "tool"}
+    ]
+
+    system_message = None
+    if isinstance(form_data.system_message, str) and form_data.system_message.strip():
+        system_message = {"role": "system", "content": form_data.system_message.strip()}
+
+    preview = await build_aggregate_context_window_preview(
+        request,
+        models_map=request.app.state.MODELS,
+        main_model_ids=model_ids,
+        system_message=system_message,
+        history_messages=history_messages,
+        form_data={"files": form_data.files or []},
+        metadata={"chat_id": current_chat_id},
+        summary_state=summary_state,
+        maintenance_enabled=form_data.context_maintenance_enabled,
+    )
+
+    if preview is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active preview models were found.",
+        )
+
+    return ContextWindowPreviewResponse(**preview)
 
 
 @router.post("/{id}/messages/{message_id}", response_model=Optional[ChatResponse])

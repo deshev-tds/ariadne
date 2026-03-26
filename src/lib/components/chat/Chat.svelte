@@ -70,11 +70,13 @@
 		getAllTags,
 		getChatById,
 		getChatList,
+		getContextWindowPreview,
 		getPinnedChatList,
 		getTagsById,
 		updateChatById,
 		updateChatFolderIdById
 	} from '$lib/apis/chats';
+	import type { ContextWindowPreview } from '$lib/apis/chats';
 	import { generateOpenAIChatCompletion } from '$lib/apis/openai';
 	import { processWeb, processWebSearch, processYoutubeVideo } from '$lib/apis/retrieval';
 	import { getAndUpdateUserLocation, getUserSettings } from '$lib/apis/users';
@@ -112,6 +114,12 @@
 		type TokenBranchRequest
 	} from './tokenExplorer';
 	import { getBanners } from '$lib/apis/configs';
+
+	type RuntimeAwareModel = Model & {
+		status?: {
+			value?: string;
+		};
+	};
 
 	export let chatIdProp = '';
 
@@ -159,6 +167,11 @@
 	let generating = false;
 	let dragged = false;
 	let generationController = null;
+	let contextWindowPreview: ContextWindowPreview | null = null;
+	let contextWindowRuntimeState: 'ready' | 'loading' | 'hidden' = 'ready';
+	let contextWindowPreviewRequestId = 0;
+	let contextWindowPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+	let contextWindowPreviewWatchKey = '';
 
 	let chat = null;
 	let tags = [];
@@ -248,6 +261,111 @@
 		nextParams.local_corpus_mode = mode;
 		params = nextParams;
 	};
+
+	const getContextWindowPreviewFileSignature = (items) =>
+		JSON.stringify(
+			(items ?? []).map((item) => ({
+				id: item?.id ?? null,
+				itemId: item?.itemId ?? null,
+				name: item?.name ?? null,
+				type: item?.type ?? null,
+				status: item?.status ?? null,
+				size: item?.size ?? null
+			}))
+		);
+
+	const buildContextWindowPreviewMessages = () =>
+		(history?.currentId ? createMessagesList(history, history.currentId) : []).filter((message) =>
+			['user', 'assistant', 'tool'].includes(message?.role ?? '')
+		);
+
+	const resolveContextWindowRuntimeState = (
+		modelIds: string[],
+		availableModels: RuntimeAwareModel[]
+	): 'ready' | 'loading' | 'hidden' => {
+		const selected = modelIds
+			.map((modelId) => availableModels.find((model) => model.id === modelId))
+			.filter(Boolean);
+
+		if (selected.length === 0) {
+			return 'hidden';
+		}
+
+		const statuses = selected
+			.map((model) => String(model?.status?.value ?? '').trim())
+			.filter((status) => status.length > 0);
+
+		if (statuses.length === 0) {
+			return 'ready';
+		}
+
+		if (statuses.some((status) => status === 'loading')) {
+			return 'loading';
+		}
+
+		if (statuses.every((status) => status === 'loaded')) {
+			return 'ready';
+		}
+
+		return 'hidden';
+	};
+
+	const loadContextWindowPreview = async (force = false) => {
+		const mainModelIds = selectedModelIds.filter((modelId) => modelId);
+		if (loading || mainModelIds.length === 0 || contextWindowRuntimeState !== 'ready') {
+			contextWindowPreview = null;
+			return;
+		}
+
+		const currentMessageId = history?.currentId ?? null;
+		const activeMessage = currentMessageId ? history?.messages?.[currentMessageId] : null;
+		if (
+			!force &&
+			generating &&
+			activeMessage?.role === 'assistant' &&
+			activeMessage?.done !== true
+		) {
+			return;
+		}
+
+		const maintenanceEnabled =
+			$settings?.contextMaintenance ?? $config?.features?.enable_context_maintenance ?? true;
+		const systemMessage = (params?.system ?? $settings?.system ?? '').trim();
+		const persistedChat = !!$chatId && !$chatId.startsWith('local:');
+		const payload = {
+			chat_id: persistedChat ? $chatId : null,
+			current_message_id: persistedChat ? currentMessageId : null,
+			main_model_ids: mainModelIds,
+			messages: persistedChat ? undefined : buildContextWindowPreviewMessages(),
+			files: files.length > 0 ? files : undefined,
+			system_message: systemMessage || undefined,
+			context_maintenance_enabled: maintenanceEnabled
+		};
+
+		const requestId = ++contextWindowPreviewRequestId;
+
+		try {
+			const preview = await getContextWindowPreview(localStorage.token, payload);
+			if (requestId === contextWindowPreviewRequestId) {
+				contextWindowPreview = preview;
+			}
+		} catch (error) {
+			if (requestId === contextWindowPreviewRequestId) {
+				contextWindowPreview = null;
+			}
+		}
+	};
+
+	const scheduleContextWindowPreviewRefresh = (delay = 120, force = false) => {
+		if (contextWindowPreviewTimer) {
+			clearTimeout(contextWindowPreviewTimer);
+			contextWindowPreviewTimer = null;
+		}
+
+		contextWindowPreviewTimer = setTimeout(() => {
+			loadContextWindowPreview(force);
+		}, delay);
+	};
 	// Message queue for storing messages while generating
 	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
 
@@ -257,6 +375,8 @@
 
 	const navigateHandler = async () => {
 		loading = true;
+		contextWindowPreview = null;
+		contextWindowPreviewWatchKey = '';
 
 		// Save current queue to sessionStorage before navigating away
 		if (messageQueue.length > 0 && $chatId) {
@@ -375,6 +495,44 @@
 	let oldSelectedModelIds = [''];
 	$: if (JSON.stringify(selectedModelIds) !== JSON.stringify(oldSelectedModelIds)) {
 		onSelectedModelIdsChange();
+	}
+
+	$: contextWindowPreviewDependencyKey = JSON.stringify({
+		chatId: $chatId ?? null,
+		currentId: history?.currentId ?? null,
+		modelIds: selectedModelIds.filter((modelId) => modelId),
+		modelStatuses: selectedModelIds
+			.filter((modelId) => modelId)
+			.map((modelId) => {
+				const model = ($models as RuntimeAwareModel[]).find((entry) => entry.id === modelId);
+				return [modelId, model?.status?.value ?? null];
+			}),
+		files: getContextWindowPreviewFileSignature(files),
+		maintenance:
+			$settings?.contextMaintenance ?? $config?.features?.enable_context_maintenance ?? true,
+		system: params?.system ?? $settings?.system ?? ''
+	});
+
+	$: contextWindowRuntimeState = resolveContextWindowRuntimeState(
+		selectedModelIds.filter((modelId) => modelId),
+		$models as RuntimeAwareModel[]
+	);
+
+	$: if (
+		!loading &&
+		contextWindowPreviewDependencyKey !== contextWindowPreviewWatchKey &&
+		selectedModelIds.filter((modelId) => modelId).length > 0 &&
+		contextWindowRuntimeState === 'ready'
+	) {
+		contextWindowPreviewWatchKey = contextWindowPreviewDependencyKey;
+		scheduleContextWindowPreviewRefresh();
+	}
+
+	$: if (
+		selectedModelIds.filter((modelId) => modelId).length === 0 ||
+		contextWindowRuntimeState !== 'ready'
+	) {
+		contextWindowPreview = null;
 	}
 
 	const onSelectedModelIdsChange = () => {
@@ -520,6 +678,10 @@
 						message.statusHistory.push(data);
 					} else {
 						message.statusHistory = [data];
+					}
+
+					if (data?.action === 'context_maintenance' && data?.done === true) {
+						scheduleContextWindowPreviewRefresh(0, true);
 					}
 				} else if (type === 'chat:completion') {
 					chatCompletionEventHandler(data, message, event.chat_id);
@@ -831,6 +993,10 @@
 
 		return () => {
 			try {
+				if (contextWindowPreviewTimer) {
+					clearTimeout(contextWindowPreviewTimer);
+					contextWindowPreviewTimer = null;
+				}
 				pageSubscribe();
 				showControlsSubscribe();
 				selectedFolderSubscribe();
@@ -1814,6 +1980,10 @@
 				message.id,
 				createMessagesList(history, message.id)
 			);
+
+			if (message.id === history.currentId) {
+				scheduleContextWindowPreviewRefresh(0, true);
+			}
 		}
 
 		console.log(data);
@@ -2855,6 +3025,9 @@
 							}
 						}}
 						{history}
+						contextWindowPreview={contextWindowPreview}
+						contextWindowRuntimeState={contextWindowRuntimeState}
+						draftPrompt={prompt}
 						title={$chatTitle}
 						bind:selectedModels
 						shareEnabled={!!history.currentId}

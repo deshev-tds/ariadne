@@ -4,16 +4,20 @@ import pytest
 
 import open_webui.utils.context_maintenance as context_maintenance
 from open_webui.utils.context_maintenance import (
+    build_aggregate_context_window_preview,
     build_summary_message,
     build_summary_prompt,
     build_context_maintenance_payload,
+    build_context_window_model_preview,
     build_request_messages,
+    count_preview_messages_tokens,
     extract_model_ctx_cap,
     extract_n_ctx_from_props,
     is_summary_refresh_needed,
     merge_system_message,
     normalize_summary_snapshot,
     parse_prometheus_metrics,
+    render_preview_prompt,
     resolve_effective_ctx_cap,
     resolve_history_budgets,
     resolve_live_prompt_cap,
@@ -72,6 +76,20 @@ def test_extract_n_ctx_from_props_supports_llamacpp_shape():
     }
 
     assert extract_n_ctx_from_props(props) == 65536
+
+
+def test_render_preview_prompt_includes_roles_and_content():
+    rendered = render_preview_prompt(
+        [
+            {"role": "system", "content": "keep state"},
+            {"role": "user", "content": "ship the ring"},
+        ]
+    )
+
+    assert "<|system|>" in rendered
+    assert "keep state" in rendered
+    assert "<|user|>" in rendered
+    assert "ship the ring" in rendered
 
 
 def test_build_summary_prompt_requests_structured_state_snapshot():
@@ -528,3 +546,101 @@ async def test_inline_maintenance_force_flag_skips_pressure_gate(monkeypatch):
 
     assert messages[0]["content"] == "forced"
     assert result["telemetry"]["force_inline_compaction"] is True
+
+
+def test_count_preview_messages_tokens_caches_rendered_prompt(monkeypatch):
+    context_maintenance._PREVIEW_TOKEN_CACHE.clear()
+
+    class FakeEncoding:
+        def __init__(self):
+            self.calls = 0
+
+        def encode(self, text: str):
+            self.calls += 1
+            return list(range(max(1, len(text) // 8)))
+
+    fake_encoding = FakeEncoding()
+    monkeypatch.setattr(
+        context_maintenance, "_get_tiktoken_encoding", lambda _encoding_name: fake_encoding
+    )
+
+    request = _make_request(TIKTOKEN_ENCODING_NAME="cl100k_base")
+    model = {"id": "demo", "owned_by": "openai"}
+    messages = [{"role": "user", "content": "cache me"}]
+
+    first_count, first_source, first_confidence = count_preview_messages_tokens(
+        request, model, messages
+    )
+    second_count, second_source, second_confidence = count_preview_messages_tokens(
+        request, model, messages
+    )
+
+    assert first_count == second_count
+    assert first_source == second_source == "tiktoken"
+    assert first_confidence == second_confidence == "model_tokenizer"
+    assert fake_encoding.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_build_context_window_model_preview_degrades_confidence_for_local_models():
+    request = _make_request(TIKTOKEN_ENCODING_NAME="cl100k_base")
+    model = {
+        "id": "llama-local",
+        "name": "Llama Local",
+        "owned_by": "ollama",
+        "status": {"args": ["--ctx-size", "32768"]},
+    }
+
+    preview = await build_context_window_model_preview(
+        request,
+        model=model,
+        system_message={"role": "system", "content": "Be precise"},
+        history_messages=[_message("m1", "user", "Long mixed кирилица and code payload")],
+        form_data={"files": []},
+        metadata={},
+        summary_state={},
+        maintenance_enabled=True,
+    )
+
+    assert preview["token_count_confidence"] == "fallback"
+    assert preview["soft_trigger_tokens"] is not None
+    assert preview["hard_trigger_tokens"] is not None
+
+
+@pytest.mark.asyncio
+async def test_build_aggregate_context_window_preview_selects_limiting_model():
+    request = _make_request(TIKTOKEN_ENCODING_NAME="cl100k_base")
+    models_map = {
+        "small": {
+            "id": "small",
+            "name": "Small",
+            "owned_by": "openai",
+            "status": {"args": ["--ctx-size", "32768"]},
+        },
+        "large": {
+            "id": "large",
+            "name": "Large",
+            "owned_by": "openai",
+            "status": {"args": ["--ctx-size", "81920"]},
+        },
+    }
+
+    preview = await build_aggregate_context_window_preview(
+        request,
+        models_map=models_map,
+        main_model_ids=["large", "small"],
+        system_message={"role": "system", "content": "Keep state"},
+        history_messages=[
+            _message("m1", "user", "message one"),
+            _message("m2", "assistant", "message two"),
+        ],
+        form_data={"files": []},
+        metadata={},
+        summary_state={},
+        maintenance_enabled=True,
+    )
+
+    assert preview is not None
+    assert preview["limiting_model_id"] == "small"
+    assert preview["multi_model"] is True
+    assert preview["active_main_model_ids"] == ["large", "small"]
