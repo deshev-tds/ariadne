@@ -519,6 +519,47 @@ async def search_web(
         return json.dumps({"error": str(e)})
 
 
+async def upstream_vanilla_search_web(
+    query: str,
+    count: int = 5,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Search the public web for information. Best for current events, external references,
+    or topics not covered in internal documents.
+
+    :param query: The search query to look up
+    :param count: Number of results to return (default: 5)
+    :return: JSON with search results containing title, link, and snippet for each result
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        engine = __request__.app.state.config.WEB_SEARCH_ENGINE
+        user = UserModel(**__user__) if __user__ else None
+
+        max_count = getattr(__request__.app.state.config, "WEB_SEARCH_RESULT_COUNT", None)
+        if isinstance(max_count, int) and max_count > 0:
+            count = count if count < max_count else max_count
+
+        results = await asyncio.to_thread(_search_web, __request__, engine, query, user)
+        results = results[:count] if results else []
+
+        return json.dumps(
+            [{"title": r.title, "link": r.link, "snippet": r.snippet} for r in results],
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        log.exception(f"upstream_vanilla_search_web error: {e}")
+        return json.dumps({"error": str(e)})
+
+
+upstream_vanilla_search_web.__name__ = "search_web"
+upstream_vanilla_search_web.__qualname__ = "search_web"
+
+
 async def _run_web_research_strong(
     query: str,
     mode: str = "search",
@@ -1362,6 +1403,46 @@ async def fetch_url(
         return json.dumps({"error": str(e)})
 
 
+async def upstream_vanilla_fetch_url(
+    url: str,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Fetch and extract the main text content from a web page URL.
+
+    :param url: The URL to fetch content from
+    :return: The extracted text content from the page
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        fetched = await asyncio.to_thread(get_content_from_url, __request__, url)
+        if isinstance(fetched, tuple):
+            content = fetched[0] if fetched else ""
+        else:
+            content = fetched
+
+        if not isinstance(content, str):
+            content = str(content or "")
+
+        max_length = getattr(
+            __request__.app.state.config, "WEB_FETCH_MAX_CONTENT_LENGTH", None
+        )
+        if isinstance(max_length, int) and max_length > 0 and len(content) > max_length:
+            content = content[:max_length] + "\n\n[Content truncated...]"
+
+        return content
+    except Exception as e:
+        log.exception(f"upstream_vanilla_fetch_url error: {e}")
+        return json.dumps({"error": str(e)})
+
+
+upstream_vanilla_fetch_url.__name__ = "fetch_url"
+upstream_vanilla_fetch_url.__qualname__ = "fetch_url"
+
+
 async def read_web_page(
     url: Optional[str] = None,
     artifact_id: Optional[str] = None,
@@ -2090,7 +2171,13 @@ async def search_notes(
     __user__: dict = None,
 ) -> str:
     """
-    Backward-compatible alias for `notes_lookup`.
+    Search the user's notes by title and content.
+
+    :param query: The search query to find matching notes
+    :param count: Maximum number of results to return (default: 5)
+    :param start_timestamp: Only include notes updated after this Unix timestamp (seconds)
+    :param end_timestamp: Only include notes updated before this Unix timestamp (seconds)
+    :return: JSON with matching notes containing id, title, and content snippet
     """
     return await _run_notes_lookup(
         query=query,
@@ -2100,6 +2187,112 @@ async def search_notes(
         __request__=__request__,
         __user__=__user__,
     )
+
+
+async def list_knowledge(
+    __request__: Request = None,
+    __user__: dict = None,
+    __model_knowledge__: Optional[list[dict]] = None,
+) -> str:
+    """
+    List all knowledge bases, files, and notes attached to the current model.
+    Use this first to discover what knowledge is available before querying or reading files.
+
+    :return: JSON with knowledge_bases, files, and notes attached to this model
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    if not __user__:
+        return json.dumps({"error": "User context not available"})
+
+    if not __model_knowledge__:
+        return json.dumps({"knowledge_bases": [], "files": [], "notes": []})
+
+    try:
+        from open_webui.models.access_grants import AccessGrants
+        from open_webui.models.files import Files
+        from open_webui.models.knowledge import Knowledges
+        from open_webui.models.notes import Notes
+
+        user_id = __user__.get("id")
+        user_role = __user__.get("role", "user")
+        user_group_ids = [group.id for group in Groups.get_groups_by_member_id(user_id)]
+
+        knowledge_bases: list[dict[str, Any]] = []
+        files: list[dict[str, Any]] = []
+        notes: list[dict[str, Any]] = []
+
+        for item in __model_knowledge__:
+            item_type = item.get("type")
+            item_id = item.get("id")
+
+            if item_type == "collection":
+                knowledge = Knowledges.get_knowledge_by_id(item_id)
+                if knowledge and (
+                    user_role == "admin"
+                    or knowledge.user_id == user_id
+                    or AccessGrants.has_access(
+                        user_id=user_id,
+                        resource_type="knowledge",
+                        resource_id=knowledge.id,
+                        permission="read",
+                        user_group_ids=set(user_group_ids),
+                    )
+                ):
+                    kb_files = Knowledges.get_files_by_id(knowledge.id)
+                    file_count = len(kb_files) if kb_files else 0
+
+                    kb_entry = {
+                        "id": knowledge.id,
+                        "name": knowledge.name,
+                        "description": knowledge.description or "",
+                        "file_count": file_count,
+                    }
+                    if kb_files:
+                        kb_entry["files"] = [
+                            {"id": file.id, "filename": file.filename}
+                            for file in kb_files
+                        ]
+
+                    knowledge_bases.append(kb_entry)
+
+            elif item_type == "file":
+                file = Files.get_file_by_id(item_id)
+                if file:
+                    files.append(
+                        {
+                            "id": file.id,
+                            "filename": file.filename,
+                            "updated_at": file.updated_at,
+                        }
+                    )
+
+            elif item_type == "note":
+                note = Notes.get_note_by_id(item_id)
+                if note and (
+                    user_role == "admin"
+                    or note.user_id == user_id
+                    or AccessGrants.has_access(
+                        user_id=user_id,
+                        resource_type="note",
+                        resource_id=note.id,
+                        permission="read",
+                    )
+                ):
+                    notes.append({"id": note.id, "title": note.title})
+
+        return json.dumps(
+            {
+                "knowledge_bases": knowledge_bases,
+                "files": files,
+                "notes": notes,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        log.exception(f"list_knowledge error: {e}")
+        return json.dumps({"error": str(e)})
 
 
 async def view_note(

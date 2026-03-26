@@ -53,6 +53,7 @@ from open_webui.env import (
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.tools.builtin import (
     search_web,
+    upstream_vanilla_search_web,
     web_research_strong,
     offsec_consult,
     offsec_register_plan,
@@ -70,6 +71,7 @@ from open_webui.tools.builtin import (
     local_corpus_view_table,
     local_corpus_view_figure_metadata,
     fetch_url,
+    upstream_vanilla_fetch_url,
     read_web_page,
     generate_image,
     edit_image,
@@ -82,6 +84,7 @@ from open_webui.tools.builtin import (
     get_current_timestamp,
     calculate_timestamp,
     notes_lookup,
+    search_notes,
     search_chats,
     search_channels,
     search_channel_messages,
@@ -96,11 +99,13 @@ from open_webui.tools.builtin import (
     query_knowledge_bases,
     search_knowledge_files,
     query_knowledge_files,
+    list_knowledge,
     view_file,
     view_knowledge_file,
     view_skill,
 )
 from open_webui.retrieval.corpus_runtime import resolve_corpus_runtime
+from open_webui.retrieval.working_mode import normalize_working_mode
 
 import copy
 
@@ -110,6 +115,42 @@ log = logging.getLogger(__name__)
 def _old_chats_search_enabled(extra_params: dict) -> bool:
     params = ((extra_params or {}).get("__metadata__", {}) or {}).get("params", {}) or {}
     return params.get("old_chats_search_enabled", True) is not False
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
+
+
+def _extract_model_knowledge(extra_params: dict, model: dict) -> list[dict]:
+    model_knowledge = list(model.get("info", {}).get("meta", {}).get("knowledge", []) or [])
+    folder_knowledge = extra_params.get("__metadata__", {}).get("folder_knowledge")
+    if folder_knowledge:
+        model_knowledge.extend(list(folder_knowledge))
+    return model_knowledge
+
+
+def is_upstream_vanilla_general_lane(
+    *, features: dict | None = None, params: dict | None = None
+) -> bool:
+    features = features or {}
+    params = params or {}
+
+    working_mode = normalize_working_mode(
+        params.get("working_mode"),
+        local_corpus_mode=params.get("local_corpus_mode"),
+    )
+    return (
+        working_mode == "general"
+        and bool(features.get("web_search"))
+        and not bool(features.get("focused_search"))
+        and not bool(features.get("deep_research"))
+        and not _coerce_bool(params.get("research_guided_mode"))
+    )
 
 
 def get_async_tool_function_and_apply_extra_params(
@@ -165,6 +206,162 @@ def get_updated_tool_function(function: Callable, extra_params: dict):
         )
 
     return function
+
+
+def _build_builtin_tools_dict(
+    request: Request,
+    extra_params: dict,
+    builtin_functions: list[Callable],
+    model_knowledge: list[dict],
+) -> dict[str, dict]:
+    tools_dict: dict[str, dict] = {}
+
+    for func in builtin_functions:
+        callable = get_async_tool_function_and_apply_extra_params(
+            func,
+            {
+                "__request__": request,
+                "__user__": extra_params.get("__user__", {}),
+                "__event_emitter__": extra_params.get("__event_emitter__"),
+                "__event_call__": extra_params.get("__event_call__"),
+                "__metadata__": extra_params.get("__metadata__"),
+                "__chat_id__": extra_params.get("__chat_id__"),
+                "__message_id__": extra_params.get("__message_id__"),
+                "__model_knowledge__": model_knowledge,
+            },
+        )
+
+        pydantic_model = convert_function_to_pydantic_model(func)
+        spec = convert_pydantic_model_to_openai_function_spec(pydantic_model)
+        spec = clean_openai_tool_schema(spec)
+
+        tools_dict[func.__name__] = {
+            "tool_id": f"builtin:{func.__name__}",
+            "callable": callable,
+            "spec": spec,
+            "type": "builtin",
+        }
+
+    return tools_dict
+
+
+def _get_upstream_vanilla_builtin_tools(
+    request: Request, extra_params: dict, features: dict = None, model: dict = None
+) -> dict[str, dict]:
+    builtin_functions: list[Callable] = []
+    features = features or {}
+    model = model or {}
+
+    def get_model_capability(name: str, default: bool = True) -> bool:
+        return (model.get("info", {}).get("meta", {}).get("capabilities") or {}).get(
+            name, default
+        )
+
+    def is_builtin_tool_enabled(category: str) -> bool:
+        builtin_tools = model.get("info", {}).get("meta", {}).get("builtinTools", {})
+        return builtin_tools.get(category, True)
+
+    model_knowledge = _extract_model_knowledge(extra_params, model)
+
+    if is_builtin_tool_enabled("time"):
+        builtin_functions.extend([get_current_timestamp, calculate_timestamp])
+
+    if is_builtin_tool_enabled("knowledge"):
+        if model_knowledge:
+            builtin_functions.extend(
+                [list_knowledge, search_knowledge_files, query_knowledge_files]
+            )
+
+            knowledge_types = {item.get("type") for item in model_knowledge}
+            if "file" in knowledge_types or "collection" in knowledge_types:
+                builtin_functions.extend([view_file, view_knowledge_file])
+            if "note" in knowledge_types:
+                builtin_functions.append(view_note)
+        else:
+            builtin_functions.extend(
+                [
+                    list_knowledge_bases,
+                    search_knowledge_bases,
+                    query_knowledge_bases,
+                    search_knowledge_files,
+                    query_knowledge_files,
+                    view_knowledge_file,
+                ]
+            )
+
+    if is_builtin_tool_enabled("chats"):
+        builtin_functions.extend([search_chats, view_chat])
+
+    if is_builtin_tool_enabled("memory") and (
+        features.get("memory") or get_model_capability("memory", False)
+    ):
+        builtin_functions.extend(
+            [
+                search_memories,
+                add_memory,
+                replace_memory_content,
+                delete_memory,
+                list_memories,
+            ]
+        )
+
+    if (
+        is_builtin_tool_enabled("web_search")
+        and getattr(request.app.state.config, "ENABLE_WEB_SEARCH", False)
+        and get_model_capability("web_search")
+        and features.get("web_search")
+    ):
+        builtin_functions.extend([upstream_vanilla_search_web, upstream_vanilla_fetch_url])
+
+    if (
+        is_builtin_tool_enabled("image_generation")
+        and getattr(request.app.state.config, "ENABLE_IMAGE_GENERATION", False)
+        and get_model_capability("image_generation")
+        and features.get("image_generation")
+    ):
+        builtin_functions.append(generate_image)
+    if (
+        is_builtin_tool_enabled("image_generation")
+        and getattr(request.app.state.config, "ENABLE_IMAGE_EDIT", False)
+        and get_model_capability("image_generation")
+        and features.get("image_generation")
+    ):
+        builtin_functions.append(edit_image)
+
+    if (
+        is_builtin_tool_enabled("code_interpreter")
+        and getattr(request.app.state.config, "ENABLE_CODE_INTERPRETER", True)
+        and get_model_capability("code_interpreter")
+        and features.get("code_interpreter")
+    ):
+        builtin_functions.append(execute_code)
+
+    if is_builtin_tool_enabled("notes") and getattr(
+        request.app.state.config, "ENABLE_NOTES", False
+    ):
+        builtin_functions.extend([search_notes, view_note, write_note, replace_note_content])
+
+    if is_builtin_tool_enabled("channels") and getattr(
+        request.app.state.config, "ENABLE_CHANNELS", False
+    ):
+        builtin_functions.extend(
+            [
+                search_channels,
+                search_channel_messages,
+                view_channel_thread,
+                view_channel_message,
+            ]
+        )
+
+    if extra_params.get("__skill_ids__"):
+        builtin_functions.append(view_skill)
+
+    return _build_builtin_tools_dict(
+        request,
+        extra_params,
+        builtin_functions,
+        model_knowledge,
+    )
 
 
 async def get_tools(
@@ -434,6 +631,15 @@ def get_builtin_tools(
     builtin_functions = []
     features = features or {}
     model = model or {}
+    request_params = ((extra_params.get("__metadata__", {}) or {}).get("params", {}) or {})
+
+    if is_upstream_vanilla_general_lane(features=features, params=request_params):
+        return _get_upstream_vanilla_builtin_tools(
+            request=request,
+            extra_params=extra_params,
+            features=features,
+            model=model,
+        )
 
     # Helper to get model capabilities (defaults to True if not specified)
     def get_model_capability(name: str, default: bool = True) -> bool:
@@ -447,7 +653,6 @@ def get_builtin_tools(
         builtin_tools = model.get("info", {}).get("meta", {}).get("builtinTools", {})
         return builtin_tools.get(category, True)
 
-    request_params = ((extra_params.get("__metadata__", {}) or {}).get("params", {}) or {})
     corpus_runtime = resolve_corpus_runtime(
         request.app.state.config,
         request_params,
@@ -460,11 +665,7 @@ def get_builtin_tools(
     # Knowledge base tools - conditional injection based on model knowledge
     # If model has attached knowledge (any type), only provide query_knowledge_files
     # Otherwise, provide all KB browsing tools
-    model_knowledge = model.get("info", {}).get("meta", {}).get("knowledge", [])
-    # Merge folder-attached knowledge so builtin tools can search it
-    folder_knowledge = extra_params.get("__metadata__", {}).get("folder_knowledge")
-    if folder_knowledge:
-        model_knowledge = list(model_knowledge or []) + list(folder_knowledge)
+    model_knowledge = _extract_model_knowledge(extra_params, model)
     if is_builtin_tool_enabled("knowledge") and corpus_runtime.working_mode != "offsec":
         if model_knowledge:
             # Model has attached knowledge - only allow semantic search within it
@@ -612,34 +813,12 @@ def get_builtin_tools(
     if extra_params.get("__skill_ids__"):
         builtin_functions.append(view_skill)
 
-    for func in builtin_functions:
-        callable = get_async_tool_function_and_apply_extra_params(
-            func,
-            {
-                "__request__": request,
-                "__user__": extra_params.get("__user__", {}),
-                "__event_emitter__": extra_params.get("__event_emitter__"),
-                "__event_call__": extra_params.get("__event_call__"),
-                "__metadata__": extra_params.get("__metadata__"),
-                "__chat_id__": extra_params.get("__chat_id__"),
-                "__message_id__": extra_params.get("__message_id__"),
-                "__model_knowledge__": model_knowledge,
-            },
-        )
-
-        # Generate spec from function
-        pydantic_model = convert_function_to_pydantic_model(func)
-        spec = convert_pydantic_model_to_openai_function_spec(pydantic_model)
-        spec = clean_openai_tool_schema(spec)
-
-        tools_dict[func.__name__] = {
-            "tool_id": f"builtin:{func.__name__}",
-            "callable": callable,
-            "spec": spec,
-            "type": "builtin",
-        }
-
-    return tools_dict
+    return _build_builtin_tools_dict(
+        request,
+        extra_params,
+        builtin_functions,
+        model_knowledge,
+    )
 
 
 def parse_description(docstring: str | None) -> str:

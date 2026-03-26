@@ -124,6 +124,41 @@ async def test_search_web_results_are_read_admission_inputs(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_upstream_vanilla_search_web_returns_only_upstream_keys(monkeypatch):
+    class _Result:
+        def __init__(self, title, link, snippet):
+            self.title = title
+            self.link = link
+            self.snippet = snippet
+
+    def _fake_search_web(_request, _engine, _query, _user):
+        return [
+            _Result(
+                "Example Paper",
+                "https://example.org/paper",
+                "Relevant snippet text",
+            )
+        ]
+
+    monkeypatch.setattr(builtin_tools, "_search_web", _fake_search_web)
+
+    payload = await builtin_tools.upstream_vanilla_search_web(
+        "sleep latency",
+        __request__=_request(),
+        __user__=None,
+    )
+    parsed = json.loads(payload)
+
+    assert parsed == [
+        {
+            "title": "Example Paper",
+            "link": "https://example.org/paper",
+            "snippet": "Relevant snippet text",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_search_web_collapses_same_article_mirrors(monkeypatch):
     class _Result:
         def __init__(self, title, link, snippet):
@@ -161,6 +196,26 @@ async def test_search_web_collapses_same_article_mirrors(monkeypatch):
     assert len(parsed) == 2
     assert parsed[0]["mirror_family_collapsed"] is True
     assert parsed[0]["collapsed_mirror_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_upstream_vanilla_fetch_url_returns_plain_text(monkeypatch):
+    def _fake_get_content_from_url(_request, _url):
+        return (
+            "Full extracted text",
+            [],
+            {"content_source": "unit_test", "status": "ok"},
+        )
+
+    monkeypatch.setattr(builtin_tools, "get_content_from_url", _fake_get_content_from_url)
+
+    payload = await builtin_tools.upstream_vanilla_fetch_url(
+        "https://example.org/paper",
+        __request__=_request(),
+        __user__=None,
+    )
+
+    assert payload == "Full extracted text"
 
 
 @pytest.mark.asyncio

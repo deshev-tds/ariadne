@@ -51,7 +51,10 @@ from open_webui.routers.retrieval import (
     process_web_search,
     SearchForm,
 )
-from open_webui.utils.tools import get_builtin_tools
+from open_webui.utils.tools import (
+    get_builtin_tools,
+    is_upstream_vanilla_general_lane,
+)
 from open_webui.routers.images import (
     image_generations,
     CreateImageForm,
@@ -215,6 +218,7 @@ from open_webui.config import (
     DEFAULT_QUERY_GENERATION_PROMPT_TEMPLATE,
     DEFAULT_VOICE_MODE_PROMPT_TEMPLATE,
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
+    UPSTREAM_DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
     DEFAULT_CODE_INTERPRETER_PROMPT,
     CODE_INTERPRETER_PYODIDE_PROMPT,
     CODE_INTERPRETER_BLOCKED_MODULES,
@@ -1528,6 +1532,34 @@ def _build_default_selector_guidance(
         return ""
 
     return "Additional runtime guidance:\n- " + "\n- ".join(clauses)
+
+
+def _is_upstream_vanilla_general_lane_metadata(metadata: dict[str, Any]) -> bool:
+    return is_upstream_vanilla_general_lane(
+        features=metadata.get("features", {}) or {},
+        params=metadata.get("params", {}) or {},
+    )
+
+
+def _resolve_tools_function_calling_prompt_template(
+    request: Request, metadata: dict[str, Any]
+) -> str:
+    if _is_upstream_vanilla_general_lane_metadata(metadata):
+        return UPSTREAM_DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+
+    if request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE != "":
+        return request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+
+    return DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+
+
+def _resolve_default_selector_guidance(
+    metadata: dict[str, Any], tools: dict[str, Any], messages: list[dict] | None = None
+) -> str:
+    if _is_upstream_vanilla_general_lane_metadata(metadata):
+        return ""
+
+    return _build_default_selector_guidance(metadata, tools, messages)
 
 
 def _build_forced_default_selector_tool_call(
@@ -5492,12 +5524,9 @@ async def chat_completion_tools_handler(
     specs = [tool["spec"] for tool in tools.values()]
     tools_specs = json.dumps(specs, ensure_ascii=False)
 
-    if request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE != "":
-        template = request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
-    else:
-        template = DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+    template = _resolve_tools_function_calling_prompt_template(request, metadata)
 
-    selector_guidance = _build_default_selector_guidance(
+    selector_guidance = _resolve_default_selector_guidance(
         metadata, tools, body.get("messages", [])
     )
     if selector_guidance:
