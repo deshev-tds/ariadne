@@ -603,18 +603,6 @@ def _build_tool_continuation_messages(
     return messages
 
 
-def _inject_runtime_timestamp_once(messages: list[dict]) -> list[dict]:
-    system_message = get_system_message(messages)
-    if system_message:
-        system_content = get_content_from_message(system_message) or ""
-        if RUNTIME_TIMESTAMP_MARKER in system_content:
-            return messages
-
-    return add_or_update_system_message(
-        append_runtime_temporal_grounding(""),
-        messages,
-        append=True,
-    )
 DEFAULT_SOLUTION_TAGS = [("<|begin_of_solution|>", "<|end_of_solution|>")]
 DEFAULT_CODE_INTERPRETER_TAGS = [("<code_interpreter>", "</code_interpreter>")]
 
