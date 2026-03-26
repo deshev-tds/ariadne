@@ -6,6 +6,25 @@ Owner: local fork
 
 Last updated: 2026-03-27
 
+## Executive Summary
+
+This epic is about rebuilding the fork's agent-improvement line on verification-first foundations.
+
+The earlier implementation line around `workflow diary / workflow lessons` was directionally good, but it optimized for observability and review before it optimized for instance-level verification of the current run.
+
+The new plan keeps the good parts of that work:
+
+- rich run capture
+- structured materialization
+- human review surfaces
+
+but moves them behind a stronger center:
+
+- verifier-facing trace
+- claim/evidence representation
+- targeted verification
+- bounded retry feedback
+
 ## Goal
 
 Build a local-first verification substrate for agentic runs that supports:
@@ -15,6 +34,25 @@ Build a local-first verification substrate for agentic runs that supports:
 - downstream workflow learning from verification artifacts
 
 The design is inspired by DeepVerifier, but adapted for this fork's interactive Open WebUI environment rather than benchmark-only pipelines.
+
+## Problem Statement
+
+Today, agentic runs can fail in ways that are expensive and annoying for a local-first power user:
+
+- a run reaches a plausible but weak conclusion
+- the agent used tools, but the final answer is only loosely grounded in what those tools actually showed
+- the run made one or two crucial mistakes, but the system cannot name them precisely
+- retries, when they exist, are too generic and mostly amount to "try again"
+- useful lessons from repeated failures are hard to separate from noisy one-off incidents
+
+In practice, this means the user often has to do the hard verification step manually:
+
+- inspect the trajectory
+- infer where the run drifted
+- decide whether to retry
+- figure out what the retry should change
+
+That is exactly the burden this epic is meant to reduce.
 
 ## Why This Exists
 
@@ -32,6 +70,59 @@ It did not fully answer:
 - should the agent retry, stop, or narrow scope?
 
 This roadmap exists to rebuild that area on better foundations.
+
+## Why Now
+
+This is worth doing now for three reasons:
+
+1. The fork already has better context hygiene, telemetry, local corpus routing, and admin surfaces than before, so a verifier now has cleaner substrate to stand on.
+2. DeepVerifier gives a credible reference shape for what the loop should look like, instead of inventing the next attempt from scratch.
+3. The current local-first usage pattern is increasingly agentic and research-heavy, which makes "good enough answer generation" less valuable than "detect, localize, and correct likely failure points."
+
+## Why This Matters In This Fork
+
+This is not a generic product feature request. It matters specifically here because this fork is optimized for:
+
+- local models
+- long technical chats
+- agentic workflows
+- context-budget discipline
+- practical debugging of model and tool behavior
+
+In that environment, bad verification has a high cost:
+
+- you waste limited prompt budget on low-value retries
+- you keep too much trajectory in context because the system cannot distill what matters
+- you spend human attention re-checking runs the system should have triaged better
+
+## Inspired By
+
+This roadmap is explicitly inspired by two lines of prior work.
+
+### External inspiration
+
+DeepVerifier contributes the most important conceptual move:
+
+- verification should exploit asymmetry
+- the verifier should decompose the problem into small, checkable questions
+- feedback should be structured and actionable
+- retries should be bounded
+
+### Internal inspiration
+
+The older local line around:
+
+- `workflow diary`
+- `workflow lessons`
+- admin review surfaces
+
+proved that this fork benefits from:
+
+- durable run artifacts
+- structured post-hoc review
+- repeated-pattern mining
+
+The new plan keeps that spirit but relocates it behind a stronger online verification core.
 
 ## Non-Goals
 
@@ -52,6 +143,34 @@ Not:
 `workflow diary -> lessons -> maybe useful heuristics`
 
 `workflow lessons` should become a downstream human-reviewed product of verification artifacts, not the primary mechanism.
+
+## What Success Looks Like
+
+Success is not "we have a verifier UI" or "we store more logs."
+
+Success looks like this:
+
+- a weak agent run can be inspected and challenged without replaying the whole run mentally
+- the system can point to the specific claims or steps that are most likely wrong
+- retries are shorter, more surgical, and more useful
+- repeated patterns across runs can be promoted into curated lessons only after they already proved useful in verification artifacts
+- a fresh agent session can resume work from repo docs alone without re-reading papers and git archaeology
+
+## What Failed Before
+
+The previous line did not fail because the idea was bad.
+
+It failed because the center of the design was off.
+
+The main failure modes were:
+
+- too much emphasis on diary capture before verifier-facing data contracts
+- lessons becoming the visible product before verification became the runtime core
+- not enough separation between:
+  - online correction of a current run
+  - offline curation of repeated patterns across runs
+
+That earlier work should be treated as a prototype and substrate, not as wasted effort.
 
 ## Key References
 
@@ -118,6 +237,17 @@ Do not reuse blindly:
 - prompt-and-regex glue as the main protocol
 - loose lesson cards as a substitute for verifier logic
 - text-only feedback injected as an unstructured prompt appendix
+
+## What A Zero-Context Agent Should Understand Immediately
+
+If a future coding agent opens this repo cold, the important orientation is:
+
+- this epic is not about memory
+- this epic is not about a generic judge
+- this epic is not about restoring old `workflow-lessons` as-is
+- this epic is about making current agent runs verifiable and correctable
+- the old lessons/diary line matters mainly as historical substrate and UI inspiration
+- the first serious implementation target is verifier-facing data shape, not front-end polish
 
 ## Proposed Story Breakdown
 
@@ -293,6 +423,16 @@ Why:
 
 This is where old `workflow-lessons` ideas come back in a better role.
 
+## Acceptance Signals For The Epic Direction
+
+Before this epic is considered directionally healthy, the project should be able to answer "yes" to most of these:
+
+- Can we represent a run in a verifier-facing format without dumping full raw artifacts into prompt context?
+- Can we name the riskiest claims in a run instead of only showing the whole trajectory?
+- Can a verifier emit bounded retry instructions that are more useful than "try again"?
+- Can repeated lessons be derived from verification artifacts rather than hand-curated from vague impressions?
+- Can a fresh coding agent start from this document and know where to begin without doing paper archaeology first?
+
 ## High-Value Borrowings From DeepVerifier
 
 - stage separation: context/decomposition, additional checks, judging, feedback
@@ -343,6 +483,17 @@ The next agent should not have to rediscover the following:
 - the new design should separate online verification from offline lesson mining
 - DeepVerifier is the conceptual reference, but not a codebase to port directly
 - the first real milestone is not UI; it is a strong verifier-facing trace and packet contract
+
+## If You Only Read One Section Before Coding
+
+Read:
+
+- `Problem Statement`
+- `Inspired By`
+- `What Failed Before`
+- `Suggested Delivery Order`
+
+That is the shortest path to understanding why this epic exists and why the work is sequenced this way.
 
 ## First Sensible Starting Point
 
