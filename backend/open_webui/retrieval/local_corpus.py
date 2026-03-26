@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 LOCAL_CORPUS_SCHEMA_VERSION = 2
 LOCAL_CORPUS_INDEX_DIR = DATA_DIR / "local_corpus"
 DEFAULT_LOCAL_CORPUS_ROOT = BASE_DIR / "literature_corpus"
+DEFAULT_LOCAL_CORPUS_ROOT_SETTING = Path("literature_corpus")
 
 TABLE_LIKE_TERMS = {
     "criteria",
@@ -210,6 +211,45 @@ def _normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _portable_repo_root_fallback(
+    candidate: Path,
+    repo_relative_default: Path,
+) -> Optional[Path]:
+    if not candidate.is_absolute():
+        return None
+
+    expected_suffix = repo_relative_default.parts
+    if len(candidate.parts) < len(expected_suffix):
+        return None
+    if candidate.parts[-len(expected_suffix) :] != expected_suffix:
+        return None
+
+    portable = (BASE_DIR / repo_relative_default).resolve()
+    if portable.exists():
+        log.warning(
+            "Falling back from missing absolute corpus root %s to repo-relative %s",
+            candidate,
+            portable,
+        )
+        return portable
+    return None
+
+
+def resolve_repo_relative_corpus_root(
+    candidate: Path,
+    repo_relative_default: Path,
+) -> Optional[Path]:
+    expanded = candidate.expanduser()
+    if not expanded.is_absolute():
+        expanded = BASE_DIR / expanded
+
+    resolved = expanded.resolve()
+    if resolved.exists():
+        return resolved
+
+    return _portable_repo_root_fallback(expanded, repo_relative_default)
+
+
 def _phrase_ready_text(value: Any) -> str:
     return re.sub(
         r"\s+",
@@ -344,12 +384,12 @@ def resolve_local_corpus_root(config_or_path: Any = None) -> Optional[Path]:
         candidate = Path(config_or_path)
     else:
         raw = getattr(config_or_path, "LOCAL_CORPUS_ROOT", None)
-        candidate = Path(str(raw)) if raw else DEFAULT_LOCAL_CORPUS_ROOT
+        candidate = Path(str(raw)) if raw else DEFAULT_LOCAL_CORPUS_ROOT_SETTING
 
-    resolved = candidate.expanduser().resolve()
-    if not resolved.exists():
-        return None
-    return resolved
+    return resolve_repo_relative_corpus_root(
+        candidate,
+        DEFAULT_LOCAL_CORPUS_ROOT_SETTING,
+    )
 
 
 def _registry_cache_key(root: Path, catalog_path: Path) -> tuple[str, float]:

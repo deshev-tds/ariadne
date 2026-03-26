@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import open_webui.retrieval.corpus_runtime as corpus_runtime
+import open_webui.retrieval.local_corpus as local_corpus
 import open_webui.retrieval.offsec_corpus as offsec_corpus
 import open_webui.tools.builtin as builtin_tools
 import open_webui.utils.tools as tool_utils
@@ -327,6 +329,32 @@ def test_load_offsec_registry_rebases_stale_absolute_review_paths(offsec_corpus_
     assert registry.books_by_id[
         "hacking-and-security-comprehensive-guide"
     ].retrieval_path.exists()
+
+
+def test_resolve_offsec_corpus_root_anchors_relative_paths_to_repo_root(tmp_path, monkeypatch):
+    repo_root = tmp_path / "portable-repo"
+    corpus_root = _mini_offsec_corpus(repo_root / "offsec_corpus")
+    monkeypatch.setattr(local_corpus, "BASE_DIR", repo_root)
+    offsec_corpus.clear_offsec_corpus_caches()
+
+    resolved = corpus_runtime.resolve_offsec_corpus_root("offsec_corpus")
+
+    assert resolved == corpus_root.resolve()
+
+
+def test_resolve_offsec_corpus_root_falls_back_from_stale_absolute_repo_path(
+    tmp_path, monkeypatch
+):
+    repo_root = tmp_path / "portable-repo"
+    corpus_root = _mini_offsec_corpus(repo_root / "offsec_corpus")
+    monkeypatch.setattr(local_corpus, "BASE_DIR", repo_root)
+    offsec_corpus.clear_offsec_corpus_caches()
+
+    resolved = corpus_runtime.resolve_offsec_corpus_root(
+        "/old/location/open-webui/offsec_corpus"
+    )
+
+    assert resolved == corpus_root.resolve()
 
 
 def test_builtin_tools_expose_offsec_tools_only_in_offsec_mode(offsec_corpus_fixture):

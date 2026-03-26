@@ -3572,13 +3572,13 @@ ENABLE_LOCAL_CORPUS_TOOLS = PersistentConfig(
 LOCAL_CORPUS_ROOT = PersistentConfig(
     "LOCAL_CORPUS_ROOT",
     "rag.local_corpus.root",
-    os.getenv("LOCAL_CORPUS_ROOT", str(BASE_DIR / "literature_corpus")),
+    os.getenv("LOCAL_CORPUS_ROOT", "literature_corpus"),
 )
 
 OFFSEC_CORPUS_ROOT = PersistentConfig(
     "OFFSEC_CORPUS_ROOT",
     "rag.offsec.root",
-    os.getenv("OFFSEC_CORPUS_ROOT", str(BASE_DIR / "offsec_corpus")),
+    os.getenv("OFFSEC_CORPUS_ROOT", "offsec_corpus"),
 )
 
 WEB_SEARCH_EVIDENCE_MAX_TOKENS = PersistentConfig(

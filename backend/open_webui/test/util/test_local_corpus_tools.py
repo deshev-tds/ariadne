@@ -513,6 +513,32 @@ def _request_for_corpus(corpus_root: Path) -> SimpleNamespace:
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=config)))
 
 
+def test_resolve_local_corpus_root_anchors_relative_paths_to_repo_root(tmp_path, monkeypatch):
+    repo_root = tmp_path / "portable-repo"
+    corpus_root = _mini_corpus(repo_root / "literature_corpus")
+    monkeypatch.setattr(local_corpus, "BASE_DIR", repo_root)
+    local_corpus.clear_local_corpus_caches()
+
+    resolved = local_corpus.resolve_local_corpus_root("literature_corpus")
+
+    assert resolved == corpus_root.resolve()
+
+
+def test_resolve_local_corpus_root_falls_back_from_stale_absolute_repo_path(
+    tmp_path, monkeypatch
+):
+    repo_root = tmp_path / "portable-repo"
+    corpus_root = _mini_corpus(repo_root / "literature_corpus")
+    monkeypatch.setattr(local_corpus, "BASE_DIR", repo_root)
+    local_corpus.clear_local_corpus_caches()
+
+    resolved = local_corpus.resolve_local_corpus_root(
+        "/old/location/open-webui/literature_corpus"
+    )
+
+    assert resolved == corpus_root.resolve()
+
+
 def test_list_local_corpus_domains_discovers_multiple_domains(local_corpus_fixture):
     payload = local_corpus.list_local_corpus_domains(str(local_corpus_fixture))
 

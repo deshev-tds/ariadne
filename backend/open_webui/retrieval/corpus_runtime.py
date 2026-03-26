@@ -2,9 +2,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from open_webui.retrieval.local_corpus import resolve_local_corpus_root
+from open_webui.retrieval.local_corpus import (
+    resolve_local_corpus_root,
+    resolve_repo_relative_corpus_root,
+)
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 from open_webui.retrieval.working_mode import normalize_working_mode
+
+DEFAULT_OFFSEC_CORPUS_ROOT_SETTING = Path("offsec_corpus")
 
 
 @dataclass(frozen=True)
@@ -40,10 +45,10 @@ def resolve_offsec_corpus_root(config_or_path: Any = None) -> Optional[Path]:
     if candidate is None:
         return None
 
-    resolved = candidate.expanduser().resolve()
-    if not resolved.exists():
-        return None
-    return resolved
+    return resolve_repo_relative_corpus_root(
+        candidate,
+        DEFAULT_OFFSEC_CORPUS_ROOT_SETTING,
+    )
 
 
 def resolve_corpus_runtime(
