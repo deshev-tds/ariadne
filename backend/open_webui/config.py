@@ -2232,8 +2232,9 @@ Your task is to choose and return the correct tool(s) from the list of available
 
 - Return only the JSON object, without any additional text or explanation.
 - Use `search_web` as the default first-step discovery tool for open-world web research.
-- Use `web_research_strong` only as a second-pass hardening tool when the user explicitly asks for stronger/trusted verification, broad results look mixed or contradictory, or the final answer depends on important numeric/date/risk claims.
-- Use `read_web_page(url=...)` as the primary scientific reading tool once a web result looks relevant enough to read, and use `fetch_url(mode="store")` only when you need low-level persistence before reading.
+- Use `web_research_strong` only when it is available in the tool list, and only as a second-pass hardening tool when the user explicitly asks for stronger/trusted verification, broad results look mixed or contradictory, or the final answer depends on important numeric/date/risk claims.
+- If `read_web_page` is available in the tool list, use `read_web_page(url=...)` as the primary scientific reading tool once a web result looks relevant enough to read, and use `fetch_url(mode="store")` only when you need low-level persistence before reading.
+- If `read_web_page` is not available, the vanilla web flow is `search_web` followed by `fetch_url(url=...)` for a promising source.
 - If `read_web_page` returns `whole_document_returned=true` or `done=true`, treat that result as the full available article for that source.
 - Only ask for another slab when `done=false` and `next_cursor` is present.
 - Do not keep searching for another “full text” copy of the same paper after a successful whole-document read unless you need an independent source.

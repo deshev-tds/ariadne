@@ -447,9 +447,10 @@ def get_builtin_tools(
         builtin_tools = model.get("info", {}).get("meta", {}).get("builtinTools", {})
         return builtin_tools.get(category, True)
 
+    request_params = ((extra_params.get("__metadata__", {}) or {}).get("params", {}) or {})
     corpus_runtime = resolve_corpus_runtime(
         request.app.state.config,
-        ((extra_params.get("__metadata__", {}) or {}).get("params", {}) or {}),
+        request_params,
     )
 
     # Time utilities - available for date calculations
@@ -517,6 +518,13 @@ def get_builtin_tools(
         focused_search_enabled = bool(features.get("focused_search")) and bool(
             internet_access_enabled
         )
+        read_first_web_enabled = bool(
+            internet_access_enabled
+            and (
+                focused_search_enabled
+                or corpus_runtime.working_mode == "science"
+            )
+        )
 
         if internet_access_enabled:
             builtin_functions.append(search_web)
@@ -524,6 +532,7 @@ def get_builtin_tools(
             builtin_functions.append(web_research_strong)
         if internet_access_enabled:
             builtin_functions.append(fetch_url)
+        if read_first_web_enabled:
             builtin_functions.append(read_web_page)
 
     if is_builtin_tool_enabled("local_corpus") and corpus_runtime.science_enabled:

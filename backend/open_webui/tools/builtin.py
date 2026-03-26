@@ -478,13 +478,14 @@ async def search_web(
     or topics not covered in internal documents.
     Use this as the default first-step discovery tool for open-world web research.
     Search result snippets are excerpts, not full-page content.
-    For research turns, the expected choreography is:
+    For science / read-first turns where `read_web_page` is available, the expected choreography is:
     - `search_web` for discovery
     - `read_web_page(url=...)` once a result looks relevant enough to read
+    For plain web-search turns, use `fetch_url(url=...)` to inspect a promising result directly.
     Search result title + snippet are enough to decide whether to try reading a page.
     Do not require a secondary local query loop before reading a promising scientific source.
-    After a relevant scientific hit, prefer trying one `read_web_page(url=...)`
-    before running more searches about the same paper.
+    After a relevant scientific hit, prefer trying one read/fetch step before running more
+    searches about the same paper.
     Keep calls concise:
     - Prefer one high-quality query first.
     - Avoid repeated near-identical queries.
