@@ -6,6 +6,7 @@ node_modules
 /.svelte-kit
 /package
 .run/
+/.codex_tmp/
 backend/models/
 .env
 .env.*

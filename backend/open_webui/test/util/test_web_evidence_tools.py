@@ -34,6 +34,14 @@ def _install_temp_store(monkeypatch, tmp_path):
     )
 
 
+def test_read_web_page_docstring_explains_whole_document_semantics():
+    doc = builtin_tools.read_web_page.__doc__ or ""
+
+    assert "whole_document_returned=true" in doc
+    assert "done=false" in doc
+    assert "next_cursor" in doc
+
+
 def test_store_and_read_stored_web_page_roundtrip(tmp_path, monkeypatch):
     _install_temp_store(monkeypatch, tmp_path)
 

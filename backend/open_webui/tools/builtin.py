@@ -483,6 +483,8 @@ async def search_web(
     - `read_web_page(url=...)` once a result looks relevant enough to read
     Search result title + snippet are enough to decide whether to try reading a page.
     Do not require a secondary local query loop before reading a promising scientific source.
+    After a relevant scientific hit, prefer trying one `read_web_page(url=...)`
+    before running more searches about the same paper.
     Keep calls concise:
     - Prefer one high-quality query first.
     - Avoid repeated near-identical queries.
@@ -1380,6 +1382,13 @@ async def read_web_page(
     - If `artifact_id` is provided, the tool reads the stored artifact directly.
     - If `cursor` is provided, the tool returns the next contiguous slab with overlap.
     - If the document fits within the token budget, the whole document is returned.
+    - If `whole_document_returned=true` or `done=true`, treat that tool result as the
+      full available stored text for that source.
+    - Only request continuation when `done=false` and `next_cursor` is present.
+    - Start with the default read first; ask for more slabs only if the returned text
+      still lacks the evidence you need.
+    - Do not keep searching for another "full article" copy of the same paper after a
+      successful whole-document read unless you need a second independent source.
 
     :param url: URL to read (auto-fetch/store if needed)
     :param artifact_id: Stored artifact id to read directly

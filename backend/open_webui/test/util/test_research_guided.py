@@ -29,6 +29,8 @@ def test_research_guided_entry_prompt_prefers_search_then_read():
     prompt = research_guided.build_entry_prompt(state)
 
     assert "read_web_page(url=...)" in prompt
+    assert "whole_document_returned=true" in prompt
+    assert "next_cursor" in prompt
     assert "fetch_url(url, mode=\"store\") before" not in prompt
 
 

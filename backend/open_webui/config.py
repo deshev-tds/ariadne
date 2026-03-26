@@ -2234,6 +2234,9 @@ Your task is to choose and return the correct tool(s) from the list of available
 - Use `search_web` as the default first-step discovery tool for open-world web research.
 - Use `web_research_strong` only as a second-pass hardening tool when the user explicitly asks for stronger/trusted verification, broad results look mixed or contradictory, or the final answer depends on important numeric/date/risk claims.
 - Use `read_web_page(url=...)` as the primary scientific reading tool once a web result looks relevant enough to read, and use `fetch_url(mode="store")` only when you need low-level persistence before reading.
+- If `read_web_page` returns `whole_document_returned=true` or `done=true`, treat that result as the full available article for that source.
+- Only ask for another slab when `done=false` and `next_cursor` is present.
+- Do not keep searching for another “full text” copy of the same paper after a successful whole-document read unless you need an independent source.
 - Optimize for minimum tool turns and minimum repeated loops.
 - Start with the smallest sufficient tool plan (usually one call), then stop as soon as evidence is adequate.
 - Do not repeat the same tool with near-identical parameters unless the previous result explicitly indicates insufficiency.

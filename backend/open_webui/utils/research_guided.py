@@ -889,7 +889,10 @@ def build_entry_prompt(state: dict[str, Any]) -> str:
         "Use evidence tools to resolve the goals below, and preserve uncertainty when evidence is weak or conflicting.",
         "Use `search_web` for discovery, then `read_web_page(url=...)` once a source looks relevant enough to read.",
         "Search-result title + snippet are enough to justify reading a promising scientific source.",
-        ]
+        "If `read_web_page` returns `whole_document_returned=true` or `done=true`, treat that result as the full available article text for that source.",
+        "Only ask for `read_web_page(cursor=...)` when `done=false` and `next_cursor` is present.",
+        "Do not keep searching for another “full text” copy of the same paper after a successful whole-document read unless you need an independent source.",
+    ]
     if goals:
         lines.append("Primary goals:")
         for goal in goals[:RESEARCH_GUIDED_MAX_GOALS]:
