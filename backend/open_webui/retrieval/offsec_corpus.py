@@ -193,6 +193,56 @@ def _relative_source_path(source_path: str, root: Path) -> str:
     return Path(raw).as_posix()
 
 
+def _tail_relative_path(raw_path: str, *, parts: int = 2) -> str:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return ""
+
+    candidate = Path(raw)
+    path_parts = candidate.parts
+    if len(path_parts) >= parts:
+        return Path(*path_parts[-parts:]).as_posix()
+    return candidate.as_posix()
+
+
+def _candidate_source_keys(source_path: str, root: Path) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    for value in (
+        _relative_source_path(source_path, root),
+        Path(str(source_path or "").strip()).as_posix() if str(source_path or "").strip() else "",
+        _tail_relative_path(source_path, parts=2),
+        _tail_relative_path(source_path, parts=1),
+    ):
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        candidates.append(normalized)
+    return candidates
+
+
+def _rebase_review_artifact_path(raw_path: str, root: Path) -> Path:
+    candidate = Path(str(raw_path or ""))
+    if not str(raw_path or "").strip():
+        return candidate
+    if candidate.exists():
+        return candidate
+
+    for marker in ("_compiled_docling_review", "_compiled_docling_review_smoke", "_serving"):
+        try:
+            marker_index = candidate.parts.index(marker)
+        except ValueError:
+            continue
+
+        rebased = root / Path(*candidate.parts[marker_index:])
+        if rebased.exists():
+            return rebased
+
+    return candidate
+
+
 def _read_markdown(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace").strip()
 
@@ -251,8 +301,7 @@ def load_offsec_registry(config_or_path: Any = None) -> OffsecRegistry:
         for item in review_items:
             if not isinstance(item, dict):
                 continue
-            source_key = _relative_source_path(item.get("source_path"), root)
-            if source_key:
+            for source_key in _candidate_source_keys(item.get("source_path"), root):
                 review_by_source[source_key] = item
 
         domains: dict[str, dict[str, Any]] = {}
@@ -308,13 +357,19 @@ def load_offsec_registry(config_or_path: Any = None) -> OffsecRegistry:
                 continue
 
             source_pdf = str(item.get("source_pdf") or "").strip()
-            source_key = _relative_source_path(source_pdf, root)
-            review_item = review_by_source.get(source_key)
+            review_item = None
+            for source_key in _candidate_source_keys(source_pdf, root):
+                review_item = review_by_source.get(source_key)
+                if review_item is not None:
+                    break
             if review_item is None:
                 missing_book_reviews.append(book_id)
                 continue
 
-            retrieval_path = Path(str(review_item.get("retrieval_markdown_path") or ""))
+            retrieval_path = _rebase_review_artifact_path(
+                str(review_item.get("retrieval_markdown_path") or ""),
+                root,
+            )
             if not retrieval_path.exists():
                 missing_book_retrieval.append(book_id)
                 continue
@@ -325,9 +380,18 @@ def load_offsec_registry(config_or_path: Any = None) -> OffsecRegistry:
                 item.get("title") or book_id,
                 "book",
             )
-            raw_path = Path(str(review_item.get("raw_markdown_path") or ""))
-            catalog_path = Path(str(review_item.get("catalog_path") or ""))
-            manifest_path = Path(str(review_item.get("manifest_path") or ""))
+            raw_path = _rebase_review_artifact_path(
+                str(review_item.get("raw_markdown_path") or ""),
+                root,
+            )
+            catalog_path = _rebase_review_artifact_path(
+                str(review_item.get("catalog_path") or ""),
+                root,
+            )
+            manifest_path = _rebase_review_artifact_path(
+                str(review_item.get("manifest_path") or ""),
+                root,
+            )
 
             books_by_id[book_id] = OffsecBook(
                 book_id=book_id,

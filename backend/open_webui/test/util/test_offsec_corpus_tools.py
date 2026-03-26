@@ -295,6 +295,40 @@ def test_retrieve_offsec_evidence_returns_retrieval_snippets_only(offsec_corpus_
     assert "raw broad book" not in json.dumps(payload)
 
 
+def test_load_offsec_registry_rebases_stale_absolute_review_paths(offsec_corpus_fixture):
+    review_path = (
+        offsec_corpus_fixture / "_compiled_docling_review" / "compiled-offsec-review.json"
+    )
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    stale_root = Path("/Volumes/External/Books/Offsec")
+    for item in review["review_queue"]:
+        item["source_path"] = str(
+            stale_root / Path(str(item["source_path"])).relative_to(offsec_corpus_fixture)
+        )
+        for key in (
+            "retrieval_markdown_path",
+            "raw_markdown_path",
+            "catalog_path",
+            "manifest_path",
+        ):
+            item[key] = str(
+                stale_root / Path(str(item[key])).relative_to(offsec_corpus_fixture)
+            )
+    review_path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    offsec_corpus.clear_offsec_corpus_caches()
+
+    registry = offsec_corpus.load_offsec_registry(str(offsec_corpus_fixture))
+
+    assert sorted(registry.books_by_id) == [
+        "hacking-and-security-comprehensive-guide",
+        "web-application-pentesting",
+    ]
+    assert registry.books_by_id["web-application-pentesting"].retrieval_path.exists()
+    assert registry.books_by_id[
+        "hacking-and-security-comprehensive-guide"
+    ].retrieval_path.exists()
+
+
 def test_builtin_tools_expose_offsec_tools_only_in_offsec_mode(offsec_corpus_fixture):
     request = _request_for_offsec(offsec_corpus_fixture)
     model = {"info": {"meta": {"capabilities": {}, "builtinTools": {"local_corpus": True}}}}
