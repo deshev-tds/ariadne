@@ -12,6 +12,8 @@ backend/models/
 !.env.example
 # Proprietary local corpus must never be committed from this repo.
 /literature_corpus*/
+/scripts/models.ini
+/scripts/run_llama.sh
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 # Byte-compiled / optimized / DLL files
