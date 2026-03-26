@@ -50,6 +50,8 @@
 	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
 	export let focusedSearchEnabled = false;
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
+	export let workingMode: 'general' | 'science' | 'offsec' = 'general';
+	export let setChatWorkingMode: (mode: 'general' | 'science' | 'offsec') => void = () => {};
 	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
 
@@ -218,6 +220,8 @@
 					{setChatLedgerAgenticEnabled}
 					{focusedSearchEnabled}
 					{setChatFocusedSearchEnabled}
+					{workingMode}
+					{setChatWorkingMode}
 					{localCorpusMode}
 					{setChatLocalCorpusMode}
 					bind:files

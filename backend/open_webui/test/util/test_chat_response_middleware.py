@@ -18,6 +18,7 @@ def _build_request(
     *,
     enable_local_corpus: bool = False,
     local_corpus_root: str | None = None,
+    offsec_corpus_root: str | None = None,
 ):
     return SimpleNamespace(
         app=SimpleNamespace(
@@ -25,6 +26,7 @@ def _build_request(
                 config=SimpleNamespace(
                     ENABLE_LOCAL_CORPUS_TOOLS=enable_local_corpus,
                     LOCAL_CORPUS_ROOT=local_corpus_root,
+                    OFFSEC_CORPUS_ROOT=offsec_corpus_root,
                     TASK_MODEL="",
                     TASK_MODEL_EXTERNAL=False,
                 )
@@ -291,6 +293,7 @@ def test_apply_params_strips_ledger_mode_from_openai_payload():
     form_data = {
         "params": {
             "ledger_mode": "agentic",
+            "working_mode": "offsec",
             "local_corpus_mode": "prefer",
             "temperature": 0.2,
         }
@@ -300,6 +303,7 @@ def test_apply_params_strips_ledger_mode_from_openai_payload():
     result = apply_params_to_form_data(form_data, model)
 
     assert "ledger_mode" not in result
+    assert "working_mode" not in result
     assert "local_corpus_mode" not in result
     assert result["temperature"] == 0.2
 
@@ -308,6 +312,7 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
     form_data = {
         "params": {
             "ledger_mode": "agentic",
+            "working_mode": "offsec",
             "local_corpus_mode": "prefer",
             "temperature": 0.2,
         }
@@ -318,6 +323,7 @@ def test_apply_params_strips_ledger_mode_from_ollama_options():
 
     assert result["options"].get("temperature") == 0.2
     assert "ledger_mode" not in result["options"]
+    assert "working_mode" not in result["options"]
     assert "local_corpus_mode" not in result["options"]
 
 
@@ -623,11 +629,52 @@ def test_build_default_selector_guidance_is_default_only():
     tools = {"local_corpus_frame_problem": {}}
 
     assert middleware._build_default_selector_guidance(metadata, tools, []) == ""
+
+
+def test_build_default_selector_guidance_adds_offsec_consult_rules():
+    metadata = {
+        "params": {
+            "function_calling": "default",
+            "working_mode": "offsec",
+            "local_corpus_mode": "prefer",
+        },
+        "features": {},
+    }
+    tools = {
+        "offsec_consult": {},
+        "offsec_retrieve_evidence": {},
+    }
+
+    guidance = middleware._build_default_selector_guidance(metadata, tools, [])
+
+    assert "start with offsec_consult" in guidance
+    assert "project/GitHub docs before broad web search" in guidance
+
+
 def test_should_enable_shared_tool_narration_for_local_corpus_prefer():
     request = _build_request(
         enable_local_corpus=True, local_corpus_root="/tmp/local-corpus"
     )
     metadata = {"params": {"function_calling": "native", "local_corpus_mode": "prefer"}}
+
+    assert (
+        middleware._should_enable_shared_tool_narration(request, metadata, {})
+        is True
+    )
+
+
+def test_should_enable_shared_tool_narration_for_offsec_mode():
+    request = _build_request(
+        enable_local_corpus=True,
+        offsec_corpus_root="/tmp/offsec-corpus",
+    )
+    metadata = {
+        "params": {
+            "function_calling": "native",
+            "working_mode": "offsec",
+            "local_corpus_mode": "prefer",
+        }
+    }
 
     assert (
         middleware._should_enable_shared_tool_narration(request, metadata, {})

@@ -116,6 +116,7 @@ from open_webui.models.models import Models
 from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
+from open_webui.retrieval.working_mode import normalize_working_mode
 
 from open_webui.config import (
     # Ollama
@@ -328,6 +329,7 @@ from open_webui.config import (
     ENABLE_WEB_SEARCH_EVIDENCE_SATURATION,
     ENABLE_LOCAL_CORPUS_TOOLS,
     LOCAL_CORPUS_ROOT,
+    OFFSEC_CORPUS_ROOT,
     WEB_SEARCH_EVIDENCE_MAX_TOKENS,
     WEB_SEARCH_EVIDENCE_CHUNK_TOKENS,
     WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE,
@@ -1185,6 +1187,7 @@ app.state.config.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION = (
 )
 app.state.config.ENABLE_LOCAL_CORPUS_TOOLS = ENABLE_LOCAL_CORPUS_TOOLS
 app.state.config.LOCAL_CORPUS_ROOT = LOCAL_CORPUS_ROOT
+app.state.config.OFFSEC_CORPUS_ROOT = OFFSEC_CORPUS_ROOT
 app.state.config.WEB_SEARCH_EVIDENCE_MAX_TOKENS = WEB_SEARCH_EVIDENCE_MAX_TOKENS
 app.state.config.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS = WEB_SEARCH_EVIDENCE_CHUNK_TOKENS
 app.state.config.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE = (
@@ -1943,6 +1946,10 @@ async def chat_completion(
         local_corpus_mode = normalize_local_corpus_mode(
             form_data.get("params", {}).get("local_corpus_mode")
         )
+        working_mode = normalize_working_mode(
+            form_data.get("params", {}).get("working_mode"),
+            local_corpus_mode=local_corpus_mode,
+        )
 
         # Model Params
         if model_info_params.get("stream_response") is not None:
@@ -1974,6 +1981,7 @@ async def chat_completion(
                 "stream_delta_chunk_size": stream_delta_chunk_size,
                 "reasoning_tags": reasoning_tags,
                 "ledger_mode": ledger_mode,
+                "working_mode": working_mode,
                 "local_corpus_mode": local_corpus_mode,
                 "debug_memory_telemetry": bool(
                     form_data.get("params", {}).get("debug_memory_telemetry")

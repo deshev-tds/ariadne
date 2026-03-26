@@ -33,6 +33,10 @@ from open_webui.retrieval.local_corpus_reasoning import (
     collect_local_corpus_axis_evidence,
     assess_local_corpus_evidence,
 )
+from open_webui.retrieval.offsec_corpus import (
+    consult_offsec_corpus,
+    retrieve_offsec_evidence,
+)
 from open_webui.routers.images import (
     image_generations,
     image_edits,
@@ -660,6 +664,76 @@ async def local_corpus_assess_evidence(
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"local_corpus_assess_evidence error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def offsec_consult(
+    objective: str,
+    phase: str = "start",
+    current_findings: str = "",
+    current_hypothesis: str = "",
+    named_entity: str = "",
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Consult the Offsec corpus for route, methodology, and source narrowing.
+    Use this when target framing, method choice, or tool fit is still unclear.
+
+    :param objective: The current objective or immediate task
+    :param phase: Short phase label like start, planning, mid_run, or validation
+    :param current_findings: Important findings collected so far
+    :param current_hypothesis: Current working hypothesis, if any
+    :param named_entity: Specific tool, product, or concept to anchor around
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            consult_offsec_corpus,
+            objective=objective,
+            phase=phase,
+            current_findings=current_findings,
+            current_hypothesis=current_hypothesis,
+            named_entity=named_entity,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"offsec_consult error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def offsec_retrieve_evidence(
+    query: str,
+    book_ids: Optional[list[str]] = None,
+    max_snippets: int = 6,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Retrieve focused evidence from Offsec retrieval payloads only.
+    Use this after offsec_consult to deepen a method, tool, or tactic with source-close examples.
+
+    :param query: The focused retrieval need
+    :param book_ids: Optional shortlisted Offsec book ids
+    :param max_snippets: Maximum evidence snippets to return, capped by backend policy
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            retrieve_offsec_evidence,
+            query=query,
+            book_ids=book_ids,
+            max_snippets=max_snippets,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"offsec_retrieve_evidence error: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
