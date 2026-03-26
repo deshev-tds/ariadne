@@ -1,24 +1,82 @@
-# Open WebUI Fork for Local Context, Recall, Voice, and Token Inspection
+# Ariadne
 
-This repository is a fork of Open WebUI, built for a different priority set than the upstream project.
+Ariadne is a local-first LLM workbench for bounded long-chat continuity, exact recall, evidence-first retrieval, practical local voice, and inspectable generation.
 
-That priority set is:
+Through its Open WebUI inheritance, Ariadne remains a full local AI workbench with chat, voice, files, tools, and the broader interaction surface people expect from a real daily driver.
 
-- local-first behavior over backend-agnostic product smoothing
-- long-chat survivability over naive full-history replay
+It is for people already running local models, especially `llama.cpp`-style stacks, who care about prompt-budget hygiene, controllable behavior, and being able to inspect what the system actually did.
+
+The thesis is simple: local LLM UX fails predictably when chat history is replayed naively, retrieval is allowed to sprawl, literature is flattened into generic ingest, and generation becomes an opaque black box. Ariadne is narrow on purpose. It exists to make one local workflow sharper, not to flatten every workflow into a generic chat surface.
+
+Built on Open WebUI, Ariadne diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, deliberate literature handling, and generation inspection that is useful during real debugging rather than only during demos.
+
+In practice, the local stack behind Ariadne is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. A lot of the design decisions here are not abstract product ideas, but are tied to the behavior and limits of this real local runtime.
+
+## Quick Navigation
+
+- [Ariadne in One View](#ariadne-in-one-view)
+- [Why Ariadne Exists](#why-ariadne-exists)
+- [What Changed from Upstream](#what-changed-from-upstream)
+- [What Was Actually Validated](#what-was-actually-validated)
+- [Context and Memory in Ariadne](#context-and-memory-in-ariadne)
+- [Context Window Indicator](#context-window-indicator)
+- [Web Search and Retrieval Planning](#web-search-and-retrieval-planning)
+- [Optional Local Corpus Lane](#optional-local-corpus-lane)
+- [Voice / TTS](#voice--tts)
+- [Token Exploration and Response Branching](#token-exploration-and-response-branching)
+- [Thinking / Reasoning Controls](#thinking--reasoning-controls)
+- [Recent Lessons](#recent-lessons)
+- [Verification Roadmap](docs/roadmap/README.md)
+- [Compatibility / Install](#compatibility--install)
+
+Reading paths:
+
+> **Architecture path**  
+> [Ariadne in One View](#ariadne-in-one-view) -> [What Was Actually Validated](#what-was-actually-validated) -> [Context and Memory in Ariadne](#context-and-memory-in-ariadne) -> [Web Search and Retrieval Planning](#web-search-and-retrieval-planning) -> [Optional Local Corpus Lane](#optional-local-corpus-lane)
+>
+> **Local corpus path**  
+> [Ariadne in One View](#ariadne-in-one-view) -> [What Was Actually Validated](#what-was-actually-validated) -> [Optional Local Corpus Lane](#optional-local-corpus-lane) -> [Recent Lessons](#recent-lessons)
+>
+> **Local runtime UX path**  
+> [Ariadne in One View](#ariadne-in-one-view) -> [Context and Memory in Ariadne](#context-and-memory-in-ariadne) -> [Context Window Indicator](#context-window-indicator) -> [Voice / TTS](#voice--tts) -> [Token Exploration and Response Branching](#token-exploration-and-response-branching) -> [Thinking / Reasoning Controls](#thinking--reasoning-controls)
+
+The priority set here is:
+
+- local-first behavior
+- long-chat survivability
 - memory with evidence and recall, not summary-only compression
 - fast-path UX by default, with bounded slow paths only when needed
-- lightweight local voice that still sounds good enough to use
-- token-level inspection and deliberate response branching for real debugging
-- honest control surfaces for `llama.cpp`-style local stacks instead of universal-magic toggles
+- lightweight local voice that sounds good
+- token-level inspection and deliberate response branching for real debugging and research
+- honest control surfaces for `llama.cpp`-style local stacks
 
-Upstream Open WebUI is a strong base platform and UI for self-hosted LLM workflows. This fork keeps that base, but diverges where local-first power-user workflows need tighter control: long-running chats, context overflow, exact recovery of old facts, practical local TTS quality, and generation inspection that is useful during real debugging rather than only during demos.
+That is the frame for the rest of this document.
 
-In practice, the local stack behind this fork is centered on `llama.cpp`, OpenAI-compatible local serving, and AMD Strix Halo hardware. That matters because a lot of the design decisions here are not abstract product ideas; they are responses to the behavior and limits of a real local runtime.
+## Ariadne in One View
 
-If you care about local models, long technical chats, prompt-budget hygiene, and being able to inspect or deliberately fork a response path, this fork is trying to make those workflows less opaque and less fragile.
+There are three deliberate lanes in Ariadne. Trying to force all of them through one vague "chat with tools" path is how local stacks become slow, opaque, and prompt-heavy.
 
-## Why This Fork Exists
+```text
+User request
+    |
+    +--> Chat lane     -> bounded hot context -> exact recall when needed -> token inspection when supported
+    +--> Web retrieval -> plan -> target -> bound evidence -> stop
+    +--> Local corpus  -> shortlist sources -> retrieve evidence inside them -> open tables/figures explicitly
+```
+
+### Chat lane
+
+The normal fast path stays in the chat. It uses server-side context maintenance, a bounded hot working set, structured state snapshots, and exact recall only when evidence is needed. When the backend exposes the necessary telemetry, this lane also supports token-level inspection and deliberate response branching, so local generation is less of a black box.
+
+### Web retrieval lane
+
+This is the current-answer evidence path. It plans, targets, and bounds web retrieval for a chat turn, then stops once enough evidence exists. It is there for the single purpose of improving an answer, mostly by avoiding pouring web text into context without a care in the world.
+
+### Local corpus lane
+
+This is the on-disk evidence path for proprietary, bought, or locally curated literature. It is domain-first on purpose: first narrow the source set, then retrieve evidence inside that narrowed set. The selector layer and the evidence layer are separate because "find the right source" and "extract the right evidence from that source" are not the same job.
+
+## Why Ariadne Exists
 
 The upstream project is broad. This fork is narrow on purpose.
 
@@ -63,7 +121,22 @@ The important divergences are not cosmetic.
 
 The rest of this README explains the rationale behind those changes.
 
-## Context and Memory in This Fork
+## What Was Actually Validated
+
+This README makes narrow claims on purpose.
+
+It does not claim that local RAG is solved, that models obey tools reliably by default, or that one runtime can erase backend differences. What was validated in practice is narrower and more honest:
+
+- the lane split is useful on a real local OWUI instance
+- bounded hot context plus exact recall keeps long chats usable without pretending memory is free
+- focused search can gather bounded evidence without turning into a prompt-dumping ritual
+- a domain-first local corpus architecture works better for cases where source quality matters more than generic breadth
+- table-aware retrieval and page/section-grounded answers are viable without flattening a literature shelf
+- token-level inspection and manual branching are practical on compatible local runtimes
+
+The main validation corpus was medical literature, because it is a domain with near-zero tolerance for citation sloppiness, bad ingest, and casual reasoning drift.
+
+## Context and Memory in Ariadne
 
 This fork now treats context as a layered system, not as "replay everything until the model breaks".
 
@@ -253,6 +326,18 @@ Mode switching is also explicit and forward-only:
 - from the next turn onward, only the selected ledger kind is eligible for capture and injection
 
 On the first turn after a mode switch, the selected mode can force a single ledger injection when active entries already exist for that mode. After that turn, normal selective gating resumes.
+
+## Context Window Indicator
+
+Ariadne also exposes a live preview of context pressure in the chat UI.
+
+The point is not to promise exact token accounting on every backend. The point is to make maintenance pressure visible early enough that long local chats stop feeling arbitrary.
+
+In practice, the indicator helps answer a more useful question than "what is the model's theoretical max context?":
+
+- how close is this actual conversation to the next maintenance event on this actual runtime?
+
+That matters because local runtimes are constrained by real latency and memory bandwidth, not only by headline context-window numbers.
 
 ### Legacy Simon Pipe Cleanup
 
@@ -679,6 +764,14 @@ chat-template-kwargs = {"enable_thinking": false}
 In that kind of setup, the fork's UI toggle is not inventing a new reasoning protocol. It is sending a real signal back to a template that was explicitly authored to switch between thinking and non-thinking prompt shapes.
 
 The important distinction for this README is attribution: most of the generic reasoning-tag handling, thought-block rendering, and provider-specific reasoning params come from Open WebUI itself. The fork-specific point is that this repo treats template-aware thinking control as operationally important for local `llama.cpp` deployments and describes it accordingly, without pretending that one toggle can force every model/backend pair into a coherent thinking mode.
+
+## Recent Lessons
+
+Some of the most useful recent lessons are architectural rather than feature-shaped.
+
+- Verification and workflow improvement should be built around verifier-facing run artifacts, not around diary capture alone. The current direction for that work lives in the [verification roadmap](docs/roadmap/verification-native-agent-improvement-platform.md).
+- Web retrieval should stay bounded and inspectable. When the stack drifts too far from a normal "find source -> fetch source -> answer from fetched text" mental model, models start behaving worse, not better.
+- Local corpus paths work best when they preserve source boundaries and keep selector logic separate from evidence retrieval.
 
 ## Other Notable Divergences
 
