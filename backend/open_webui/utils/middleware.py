@@ -1700,10 +1700,11 @@ def _build_tool_continuation_messages(
     output: list[dict[str, Any]],
     narration_instruction: str | None = None,
     research_instruction: str | None = None,
+    include_reasoning: bool = True,
 ) -> list[dict[str, Any]]:
     messages = [
         *copy.deepcopy(form_data_messages),
-        *convert_output_to_messages(output, raw=True),
+        *convert_output_to_messages(output, raw=include_reasoning),
     ]
     for instruction in (narration_instruction, research_instruction):
         if not instruction:
@@ -6390,6 +6391,80 @@ def _extract_json_payload(raw_output: str) -> Optional[dict[str, Any]]:
         return payload if isinstance(payload, dict) else None
     except Exception:
         return None
+
+
+def _extract_textual_tool_calls(
+    raw_output: str,
+    available_tools: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    content = str(raw_output or "").strip()
+    if not content:
+        return []
+
+    wrapped = False
+    if content.startswith("<tool_call>"):
+        content = content[len("<tool_call>") :].strip()
+        wrapped = True
+    if content.endswith("</tool_call>"):
+        content = content[: -len("</tool_call>")].strip()
+        wrapped = True
+
+    payload = _extract_json_payload(content)
+    if not isinstance(payload, dict):
+        return []
+
+    if not wrapped and not (
+        ("name" in payload and ("arguments" in payload or "parameters" in payload))
+        or isinstance(payload.get("tool_calls"), list)
+    ):
+        return []
+
+    tool_names = set((available_tools or {}).keys())
+
+    entries = payload.get("tool_calls") if isinstance(payload.get("tool_calls"), list) else [payload]
+    parsed_calls: list[dict[str, Any]] = []
+
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            return []
+
+        function_block = entry.get("function") if isinstance(entry.get("function"), dict) else None
+        name = str(
+            (function_block or {}).get("name")
+            or entry.get("name")
+            or ""
+        ).strip()
+        if not name or (tool_names and name not in tool_names):
+            return []
+
+        arguments = (
+            (function_block or {}).get("arguments")
+            if function_block is not None
+            else None
+        )
+        if arguments is None:
+            arguments = entry.get("arguments")
+        if arguments is None:
+            arguments = entry.get("parameters", {})
+
+        if isinstance(arguments, (dict, list)):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+        elif not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+
+        parsed_calls.append(
+            {
+                "id": str(entry.get("id") or f"call_{uuid4().hex[:24]}"),
+                "index": entry.get("index", index),
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": arguments,
+                },
+            }
+        )
+
+    return parsed_calls
 
 
 def _build_round_robin_web_chunks(
@@ -11193,6 +11268,51 @@ async def streaming_chat_response_handler(response, ctx):
                                 )
                                 reasoning_item["status"] = "completed"
 
+                    if (
+                        not response_tool_calls
+                        and metadata.get("params", {}).get("function_calling")
+                        == "native"
+                        and output
+                        and output[-1].get("type") == "message"
+                    ):
+                        last_message_parts = output[-1].get("content", []) or []
+                        last_message_text = ""
+                        for part in last_message_parts:
+                            if part.get("type") == "output_text":
+                                last_message_text += str(part.get("text") or "")
+                        fallback_tool_calls = _extract_textual_tool_calls(
+                            last_message_text,
+                            metadata.get("tools")
+                            if isinstance(metadata.get("tools"), dict)
+                            else {},
+                        )
+                        if fallback_tool_calls:
+                            response_tool_calls = fallback_tool_calls
+                            output.pop()
+                            if output and output[-1].get("type") == "message":
+                                trailing_parts = output[-1].get("content", []) or []
+                                if trailing_parts and trailing_parts[-1].get("type") == "output_text":
+                                    trailing_parts[-1]["text"] = str(
+                                        trailing_parts[-1].get("text") or ""
+                                    ).strip()
+                                    if not trailing_parts[-1]["text"]:
+                                        output.pop()
+                            corrected_payload = {
+                                "content": serialize_output(output),
+                                "output": output,
+                            }
+                            await event_emitter(
+                                {
+                                    "type": "chat:completion",
+                                    "data": corrected_payload,
+                                }
+                            )
+                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                                metadata["chat_id"],
+                                metadata["message_id"],
+                                corrected_payload,
+                            )
+
                     if response_tool_calls:
                         tool_calls.append(_split_tool_calls(response_tool_calls))
 
@@ -11872,6 +11992,10 @@ async def streaming_chat_response_handler(response, ctx):
                             output,
                             narration_instruction=narration_instruction,
                             research_instruction=research_instruction,
+                            include_reasoning=(
+                                metadata.get("params", {}).get("function_calling")
+                                != "native"
+                            ),
                         )
                         new_form_data = {
                             **form_data,
@@ -12123,7 +12247,15 @@ async def streaming_chat_response_handler(response, ctx):
                                 "stream": True,
                                 "messages": [
                                     *form_data["messages"],
-                                    *convert_output_to_messages(output, raw=True),
+                                    *convert_output_to_messages(
+                                        output,
+                                        raw=(
+                                            metadata.get("params", {}).get(
+                                                "function_calling"
+                                            )
+                                            != "native"
+                                        ),
+                                    ),
                                 ],
                             }
 

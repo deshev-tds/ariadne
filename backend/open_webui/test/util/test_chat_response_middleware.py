@@ -2177,6 +2177,63 @@ def test_build_tool_continuation_messages_uses_temporary_system_append():
     assert messages[-1]["role"] == "assistant"
 
 
+def test_build_tool_continuation_messages_can_strip_reasoning_for_native_tools():
+    form_messages = [{"role": "system", "content": "base prompt"}]
+    output = [
+        {
+            "type": "reasoning",
+            "id": "r_1",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "internal reasoning"}],
+        },
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call-1",
+            "name": "search_web",
+            "arguments": '{"query":"sleep latency"}',
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "id": "fco_1",
+            "call_id": "call-1",
+            "output": [{"type": "input_text", "text": "[]"}],
+            "status": "completed",
+        },
+    ]
+
+    messages = middleware._build_tool_continuation_messages(
+        form_messages,
+        output,
+        include_reasoning=False,
+    )
+
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["tool_calls"][0]["function"]["name"] == "search_web"
+    assert messages[1]["content"] == ""
+    assert "internal reasoning" not in json.dumps(messages, ensure_ascii=False)
+
+
+def test_extract_textual_tool_calls_parses_wrapped_native_fallback():
+    raw = (
+        '{"arguments": "{\\"url\\": \\"https://example.com\\", \\"mode\\": \\"content\\"}", '
+        '"name": "fetch_url"}\n</tool_call>'
+    )
+
+    parsed = middleware._extract_textual_tool_calls(
+        raw,
+        {"fetch_url": {"spec": {}}},
+    )
+
+    assert len(parsed) == 1
+    assert parsed[0]["function"]["name"] == "fetch_url"
+    assert json.loads(parsed[0]["function"]["arguments"]) == {
+        "url": "https://example.com",
+        "mode": "content",
+    }
+
+
 @pytest.mark.asyncio
 async def test_process_chat_payload_injects_research_guided_prompt_for_science_turn(
     monkeypatch,
