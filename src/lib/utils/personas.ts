@@ -7,6 +7,17 @@ export const buildPersonaDefaultsSnapshot = (persona: Persona) => ({
 	bound_model_id: persona.bound_model_id ?? null,
 	system_prompt: persona.system_prompt ?? null,
 	greeting: persona.greeting ?? null,
+	partner_profile: persona.partner_profile
+		? {
+				enabled: !!persona.partner_profile.enabled,
+				title: persona.partner_profile.title ?? null,
+				summary: persona.partner_profile.summary ?? '',
+				relational_frame: persona.partner_profile.relational_frame ?? null,
+				style_preferences: [...(persona.partner_profile.style_preferences ?? [])],
+				avoidances: [...(persona.partner_profile.avoidances ?? [])],
+				updated_at: persona.partner_profile.updated_at ?? null
+			}
+		: null,
 	voice_id: persona.voice_id ?? null,
 	voice_speed: persona.voice_speed ?? null,
 	tool_ids: [...(persona.tool_ids ?? [])],
@@ -65,6 +76,41 @@ export const getEffectiveModelBinding = ({
 
 const sanitizeByExistingIds = (ids: string[] = [], existingIds: Set<string>) =>
 	ids.filter((id) => existingIds.has(id));
+
+const sanitizePartnerProfile = (partnerProfile?: Record<string, any> | null) => {
+	if (!partnerProfile || !partnerProfile.enabled) {
+		return null;
+	}
+
+	const title = typeof partnerProfile.title === 'string' ? partnerProfile.title.trim() : '';
+	const summary = typeof partnerProfile.summary === 'string' ? partnerProfile.summary.trim() : '';
+	const relationalFrame =
+		typeof partnerProfile.relational_frame === 'string'
+			? partnerProfile.relational_frame.trim()
+			: '';
+	const stylePreferences = (partnerProfile.style_preferences ?? [])
+		.filter((value) => typeof value === 'string')
+		.map((value) => value.trim())
+		.filter(Boolean);
+	const avoidances = (partnerProfile.avoidances ?? [])
+		.filter((value) => typeof value === 'string')
+		.map((value) => value.trim())
+		.filter(Boolean);
+
+	if (!title && !summary && !relationalFrame && !stylePreferences.length && !avoidances.length) {
+		return null;
+	}
+
+	return {
+		enabled: true,
+		title: title || null,
+		summary,
+		relational_frame: relationalFrame || null,
+		style_preferences: stylePreferences,
+		avoidances,
+		updated_at: typeof partnerProfile.updated_at === 'number' ? partnerProfile.updated_at : null
+	};
+};
 
 export const getEffectivePersonaState = ({
 	persona,
@@ -136,6 +182,7 @@ export const getEffectivePersonaState = ({
 		effective: {
 			bound_model_id: requested.bound_model_id ?? persona.bound_model_id ?? null,
 			system_prompt: requested.system_prompt,
+			partner_profile: sanitizePartnerProfile(requested.partner_profile),
 			tool_ids: toolIds,
 			filter_ids: filterIds,
 			action_ids: actionIds,

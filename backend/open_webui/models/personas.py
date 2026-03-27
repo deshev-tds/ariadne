@@ -1,7 +1,8 @@
 import logging
 import time
 import uuid
-from typing import Literal, Optional
+from copy import deepcopy
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import BigInteger, Boolean, Column, Float, Index, String, Text
@@ -10,6 +11,77 @@ from sqlalchemy.orm import Session
 from open_webui.internal.db import JSONField, Base, get_db_context
 
 log = logging.getLogger(__name__)
+
+
+def _normalize_partner_profile_text(value: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _normalize_partner_profile_list(values: Optional[list[str]]) -> list[str]:
+    if not isinstance(values, list):
+        return []
+
+    normalized: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        if value:
+            normalized.append(value)
+    return normalized
+
+
+class PersonaPartnerProfile(BaseModel):
+    enabled: bool = False
+    title: Optional[str] = None
+    summary: str = ""
+    relational_frame: Optional[str] = None
+    style_preferences: list[str] = Field(default_factory=list)
+    avoidances: list[str] = Field(default_factory=list)
+    updated_at: Optional[int] = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+def normalize_partner_profile(
+    partner_profile: Optional[PersonaPartnerProfile | dict[str, Any]],
+    updated_at: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    if partner_profile is None:
+        return None
+
+    if isinstance(partner_profile, PersonaPartnerProfile):
+        data = partner_profile.model_dump()
+    elif isinstance(partner_profile, dict):
+        data = deepcopy(partner_profile)
+    else:
+        return None
+
+    title = _normalize_partner_profile_text(data.get("title"))
+    summary = _normalize_partner_profile_text(data.get("summary")) or ""
+    relational_frame = _normalize_partner_profile_text(data.get("relational_frame"))
+    style_preferences = _normalize_partner_profile_list(data.get("style_preferences"))
+    avoidances = _normalize_partner_profile_list(data.get("avoidances"))
+    enabled = bool(data.get("enabled"))
+
+    has_content = bool(
+        title or summary or relational_frame or style_preferences or avoidances
+    )
+    if not enabled and not has_content:
+        return None
+
+    return {
+        "enabled": enabled,
+        "title": title,
+        "summary": summary,
+        "relational_frame": relational_frame,
+        "style_preferences": style_preferences,
+        "avoidances": avoidances,
+        "updated_at": updated_at,
+    }
 
 
 class Persona(Base):
@@ -27,6 +99,7 @@ class Persona(Base):
     bound_model_id = Column(Text, nullable=True)
     system_prompt = Column(Text, nullable=True)
     greeting = Column(Text, nullable=True)
+    partner_profile = Column(JSONField, nullable=True)
 
     voice_id = Column(Text, nullable=True)
     voice_speed = Column(Float, nullable=True)
@@ -62,6 +135,7 @@ class PersonaModel(BaseModel):
     bound_model_id: Optional[str] = None
     system_prompt: Optional[str] = None
     greeting: Optional[str] = None
+    partner_profile: Optional[PersonaPartnerProfile] = None
 
     voice_id: Optional[str] = None
     voice_speed: Optional[float] = None
@@ -92,6 +166,7 @@ class PersonaForm(BaseModel):
     bound_model_id: Optional[str] = None
     system_prompt: Optional[str] = None
     greeting: Optional[str] = None
+    partner_profile: Optional[PersonaPartnerProfile] = None
 
     voice_id: Optional[str] = None
     voice_speed: Optional[float] = None
@@ -118,9 +193,13 @@ class PersonasTable:
         try:
             with get_db_context(db) as db:
                 now = int(time.time())
+                payload = form_data.model_dump()
+                payload["partner_profile"] = normalize_partner_profile(
+                    form_data.partner_profile, updated_at=now
+                )
                 result = Persona(
                     **{
-                        **form_data.model_dump(),
+                        **payload,
                         "id": form_data.id or str(uuid.uuid4()),
                         "user_id": user_id,
                         "updated_at": now,
@@ -176,9 +255,15 @@ class PersonasTable:
                 if persona is None:
                     return None
 
-                for key, value in form_data.model_dump(exclude={"id"}).items():
+                now = int(time.time())
+                payload = form_data.model_dump(exclude={"id"})
+                payload["partner_profile"] = normalize_partner_profile(
+                    form_data.partner_profile, updated_at=now
+                )
+
+                for key, value in payload.items():
                     setattr(persona, key, value)
-                persona.updated_at = int(time.time())
+                persona.updated_at = now
                 db.commit()
                 db.refresh(persona)
                 return PersonaModel.model_validate(persona)

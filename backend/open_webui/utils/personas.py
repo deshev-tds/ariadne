@@ -23,6 +23,9 @@ def build_persona_defaults_snapshot(persona: PersonaModel) -> dict[str, Any]:
         "bound_model_id": persona.bound_model_id,
         "system_prompt": persona.system_prompt,
         "greeting": persona.greeting,
+        "partner_profile": (
+            persona.partner_profile.model_dump() if persona.partner_profile else None
+        ),
         "voice_id": persona.voice_id,
         "voice_speed": persona.voice_speed,
         "tool_ids": list(persona.tool_ids or []),
@@ -51,8 +54,126 @@ def _merge_requested_state(
     requested.setdefault("action_ids", [])
     requested.setdefault("default_feature_ids", [])
     requested.setdefault("capabilities", {})
+    requested.setdefault("partner_profile", None)
 
     return requested
+
+
+def _normalize_partner_profile(partner_profile: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(partner_profile, dict):
+        return None
+
+    title = partner_profile.get("title")
+    title = title.strip() if isinstance(title, str) else None
+    title = title or None
+
+    summary = partner_profile.get("summary")
+    summary = summary.strip() if isinstance(summary, str) else ""
+
+    relational_frame = partner_profile.get("relational_frame")
+    relational_frame = (
+        relational_frame.strip() if isinstance(relational_frame, str) else None
+    )
+    relational_frame = relational_frame or None
+
+    style_preferences = [
+        value.strip()
+        for value in (partner_profile.get("style_preferences") or [])
+        if isinstance(value, str) and value.strip()
+    ]
+    avoidances = [
+        value.strip()
+        for value in (partner_profile.get("avoidances") or [])
+        if isinstance(value, str) and value.strip()
+    ]
+
+    enabled = bool(partner_profile.get("enabled"))
+    has_content = bool(
+        title or summary or relational_frame or style_preferences or avoidances
+    )
+    if not enabled or not has_content:
+        return None
+
+    return {
+        "enabled": True,
+        "title": title,
+        "summary": summary,
+        "relational_frame": relational_frame,
+        "style_preferences": style_preferences,
+        "avoidances": avoidances,
+        "updated_at": partner_profile.get("updated_at"),
+    }
+
+
+def _render_partner_profile_block(partner_profile: Optional[dict[str, Any]]) -> Optional[str]:
+    if not partner_profile:
+        return None
+
+    lines = [
+        "[Partner Profile]",
+        "Treat the following as always-on relational guidance about the human you are engaging with.",
+        "It is not scene context, and it never permits you to override the user's agency, words, thoughts, or choices.",
+    ]
+
+    if partner_profile.get("title"):
+        lines.append(f"Title: {partner_profile['title']}")
+
+    if partner_profile.get("summary"):
+        lines.extend(["Summary:", partner_profile["summary"]])
+
+    if partner_profile.get("relational_frame"):
+        lines.extend(["Relational Frame:", partner_profile["relational_frame"]])
+
+    if partner_profile.get("style_preferences"):
+        lines.append("Style Preferences:")
+        lines.extend(
+            f"- {value}" for value in partner_profile.get("style_preferences", [])
+        )
+
+    if partner_profile.get("avoidances"):
+        lines.append("Avoidances:")
+        lines.extend(f"- {value}" for value in partner_profile.get("avoidances", []))
+
+    return "\n".join(lines)
+
+
+def _extract_model_system_prompt(runtime_context: dict[str, Any]) -> Optional[str]:
+    model_info = runtime_context.get("model_info")
+    if model_info and getattr(model_info, "params", None):
+        params = model_info.params
+        if hasattr(params, "model_dump"):
+            params = params.model_dump()
+        if isinstance(params, dict) and isinstance(params.get("system"), str):
+            return params.get("system")
+
+    model = runtime_context.get("model")
+    model_info_payload = (model or {}).get("info", {}) if isinstance(model, dict) else {}
+    params = model_info_payload.get("params", {})
+    if isinstance(params, dict) and isinstance(params.get("system"), str):
+        return params.get("system")
+
+    return None
+
+
+def _compose_effective_system_prompt(
+    requested_system_prompt: Optional[str],
+    model_system_prompt: Optional[str],
+    partner_profile_block: Optional[str],
+) -> Optional[str]:
+    if requested_system_prompt is None and not partner_profile_block:
+        return None
+
+    base_prompt = (
+        requested_system_prompt
+        if requested_system_prompt is not None
+        else (model_system_prompt or None)
+    )
+    if partner_profile_block:
+        if base_prompt:
+            return f"{base_prompt.rstrip()}\n\n{partner_profile_block}"
+        return partner_profile_block
+
+    return requested_system_prompt
 
 
 def _available_tool_ids(user_id: str) -> set[str]:
@@ -161,6 +282,7 @@ def resolve_effective_persona_state(
     requested_filter_ids = list(requested.get("filter_ids") or [])
     requested_action_ids = list(requested.get("action_ids") or [])
     requested_feature_ids = list(requested.get("default_feature_ids") or [])
+    requested_partner_profile = _normalize_partner_profile(requested.get("partner_profile"))
 
     effective_tool_ids = [tool_id for tool_id in requested_tool_ids if tool_id in available_tool_ids]
     effective_skill_ids = [
@@ -177,8 +299,15 @@ def resolve_effective_persona_state(
     )
 
     requested_system_prompt = requested.get("system_prompt")
-    effective_system_prompt = requested_system_prompt
-    system_prompt_override_present = requested_system_prompt is not None
+    partner_profile_block = _render_partner_profile_block(requested_partner_profile)
+    effective_system_prompt = _compose_effective_system_prompt(
+        requested_system_prompt,
+        _extract_model_system_prompt(runtime_context),
+        partner_profile_block,
+    )
+    system_prompt_override_present = (
+        requested_system_prompt is not None or partner_profile_block is not None
+    )
 
     voice_speed = requested.get("voice_speed")
     if request.app.state.config.TTS_ENGINE == "kokoro_onnx":
@@ -204,6 +333,7 @@ def resolve_effective_persona_state(
             "bound_model_id": requested_bound_model_id,
             "system_prompt": effective_system_prompt,
             "system_prompt_override_present": system_prompt_override_present,
+            "partner_profile": requested_partner_profile,
             "voice_id": requested.get("voice_id"),
             "voice_speed": voice_speed,
             "tool_ids": effective_tool_ids,

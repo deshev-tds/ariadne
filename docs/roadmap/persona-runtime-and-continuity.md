@@ -238,6 +238,8 @@ Relevant local files and primitives:
 - context maintenance and summaries: `backend/open_webui/utils/context_maintenance.py`
 - ledger capture: `backend/open_webui/models/ledger.py`
 - character-card parsing utility: `src/lib/utils/characters/index.ts`
+- partner-profile companion spec: `docs/roadmap/persona-partner-profile-spec.md`
+- scene-note companion spec: `docs/roadmap/persona-scene-note-spec.md`
 
 External conceptual reference:
 
@@ -311,6 +313,8 @@ The intended split is:
   - which preset/base runtime this persona prefers or requires
 - `behavior profile`
   - initiative, reply style, greeting seeds, optional engagement defaults
+- `partner profile`
+  - always-on operator-facing relational guidance kept separate from persona identity and separate from learned memory
 - `capability policy`
   - allowed tools, ask-before-use tools, disabled tools, optional admin defaults
 - `scene note`

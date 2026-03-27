@@ -8,7 +8,7 @@
 	import { getFunctions } from '$lib/apis/functions';
 	import { getTools } from '$lib/apis/tools';
 	import { getVoices, synthesizeOpenAISpeech } from '$lib/apis/audio';
-	import type { Persona } from '$lib/apis/personas';
+	import type { Persona, PersonaPartnerProfile } from '$lib/apis/personas';
 
 	import ToolsSelector from '$lib/components/workspace/Models/ToolsSelector.svelte';
 	import SkillsSelector from '$lib/components/workspace/Models/SkillsSelector.svelte';
@@ -39,6 +39,13 @@
 	let useBoundModelSystemPrompt = true;
 	let systemPrompt = '';
 	let greeting = '';
+	let partnerProfileEnabled = false;
+	let partnerProfileTitle = '';
+	let partnerProfileSummary = '';
+	let partnerProfileRelationalFrame = '';
+	let partnerProfileStylePreferencesText = '';
+	let partnerProfileAvoidancesText = '';
+	let partnerProfileUpdatedAt: number | null = null;
 
 	let voiceId = '';
 	let voiceSpeed = 1;
@@ -92,6 +99,41 @@
 		}
 	};
 
+	const getPartnerProfileList = (value: string) =>
+		value
+			.split('\n')
+			.map((item) => item.trim())
+			.filter(Boolean);
+
+	const buildPartnerProfile = (): PersonaPartnerProfile | null => {
+		const title = partnerProfileTitle.trim() || null;
+		const summary = partnerProfileSummary.trim();
+		const relationalFrame = partnerProfileRelationalFrame.trim() || null;
+		const stylePreferences = getPartnerProfileList(partnerProfileStylePreferencesText);
+		const avoidances = getPartnerProfileList(partnerProfileAvoidancesText);
+		const hasContent = !!(
+			title ||
+			summary ||
+			relationalFrame ||
+			stylePreferences.length ||
+			avoidances.length
+		);
+
+		if (!partnerProfileEnabled && !hasContent) {
+			return null;
+		}
+
+		return {
+			enabled: partnerProfileEnabled,
+			title,
+			summary,
+			relational_frame: relationalFrame,
+			style_preferences: stylePreferences,
+			avoidances,
+			...(partnerProfileUpdatedAt ? { updated_at: partnerProfileUpdatedAt } : {})
+		};
+	};
+
 	const submitHandler = async () => {
 		if (!name.trim()) {
 			toast.error($i18n.t('Persona name is required.'));
@@ -110,6 +152,7 @@
 				bound_model_id: boundModelId || null,
 				system_prompt: useBoundModelSystemPrompt ? null : systemPrompt,
 				greeting: greeting.trim() || null,
+				partner_profile: buildPartnerProfile(),
 				voice_id: voiceId || null,
 				voice_speed: voiceId ? voiceSpeed : null,
 				tool_ids: toolIds,
@@ -148,9 +191,19 @@
 			description = source.description ?? '';
 			archetype = source.archetype ?? 'assistant';
 			boundModelId = source.bound_model_id ?? '';
-			useBoundModelSystemPrompt = source.system_prompt === null || source.system_prompt === undefined;
+			useBoundModelSystemPrompt =
+				source.system_prompt === null || source.system_prompt === undefined;
 			systemPrompt = source.system_prompt ?? '';
 			greeting = source.greeting ?? '';
+			partnerProfileEnabled = source.partner_profile?.enabled ?? false;
+			partnerProfileTitle = source.partner_profile?.title ?? '';
+			partnerProfileSummary = source.partner_profile?.summary ?? '';
+			partnerProfileRelationalFrame = source.partner_profile?.relational_frame ?? '';
+			partnerProfileStylePreferencesText = (source.partner_profile?.style_preferences ?? []).join(
+				'\n'
+			);
+			partnerProfileAvoidancesText = (source.partner_profile?.avoidances ?? []).join('\n');
+			partnerProfileUpdatedAt = source.partner_profile?.updated_at ?? null;
 			voiceId = source.voice_id ?? '';
 			voiceSpeed = source.voice_speed ?? 1;
 			toolIds = source.tool_ids ?? [];
@@ -194,7 +247,9 @@
 
 				<div class="mt-4 grid gap-4 md:grid-cols-[112px_1fr]">
 					<div class="flex flex-col items-center gap-3">
-						<div class="size-24 overflow-hidden rounded-3xl border border-gray-100 bg-gray-50 dark:border-gray-800 dark:bg-gray-900">
+						<div
+							class="size-24 overflow-hidden rounded-3xl border border-gray-100 bg-gray-50 dark:border-gray-800 dark:bg-gray-900"
+						>
 							<img
 								class="size-full object-cover"
 								src={profileImageUrl}
@@ -220,17 +275,27 @@
 					<div class="grid gap-4 md:grid-cols-2">
 						<div>
 							<div class="mb-1 text-xs font-medium text-gray-500">{$i18n.t('Name')}</div>
-							<input class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800" bind:value={name} />
+							<input
+								class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+								bind:value={name}
+							/>
 						</div>
 
 						<div>
 							<div class="mb-1 text-xs font-medium text-gray-500">{$i18n.t('Emoji')}</div>
-							<input class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800" bind:value={emoji} maxlength="8" />
+							<input
+								class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+								bind:value={emoji}
+								maxlength="8"
+							/>
 						</div>
 
 						<div>
 							<div class="mb-1 text-xs font-medium text-gray-500">{$i18n.t('Archetype')}</div>
-							<select class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800" bind:value={archetype}>
+							<select
+								class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+								bind:value={archetype}
+							>
 								<option value="assistant">{$i18n.t('Assistant')}</option>
 								<option value="storyteller">{$i18n.t('Storyteller')}</option>
 								<option value="companion">{$i18n.t('Companion')}</option>
@@ -242,7 +307,10 @@
 							<div class="mb-1 text-xs font-medium text-gray-500">
 								{$i18n.t('Bound Model')}
 							</div>
-							<select class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800" bind:value={boundModelId}>
+							<select
+								class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+								bind:value={boundModelId}
+							>
 								<option value="">{$i18n.t('Select a model')}</option>
 								{#each $models.filter((model) => !(model?.info?.meta?.hidden ?? false)) as model}
 									<option value={model.id}>{model.name}</option>
@@ -254,14 +322,20 @@
 							<div class="mb-1 text-xs font-medium text-gray-500">
 								{$i18n.t('Description')}
 							</div>
-							<textarea class="min-h-24 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800" bind:value={description} />
+							<textarea
+								class="min-h-24 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+								bind:value={description}
+							/>
 						</div>
 
 						<div class="md:col-span-2">
 							<div class="mb-1 text-xs font-medium text-gray-500">
 								{$i18n.t('Greeting')}
 							</div>
-							<textarea class="min-h-24 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800" bind:value={greeting} />
+							<textarea
+								class="min-h-24 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+								bind:value={greeting}
+							/>
 						</div>
 					</div>
 				</div>
@@ -284,7 +358,9 @@
 					</div>
 
 					<div class="mt-2 text-xs text-gray-500">
-						{$i18n.t('Turn this off to override the model prompt. Leave the text empty to send no system prompt.')}
+						{$i18n.t(
+							'Turn this off to override the model prompt. Leave the text empty to send no system prompt.'
+						)}
 					</div>
 				</div>
 
@@ -293,9 +369,95 @@
 						<div class="mb-1 text-xs font-medium text-gray-500">
 							{$i18n.t('System Prompt')}
 						</div>
-						<textarea class="min-h-40 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800" bind:value={systemPrompt} />
+						<textarea
+							class="min-h-40 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+							bind:value={systemPrompt}
+						/>
 					</div>
 				{/if}
+			</section>
+
+			<section class="rounded-2xl border border-gray-100 p-5 dark:border-gray-800">
+				<div class="text-sm font-medium text-gray-900 dark:text-gray-100">
+					{$i18n.t('Partner Profile')}
+				</div>
+
+				<div class="mt-1 text-xs text-gray-500">
+					{$i18n.t(
+						'Always-on relational guidance for this persona. Existing chats keep the version they started with.'
+					)}
+				</div>
+
+				<div class="mt-4 flex items-center gap-2">
+					<Checkbox
+						state={partnerProfileEnabled ? 'checked' : 'unchecked'}
+						on:change={(event) => {
+							partnerProfileEnabled = event.detail === 'checked';
+						}}
+					/>
+					<div class="text-sm">{$i18n.t('Enable partner profile')}</div>
+				</div>
+
+				<div class="mt-4 grid gap-4">
+					<div>
+						<div class="mb-1 text-xs font-medium text-gray-500">{$i18n.t('Title')}</div>
+						<input
+							class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+							bind:value={partnerProfileTitle}
+							placeholder={$i18n.t('Optional label such as Operator Profile')}
+						/>
+					</div>
+
+					<div>
+						<div class="mb-1 text-xs font-medium text-gray-500">
+							{$i18n.t('Summary')}
+						</div>
+						<textarea
+							class="min-h-28 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+							bind:value={partnerProfileSummary}
+							placeholder={$i18n.t(
+								'Short always-on guidance about how this persona should relate to the user.'
+							)}
+						/>
+					</div>
+
+					<div>
+						<div class="mb-1 text-xs font-medium text-gray-500">
+							{$i18n.t('Relational Frame')}
+						</div>
+						<textarea
+							class="min-h-28 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+							bind:value={partnerProfileRelationalFrame}
+							placeholder={$i18n.t(
+								'Peer, guide, witness, co-conspirator, or another relationship frame.'
+							)}
+						/>
+					</div>
+
+					<div class="grid gap-4 md:grid-cols-2">
+						<div>
+							<div class="mb-1 text-xs font-medium text-gray-500">
+								{$i18n.t('Style Preferences')}
+							</div>
+							<textarea
+								class="min-h-36 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+								bind:value={partnerProfileStylePreferencesText}
+								placeholder={$i18n.t('One preference per line')}
+							/>
+						</div>
+
+						<div>
+							<div class="mb-1 text-xs font-medium text-gray-500">
+								{$i18n.t('Avoidances')}
+							</div>
+							<textarea
+								class="min-h-36 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+								bind:value={partnerProfileAvoidancesText}
+								placeholder={$i18n.t('One avoidance per line')}
+							/>
+						</div>
+					</div>
+				</div>
 			</section>
 
 			<section class="rounded-2xl border border-gray-100 p-5 dark:border-gray-800">
@@ -305,7 +467,9 @@
 							{$i18n.t('Voice')}
 						</div>
 						<div class="mt-1 text-xs text-gray-500">
-							{$i18n.t('Playback speed is a preference. The active engine may honor, clamp, or ignore it.')}
+							{$i18n.t(
+								'Playback speed is a preference. The active engine may honor, clamp, or ignore it.'
+							)}
 						</div>
 					</div>
 
@@ -315,7 +479,9 @@
 						on:click={previewVoice}
 					>
 						{#if previewingVoice}
-							<span class="inline-flex items-center gap-2"><Spinner className="size-4" />{$i18n.t('Previewing')}</span>
+							<span class="inline-flex items-center gap-2"
+								><Spinner className="size-4" />{$i18n.t('Previewing')}</span
+							>
 						{:else}
 							{$i18n.t('Preview Voice')}
 						{/if}
@@ -325,7 +491,10 @@
 				<div class="mt-4 grid gap-4 md:grid-cols-2">
 					<div>
 						<div class="mb-1 text-xs font-medium text-gray-500">{$i18n.t('Voice')}</div>
-						<select class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800" bind:value={voiceId}>
+						<select
+							class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+							bind:value={voiceId}
+						>
 							<option value="">{$i18n.t('Default')}</option>
 							{#each availableVoices as voice}
 								<option value={voice.id}>{voice.name}</option>
@@ -338,7 +507,14 @@
 							<span>{$i18n.t('Speed')}</span>
 							<span>{voiceSpeed.toFixed(2)}x</span>
 						</div>
-						<input class="w-full" type="range" min="0.5" max="2" step="0.05" bind:value={voiceSpeed} />
+						<input
+							class="w-full"
+							type="range"
+							min="0.5"
+							max="2"
+							step="0.05"
+							bind:value={voiceSpeed}
+						/>
 					</div>
 				</div>
 			</section>
@@ -371,7 +547,9 @@
 					on:click={submitHandler}
 				>
 					{#if loading}
-						<span class="inline-flex items-center gap-2"><Spinner className="size-4" />{$i18n.t('Saving')}</span>
+						<span class="inline-flex items-center gap-2"
+							><Spinner className="size-4" />{$i18n.t('Saving')}</span
+						>
 					{:else}
 						{edit ? $i18n.t('Save Persona') : $i18n.t('Create Persona')}
 					{/if}

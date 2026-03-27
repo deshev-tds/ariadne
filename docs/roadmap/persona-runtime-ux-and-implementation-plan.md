@@ -9,6 +9,8 @@ Last updated: 2026-03-27
 Companion to:
 
 - `docs/roadmap/persona-runtime-and-continuity.md`
+- `docs/roadmap/persona-partner-profile-spec.md`
+- `docs/roadmap/persona-scene-note-spec.md`
 
 ## Goal
 
@@ -83,6 +85,7 @@ Roleplay/storytelling quality will not come mainly from continuity.
 It will come from keeping these layers separate:
 
 - identity anchor
+- partner profile
 - scene note
 - lorebook
 - learned continuity
@@ -252,6 +255,7 @@ V1 editor sections:
 
 V2 editor sections:
 
+- Partner profile
 - Scene note defaults
 - Lorebook
 - Continuity policy
@@ -285,6 +289,10 @@ Preview behavior:
 ### 7. Scene Note UX
 
 This should not live in persona creation.
+
+Detailed companion spec:
+
+- `docs/roadmap/persona-scene-note-spec.md`
 
 It belongs to the active chat.
 

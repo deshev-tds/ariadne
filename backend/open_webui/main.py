@@ -1973,6 +1973,7 @@ async def chat_completion(
                         "persisted_overrides": persona_persisted_overrides,
                         "request_overrides": request_persona_overrides,
                         "model": model,
+                        "model_info": model_info,
                     },
                 )
                 effective_persona_state = persona_state["effective"]
@@ -2115,6 +2116,9 @@ async def chat_completion(
             ]
             metadata["system_prompt_override"] = effective_persona_state[
                 "system_prompt"
+            ]
+            metadata["persona_partner_profile"] = effective_persona_state[
+                "partner_profile"
             ]
             metadata["persona_voice"] = {
                 "voice_id": effective_persona_state["voice_id"],

@@ -1,5 +1,15 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 
+export type PersonaPartnerProfile = {
+	enabled: boolean;
+	title?: string | null;
+	summary?: string;
+	relational_frame?: string | null;
+	style_preferences?: string[];
+	avoidances?: string[];
+	updated_at?: number | null;
+};
+
 export type Persona = {
 	id?: string;
 	user_id?: string;
@@ -11,6 +21,7 @@ export type Persona = {
 	bound_model_id?: string | null;
 	system_prompt?: string | null;
 	greeting?: string | null;
+	partner_profile?: PersonaPartnerProfile | null;
 	voice_id?: string | null;
 	voice_speed?: number | null;
 	tool_ids?: string[];
