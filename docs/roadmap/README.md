@@ -37,3 +37,4 @@ Structure:
 Active epics:
 
 - [Verification-Native Agent Improvement Platform](./verification-native-agent-improvement-platform.md)
+- [Persona Runtime And Continuity Layer](./persona-runtime-and-continuity.md)
