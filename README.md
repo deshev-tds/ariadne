@@ -58,10 +58,55 @@ The important divergences are not cosmetic.
 - Source routing now supports explicit `planner_hints.is_local`, so local/trusted domains can be prioritized deterministically.
 - Focused search now emits visible chat status phases (targeted run, fallback escalation, completed) using the same status UI path as regular web search.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
+- Persona V1 was added so the daily-driver interaction unit can be a persona rather than only a model preset.
+- Persona chats now pin requested runtime defaults per chat while keeping persona identity live across the UI.
+- The app now has a dedicated `Workspace -> Personas` surface with persona-first chat selection, voice preview, and direct-model fallback.
+- Automatic pre-migration SQLite backups were added before Alembic upgrades so local schema changes do not run without a fresh snapshot.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
 - On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
 
 The rest of this README explains the rationale behind those changes.
+
+## Persona Runtime in This Fork
+
+This fork now has a first usable persona layer on top of the older model-preset substrate.
+
+The important distinction is that persona is no longer treated as "just another model with a different prompt". The runtime shape is:
+
+`persona identity + binding + requested defaults + chat attachment`
+
+Current Persona V1 behavior:
+
+- personas are first-class private objects with their own workspace screen
+- a chat can attach to one `persona_id`
+- persona identity is live across attached chats
+- persona runtime defaults are pinned per chat at creation time
+- direct model use still exists as a separate fallback path
+- voice belongs to the persona definition and can be previewed inline
+
+That split matters because it keeps older chats stable when a persona's behavior settings change, while still letting the persona's visible identity update across the interface.
+
+The current V1 implementation deliberately stops before:
+
+- scene notes
+- lorebooks
+- persona-scoped continuity synthesis
+- persona-scoped recall
+
+Those remain roadmap items rather than pretending they already exist.
+
+## Migration Safety
+
+This fork now creates an automatic pre-migration backup for local SQLite databases before Alembic upgrades run on launch.
+
+That is intentionally local-first behavior:
+
+- schema migrations still run automatically
+- but SQLite gets a timestamped snapshot first
+- if backup creation fails, the migration does not proceed
+
+The goal is not enterprise migration orchestration. The goal is to avoid dumb local footguns on a single-maintainer system.
+
 ## Context and Memory in This Fork
 
 This fork now treats context as a layered system, not as "replay everything until the model breaks".
