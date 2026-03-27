@@ -259,13 +259,6 @@
 		}
 	}
 
-	$: if (selectedPersona && activeBoundModelId) {
-		const personaModels = [activeBoundModelId];
-		if (JSON.stringify(selectedModels) !== JSON.stringify(personaModels)) {
-			selectedModels = personaModels;
-		}
-	}
-
 	$: if (!selectedPersona && selectedModels.filter((modelId) => modelId).length > 0) {
 		directSelectedModels = [...selectedModels];
 	}
