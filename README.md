@@ -60,7 +60,9 @@ The important divergences are not cosmetic.
 - Kokoro TTS paths were added because they sound better than many lightweight local options without dragging in a huge stack.
 - Persona V1 was added so the daily-driver interaction unit can be a persona rather than only a model preset.
 - Persona chats now pin requested runtime defaults per chat while keeping persona identity live across the UI.
+- Persona authoring now includes a first-class `partner_profile` layer for always-on relational or operator framing that stays separate from the persona core prompt.
 - The app now has a dedicated `Workspace -> Personas` surface with persona-first chat selection, voice preview, and direct-model fallback.
+- Persona rebinding on an existing chat now refreshes the pinned runtime snapshot instead of silently carrying stale defaults from the previous persona.
 - Automatic pre-migration SQLite backups were added before Alembic upgrades so local schema changes do not run without a fresh snapshot.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
 - On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
@@ -73,14 +75,16 @@ This fork now has a first usable persona layer on top of the older model-preset 
 
 The important distinction is that persona is no longer treated as "just another model with a different prompt". The runtime shape is:
 
-`persona identity + binding + requested defaults + chat attachment`
+`persona identity + binding + partner profile + requested defaults + chat attachment`
 
 Current Persona V1 behavior:
 
 - personas are first-class private objects with their own workspace screen
 - a chat can attach to one `persona_id`
 - persona identity is live across attached chats
+- persona `partner_profile` is a separate always-on layer for relational framing and user/operator-specific stance
 - persona runtime defaults are pinned per chat at creation time
+- changing persona on an existing chat replaces that chat's pinned persona snapshot instead of reusing stale defaults
 - direct model use still exists as a separate fallback path
 - voice belongs to the persona definition and can be previewed inline
 
