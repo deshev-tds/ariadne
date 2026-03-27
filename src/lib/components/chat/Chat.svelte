@@ -174,6 +174,14 @@
 	const hasOwn = (value: Record<string, any> | null | undefined, key: string) =>
 		typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, key);
 
+	const getSelectedPersonaChatMeta = () => {
+		if (!selectedPersona || !chat || chat.persona_id !== selectedPersona.id) {
+			return null;
+		}
+
+		return chat.meta ?? null;
+	};
+
 	const buildPersonaOverlayModel = (persona: Persona | null, model: Model | undefined) => {
 		if (!persona || !model) {
 			return model;
@@ -181,7 +189,7 @@
 
 		const personaState = getEffectivePersonaState({
 			persona,
-			chatMeta: chat?.meta ?? null,
+			chatMeta: getSelectedPersonaChatMeta(),
 			model,
 			tools: $tools ?? [],
 			functions: $functions ?? [],
@@ -230,7 +238,7 @@
 	$: activeBoundModelId = getEffectiveModelBinding({
 		selectedPersona,
 		selectedModels,
-		chatMeta: chat?.meta ?? null
+		chatMeta: getSelectedPersonaChatMeta()
 	});
 
 	$: activeChatIdentity = getActiveChatIdentity({
@@ -242,7 +250,7 @@
 
 	$: activeVoicePreference = getEffectiveVoicePreference({
 		persona: selectedPersona,
-		chatMeta: chat?.meta ?? null,
+		chatMeta: getSelectedPersonaChatMeta(),
 		model:
 			atSelectedModel ??
 			$models.find((model) => model.id === (activeBoundModelId ?? selectedModels[0])),
@@ -395,7 +403,10 @@
 			return null;
 		}
 
-		return chat?.meta?.persona_defaults_snapshot ?? buildPersonaDefaultsSnapshot(selectedPersona);
+		return (
+			getSelectedPersonaChatMeta()?.persona_defaults_snapshot ??
+			buildPersonaDefaultsSnapshot(selectedPersona)
+		);
 	};
 
 	const getCurrentPersonaOverrides = () => {
@@ -441,7 +452,7 @@
 		return buildPersonaChatMeta(
 			selectedPersona,
 			getCurrentPersonaOverrides(),
-			chat?.meta ?? {},
+			getSelectedPersonaChatMeta() ?? {},
 			getCurrentPersonaSnapshot()
 		);
 	};
@@ -1723,6 +1734,8 @@
 			messages: {},
 			currentId: null
 		};
+		chat = null;
+		tags = [];
 
 		chatFiles = [];
 		params = {};

@@ -131,7 +131,13 @@ def _to_chat_response_with_rehydration(chat_model) -> ChatResponse:
     return ChatResponse(**payload)
 
 
-def _prepare_chat_form_with_persona_defaults(form_data: ChatForm, user_id: str, db: Session) -> ChatForm:
+def _prepare_chat_form_with_persona_defaults(
+    form_data: ChatForm,
+    user_id: str,
+    db: Session,
+    *,
+    replace_existing_snapshot: bool = False,
+) -> ChatForm:
     if not form_data.persona_id:
         return form_data
 
@@ -143,8 +149,12 @@ def _prepare_chat_form_with_persona_defaults(form_data: ChatForm, user_id: str, 
         )
 
     meta = dict(form_data.meta or {})
-    meta.setdefault("persona_defaults_snapshot", build_persona_defaults_snapshot(persona))
-    meta.setdefault("persona_chat_overrides", {})
+    if replace_existing_snapshot:
+        meta["persona_defaults_snapshot"] = build_persona_defaults_snapshot(persona)
+        meta["persona_chat_overrides"] = {}
+    else:
+        meta.setdefault("persona_defaults_snapshot", build_persona_defaults_snapshot(persona))
+        meta.setdefault("persona_chat_overrides", {})
 
     return form_data.__class__(**{**form_data.model_dump(), "meta": meta})
 
@@ -1110,6 +1120,7 @@ async def update_chat_by_id(
             persona_id = form_data.persona_id
 
         if persona_id:
+            persona_changed = persona_id != chat.persona_id
             prepared_form = _prepare_chat_form_with_persona_defaults(
                 ChatForm(
                     chat=updated_chat,
@@ -1119,6 +1130,7 @@ async def update_chat_by_id(
                 ),
                 user.id,
                 db,
+                replace_existing_snapshot=persona_changed,
             )
             updated_meta = prepared_form.meta
             persona_id = prepared_form.persona_id
