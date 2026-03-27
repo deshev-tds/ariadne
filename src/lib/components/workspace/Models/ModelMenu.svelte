@@ -27,6 +27,7 @@
 	export let editHandler: Function;
 	export let shareHandler: Function;
 	export let cloneHandler: Function;
+	export let createPersonaHandler: Function;
 	export let exportHandler: Function;
 	export let copyLinkHandler: Function;
 
@@ -164,6 +165,17 @@
 					<DocumentDuplicate />
 
 					<div class="flex items-center">{$i18n.t('Clone')}</div>
+				</DropdownMenu.Item>
+
+				<DropdownMenu.Item
+					class="select-none flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
+					on:click={() => {
+						createPersonaHandler();
+					}}
+				>
+					<DocumentDuplicate />
+
+					<div class="flex items-center">{$i18n.t('Create Persona')}</div>
 				</DropdownMenu.Item>
 			{/if}
 

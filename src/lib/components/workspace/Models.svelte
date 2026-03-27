@@ -12,7 +12,7 @@
 	const i18n = getContext('i18n');
 
 	import { WEBUI_NAME, config, mobile, models as _models, settings, user } from '$lib/stores';
-	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+	import { DEFAULT_CAPABILITIES, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 	import {
 		createNewModel,
 		deleteModelById,
@@ -136,6 +136,30 @@
 			name: `${model.name} (Clone)`
 		});
 		goto('/workspace/models/create');
+	};
+
+	const createPersonaFromModelHandler = async (model) => {
+		sessionStorage.persona = JSON.stringify({
+			name: model.name,
+			emoji: '',
+			profile_image_url:
+				model?.info?.meta?.profile_image_url ??
+				`${WEBUI_API_BASE_URL}/models/model/profile/image?id=${encodeURIComponent(model.id)}`,
+			description: model?.info?.meta?.description ?? '',
+			archetype: 'assistant',
+			bound_model_id: model.id,
+			system_prompt: model?.info?.params?.system ?? null,
+			greeting: '',
+			voice_id: model?.info?.meta?.tts?.voice ?? '',
+			voice_speed: 1,
+			tool_ids: model?.info?.meta?.toolIds ?? [],
+			skill_ids: model?.info?.meta?.skillIds ?? [],
+			filter_ids: model?.info?.meta?.filterIds ?? [],
+			action_ids: model?.info?.meta?.actionIds ?? [],
+			default_feature_ids: model?.info?.meta?.defaultFeatureIds ?? [],
+			capabilities: { ...DEFAULT_CAPABILITIES, ...(model?.info?.meta?.capabilities ?? {}) }
+		});
+		goto('/workspace/personas/create');
 	};
 
 	const shareModelHandler = async (model) => {
@@ -562,6 +586,9 @@
 																	}}
 																	cloneHandler={() => {
 																		cloneModelHandler(model);
+																	}}
+																	createPersonaHandler={() => {
+																		createPersonaFromModelHandler(model);
 																	}}
 																	exportHandler={() => {
 																		exportModelHandler(model);

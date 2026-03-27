@@ -1330,7 +1330,10 @@ async def generate_chat_completion(
         params = model_info.params.model_dump()
 
         if params:
-            system = params.pop("system", None)
+            if metadata and metadata.get("system_prompt_override_present"):
+                system = metadata.get("system_prompt_override")
+            else:
+                system = params.pop("system", None)
 
             payload = apply_model_params_to_body_ollama(params, payload)
             if not bypass_system_prompt:

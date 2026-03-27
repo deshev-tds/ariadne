@@ -81,6 +81,7 @@ from open_webui.routers import (
     channels,
     chats,
     notes,
+    personas,
     folders,
     configs,
     groups,
@@ -113,10 +114,15 @@ from open_webui.internal.fork_memory_db import initialize_fork_memory_db
 
 from open_webui.models.functions import Functions
 from open_webui.models.models import Models
+from open_webui.models.personas import Personas
 from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 from open_webui.retrieval.working_mode import normalize_working_mode
+from open_webui.utils.personas import (
+    build_persona_defaults_snapshot,
+    resolve_effective_persona_state,
+)
 
 from open_webui.config import (
     # Ollama
@@ -1718,6 +1724,7 @@ app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])
 app.include_router(chats.router, prefix="/api/v1/chats", tags=["chats"])
 app.include_router(notes.router, prefix="/api/v1/notes", tags=["notes"])
+app.include_router(personas.router, prefix="/api/v1/personas", tags=["personas"])
 
 
 app.include_router(models.router, prefix="/api/v1/models", tags=["models"])
@@ -1867,10 +1874,78 @@ async def chat_completion(
     model_id = form_data.get("model", None)
     model_item = form_data.pop("model_item", {})
     tasks = form_data.pop("background_tasks", None)
+    incoming_persona_id = form_data.pop("persona_id", None)
+    incoming_persona_defaults_snapshot = form_data.pop(
+        "persona_defaults_snapshot", None
+    )
+    incoming_persona_chat_overrides = form_data.pop("persona_chat_overrides", None)
 
     metadata = {}
     try:
         model_info = None
+        persona = None
+        persona_state = None
+        persona_snapshot = incoming_persona_defaults_snapshot
+        persona_persisted_overrides = incoming_persona_chat_overrides or {}
+        request_persona_overrides = {}
+
+        params_payload = form_data.get("params") or {}
+        if "tool_ids" in form_data:
+            request_persona_overrides["tool_ids"] = list(form_data.get("tool_ids") or [])
+        if "skill_ids" in form_data:
+            request_persona_overrides["skill_ids"] = list(
+                form_data.get("skill_ids") or []
+            )
+        if "filter_ids" in form_data:
+            request_persona_overrides["filter_ids"] = list(
+                form_data.get("filter_ids") or []
+            )
+        if "features" in form_data:
+            request_persona_overrides["default_feature_ids"] = [
+                key
+                for key, value in (form_data.get("features") or {}).items()
+                if value
+            ]
+        if "system" in params_payload:
+            request_persona_overrides["system_prompt"] = params_payload.get("system")
+
+        incoming_chat_id = form_data.get("chat_id")
+        if incoming_chat_id and not str(incoming_chat_id).startswith("local:"):
+            chat_persona_context = Chats.get_chat_persona_context_by_id_and_user_id(
+                incoming_chat_id, user.id
+            )
+            if chat_persona_context:
+                incoming_persona_id = (
+                    chat_persona_context.get("persona_id") or incoming_persona_id
+                )
+                chat_meta = chat_persona_context.get("meta") or {}
+                persona_snapshot = (
+                    chat_meta.get("persona_defaults_snapshot") or persona_snapshot
+                )
+                if not incoming_persona_chat_overrides:
+                    persona_persisted_overrides = (
+                        chat_meta.get("persona_chat_overrides") or {}
+                    )
+
+        if incoming_persona_id:
+            persona = Personas.get_persona_by_id(incoming_persona_id)
+            if (
+                not persona
+                or (user.role != "admin" and persona.user_id != user.id)
+                or not persona.is_active
+            ):
+                raise Exception("Persona not found")
+
+            if not persona_snapshot:
+                persona_snapshot = build_persona_defaults_snapshot(persona)
+
+            model_id = (
+                (persona_snapshot or {}).get("bound_model_id")
+                or persona.bound_model_id
+                or model_id
+            )
+            form_data["model"] = model_id
+
         if not model_item.get("direct", False):
             if model_id not in request.app.state.MODELS:
                 raise Exception("Model not found")
@@ -1886,6 +1961,39 @@ async def chat_completion(
                     check_model_access(user, model)
                 except Exception as e:
                     raise e
+
+            if persona:
+                persona_state = resolve_effective_persona_state(
+                    None,
+                    persona,
+                    user,
+                    {
+                        "request": request,
+                        "snapshot": persona_snapshot,
+                        "persisted_overrides": persona_persisted_overrides,
+                        "request_overrides": request_persona_overrides,
+                        "model": model,
+                    },
+                )
+                effective_persona_state = persona_state["effective"]
+                model_id = effective_persona_state["bound_model_id"] or model_id
+                form_data["model"] = model_id
+
+                if effective_persona_state["tool_ids"]:
+                    form_data["tool_ids"] = effective_persona_state["tool_ids"]
+                else:
+                    form_data.pop("tool_ids", None)
+
+                if effective_persona_state["skill_ids"]:
+                    form_data["skill_ids"] = effective_persona_state["skill_ids"]
+                else:
+                    form_data.pop("skill_ids", None)
+
+                form_data["filter_ids"] = effective_persona_state["filter_ids"]
+                form_data["features"] = {
+                    feature_id: True
+                    for feature_id in effective_persona_state["default_feature_ids"]
+                }
         else:
             model = model_item
 
@@ -1977,6 +2085,7 @@ async def chat_completion(
             "variables": form_data.get("variables", {}),
             "model": model,
             "direct": model_item.get("direct", False),
+            "persona_id": persona.id if persona else None,
             "params": {
                 "stream_delta_chunk_size": stream_delta_chunk_size,
                 "reasoning_tags": reasoning_tags,
@@ -1996,6 +2105,24 @@ async def chat_completion(
                 ),
             },
         }
+
+        if persona_state:
+            effective_persona_state = persona_state["effective"]
+            metadata["persona_requested_defaults"] = persona_state["requested"]
+            metadata["persona_snapshot"] = persona_state["snapshot"]
+            metadata["system_prompt_override_present"] = effective_persona_state[
+                "system_prompt_override_present"
+            ]
+            metadata["system_prompt_override"] = effective_persona_state[
+                "system_prompt"
+            ]
+            metadata["persona_voice"] = {
+                "voice_id": effective_persona_state["voice_id"],
+                "voice_speed": effective_persona_state["voice_speed"],
+            }
+            metadata["filter_ids"] = effective_persona_state["filter_ids"]
+            metadata["tool_ids"] = form_data.get("tool_ids", None)
+            metadata["features"] = form_data.get("features", {})
 
         if metadata.get("chat_id") and user:
             if not metadata["chat_id"].startswith(

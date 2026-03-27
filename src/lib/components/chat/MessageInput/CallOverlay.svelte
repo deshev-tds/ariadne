@@ -23,6 +23,7 @@
 	export let files;
 	export let chatId;
 	export let modelId;
+	export let voicePreference = { voiceId: null, speed: null };
 
 	let wakeLock = null;
 
@@ -365,6 +366,10 @@
 
 	// Get voice: model-specific > user settings > config default
 	const getVoiceId = () => {
+		if (voicePreference?.voiceId) {
+			return voicePreference.voiceId;
+		}
+
 		// Check for model-specific TTS voice first
 		if (model?.info?.meta?.tts?.voice) {
 			return model.info.meta.tts.voice;
@@ -491,12 +496,15 @@
 						audioCache.set(content, new Audio(url));
 					}
 				} else if ($config.audio.tts.engine !== '') {
-					const res = await synthesizeOpenAISpeech(localStorage.token, getVoiceId(), content).catch(
-						(error) => {
-							console.error(error);
-							return null;
-						}
-					);
+					const res = await synthesizeOpenAISpeech(
+						localStorage.token,
+						getVoiceId(),
+						content,
+						voicePreference?.speed ?? undefined
+					).catch((error) => {
+						console.error(error);
+						return null;
+					});
 
 					if (res) {
 						const blob = await res.blob();

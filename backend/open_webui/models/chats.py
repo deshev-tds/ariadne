@@ -17,7 +17,7 @@ from open_webui.models.simon_lex_index import (
 from open_webui.models.ledger import Ledgers
 from open_webui.utils.misc import sanitize_data_for_db, sanitize_text_for_db
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -38,6 +38,7 @@ from sqlalchemy.sql.expression import bindparam
 ####################
 
 log = logging.getLogger(__name__)
+_UNSET = object()
 
 
 class Chat(Base):
@@ -57,6 +58,7 @@ class Chat(Base):
 
     meta = Column(JSON, server_default="{}")
     folder_id = Column(Text, nullable=True)
+    persona_id = Column(Text, nullable=True)
 
     __table_args__ = (
         # Performance indexes for common queries
@@ -70,6 +72,8 @@ class Chat(Base):
         Index("updated_at_user_id_idx", "updated_at", "user_id"),
         # WHERE folder_id = ... AND user_id = ...
         Index("folder_id_user_id_idx", "folder_id", "user_id"),
+        # WHERE user_id = ... AND persona_id = ...
+        Index("persona_id_user_id_idx", "persona_id", "user_id"),
     )
 
 
@@ -90,6 +94,7 @@ class ChatModel(BaseModel):
 
     meta: dict = {}
     folder_id: Optional[str] = None
+    persona_id: Optional[str] = None
 
 
 class ChatFile(Base):
@@ -132,10 +137,11 @@ class ChatFileModel(BaseModel):
 class ChatForm(BaseModel):
     chat: dict
     folder_id: Optional[str] = None
+    meta: Optional[dict] = Field(default_factory=dict)
+    persona_id: Optional[str] = None
 
 
 class ChatImportForm(ChatForm):
-    meta: Optional[dict] = {}
     pinned: Optional[bool] = False
     created_at: Optional[int] = None
     updated_at: Optional[int] = None
@@ -166,6 +172,7 @@ class ChatResponse(BaseModel):
     pinned: Optional[bool] = False
     meta: dict = {}
     folder_id: Optional[str] = None
+    persona_id: Optional[str] = None
 
 
 class ChatTitleIdResponse(BaseModel):
@@ -173,6 +180,7 @@ class ChatTitleIdResponse(BaseModel):
     title: str
     updated_at: int
     created_at: int
+    persona_id: Optional[str] = None
 
 
 class SharedChatResponse(BaseModel):
@@ -311,7 +319,9 @@ class ChatTable:
                         else "New Chat"
                     ),
                     "chat": self._clean_null_bytes(form_data.chat),
+                    "meta": self._clean_null_bytes(form_data.meta or {}),
                     "folder_id": form_data.folder_id,
+                    "persona_id": form_data.persona_id,
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
                 }
@@ -354,9 +364,10 @@ class ChatTable:
                     form_data.chat["title"] if "title" in form_data.chat else "New Chat"
                 ),
                 "chat": self._clean_null_bytes(form_data.chat),
-                "meta": form_data.meta,
+                "meta": self._clean_null_bytes(form_data.meta or {}),
                 "pinned": form_data.pinned,
                 "folder_id": form_data.folder_id,
+                "persona_id": form_data.persona_id,
                 "created_at": (
                     form_data.created_at if form_data.created_at else int(time.time())
                 ),
@@ -405,7 +416,12 @@ class ChatTable:
             return [ChatModel.model_validate(chat) for chat in chats]
 
     def update_chat_by_id(
-        self, id: str, chat: dict, db: Optional[Session] = None
+        self,
+        id: str,
+        chat: dict,
+        meta: Optional[dict] | object = _UNSET,
+        persona_id: Optional[str] | object = _UNSET,
+        db: Optional[Session] = None,
     ) -> Optional[ChatModel]:
         try:
             with get_db_context(db) as db:
@@ -417,6 +433,11 @@ class ChatTable:
                     else "New Chat"
                 )
 
+                if meta is not _UNSET:
+                    chat_item.meta = self._clean_null_bytes(meta)
+
+                if persona_id is not _UNSET:
+                    chat_item.persona_id = persona_id
                 chat_item.updated_at = int(time.time())
 
                 db.commit()
@@ -589,6 +610,7 @@ class ChatTable:
                     "meta": chat.meta,
                     "pinned": chat.pinned,
                     "folder_id": chat.folder_id,
+                    "persona_id": chat.persona_id,
                     "created_at": chat.created_at,
                     "updated_at": int(time.time()),
                 }
@@ -625,6 +647,7 @@ class ChatTable:
                 shared_chat.meta = chat.meta
                 shared_chat.pinned = chat.pinned
                 shared_chat.folder_id = chat.folder_id
+                shared_chat.persona_id = chat.persona_id
                 shared_chat.updated_at = int(time.time())
                 db.commit()
                 db.refresh(shared_chat)
@@ -752,7 +775,7 @@ class ChatTable:
                 query = query.order_by(Chat.updated_at.desc(), Chat.id)
 
             query = query.with_entities(
-                Chat.id, Chat.title, Chat.updated_at, Chat.created_at
+                Chat.id, Chat.title, Chat.updated_at, Chat.created_at, Chat.persona_id
             )
 
             if skip:
@@ -768,6 +791,7 @@ class ChatTable:
                         "title": chat[1],
                         "updated_at": chat[2],
                         "created_at": chat[3],
+                        "persona_id": chat[4],
                     }
                 )
                 for chat in all_chats
@@ -902,7 +926,7 @@ class ChatTable:
                 query = query.filter_by(archived=False)
 
             query = query.order_by(Chat.updated_at.desc(), Chat.id).with_entities(
-                Chat.id, Chat.title, Chat.updated_at, Chat.created_at
+                Chat.id, Chat.title, Chat.updated_at, Chat.created_at, Chat.persona_id
             )
 
             if skip:
@@ -920,6 +944,7 @@ class ChatTable:
                         "title": chat[1],
                         "updated_at": chat[2],
                         "created_at": chat[3],
+                        "persona_id": chat[4],
                     }
                 )
                 for chat in all_chats
@@ -1016,6 +1041,26 @@ class ChatTable:
         except Exception:
             return None
 
+    def get_chat_persona_context_by_id_and_user_id(
+        self, id: str, user_id: str, db: Optional[Session] = None
+    ) -> Optional[dict]:
+        try:
+            with get_db_context(db) as db:
+                result = (
+                    db.query(Chat.persona_id, Chat.meta)
+                    .filter_by(id=id, user_id=user_id)
+                    .first()
+                )
+                if not result:
+                    return None
+
+                return {
+                    "persona_id": result[0],
+                    "meta": result[1] or {},
+                }
+        except Exception:
+            return None
+
     def get_chats(
         self, skip: int = 0, limit: int = 50, db: Optional[Session] = None
     ) -> list[ChatModel]:
@@ -1085,7 +1130,9 @@ class ChatTable:
                 db.query(Chat)
                 .filter_by(user_id=user_id, pinned=True, archived=False)
                 .order_by(Chat.updated_at.desc())
-                .with_entities(Chat.id, Chat.title, Chat.updated_at, Chat.created_at)
+                .with_entities(
+                    Chat.id, Chat.title, Chat.updated_at, Chat.created_at, Chat.persona_id
+                )
             )
             return [
                 ChatTitleIdResponse.model_validate(
@@ -1094,6 +1141,7 @@ class ChatTable:
                         "title": chat[1],
                         "updated_at": chat[2],
                         "created_at": chat[3],
+                        "persona_id": chat[4],
                     }
                 )
                 for chat in all_chats

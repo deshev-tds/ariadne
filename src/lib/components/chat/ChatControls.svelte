@@ -51,6 +51,7 @@
 	export let showMessage: Function;
 	export let files;
 	export let modelId;
+	export let voicePreference = { voiceId: null, speed: null };
 
 	export let codeInterpreterEnabled = false;
 
@@ -277,6 +278,7 @@
 							{stopResponse}
 							{modelId}
 							{chatId}
+							{voicePreference}
 							{eventTarget}
 							on:close={() => showControls.set(false)}
 						/>
@@ -423,6 +425,7 @@
 								{stopResponse}
 								{modelId}
 								{chatId}
+								{voicePreference}
 								{eventTarget}
 								on:close={() => showControls.set(false)}
 							/>

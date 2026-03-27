@@ -63,6 +63,7 @@ export const folders = writable([]);
 export const selectedFolder = writable(null);
 
 export const models: Writable<Model[]> = writable([]);
+export const personas = writable([]);
 
 export const knowledge: Writable<null | Document[]> = writable(null);
 export const tools = writable(null);
@@ -204,6 +205,7 @@ type Settings = {
 	chatBubble?: boolean;
 	copyFormatted?: boolean;
 	models?: string[];
+	personaId?: string | null;
 	conversationMode?: boolean;
 	speechAutoSend?: boolean;
 	responseAutoPlayback?: boolean;

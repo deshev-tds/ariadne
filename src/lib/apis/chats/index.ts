@@ -24,7 +24,13 @@ export type ContextWindowPreview = ContextWindowModelPreview & {
 	model_previews: ContextWindowModelPreview[];
 };
 
-export const createNewChat = async (token: string, chat: object, folderId: string | null) => {
+export const createNewChat = async (
+	token: string,
+	chat: object,
+	folderId: string | null,
+	meta: object | null = null,
+	personaId: string | null = null
+) => {
 	let error = null;
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/new`, {
@@ -36,7 +42,9 @@ export const createNewChat = async (token: string, chat: object, folderId: strin
 		},
 		body: JSON.stringify({
 			chat: chat,
-			folder_id: folderId ?? null
+			folder_id: folderId ?? null,
+			...(meta ? { meta } : {}),
+			...(personaId !== null ? { persona_id: personaId } : {})
 		})
 	})
 		.then(async (res) => {
@@ -1016,7 +1024,13 @@ export const deleteSharedChatById = async (token: string, id: string) => {
 	return res;
 };
 
-export const updateChatById = async (token: string, id: string, chat: object) => {
+export const updateChatById = async (
+	token: string,
+	id: string,
+	chat: object,
+	meta: object | null = null,
+	personaId: string | null | undefined = undefined
+) => {
 	let error = null;
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${id}`, {
@@ -1027,7 +1041,9 @@ export const updateChatById = async (token: string, id: string, chat: object) =>
 			...(token && { authorization: `Bearer ${token}` })
 		},
 		body: JSON.stringify({
-			chat: chat
+			chat: chat,
+			...(meta ? { meta } : {}),
+			...(personaId !== undefined ? { persona_id: personaId } : {})
 		})
 	})
 		.then(async (res) => {

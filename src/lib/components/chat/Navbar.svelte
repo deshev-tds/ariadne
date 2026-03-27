@@ -20,6 +20,7 @@
 
 	import ShareChatModal from '../chat/ShareChatModal.svelte';
 	import ModelSelector from '../chat/ModelSelector.svelte';
+	import PersonaSelector from '../chat/PersonaSelector.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Menu from '$lib/components/layout/Navbar/Menu.svelte';
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
@@ -49,6 +50,14 @@
 	export let chat;
 	export let history;
 	export let selectedModels;
+	export let selectedPersonaId: string | null = null;
+	export let onPersonaSelect: (personaId: string | null) => void = () => {};
+	export let activeChatIdentity: {
+		name?: string;
+		emoji?: string;
+		description?: string;
+		secondaryLabel?: string;
+	} | null = null;
 	export let contextWindowPreview: ContextWindowPreview | null = null;
 	export let contextWindowRuntimeState: 'ready' | 'loading' | 'hidden' = 'ready';
 	export let draftPrompt = '';
@@ -116,7 +125,37 @@
 				>
 					<div class="flex items-center">
 						{#if showModelSelector}
-							<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
+							<div class="flex flex-col gap-2">
+								<PersonaSelector
+									{selectedPersonaId}
+									showSetDefault={!shareEnabled}
+									on:select={(event) => {
+										onPersonaSelect(event.detail);
+									}}
+								/>
+								{#if !selectedPersonaId}
+									<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
+								{/if}
+								{#if selectedPersonaId}
+									<div class="px-1 text-[0.7rem] text-gray-500 dark:text-gray-400">
+										<div class="line-clamp-1">
+											{activeChatIdentity?.emoji
+												? `${activeChatIdentity.emoji} `
+												: ''}{activeChatIdentity?.name}
+											{#if activeChatIdentity?.secondaryLabel}
+												<span class="ml-1 text-gray-400 dark:text-gray-500">
+													· {activeChatIdentity.secondaryLabel}
+												</span>
+											{/if}
+										</div>
+										<div class="line-clamp-1">
+											{$i18n.t(
+												'Identity updates live. Behavior and defaults are pinned to this chat.'
+											)}
+										</div>
+									</div>
+								{/if}
+							</div>
 						{/if}
 						{#if contextWindowRuntimeState === 'loading'}
 							<Tooltip content={$i18n.t('Model loading')}>
@@ -127,7 +166,7 @@
 								</div>
 							</Tooltip>
 						{:else if contextWindowRuntimeState === 'ready'}
-							<ContextWindowIndicator preview={contextWindowPreview} draftPrompt={draftPrompt} />
+							<ContextWindowIndicator preview={contextWindowPreview} {draftPrompt} />
 						{/if}
 					</div>
 				</div>

@@ -26,6 +26,7 @@
 	export let history;
 	export let messageId;
 	export let selectedModels = [];
+	export let voicePreference = { voiceId: null, speed: null };
 
 	export let isLastMessage;
 	export let readOnly = false;
@@ -299,6 +300,7 @@
 									{history}
 									messageId={message?.id}
 									{selectedModels}
+									{voicePreference}
 									isLastMessage={true}
 									siblings={groupedMessageIds[selectedModelIdx].messageIds}
 									gotoMessage={(message, messageIdx) => gotoMessage(selectedModelIdx, messageIdx)}
@@ -309,11 +311,11 @@
 									{editMessage}
 									{saveMessage}
 									{rateMessage}
-											{deleteMessage}
-											{actionMessage}
-											{submitMessage}
-											{createTokenBranch}
-											{continueResponse}
+									{deleteMessage}
+									{actionMessage}
+									{submitMessage}
+									{createTokenBranch}
+									{continueResponse}
 									regenerateResponse={async (message, prompt = null) => {
 										regenerateResponse(message, prompt);
 										await tick();
@@ -356,6 +358,7 @@
 										{history}
 										messageId={_messageId}
 										{selectedModels}
+										{voicePreference}
 										isLastMessage={true}
 										siblings={groupedMessageIds[modelIdx].messageIds}
 										gotoMessage={(message, messageIdx) => gotoMessage(modelIdx, messageIdx)}

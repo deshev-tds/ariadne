@@ -13,7 +13,7 @@
 	import calendar from 'dayjs/plugin/calendar';
 	import Loader from '../common/Loader.svelte';
 	import { createMessagesList } from '$lib/utils';
-	import { config, user } from '$lib/stores';
+	import { config, personas, user } from '$lib/stores';
 	import Messages from '../chat/Messages.svelte';
 	import { goto } from '$app/navigation';
 	import PencilSquare from '../icons/PencilSquare.svelte';
@@ -384,6 +384,12 @@
 						>
 							<div class=" flex-1">
 								<div class="text-ellipsis line-clamp-1 w-full">
+									{#if chat?.persona_id}
+										<span class="mr-1 text-xs text-gray-500 dark:text-gray-400">
+											{($personas ?? []).find((persona) => persona.id === chat.persona_id)?.emoji ??
+												'◌'}
+										</span>
+									{/if}
 									{chat?.title}
 								</div>
 							</div>

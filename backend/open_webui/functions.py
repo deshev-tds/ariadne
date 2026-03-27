@@ -282,7 +282,10 @@ async def generate_function_chat_completion(
         params = model_info.params.model_dump()
 
         if params:
-            system = params.pop("system", None)
+            if metadata and metadata.get("system_prompt_override_present"):
+                system = metadata.get("system_prompt_override")
+            else:
+                system = params.pop("system", None)
             form_data = apply_model_params_to_body_openai(params, form_data)
             form_data = apply_system_prompt_to_body(system, form_data, metadata, user)
 

@@ -20,6 +20,7 @@
 		config,
 		type Model,
 		models,
+		personas,
 		tags as allTags,
 		settings,
 		showSidebar,
@@ -114,6 +115,16 @@
 		type TokenBranchRequest
 	} from './tokenExplorer';
 	import { getBanners } from '$lib/apis/configs';
+	import type { Persona } from '$lib/apis/personas';
+	import {
+		buildPersonaChatMeta,
+		buildPersonaDefaultsSnapshot,
+		getActiveChatIdentity,
+		getEffectiveModelBinding,
+		getEffectivePersonaState,
+		getEffectiveVoicePreference,
+		getRequestedFeatureIdsFromFeatures
+	} from '$lib/utils/personas';
 
 	type RuntimeAwareModel = Model & {
 		status?: {
@@ -147,8 +158,118 @@
 	let eventCallback = null;
 
 	let selectedModels = [''];
+	let directSelectedModels = [''];
+	let selectedPersonaId: string | null = null;
+	let selectedPersona: Persona | null = null;
+	let activeBoundModelId: string | null = null;
+	let activeChatIdentity = null;
+	let activeVoicePreference = { voiceId: null, speed: null };
 	let atSelectedModel: Model | undefined;
 	let selectedModelIds = [];
+	$: selectedPersona =
+		selectedPersonaId && selectedPersonaId !== ''
+			? (($personas ?? []).find((persona) => persona.id === selectedPersonaId) ?? null)
+			: null;
+
+	const hasOwn = (value: Record<string, any> | null | undefined, key: string) =>
+		typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, key);
+
+	const buildPersonaOverlayModel = (persona: Persona | null, model: Model | undefined) => {
+		if (!persona || !model) {
+			return model;
+		}
+
+		const personaState = getEffectivePersonaState({
+			persona,
+			chatMeta: chat?.meta ?? null,
+			model,
+			tools: $tools ?? [],
+			functions: $functions ?? [],
+			config: $config,
+			user: $user
+		});
+
+		const effective = personaState?.effective ?? null;
+		if (!effective) {
+			return model;
+		}
+
+		return {
+			...model,
+			name: persona.name,
+			info: {
+				...(model.info ?? {}),
+				meta: {
+					...(model.info?.meta ?? {}),
+					profile_image_url: persona.profile_image_url ?? model.info?.meta?.profile_image_url,
+					description: persona.description ?? model.info?.meta?.description,
+					toolIds: effective.tool_ids,
+					filterIds: effective.filter_ids,
+					defaultFilterIds: effective.filter_ids,
+					actionIds: effective.action_ids,
+					defaultFeatureIds: effective.default_feature_ids,
+					capabilities: {
+						...(model.info?.meta?.capabilities ?? {}),
+						...(effective.capabilities ?? {})
+					},
+					tts: {
+						...(model.info?.meta?.tts ?? {}),
+						...(effective.voice_id ? { voice: effective.voice_id } : {})
+					}
+				},
+				params: {
+					...(model.info?.params ?? {}),
+					...(effective.system_prompt !== null && effective.system_prompt !== undefined
+						? { system: effective.system_prompt }
+						: {})
+				}
+			}
+		};
+	};
+
+	$: activeBoundModelId = getEffectiveModelBinding({
+		selectedPersona,
+		selectedModels,
+		chatMeta: chat?.meta ?? null
+	});
+
+	$: activeChatIdentity = getActiveChatIdentity({
+		persona: selectedPersona,
+		model:
+			atSelectedModel ??
+			$models.find((model) => model.id === (activeBoundModelId ?? selectedModels[0]))
+	});
+
+	$: activeVoicePreference = getEffectiveVoicePreference({
+		persona: selectedPersona,
+		chatMeta: chat?.meta ?? null,
+		model:
+			atSelectedModel ??
+			$models.find((model) => model.id === (activeBoundModelId ?? selectedModels[0])),
+		settings: $settings,
+		config: $config
+	});
+
+	$: {
+		if (selectedPersona) {
+			const boundModel = $models.find((model) => model.id === activeBoundModelId);
+			atSelectedModel = buildPersonaOverlayModel(selectedPersona, boundModel);
+		} else if (atSelectedModel && atSelectedModel.id !== selectedModels[0]) {
+			atSelectedModel = undefined;
+		}
+	}
+
+	$: if (selectedPersona && activeBoundModelId) {
+		const personaModels = [activeBoundModelId];
+		if (JSON.stringify(selectedModels) !== JSON.stringify(personaModels)) {
+			selectedModels = personaModels;
+		}
+	}
+
+	$: if (!selectedPersona && selectedModels.filter((modelId) => modelId).length > 0) {
+		directSelectedModels = [...selectedModels];
+	}
+
 	$: if (atSelectedModel !== undefined) {
 		selectedModelIds = [atSelectedModel.id];
 	} else {
@@ -276,6 +397,62 @@
 		params = nextParams;
 	};
 
+	const getCurrentPersonaSnapshot = () => {
+		if (!selectedPersona) {
+			return null;
+		}
+
+		return chat?.meta?.persona_defaults_snapshot ?? buildPersonaDefaultsSnapshot(selectedPersona);
+	};
+
+	const getCurrentPersonaOverrides = () => {
+		if (!selectedPersona) {
+			return {};
+		}
+
+		const snapshot = getCurrentPersonaSnapshot();
+		if (!snapshot) {
+			return {};
+		}
+
+		const overrides = {};
+		const requestedFeatureIds = getRequestedFeatureIdsFromFeatures(getFeatures());
+
+		if (JSON.stringify(selectedToolIds) !== JSON.stringify(snapshot.tool_ids ?? [])) {
+			overrides['tool_ids'] = [...selectedToolIds];
+		}
+
+		if (JSON.stringify(selectedFilterIds) !== JSON.stringify(snapshot.filter_ids ?? [])) {
+			overrides['filter_ids'] = [...selectedFilterIds];
+		}
+
+		if (
+			JSON.stringify(requestedFeatureIds) !== JSON.stringify(snapshot.default_feature_ids ?? [])
+		) {
+			overrides['default_feature_ids'] = requestedFeatureIds;
+		}
+
+		const currentSystemPrompt = hasOwn(params, 'system') ? params.system : undefined;
+		if (currentSystemPrompt !== snapshot.system_prompt) {
+			overrides['system_prompt'] = hasOwn(params, 'system') ? params.system : null;
+		}
+
+		return overrides;
+	};
+
+	const getPersonaMetaForPersistence = () => {
+		if (!selectedPersona) {
+			return chat?.meta ?? null;
+		}
+
+		return buildPersonaChatMeta(
+			selectedPersona,
+			getCurrentPersonaOverrides(),
+			chat?.meta ?? {},
+			getCurrentPersonaSnapshot()
+		);
+	};
+
 	const getContextWindowPreviewFileSignature = (items) =>
 		JSON.stringify(
 			(items ?? []).map((item) => ({
@@ -382,6 +559,8 @@
 	};
 	// Message queue for storing messages while generating
 	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
+	let nextChatPersonaId: string | null | undefined = undefined;
+	let nextChatDirectModels: string[] | null = null;
 
 	$: if (chatIdProp) {
 		navigateHandler();
@@ -503,6 +682,10 @@
 	}
 
 	const saveSessionSelectedModels = () => {
+		if (selectedPersonaId) {
+			return;
+		}
+
 		const selectedModelsString = JSON.stringify(selectedModels);
 		if (
 			selectedModels.length === 0 ||
@@ -513,6 +696,69 @@
 		}
 		sessionStorage.selectedModels = selectedModelsString;
 		console.log('saveSessionSelectedModels', selectedModels, sessionStorage.selectedModels);
+	};
+
+	const applyDirectModelSelection = () => {
+		selectedPersonaId = null;
+		atSelectedModel = undefined;
+		selectedModels =
+			directSelectedModels.filter((modelId) => modelId).length > 0
+				? [...directSelectedModels]
+				: [...($settings?.models ?? selectedModels)];
+		resetInput();
+	};
+
+	const applyPersonaSelectionInPlace = (personaId: string | null) => {
+		selectedPersonaId = personaId;
+		if (!personaId) {
+			applyDirectModelSelection();
+			return;
+		}
+
+		const persona = ($personas ?? []).find((item) => item.id === personaId);
+		if (persona?.bound_model_id) {
+			selectedModels = [persona.bound_model_id];
+		}
+
+		resetInput();
+	};
+
+	const handlePersonaSelect = async (personaId: string | null) => {
+		const nextPersonaId = personaId || null;
+		if ((selectedPersonaId ?? null) === nextPersonaId) {
+			return;
+		}
+
+		const hasHistory = createMessagesList(history, history.currentId).length > 0;
+		if (!hasHistory) {
+			applyPersonaSelectionInPlace(nextPersonaId);
+			return;
+		}
+
+		const draftText = prompt;
+		const previousPersonaId = selectedPersonaId ?? null;
+		const previousDirectModels = [...directSelectedModels];
+
+		eventConfirmationTitle = $i18n.t('Start new chat?');
+		eventConfirmationMessage = $i18n.t(
+			'Switching persona or moving to Direct Model starts a new chat. Only the current draft will be carried over.'
+		);
+		showEventConfirmation = true;
+		eventCallback = async (confirmed) => {
+			showEventConfirmation = false;
+			if (!confirmed) {
+				selectedPersonaId = previousPersonaId;
+				directSelectedModels = previousDirectModels;
+				return;
+			}
+
+			nextChatPersonaId = nextPersonaId;
+			nextChatDirectModels = nextPersonaId ? null : previousDirectModels;
+			await initNewChat();
+			if (draftText) {
+				messageInput?.setText(draftText);
+			}
+		};
 	};
 
 	let oldSelectedModelIds = [''];
@@ -588,6 +834,18 @@
 
 		const model = atSelectedModel ?? $models.find((m) => m.id === selectedModels[0]);
 		if (model) {
+			const personaState = selectedPersona
+				? getEffectivePersonaState({
+						persona: selectedPersona,
+						chatMeta: chat?.meta ?? null,
+						model,
+						tools: $tools ?? [],
+						functions: $functions ?? [],
+						config: $config,
+						user: $user
+					})
+				: null;
+
 			// Set Default Tools
 			if (model?.info?.meta?.toolIds) {
 				selectedToolIds = [
@@ -633,6 +891,19 @@
 				) {
 					codeInterpreterEnabled = model.info.meta.defaultFeatureIds.includes('code_interpreter');
 				}
+			}
+
+			if (selectedPersona) {
+				const nextParams = structuredClone(params ?? {});
+				const effectiveSystemPrompt = personaState?.effective?.system_prompt;
+
+				if (effectiveSystemPrompt !== null && effectiveSystemPrompt !== undefined) {
+					nextParams.system = effectiveSystemPrompt;
+				} else {
+					delete nextParams.system;
+				}
+
+				params = nextParams;
 			}
 		}
 	};
@@ -873,6 +1144,10 @@
 	};
 
 	const savedModelIds = async () => {
+		if (selectedPersonaId) {
+			return;
+		}
+
 		if (
 			$selectedFolder &&
 			selectedModels.filter((modelId) => modelId !== '').length > 0 &&
@@ -1317,10 +1592,39 @@
 		const availableModels = $models
 			.filter((m) => !(m?.info?.meta?.hidden ?? false))
 			.map((m) => m.id);
+		const availablePersonas = ($personas ?? []).filter((persona) => persona.is_active);
+		const requestedDirectModels =
+			nextChatDirectModels && nextChatDirectModels.length > 0 ? [...nextChatDirectModels] : null;
 
 		const defaultModels = $config?.default_models ? $config?.default_models.split(',') : [];
+		const urlPersonaId = $page.url.searchParams.get('persona');
+		const defaultPersonaId =
+			nextChatPersonaId !== undefined
+				? nextChatPersonaId
+				: (availablePersonas.find((persona) => persona.id === urlPersonaId)?.id ??
+					availablePersonas.find((persona) => persona.id === $settings?.personaId)?.id ??
+					null);
 
-		if ($page.url.searchParams.get('models') || $page.url.searchParams.get('model')) {
+		nextChatPersonaId = undefined;
+
+		if (defaultPersonaId) {
+			selectedPersonaId = defaultPersonaId;
+			const persona = availablePersonas.find((item) => item.id === defaultPersonaId);
+			if (persona?.bound_model_id && availableModels.includes(persona.bound_model_id)) {
+				selectedModels = [persona.bound_model_id];
+			} else {
+				selectedPersonaId = null;
+			}
+		} else {
+			selectedPersonaId = null;
+		}
+
+		if (!selectedPersonaId && requestedDirectModels) {
+			selectedModels = requestedDirectModels;
+		} else if (
+			!selectedPersonaId &&
+			($page.url.searchParams.get('models') || $page.url.searchParams.get('model'))
+		) {
 			const urlModels = (
 				$page.url.searchParams.get('models') ||
 				$page.url.searchParams.get('model') ||
@@ -1355,7 +1659,7 @@
 			selectedModels = selectedModels.filter((modelId) =>
 				$models.map((m) => m.id).includes(modelId)
 			);
-		} else {
+		} else if (!selectedPersonaId) {
 			if ($selectedFolder?.data?.model_ids) {
 				// Set from folder model IDs
 				selectedModels = $selectedFolder?.data?.model_ids;
@@ -1378,9 +1682,13 @@
 			// Unavailable & hidden models filtering
 			selectedModels = selectedModels.filter((modelId) => availableModels.includes(modelId));
 		}
+		nextChatDirectModels = null;
 
 		// Ensure at least one model is selected
-		if (selectedModels.length === 0 || (selectedModels.length === 1 && selectedModels[0] === '')) {
+		if (
+			!selectedPersonaId &&
+			(selectedModels.length === 0 || (selectedModels.length === 1 && selectedModels[0] === ''))
+		) {
 			if (availableModels.length > 0) {
 				if (defaultModels && defaultModels.length > 0) {
 					selectedModels = defaultModels.filter((modelId) => availableModels.includes(modelId));
@@ -1396,6 +1704,10 @@
 			} else {
 				selectedModels = [''];
 			}
+		}
+
+		if (!selectedPersonaId) {
+			directSelectedModels = [...selectedModels];
 		}
 
 		if ($mobile) {
@@ -1505,13 +1817,31 @@
 			if (chatContent) {
 				console.log(chatContent);
 
-				selectedModels =
-					(chatContent?.models ?? undefined) !== undefined
+				selectedPersonaId = chat.persona_id ?? null;
+
+				const persistedPersona = selectedPersonaId
+					? (($personas ?? []).find((persona) => persona.id === selectedPersonaId) ?? null)
+					: null;
+				const persistedPersonaSnapshot = chat?.meta?.persona_defaults_snapshot ?? null;
+				const personaBoundModelId =
+					persistedPersonaSnapshot?.bound_model_id ?? persistedPersona?.bound_model_id ?? null;
+
+				selectedModels = selectedPersonaId
+					? personaBoundModelId
+						? [personaBoundModelId]
+						: (chatContent?.models ?? undefined) !== undefined
+							? chatContent.models
+							: [chatContent.models ?? '']
+					: (chatContent?.models ?? undefined) !== undefined
 						? chatContent.models
 						: [chatContent.models ?? ''];
 
 				if (!($user?.role === 'admin' || ($user?.permissions?.chat?.multiple_models ?? true))) {
 					selectedModels = selectedModels.length > 0 ? [selectedModels[0]] : [''];
+				}
+
+				if (!selectedPersonaId) {
+					directSelectedModels = [...selectedModels];
 				}
 
 				oldSelectedModelIds = structuredClone(selectedModels);
@@ -1589,6 +1919,11 @@
 			filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
 			model_item: $models.find((m) => m.id === modelId),
 			chat_id: _chatId,
+			...(selectedPersonaId
+				? {
+						persona_id: selectedPersonaId
+					}
+				: {}),
 			session_id: $socket?.id,
 			id: responseMessageId
 		}).catch((error) => {
@@ -1618,13 +1953,19 @@
 
 		if ($chatId == _chatId) {
 			if (!$temporaryChatEnabled) {
-				chat = await updateChatById(localStorage.token, _chatId, {
-					models: selectedModels,
-					messages: messages,
-					history: history,
-					params: params,
-					files: chatFiles
-				});
+				chat = await updateChatById(
+					localStorage.token,
+					_chatId,
+					{
+						models: selectedModels,
+						messages: messages,
+						history: history,
+						params: params,
+						files: chatFiles
+					},
+					getPersonaMetaForPersistence(),
+					selectedPersonaId
+				);
 
 				currentChatPage.set(1);
 				await chats.set(await getChatList(localStorage.token, $currentChatPage));
@@ -1662,6 +2003,11 @@
 			...(event ? { event: event } : {}),
 			model_item: $models.find((m) => m.id === modelId),
 			chat_id: _chatId,
+			...(selectedPersonaId
+				? {
+						persona_id: selectedPersonaId
+					}
+				: {}),
 			session_id: $socket?.id,
 			id: responseMessageId
 		}).catch((error) => {
@@ -1685,13 +2031,19 @@
 
 		if ($chatId == _chatId) {
 			if (!$temporaryChatEnabled) {
-				chat = await updateChatById(localStorage.token, _chatId, {
-					models: selectedModels,
-					messages: messages,
-					history: history,
-					params: params,
-					files: chatFiles
-				});
+				chat = await updateChatById(
+					localStorage.token,
+					_chatId,
+					{
+						models: selectedModels,
+						messages: messages,
+						history: history,
+						params: params,
+						files: chatFiles
+					},
+					getPersonaMetaForPersistence(),
+					selectedPersonaId
+				);
 
 				currentChatPage.set(1);
 				await chats.set(await getChatList(localStorage.token, $currentChatPage));
@@ -2403,12 +2755,15 @@
 			$settings?.params?.stream_response ??
 			params?.stream_response ??
 			true;
+		const systemMessageContent = hasOwn(params, 'system')
+			? params.system
+			: ($settings?.system ?? undefined);
 
 		let messages = [
-			params?.system || $settings.system
+			systemMessageContent !== undefined && systemMessageContent !== null
 				? {
 						role: 'system',
-						content: `${params?.system ?? $settings?.system ?? ''}`
+						content: `${systemMessageContent ?? ''}`
 					}
 				: undefined,
 			..._messages.map((message) => ({
@@ -2447,7 +2802,10 @@
 							})
 				};
 			})
-			.filter((message) => message?.role === 'user' || message?.content?.trim());
+			.filter(
+				(message) =>
+					message?.role === 'system' || message?.role === 'user' || message?.content?.trim()
+			);
 
 		const toolIds = [];
 		const toolServerIds = [];
@@ -2513,6 +2871,9 @@
 			$settings?.tokenExplorerEnabled ?? false
 		);
 
+		const personaSnapshot = selectedPersona ? getCurrentPersonaSnapshot() : null;
+		const personaOverrides = selectedPersona ? getCurrentPersonaOverrides() : {};
+
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
 			{
@@ -2542,6 +2903,13 @@
 				model_item: $models.find((m) => m.id === model.id),
 				session_id: $socket?.id,
 				chat_id: $chatId,
+				...(selectedPersonaId
+					? {
+							persona_id: selectedPersonaId,
+							persona_defaults_snapshot: personaSnapshot,
+							persona_chat_overrides: personaOverrides
+						}
+					: {}),
 				id: responseMessageId,
 				parent_id: userMessage?.id ?? null,
 				parent_message: userMessage,
@@ -2859,6 +3227,7 @@
 
 	const initChatHandler = async (history) => {
 		let _chatId = $chatId;
+		const personaMeta = getPersonaMetaForPersistence();
 
 		if (!$temporaryChatEnabled) {
 			chat = await createNewChat(
@@ -2874,7 +3243,9 @@
 					tags: [],
 					timestamp: Date.now()
 				},
-				$selectedFolder?.id
+				$selectedFolder?.id,
+				personaMeta,
+				selectedPersonaId
 			);
 
 			_chatId = chat.id;
@@ -2900,13 +3271,19 @@
 	const saveChatHandler = async (_chatId, history) => {
 		if ($chatId == _chatId) {
 			if (!$temporaryChatEnabled) {
-				chat = await updateChatById(localStorage.token, _chatId, {
-					models: selectedModels,
-					history: history,
-					messages: createMessagesList(history, history.currentId),
-					params: params,
-					files: chatFiles
-				});
+				chat = await updateChatById(
+					localStorage.token,
+					_chatId,
+					{
+						models: selectedModels,
+						history: history,
+						messages: createMessagesList(history, history.currentId),
+						params: params,
+						files: chatFiles
+					},
+					getPersonaMetaForPersistence(),
+					selectedPersonaId
+				);
 				currentChatPage.set(1);
 				await chats.set(await getChatList(localStorage.token, $currentChatPage));
 			}
@@ -3047,6 +3424,8 @@
 						bind:this={navbarElement}
 						chat={{
 							id: $chatId,
+							persona_id: selectedPersonaId,
+							meta: getPersonaMetaForPersistence(),
 							chat: {
 								title: $chatTitle,
 								models: selectedModels,
@@ -3062,6 +3441,9 @@
 						draftPrompt={prompt}
 						title={$chatTitle}
 						bind:selectedModels
+						{selectedPersonaId}
+						onPersonaSelect={handlePersonaSelect}
+						{activeChatIdentity}
 						shareEnabled={!!history.currentId}
 						{initNewChat}
 						{archiveChatHandler}
@@ -3087,7 +3469,9 @@
 										messages: messages,
 										timestamp: Date.now()
 									},
-									null
+									null,
+									getPersonaMetaForPersistence(),
+									selectedPersonaId
 								);
 
 								if (savedChat) {
@@ -3128,6 +3512,7 @@
 										}}
 										{selectedModels}
 										{atSelectedModel}
+										voicePreference={activeVoicePreference}
 										{sendMessage}
 										{showMessage}
 										{submitMessage}
@@ -3284,6 +3669,7 @@
 					bind:pane={controlPane}
 					chatId={$chatId}
 					modelId={selectedModelIds?.at(0) ?? null}
+					voicePreference={activeVoicePreference}
 					models={selectedModelIds.reduce((a, e, i, arr) => {
 						const model = $models.find((m) => m.id === e);
 						if (model) {

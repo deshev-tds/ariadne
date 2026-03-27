@@ -682,6 +682,7 @@
 							id={chat.id}
 							title={chat.title}
 							createdAt={chat.created_at}
+							personaId={chat.persona_id ?? null}
 							{shiftKey}
 							on:change={(e) => {
 								dispatch('change', e.detail);

@@ -33,6 +33,7 @@
 	export let history = {};
 	export let selectedModels;
 	export let atSelectedModel;
+	export let voicePreference = { voiceId: null, speed: null };
 
 	let messages = [];
 
@@ -471,6 +472,7 @@
 								{chatId}
 								bind:history
 								{selectedModels}
+								{voicePreference}
 								messageId={message.id}
 								idx={messageIdx}
 								{user}
@@ -484,9 +486,9 @@
 								{rateMessage}
 								{actionMessage}
 								{saveMessage}
-									{submitMessage}
-									{createTokenBranch}
-									{regenerateResponse}
+								{submitMessage}
+								{createTokenBranch}
+								{regenerateResponse}
 								{continueResponse}
 								{mergeResponses}
 								{addMessages}

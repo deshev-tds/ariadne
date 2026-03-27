@@ -64,7 +64,7 @@
 	import StatusHistory from './ResponseMessage/StatusHistory.svelte';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
 
-		interface MessageType {
+	interface MessageType {
 		id: string;
 		model: string;
 		content: string;
@@ -112,17 +112,18 @@
 			load_duration?: number;
 			usage?: unknown;
 		};
-			annotation?: { type: string; rating: number };
-			tokenTelemetry?: any;
-			tokenBranch?: any;
-			tokenTelemetryUnavailable?: boolean;
-			tokenTelemetryUnavailableReason?: string;
-		}
+		annotation?: { type: string; rating: number };
+		tokenTelemetry?: any;
+		tokenBranch?: any;
+		tokenTelemetryUnavailable?: boolean;
+		tokenTelemetryUnavailableReason?: string;
+	}
 
 	export let chatId = '';
 	export let history;
 	export let messageId;
 	export let selectedModels = [];
+	export let voicePreference = { voiceId: null, speed: null };
 
 	let message: MessageType = structuredClone(history.messages[messageId]);
 	$: if (history.messages) {
@@ -153,10 +154,10 @@
 	export let actionMessage: Function;
 	export let deleteMessage: Function;
 
-		export let submitMessage: Function;
-		export let createTokenBranch: Function = () => {};
-		export let continueResponse: Function;
-		export let regenerateResponse: Function;
+	export let submitMessage: Function;
+	export let createTokenBranch: Function = () => {};
+	export let continueResponse: Function;
+	export let regenerateResponse: Function;
 
 	export let addMessages: Function;
 
@@ -183,20 +184,20 @@
 	let speaking = false;
 	let speakingIdx: number | undefined;
 
-		let loadingSpeech = false;
+	let loadingSpeech = false;
 
-		let showRateComment = false;
-		let showTokenExplorer = false;
-		let tokenExplorerAvailable = false;
+	let showRateComment = false;
+	let showTokenExplorer = false;
+	let tokenExplorerAvailable = false;
 
-		$: tokenExplorerAvailable =
-			($settings?.tokenExplorerEnabled ?? false) &&
-			Array.isArray(message?.tokenTelemetry?.tokens) &&
-			message.tokenTelemetry.tokens.length > 0;
+	$: tokenExplorerAvailable =
+		($settings?.tokenExplorerEnabled ?? false) &&
+		Array.isArray(message?.tokenTelemetry?.tokens) &&
+		message.tokenTelemetry.tokens.length > 0;
 
-		$: if (!tokenExplorerAvailable && showTokenExplorer) {
-			showTokenExplorer = false;
-		}
+	$: if (!tokenExplorerAvailable && showTokenExplorer) {
+		showTokenExplorer = false;
+	}
 
 	const copyToClipboard = async (text) => {
 		text = removeAllDetails(text);
@@ -232,8 +233,11 @@
 		speaking = true;
 		const content = removeAllDetails(message.content);
 
-		// Get voice: model-specific > user settings > config default
 		const getVoiceId = () => {
+			if (voicePreference?.voiceId) {
+				return voicePreference.voiceId;
+			}
+
 			// Check for model-specific TTS voice first
 			if (model?.info?.meta?.tts?.voice) {
 				return model.info.meta.tts.voice;
@@ -334,15 +338,18 @@
 				}
 			} else {
 				for (const [idx, sentence] of messageContentParts.entries()) {
-					const res = await synthesizeOpenAISpeech(localStorage.token, voiceId, sentence).catch(
-						(error) => {
-							console.error(error);
-							toast.error(`${error}`);
+					const res = await synthesizeOpenAISpeech(
+						localStorage.token,
+						voiceId,
+						sentence,
+						voicePreference?.speed ?? undefined
+					).catch((error) => {
+						console.error(error);
+						toast.error(`${error}`);
 
-							speaking = false;
-							loadingSpeech = false;
-						}
-					);
+						speaking = false;
+						loadingSpeech = false;
+					});
 
 					if (res && speaking) {
 						const blob = await res.blob();
@@ -648,19 +655,19 @@
 
 		<div class="flex-auto w-0 pl-1 relative">
 			<Name>
-					<Tooltip content={model?.name ?? message.model} placement="top-start">
-						<span id="response-message-model-name" class="line-clamp-1 text-black dark:text-white">
-							{model?.name ?? message.model}
-						</span>
-					</Tooltip>
+				<Tooltip content={model?.name ?? message.model} placement="top-start">
+					<span id="response-message-model-name" class="line-clamp-1 text-black dark:text-white">
+						{model?.name ?? message.model}
+					</span>
+				</Tooltip>
 
-					{#if message?.tokenBranch}
-						<span
-							class="self-center text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-						>
-							{$i18n.t('Branched')}
-						</span>
-					{/if}
+				{#if message?.tokenBranch}
+					<span
+						class="self-center text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+					>
+						{$i18n.t('Branched')}
+					</span>
+				{/if}
 
 				{#if message.timestamp}
 					<div
@@ -804,60 +811,60 @@
 							class="w-full flex flex-col relative {edit ? 'hidden' : ''}"
 							id="response-content-container"
 						>
-								{#if message.content === '' && !message.error && ((model?.info?.meta?.capabilities?.status_updates ?? true) ? (message?.statusHistory ?? [...(message?.status ? [message?.status] : [])]).length === 0 || (message?.statusHistory?.at(-1)?.hidden ?? false) : true)}
-									<Skeleton />
-								{:else if message.content && message.error !== true}
-									<!-- always show message contents even if there's an error -->
-									<!-- unless message.error === true which is legacy error handling, where the error message is stored in message.content -->
-									{#if showTokenExplorer && tokenExplorerAvailable}
-										<TokenExplorerView
-											telemetry={message.tokenTelemetry}
-											onCreateBranch={({ forkIndex, altRank }) => {
-												createTokenBranch(message, forkIndex, altRank);
-											}}
-										/>
-									{:else}
-										<ContentRenderer
-											id={`${chatId}-${message.id}`}
-											messageId={message.id}
-											{history}
-											{selectedModels}
-											content={message.content}
-											sources={message.sources}
-											floatingButtons={message?.done &&
-												!readOnly &&
-												($settings?.showFloatingActionButtons ?? true)}
-											save={!readOnly}
-											preview={!readOnly}
-											{editCodeBlock}
-											{topPadding}
-											done={($settings?.chatFadeStreamingText ?? true)
-												? (message?.done ?? false)
-												: true}
-											{model}
-											onTaskClick={async (e) => {
-												console.log(e);
-											}}
-											onSourceClick={async (id) => {
-												console.log(id);
+							{#if message.content === '' && !message.error && ((model?.info?.meta?.capabilities?.status_updates ?? true) ? (message?.statusHistory ?? [...(message?.status ? [message?.status] : [])]).length === 0 || (message?.statusHistory?.at(-1)?.hidden ?? false) : true)}
+								<Skeleton />
+							{:else if message.content && message.error !== true}
+								<!-- always show message contents even if there's an error -->
+								<!-- unless message.error === true which is legacy error handling, where the error message is stored in message.content -->
+								{#if showTokenExplorer && tokenExplorerAvailable}
+									<TokenExplorerView
+										telemetry={message.tokenTelemetry}
+										onCreateBranch={({ forkIndex, altRank }) => {
+											createTokenBranch(message, forkIndex, altRank);
+										}}
+									/>
+								{:else}
+									<ContentRenderer
+										id={`${chatId}-${message.id}`}
+										messageId={message.id}
+										{history}
+										{selectedModels}
+										content={message.content}
+										sources={message.sources}
+										floatingButtons={message?.done &&
+											!readOnly &&
+											($settings?.showFloatingActionButtons ?? true)}
+										save={!readOnly}
+										preview={!readOnly}
+										{editCodeBlock}
+										{topPadding}
+										done={($settings?.chatFadeStreamingText ?? true)
+											? (message?.done ?? false)
+											: true}
+										{model}
+										onTaskClick={async (e) => {
+											console.log(e);
+										}}
+										onSourceClick={async (id) => {
+											console.log(id);
 
-												if (citationsElement) {
-													citationsElement?.showSourceModal(id);
-												}
-											}}
-											onAddMessages={({ modelId, parentId, messages }) => {
-												addMessages({ modelId, parentId, messages });
-											}}
-											onSave={({ raw, oldContent, newContent }) => {
-												history.messages[message.id].content = history.messages[
-													message.id
-												].content.replace(raw, raw.replace(oldContent, newContent));
+											if (citationsElement) {
+												citationsElement?.showSourceModal(id);
+											}
+										}}
+										onAddMessages={({ modelId, parentId, messages }) => {
+											addMessages({ modelId, parentId, messages });
+										}}
+										onSave={({ raw, oldContent, newContent }) => {
+											history.messages[message.id].content = history.messages[
+												message.id
+											].content.replace(raw, raw.replace(oldContent, newContent));
 
-												updateChat();
-											}}
-										/>
-									{/if}
+											updateChat();
+										}}
+									/>
 								{/if}
+							{/if}
 
 							{#if message?.error}
 								<Error content={message?.error?.content ?? message.content} />
@@ -873,16 +880,16 @@
 								/>
 							{/if}
 
-								{#if message.code_executions}
-									<CodeExecutions codeExecutions={message.code_executions} />
-								{/if}
+							{#if message.code_executions}
+								<CodeExecutions codeExecutions={message.code_executions} />
+							{/if}
 
-								{#if message?.done && ($settings?.tokenExplorerEnabled ?? false) && !message?.tokenTelemetry && message?.tokenTelemetryUnavailable}
-									<div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-										{$i18n.t('Token telemetry unavailable for this response.')}
-									</div>
-								{/if}
-							</div>
+							{#if message?.done && ($settings?.tokenExplorerEnabled ?? false) && !message?.tokenTelemetry && message?.tokenTelemetryUnavailable}
+								<div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+									{$i18n.t('Token telemetry unavailable for this response.')}
+								</div>
+							{/if}
+						</div>
 					</div>
 				</div>
 
@@ -1048,47 +1055,47 @@
 											/>
 										</svg>
 									</button>
-									</Tooltip>
+								</Tooltip>
 
-									{#if tokenExplorerAvailable}
-										<Tooltip
-											content={showTokenExplorer
+								{#if tokenExplorerAvailable}
+									<Tooltip
+										content={showTokenExplorer
+											? $i18n.t('Hide Token Explorer')
+											: $i18n.t('Show Token Explorer')}
+										placement="bottom"
+									>
+										<button
+											aria-label={showTokenExplorer
 												? $i18n.t('Hide Token Explorer')
 												: $i18n.t('Show Token Explorer')}
-											placement="bottom"
+											class="{isLastMessage || ($settings?.highContrastMode ?? false)
+												? 'visible'
+												: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition"
+											on:click={() => {
+												showTokenExplorer = !showTokenExplorer;
+											}}
 										>
-											<button
-												aria-label={showTokenExplorer
-													? $i18n.t('Hide Token Explorer')
-													: $i18n.t('Show Token Explorer')}
-												class="{isLastMessage || ($settings?.highContrastMode ?? false)
-													? 'visible'
-													: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition"
-												on:click={() => {
-													showTokenExplorer = !showTokenExplorer;
-												}}
+											<svg
+												xmlns="http://www.w3.org/2000/svg"
+												fill="none"
+												viewBox="0 0 24 24"
+												stroke-width="2.1"
+												stroke="currentColor"
+												class="w-4 h-4"
+												aria-hidden="true"
 											>
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													fill="none"
-													viewBox="0 0 24 24"
-													stroke-width="2.1"
-													stroke="currentColor"
-													class="w-4 h-4"
-													aria-hidden="true"
-												>
-													<path
-														stroke-linecap="round"
-														stroke-linejoin="round"
-														d="M3 7.5h18M3 12h18M3 16.5h18M6.75 4.5v15M12 4.5v15M17.25 4.5v15"
-													/>
-												</svg>
-											</button>
-										</Tooltip>
-									{/if}
+												<path
+													stroke-linecap="round"
+													stroke-linejoin="round"
+													d="M3 7.5h18M3 12h18M3 16.5h18M6.75 4.5v15M12 4.5v15M17.25 4.5v15"
+												/>
+											</svg>
+										</button>
+									</Tooltip>
+								{/if}
 
-									{#if $user?.role === 'admin' || ($user?.permissions?.chat?.tts ?? true)}
-										<Tooltip content={$i18n.t('Read Aloud')} placement="bottom">
+								{#if $user?.role === 'admin' || ($user?.permissions?.chat?.tts ?? true)}
+									<Tooltip content={$i18n.t('Read Aloud')} placement="bottom">
 										<button
 											aria-label={$i18n.t('Read Aloud')}
 											id="speak-button-{message.id}"

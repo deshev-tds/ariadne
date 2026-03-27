@@ -10,6 +10,7 @@
 	import { fade } from 'svelte/transition';
 
 	import { getModels, getToolServersData, getVersionUpdates } from '$lib/apis';
+	import { getPersonas } from '$lib/apis/personas';
 	import { getTools } from '$lib/apis/tools';
 	import { getBanners } from '$lib/apis/configs';
 	import { getTerminalServers } from '$lib/apis/terminal';
@@ -23,6 +24,7 @@
 		user,
 		settings,
 		models,
+		personas,
 		knowledge,
 		tools,
 		functions,
@@ -118,6 +120,10 @@
 		);
 	};
 
+	const setPersonas = async () => {
+		personas.set(await getPersonas(localStorage.token));
+	};
+
 	const setToolServers = async () => {
 		let toolServersData = await getToolServersData($settings?.toolServers ?? []);
 		toolServersData = toolServersData.filter((data) => {
@@ -208,6 +214,7 @@
 			setUserSettings(async () => {
 				await Promise.all([
 					setModels().catch((e) => console.error('Failed to load models:', e)),
+					setPersonas().catch((e) => console.error('Failed to load personas:', e)),
 					setToolServers().catch((e) => console.error('Failed to load tool servers:', e))
 				]);
 			}).catch((e) => console.error('Failed to load user settings:', e))

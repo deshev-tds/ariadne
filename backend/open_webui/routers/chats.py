@@ -30,9 +30,11 @@ from open_webui.models.chats import (
     ChatHistoryStats,
     MessageStats,
 )
+from open_webui.models.personas import Personas
 from open_webui.models.tags import TagModel, Tags
 from open_webui.models.folders import Folders
 from open_webui.internal.db import get_session
+from open_webui.utils.personas import build_persona_defaults_snapshot
 
 from open_webui.config import ENABLE_ADMIN_CHAT_ACCESS, ENABLE_ADMIN_EXPORT
 from open_webui.env import AGENTIC_ARTIFACTS_DIR
@@ -127,6 +129,24 @@ def _to_chat_response_with_rehydration(chat_model) -> ChatResponse:
     payload = chat_model.model_dump()
     payload["chat"] = _rehydrate_chat_payload(payload.get("chat", {}))
     return ChatResponse(**payload)
+
+
+def _prepare_chat_form_with_persona_defaults(form_data: ChatForm, user_id: str, db: Session) -> ChatForm:
+    if not form_data.persona_id:
+        return form_data
+
+    persona = Personas.get_persona_by_id_and_user_id(form_data.persona_id, user_id, db=db)
+    if persona is None or not persona.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Persona not found.",
+        )
+
+    meta = dict(form_data.meta or {})
+    meta.setdefault("persona_defaults_snapshot", build_persona_defaults_snapshot(persona))
+    meta.setdefault("persona_chat_overrides", {})
+
+    return form_data.__class__(**{**form_data.model_dump(), "meta": meta})
 
 ############################
 # GetChatList
@@ -686,7 +706,8 @@ async def create_new_chat(
     db: Session = Depends(get_session),
 ):
     try:
-        chat = Chats.insert_new_chat(user.id, form_data, db=db)
+        prepared_form = _prepare_chat_form_with_persona_defaults(form_data, user.id, db)
+        chat = Chats.insert_new_chat(user.id, prepared_form, db=db)
         return ChatResponse(**chat.model_dump())
     except Exception as e:
         log.exception(e)
@@ -707,7 +728,13 @@ async def import_chats(
     db: Session = Depends(get_session),
 ):
     try:
-        chats = Chats.import_chats(user.id, form_data.chats, db=db)
+        prepared_forms = [
+            _prepare_chat_form_with_persona_defaults(chat_form, user.id, db)
+            if isinstance(chat_form, ChatForm)
+            else chat_form
+            for chat_form in form_data.chats
+        ]
+        chats = Chats.import_chats(user.id, prepared_forms, db=db)
         return chats
     except Exception as e:
         log.exception(e)
@@ -789,7 +816,12 @@ async def get_chat_list_by_folder_id(
         skip = (page - 1) * limit
 
         return [
-            {"title": chat.title, "id": chat.id, "updated_at": chat.updated_at}
+            {
+                "title": chat.title,
+                "id": chat.id,
+                "updated_at": chat.updated_at,
+                "persona_id": chat.persona_id,
+            }
             for chat in Chats.get_chats_by_folder_id_and_user_id(
                 folder_id, user.id, skip=skip, limit=limit, db=db
             )
@@ -1068,7 +1100,36 @@ async def update_chat_by_id(
     chat = Chats.get_chat_by_id_and_user_id(id, user.id, db=db)
     if chat:
         updated_chat = {**chat.chat, **form_data.chat}
-        chat = Chats.update_chat_by_id(id, updated_chat, db=db)
+        updated_meta = (
+            chat.meta
+            if "meta" not in form_data.model_fields_set
+            else {**(chat.meta or {}), **(form_data.meta or {})}
+        )
+        persona_id = chat.persona_id
+        if "persona_id" in form_data.model_fields_set:
+            persona_id = form_data.persona_id
+
+        if persona_id:
+            prepared_form = _prepare_chat_form_with_persona_defaults(
+                ChatForm(
+                    chat=updated_chat,
+                    folder_id=form_data.folder_id if form_data.folder_id is not None else chat.folder_id,
+                    meta=updated_meta,
+                    persona_id=persona_id,
+                ),
+                user.id,
+                db,
+            )
+            updated_meta = prepared_form.meta
+            persona_id = prepared_form.persona_id
+
+        chat = Chats.update_chat_by_id(
+            id,
+            updated_chat,
+            meta=updated_meta,
+            persona_id=persona_id,
+            db=db,
+        )
         return ChatResponse(**chat.model_dump())
     else:
         raise HTTPException(
@@ -1416,6 +1477,7 @@ async def clone_chat_by_id(
                         "meta": chat.meta,
                         "pinned": chat.pinned,
                         "folder_id": chat.folder_id,
+                        "persona_id": chat.persona_id,
                     }
                 )
             ],
@@ -1468,6 +1530,7 @@ async def clone_shared_chat_by_id(
                         "meta": chat.meta,
                         "pinned": chat.pinned,
                         "folder_id": chat.folder_id,
+                        "persona_id": chat.persona_id,
                     }
                 )
             ],

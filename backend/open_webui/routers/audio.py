@@ -744,9 +744,12 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
         try:
             speed = float(
-                params.get(
+                payload.get(
                     "speed",
-                    os.getenv("AUDIO_TTS_KOKORO_SPEED", str(KOKORO_DEFAULT_SPEED)),
+                    params.get(
+                        "speed",
+                        os.getenv("AUDIO_TTS_KOKORO_SPEED", str(KOKORO_DEFAULT_SPEED)),
+                    ),
                 )
             )
         except (TypeError, ValueError):

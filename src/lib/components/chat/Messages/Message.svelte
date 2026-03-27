@@ -14,6 +14,7 @@
 
 	export let chatId;
 	export let selectedModels = [];
+	export let voicePreference = { voiceId: null, speed: null };
 	export let idx = 0;
 
 	export let history;
@@ -80,6 +81,7 @@
 				{history}
 				{messageId}
 				{selectedModels}
+				{voicePreference}
 				isLastMessage={messageId === history.currentId}
 				siblings={history.messages[history.messages[messageId].parentId]?.childrenIds ?? []}
 				{setInputText}
@@ -89,12 +91,12 @@
 				{updateChat}
 				{editMessage}
 				{saveMessage}
-						{rateMessage}
-						{actionMessage}
-						{submitMessage}
-						{createTokenBranch}
-						{deleteMessage}
-						{continueResponse}
+				{rateMessage}
+				{actionMessage}
+				{submitMessage}
+				{createTokenBranch}
+				{deleteMessage}
+				{continueResponse}
 				{regenerateResponse}
 				{addMessages}
 				{readOnly}
@@ -108,6 +110,7 @@
 					{chatId}
 					{messageId}
 					{selectedModels}
+					{voicePreference}
 					isLastMessage={messageId === history?.currentId}
 					{setInputText}
 					{updateChat}

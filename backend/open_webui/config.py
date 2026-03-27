@@ -22,6 +22,7 @@ from open_webui.env import (
     BASE_DIR,
     DATA_DIR,
     DATABASE_URL,
+    DATABASE_PASSWORD,
     ENABLE_DB_MIGRATIONS,
     ENV,
     REDIS_URL,
@@ -36,6 +37,7 @@ from open_webui.env import (
     WEBUI_NAME,
     log,
 )
+from open_webui.internal.db_backup import create_pre_migration_backup
 from open_webui.internal.db import Base, get_db
 from open_webui.utils.redis import get_redis_connection
 
@@ -59,6 +61,12 @@ def run_migrations():
     try:
         from alembic import command
         from alembic.config import Config
+
+        create_pre_migration_backup(
+            DATABASE_URL,
+            DATA_DIR,
+            database_password=DATABASE_PASSWORD,
+        )
 
         alembic_cfg = Config(OPEN_WEBUI_DIR / "alembic.ini")
 

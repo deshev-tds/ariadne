@@ -23,6 +23,7 @@
 		chatTitle as _chatTitle,
 		chats,
 		mobile,
+		personas,
 		pinnedChats,
 		showSidebar,
 		currentChatPage,
@@ -50,6 +51,7 @@
 	export let id;
 	export let title;
 	export let createdAt: number | null = null;
+	export let personaId: string | null = null;
 
 	export let selected = false;
 	export let shiftKey = false;
@@ -76,6 +78,8 @@
 	}
 
 	let chat = null;
+	let persona = null;
+	$: persona = personaId ? (($personas ?? []).find((item) => item.id === personaId) ?? null) : null;
 
 	let mouseOver = false;
 
@@ -455,6 +459,11 @@
 
 			<div class="flex self-center flex-1 w-full min-w-0">
 				<div dir="auto" class="text-left self-center overflow-hidden w-full h-[20px] truncate">
+					{#if persona}
+						<span class="mr-1 text-xs text-gray-500 dark:text-gray-400">
+							{persona.emoji || '◌'}
+						</span>
+					{/if}
 					{title}
 				</div>
 			</div>
