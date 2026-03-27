@@ -766,12 +766,13 @@ If a future agent session starts with zero context, it should read in this order
 
 1. this document
 2. `docs/roadmap/verification-native-agent-improvement-platform.md`
-3. `backend/open_webui/models/models.py`
-4. `backend/open_webui/utils/payload.py`
-5. `backend/open_webui/routers/audio.py`
-6. `backend/open_webui/utils/chat_recall.py`
-7. `backend/open_webui/utils/context_maintenance.py`
-8. `src/lib/components/workspace/Models/ModelEditor.svelte`
+3. `docs/roadmap/persona-runtime-ux-and-implementation-plan.md`
+4. `backend/open_webui/models/models.py`
+5. `backend/open_webui/utils/payload.py`
+6. `backend/open_webui/routers/audio.py`
+7. `backend/open_webui/utils/chat_recall.py`
+8. `backend/open_webui/utils/context_maintenance.py`
+9. `src/lib/components/workspace/Models/ModelEditor.svelte`
 
 ## Minimal Context Pack For The Next Agent
 
