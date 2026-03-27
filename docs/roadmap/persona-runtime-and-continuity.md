@@ -231,6 +231,9 @@ Relevant local files and primitives:
 - model prompt application: `backend/open_webui/utils/payload.py`
 - model preset editor: `src/lib/components/workspace/Models/ModelEditor.svelte`
 - model avatars in selector: `src/lib/components/chat/ModelSelector/ModelItem.svelte`
+- audio router and available voices: `backend/open_webui/routers/audio.py`
+- chat audio settings and preview behavior: `src/lib/components/chat/Settings/Audio.svelte`
+- call overlay TTS voice resolution: `src/lib/components/chat/MessageInput/CallOverlay.svelte`
 - chat recall middleware: `backend/open_webui/utils/chat_recall.py`
 - context maintenance and summaries: `backend/open_webui/utils/context_maintenance.py`
 - ledger capture: `backend/open_webui/models/ledger.py`
@@ -275,6 +278,7 @@ Reuse:
 - recall as evidence retrieval, not as synthetic identity memory
 - summary and ledger patterns for compact state artifacts
 - model avatars as the first visual identity layer
+- existing TTS voice metadata and Kokoro voice discovery as the first voice layer
 
 Do not reuse blindly:
 
@@ -282,6 +286,7 @@ Do not reuse blindly:
 - title-generated emoji as the only visual grouping mechanism
 - raw chat history as the continuity product
 - prompt accumulation as a substitute for scoped continuity state
+- giant creator-studio surfaces before the runtime contract is right
 
 ## What A Zero-Context Agent Should Understand Immediately
 
@@ -301,11 +306,17 @@ If a future coding agent opens this repo cold, the important orientation is:
 The intended split is:
 
 - `persona`
-  - identity, description, emoji, avatar, prompt contract, continuity policy
+  - identity, description, emoji, avatar, voice defaults, prompt contract, continuity policy
 - `binding`
   - which preset/base runtime this persona prefers or requires
+- `behavior profile`
+  - initiative, reply style, greeting seeds, optional engagement defaults
 - `capability policy`
   - allowed tools, ask-before-use tools, disabled tools, optional admin defaults
+- `scene note`
+  - chat-local or session-local steering for the current scene or mode
+- `lorebook`
+  - persona-scoped triggered context for recurring fictional or domain facts
 - `continuity`
   - persona-scoped cross-chat interpersonal or task continuity
 - `recall`
@@ -330,15 +341,23 @@ Tasks:
   - description
   - emoji
   - avatar reference
+- include presentation fields:
+  - voice id
+  - voice speed override
 - include prompt-facing fields:
   - system contract
   - greeting seed
   - optional style notes
+- include behavior-facing fields:
+  - archetype
+  - initiative profile
+  - response style
 - include policy-facing fields:
   - continuity mode
   - continuity scope
   - recall policy
   - default tool policy
+- keep the model compatible with a later character-card import path
 - keep the model small and explicit
 
 ### Story 2: Persona Binding Layer
@@ -357,6 +376,7 @@ Tasks:
   - soft switch
   - hard switch
 - expose binding reason in UI so runtime reloads are not surprising
+- keep voice and persona identity separate from model binding
 
 ### Story 3: Persona Capability Policy
 
@@ -375,20 +395,50 @@ Tasks:
 - make the policy compositional with existing model preset tool settings
 - ensure a persona can be more restrictive than its bound preset
 
-### Story 4: Persona Visual Identity
+### Story 4: Persona Presentation Surface
 
 Goal:
 
-Make personas visually legible across the whole UI.
+Make personas visually and audibly legible across the whole UI.
 
 Tasks:
 
 - use persona avatar as the primary chat identity marker
 - use persona emoji as a stable cross-chat marker
+- add persona voice defaults as first-class persona fields rather than loose per-model metadata
+- in persona creation/edit UI, show the available TTS voices for the active engine
+- support inline voice preview on the same persona screen so voice selection does not require leaving the app
+- support voice speed preview on the same screen where practical
+- keep the implementation thin by reusing existing Kokoro/OpenAI/Azure voice discovery and playback surfaces
 - keep existing generated chat title behavior, but separate persona marker from title text
 - make sidebar, chat header, and selectors render persona identity consistently
 
-### Story 5: Persona-Aware Chat Attachment
+### Story 5: Persona Starter Archetypes
+
+Goal:
+
+Make persona creation high-leverage without building a giant creator studio.
+
+Tasks:
+
+- define a small built-in archetype registry
+- start with pragmatic archetypes such as:
+  - assistant
+  - storyteller
+  - companion
+  - coach
+- let archetypes prefill:
+  - system contract
+  - greeting seed
+  - response style
+  - continuity defaults
+  - recall defaults
+  - tool defaults
+  - voice defaults where useful
+- allow any persona to diverge from its starting archetype after creation
+- keep archetypes as defaults, not hidden behavior engines
+
+### Story 6: Persona-Aware Chat Attachment
 
 Goal:
 
@@ -401,7 +451,62 @@ Tasks:
 - keep model binding and persona attachment distinct
 - define migration behavior for old chats with no persona
 
-### Story 6: Persona Continuity Artifact
+### Story 7: New Chat Injection Contract
+
+Goal:
+
+Define exactly what a new chat receives when opened under a persona.
+
+Tasks:
+
+- inject persona identity contract
+- inject archetype-derived defaults only where they remain useful after editing
+- inject current binding metadata only where useful
+- inject persona voice defaults into runtime metadata without bloating prompt payload
+- keep the prompt-visible payload minimal and stable
+- never dump raw chat ids into prompt context as the main mechanism
+
+### Story 8: Scene Note And Session Steering
+
+Goal:
+
+Add a thin roleplay/storytelling steering layer without confusing it with long-term memory.
+
+Tasks:
+
+- define a `PersonaSceneNote` or equivalent session-local artifact
+- support the equivalent of:
+  - current scene framing
+  - post-history instruction
+  - temporary behavioral steering
+- make it editable per chat or session
+- keep it distinct from persona identity and distinct from cross-chat continuity
+- support depth-aware or late-prompt insertion where the runtime model benefits from it
+- keep the first implementation simple and deterministic rather than fully programmable
+
+### Story 9: Persona Lorebook
+
+Goal:
+
+Support high-value situational context injection for storytelling, roleplay, and recurring fictional domains.
+
+Tasks:
+
+- define a small `PersonaLorebook` and `PersonaLoreEntry` model
+- support keyword-triggered or explicitly selected lore activation
+- support per-entry insertion position hints such as:
+  - before persona definition
+  - after persona definition
+  - near scene note
+- keep a strict token budget and deterministic activation order
+- support factual uses beyond roleplay:
+  - recurring project glossary
+  - recurring fictional cast
+  - places
+  - world rules
+- keep lorebook activation separate from recall and separate from learned continuity
+
+### Story 10: Persona Continuity Artifact
 
 Goal:
 
@@ -421,7 +526,7 @@ Tasks:
 - distinguish interpersonal continuity from task continuity
 - keep this artifact prompt-sized and durable
 
-### Story 7: Chat Recap And Timeline Consolidation
+### Story 11: Chat Recap And Timeline Consolidation
 
 Goal:
 
@@ -436,7 +541,7 @@ Tasks:
 - make timeline synthesis incremental rather than full rebuild by default
 - keep a repair or rebuild path for maintenance jobs
 
-### Story 8: Persona-Scoped Recall
+### Story 12: Persona-Scoped Recall
 
 Goal:
 
@@ -452,21 +557,7 @@ Tasks:
 - inject evidence only when there is a real continuation or reference gap
 - keep recall separate from continuity snapshot generation
 
-### Story 9: New Chat Injection Contract
-
-Goal:
-
-Define exactly what a new chat receives when opened under a persona.
-
-Tasks:
-
-- inject persona identity contract
-- inject current binding metadata only where useful
-- inject compact continuity snapshot according to persona policy
-- never dump raw chat ids into prompt context as the main mechanism
-- keep the prompt-visible payload minimal and stable
-
-### Story 10: Import And Packaging Surface
+### Story 13: Import And Packaging Surface
 
 Goal:
 
@@ -479,13 +570,19 @@ Tasks:
   - manifest
   - profile
   - avatar reference
+  - voice defaults
   - prompt contract
   - policy settings
   - binding hints
-- consider later compatibility with character-card style imports where practical
+- support later compatibility with character-card style imports where practical
+- explicitly plan a one-way Character Card V2 import path for:
+  - `system_prompt`
+  - `post_history_instructions`
+  - `character_book`
+  - greeting and examples
 - do not tie V1 to community gallery or cloud distribution
 
-### Story 11: Safety, Hygiene, And Debuggability
+### Story 14: Safety, Hygiene, And Debuggability
 
 Goal:
 
@@ -495,10 +592,75 @@ Tasks:
 
 - separate prompt-visible state from runtime-only state
 - add telemetry for persona switch type and continuity injection
+- add telemetry for scene-note and lorebook injection
 - test for persona contamination across chats
 - test soft vs hard switch correctness
 - test that restrictive personas do not unexpectedly inherit broad tool usage
+- test that scene note does not silently become long-term continuity
+- test that lorebook activation remains bounded and deterministic
 - test that continuity synthesis does not run on every turn
+
+## Recommended Implementation Plan
+
+### Phase A
+
+Create the minimum persona runtime that already feels better than presets:
+
+- Story 1
+- Story 2
+- Story 5
+- Story 6
+- Story 4
+
+Deliverable:
+
+- create persona
+- bind it to a preset
+- choose avatar, emoji, voice, and voice speed
+- preview the voice inline
+- attach new chats to `persona_id`
+
+### Phase B
+
+Make personas materially different at prompt/runtime level:
+
+- Story 3
+- Story 7
+- Story 8
+
+Deliverable:
+
+- persona-level tool policy
+- clean new-chat injection contract
+- per-chat scene steering that improves roleplay and storytelling
+
+### Phase C
+
+Add high-value storytelling persistence:
+
+- Story 9
+- Story 10
+- Story 11
+
+Deliverable:
+
+- small persona lorebook
+- compact continuity snapshot
+- async chat recap -> continuity update path
+
+### Phase D
+
+Add retrieval and portability:
+
+- Story 12
+- Story 13
+- Story 14
+
+Deliverable:
+
+- persona-scoped recall
+- small export/import surface
+- test and telemetry hardening
 
 ## Suggested Delivery Order
 
@@ -508,42 +670,45 @@ Build the core persona substrate:
 
 - Story 1
 - Story 2
-- Story 5
 - Story 4
+- Story 5
+- Story 6
 
 Why:
 
-Without a real persona object, attachment model, and visible identity, everything else is still model presets in disguise.
+Without a real persona object, attachment model, starter defaults, and visible identity, everything else is still model presets in disguise.
 
 ### V1
 
-Add policy and continuity foundations:
+Add policy and prompt-shaping foundations:
 
 - Story 3
-- Story 6
-- Story 9
-
-Why:
-
-This is the first version where personas become meaningfully different beyond prompt text.
-
-### V2
-
-Add cross-chat continuity and recall:
-
 - Story 7
 - Story 8
 
 Why:
 
-This is where support, coach, and companion personas begin to feel persistent rather than stateless.
+This is the first version where personas become meaningfully different beyond prompt text while also improving storytelling and session feel.
+
+### V2
+
+Add storytelling and continuity foundations:
+
+- Story 9
+- Story 10
+- Story 11
+
+Why:
+
+This is where roleplay, worldbuilding, and persistent assistant modes start to feel meaningfully different rather than stateless.
 
 ### V3
 
-Add packaging and hardening:
+Add recall, packaging, and hardening:
 
-- Story 10
-- Story 11
+- Story 12
+- Story 13
+- Story 14
 
 Why:
 
@@ -556,6 +721,9 @@ Before this epic is considered directionally healthy, the project should be able
 - Can one persona identity be rebound to different model presets without redefining the persona itself?
 - Can the UI make soft and hard switches legible?
 - Can one persona be tool-restricted without losing the agentic surface for another persona?
+- Can a persona be given a stable voice and previewed at creation time without leaving the app?
+- Can a chat use a temporary scene-steering note without polluting persona continuity?
+- Can a persona inject small bounded lorebook entries for fictional context without becoming a generic memory blob?
 - Can a new chat inherit compact persona continuity without injecting raw archives?
 - Can support or coach personas maintain cross-chat relationship continuity without contaminating technical personas?
 - Can global Ariadne learning remain shared while persona continuity remains scoped?
@@ -582,7 +750,12 @@ These names are intentionally implementation-facing rather than marketing-facing
 
 - `PersonaProfile`
 - `PersonaBinding`
+- `PersonaArchetype`
 - `PersonaCapabilityPolicy`
+- `PersonaVoiceProfile`
+- `PersonaSceneNote`
+- `PersonaLorebook`
+- `PersonaLoreEntry`
 - `PersonaContinuitySnapshot`
 - `PersonaChatRecap`
 - `PersonaTimelineState`
@@ -595,17 +768,20 @@ If a future agent session starts with zero context, it should read in this order
 2. `docs/roadmap/verification-native-agent-improvement-platform.md`
 3. `backend/open_webui/models/models.py`
 4. `backend/open_webui/utils/payload.py`
-5. `backend/open_webui/utils/chat_recall.py`
-6. `backend/open_webui/utils/context_maintenance.py`
-7. `src/lib/components/workspace/Models/ModelEditor.svelte`
+5. `backend/open_webui/routers/audio.py`
+6. `backend/open_webui/utils/chat_recall.py`
+7. `backend/open_webui/utils/context_maintenance.py`
+8. `src/lib/components/workspace/Models/ModelEditor.svelte`
 
 ## Minimal Context Pack For The Next Agent
 
 The next agent should not have to rediscover the following:
 
 - Ariadne already has model presets and avatars
+- Ariadne already has a usable TTS substrate, including discoverable Kokoro voices and playback-rate controls
 - the maintainer already has high-quality live prompts, so prompt writing is not the bottleneck
 - the bottleneck is turning those prompts into first-class runtime objects
+- roleplay/storytelling value depends on separating identity, scene steering, lore injection, and long-term continuity
 - continuity should be consolidated across chats, not improvised from every turn
 - emotional-support and coaching personas need continuity more urgently than technical personas
 - global self-improvement should stay shared across personas
@@ -626,6 +802,6 @@ That is the shortest path to understanding why this epic exists and what shape i
 
 If implementation resumes in a future chat, the first task should be:
 
-`Define the PersonaProfile and PersonaBinding schema, then attach chats to persona_id before touching continuity synthesis.`
+`Define the PersonaProfile, PersonaBinding, and PersonaArchetype schema, then attach chats to persona_id and build the persona creation/edit surface with inline voice preview before touching continuity synthesis.`
 
 That is the highest-leverage place to begin.
