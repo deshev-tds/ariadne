@@ -2134,6 +2134,9 @@ async def chat_completion(
             effective_persona_state = persona_state["effective"]
             metadata["persona_requested_defaults"] = persona_state["requested"]
             metadata["persona_snapshot"] = persona_state["snapshot"]
+            metadata["persona_effective_capabilities"] = effective_persona_state[
+                "capabilities"
+            ]
             metadata["system_prompt_override_present"] = effective_persona_state[
                 "system_prompt_override_present"
             ]

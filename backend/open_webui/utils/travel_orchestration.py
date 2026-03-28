@@ -533,9 +533,27 @@ def build_synthetic_chat_response(content: str, model_id: str) -> dict[str, Any]
 
 
 def should_activate_travel_orchestration(model: dict[str, Any], metadata: dict[str, Any]) -> bool:
-    capabilities = (model.get("info", {}).get("meta", {}).get("capabilities") or {}) if isinstance(model, dict) else {}
+    capability_enabled: Optional[bool] = None
+    metadata_capability_sources = (
+        metadata.get("persona_effective_capabilities"),
+        (metadata.get("persona_requested_defaults") or {}).get("capabilities"),
+        (metadata.get("persona_snapshot") or {}).get("capabilities"),
+    )
+    for capabilities in metadata_capability_sources:
+        if isinstance(capabilities, dict) and "travel_orchestration" in capabilities:
+            capability_enabled = bool(capabilities.get("travel_orchestration"))
+            break
+
+    if capability_enabled is None:
+        capabilities = (
+            (model.get("info", {}).get("meta", {}).get("capabilities") or {})
+            if isinstance(model, dict)
+            else {}
+        )
+        capability_enabled = bool(capabilities.get("travel_orchestration"))
+
     return bool(
-        capabilities.get("travel_orchestration")
+        capability_enabled
         and (metadata.get("params", {}) or {}).get("function_calling") == "native"
     )
 

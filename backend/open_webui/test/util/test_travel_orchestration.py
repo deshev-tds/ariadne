@@ -22,6 +22,36 @@ def test_should_activate_travel_orchestration_requires_persona_capability_and_na
     assert should_activate_travel_orchestration({"info": {"meta": {"capabilities": {}}}}, metadata) is False
 
 
+def test_should_activate_travel_orchestration_uses_persona_effective_capabilities_first():
+    model = {"info": {"meta": {"capabilities": {}}}}
+    metadata = {
+        "params": {"function_calling": "native"},
+        "persona_effective_capabilities": {"travel_orchestration": True},
+    }
+
+    assert should_activate_travel_orchestration(model, metadata) is True
+
+
+def test_should_activate_travel_orchestration_can_fall_back_to_persona_requested_defaults():
+    model = {"info": {"meta": {"capabilities": {}}}}
+    metadata = {
+        "params": {"function_calling": "native"},
+        "persona_requested_defaults": {"capabilities": {"travel_orchestration": True}},
+    }
+
+    assert should_activate_travel_orchestration(model, metadata) is True
+
+
+def test_persona_capability_false_overrides_model_capability():
+    model = {"info": {"meta": {"capabilities": {"travel_orchestration": True}}}}
+    metadata = {
+        "params": {"function_calling": "native"},
+        "persona_effective_capabilities": {"travel_orchestration": False},
+    }
+
+    assert should_activate_travel_orchestration(model, metadata) is False
+
+
 def test_brief_and_classifier_confidence_are_separate_fields():
     classifier = TravelClassifierResult(
         classification="broad_trip",
