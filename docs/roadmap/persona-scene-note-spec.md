@@ -100,12 +100,13 @@ Minimal V1 shape:
 
 ```ts
 type SceneNote = {
-  enabled: boolean;
-  preset_id: string | null;
-  title: string | null;
-  note: string;
-  updated_at: number | null;
-}
+	enabled: boolean;
+	preset_id: string | null;
+	title: string | null;
+	note: string;
+	resolved_note: string;
+	updated_at: number | null;
+};
 ```
 
 Recommended persistence location for first implementation:
@@ -126,10 +127,10 @@ Minimal preset registry:
 
 ```ts
 type ScenePreset = {
-  id: string;
-  label: string;
-  seed: string;
-}
+	id: string;
+	label: string;
+	seed: string;
+};
 ```
 
 Recommended preset set for first pass:
@@ -190,11 +191,14 @@ For the first implementation, only the `scene note` addition is in scope.
 Recommended prompt block shape:
 
 ```text
-[Scene note — current situational steering]
-- Treat this as the active setting and immediate behavioral frame for this chat.
-- Do not treat it as permanent persona identity.
-- Do not overwrite the user's actions, thoughts, or decisions.
-- Scene:
+[Scene note - active scene framing]
+The user deliberately set or updated the current scene for this chat.
+Treat the following as the active scene from this point onward.
+Do not rewrite earlier messages.
+If the existing chat history implies a transition, make a reasonable attempt to let the shift feel natural.
+If no explicit transition is needed, simply assume this is the current setting and behavioral frame now.
+Do not overwrite the user's actions, thoughts, choices, or consent.
+Active scene:
 <resolved scene note text>
 ```
 
@@ -246,6 +250,7 @@ Important UX rules:
 - the user must always be able to ignore presets and write freeform
 - scene state should be visibly chat-local
 - changing scene must never change the persona itself
+- changing scene mid-chat is forward-only and does not rewrite earlier turns
 
 ## What This Is Not
 

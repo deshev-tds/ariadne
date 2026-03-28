@@ -99,6 +99,7 @@
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
+	import SceneNoteModal from '$lib/components/chat/SceneNoteModal.svelte';
 	import ChatControls from './ChatControls.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Placeholder from './Placeholder.svelte';
@@ -125,6 +126,7 @@
 		getEffectiveVoicePreference,
 		getRequestedFeatureIdsFromFeatures
 	} from '$lib/utils/personas';
+	import { getSceneNoteLabel, normalizeSceneNote, type SceneNote } from '$lib/utils/sceneNotes';
 
 	type RuntimeAwareModel = Model & {
 		status?: {
@@ -161,9 +163,12 @@
 	let directSelectedModels = [''];
 	let selectedPersonaId: string | null = null;
 	let selectedPersona: Persona | null = null;
+	let sceneNote: SceneNote | null = null;
+	let showSceneNoteModal = false;
 	let activeBoundModelId: string | null = null;
 	let activeChatIdentity = null;
 	let activeVoicePreference = { voiceId: null, speed: null };
+	let activeSceneNoteLabel: string | null = null;
 	let atSelectedModel: Model | undefined;
 	let selectedModelIds = [];
 	$: selectedPersona =
@@ -257,6 +262,8 @@
 		settings: $settings,
 		config: $config
 	});
+
+	$: activeSceneNoteLabel = getSceneNoteLabel(sceneNote);
 
 	$: {
 		if (selectedPersona) {
@@ -449,12 +456,56 @@
 			return chat?.meta ?? null;
 		}
 
-		return buildPersonaChatMeta(
+		const nextMeta = buildPersonaChatMeta(
 			selectedPersona,
 			getCurrentPersonaOverrides(),
 			getSelectedPersonaChatMeta() ?? {},
 			getCurrentPersonaSnapshot()
 		);
+
+		if (sceneNote) {
+			return {
+				...nextMeta,
+				scene_note: sceneNote
+			};
+		}
+
+		const { scene_note, ...metaWithoutScene } = nextMeta ?? {};
+		return metaWithoutScene;
+	};
+
+	const persistSceneNote = async (nextSceneNote: SceneNote | null) => {
+		sceneNote = nextSceneNote;
+		showSceneNoteModal = false;
+
+		if (contextWindowRuntimeState === 'ready') {
+			scheduleContextWindowPreviewRefresh(0, true);
+		}
+
+		if (!chat?.id || $temporaryChatEnabled) {
+			return;
+		}
+
+		const updatedChat = await updateChatById(
+			localStorage.token,
+			chat.id,
+			{
+				models: selectedModels,
+				history: history,
+				messages: createMessagesList(history, history.currentId),
+				params: params,
+				files: chatFiles
+			},
+			getPersonaMetaForPersistence(),
+			selectedPersonaId
+		).catch((error) => {
+			toast.error(`${error}`);
+			return null;
+		});
+
+		if (updatedChat) {
+			chat = updatedChat;
+		}
 	};
 
 	const getContextWindowPreviewFileSignature = (items) =>
@@ -582,6 +633,8 @@
 
 		prompt = '';
 		messageInput?.setText('');
+		sceneNote = null;
+		showSceneNoteModal = false;
 
 		files = [];
 		messageQueue = [];
@@ -704,6 +757,8 @@
 
 	const applyDirectModelSelection = () => {
 		selectedPersonaId = null;
+		sceneNote = null;
+		showSceneNoteModal = false;
 		atSelectedModel = undefined;
 		selectedModels =
 			directSelectedModels.filter((modelId) => modelId).length > 0
@@ -714,6 +769,8 @@
 
 	const applyPersonaSelectionInPlace = (personaId: string | null) => {
 		selectedPersonaId = personaId;
+		sceneNote = null;
+		showSceneNoteModal = false;
 		if (!personaId) {
 			applyDirectModelSelection();
 			return;
@@ -1727,6 +1784,8 @@
 		autoScroll = true;
 
 		resetInput();
+		sceneNote = null;
+		showSceneNoteModal = false;
 		await chatId.set('');
 		await chatTitle.set('');
 
@@ -1824,6 +1883,7 @@
 				console.log(chatContent);
 
 				selectedPersonaId = chat.persona_id ?? null;
+				sceneNote = normalizeSceneNote(chat?.meta?.scene_note ?? null);
 
 				const persistedPersona = selectedPersonaId
 					? (($personas ?? []).find((persona) => persona.id === selectedPersonaId) ?? null)
@@ -1927,7 +1987,8 @@
 			chat_id: _chatId,
 			...(selectedPersonaId
 				? {
-						persona_id: selectedPersonaId
+						persona_id: selectedPersonaId,
+						...(sceneNote ? { scene_note: sceneNote } : {})
 					}
 				: {}),
 			session_id: $socket?.id,
@@ -2011,7 +2072,8 @@
 			chat_id: _chatId,
 			...(selectedPersonaId
 				? {
-						persona_id: selectedPersonaId
+						persona_id: selectedPersonaId,
+						...(sceneNote ? { scene_note: sceneNote } : {})
 					}
 				: {}),
 			session_id: $socket?.id,
@@ -2913,7 +2975,8 @@
 					? {
 							persona_id: selectedPersonaId,
 							persona_defaults_snapshot: personaSnapshot,
-							persona_chat_overrides: personaOverrides
+							persona_chat_overrides: personaOverrides,
+							...(sceneNote ? { scene_note: sceneNote } : {})
 						}
 					: {}),
 				id: responseMessageId,
@@ -3394,6 +3457,14 @@
 	}}
 />
 
+<SceneNoteModal
+	bind:show={showSceneNoteModal}
+	value={sceneNote}
+	on:save={(event) => {
+		persistSceneNote(event.detail);
+	}}
+/>
+
 <div
 	class="h-screen max-h-[100dvh] transition-width duration-200 ease-in-out {$showSidebar
 		? '  md:max-w-[calc(100%-var(--sidebar-width))]'
@@ -3450,6 +3521,10 @@
 						{selectedPersonaId}
 						onPersonaSelect={handlePersonaSelect}
 						{activeChatIdentity}
+						sceneNoteLabel={activeSceneNoteLabel}
+						onEditSceneNote={() => {
+							showSceneNoteModal = true;
+						}}
 						shareEnabled={!!history.currentId}
 						{initNewChat}
 						{archiveChatHandler}

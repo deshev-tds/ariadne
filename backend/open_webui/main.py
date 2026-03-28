@@ -1879,6 +1879,7 @@ async def chat_completion(
         "persona_defaults_snapshot", None
     )
     incoming_persona_chat_overrides = form_data.pop("persona_chat_overrides", None)
+    incoming_scene_note = form_data.pop("scene_note", None)
 
     metadata = {}
     try:
@@ -1887,6 +1888,7 @@ async def chat_completion(
         persona_state = None
         persona_snapshot = incoming_persona_defaults_snapshot
         persona_persisted_overrides = incoming_persona_chat_overrides or {}
+        scene_note = incoming_scene_note
         request_persona_overrides = {}
 
         params_payload = form_data.get("params") or {}
@@ -1926,6 +1928,8 @@ async def chat_completion(
                     persona_persisted_overrides = (
                         chat_meta.get("persona_chat_overrides") or {}
                     )
+                if incoming_scene_note is None:
+                    scene_note = chat_meta.get("scene_note")
 
         if incoming_persona_id:
             persona = Personas.get_persona_by_id(incoming_persona_id)
@@ -1972,6 +1976,7 @@ async def chat_completion(
                         "snapshot": persona_snapshot,
                         "persisted_overrides": persona_persisted_overrides,
                         "request_overrides": request_persona_overrides,
+                        "scene_note": scene_note,
                         "model": model,
                         "model_info": model_info,
                     },
@@ -2120,6 +2125,7 @@ async def chat_completion(
             metadata["persona_partner_profile"] = effective_persona_state[
                 "partner_profile"
             ]
+            metadata["scene_note"] = effective_persona_state["scene_note"]
             metadata["persona_voice"] = {
                 "voice_id": effective_persona_state["voice_id"],
                 "voice_speed": effective_persona_state["voice_speed"],

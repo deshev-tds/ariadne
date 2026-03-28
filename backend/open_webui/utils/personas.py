@@ -8,6 +8,7 @@ from open_webui.models.personas import PersonaModel
 from open_webui.models.skills import Skills
 from open_webui.models.tools import Tools
 from open_webui.utils.access_control import has_permission
+from open_webui.utils.scene_notes import normalize_scene_note, render_scene_note_block
 
 PERSONA_DEFAULT_FEATURE_IDS = (
     "web_search",
@@ -159,8 +160,13 @@ def _compose_effective_system_prompt(
     requested_system_prompt: Optional[str],
     model_system_prompt: Optional[str],
     partner_profile_block: Optional[str],
+    scene_note_block: Optional[str],
 ) -> Optional[str]:
-    if requested_system_prompt is None and not partner_profile_block:
+    if (
+        requested_system_prompt is None
+        and not partner_profile_block
+        and not scene_note_block
+    ):
         return None
 
     base_prompt = (
@@ -168,10 +174,11 @@ def _compose_effective_system_prompt(
         if requested_system_prompt is not None
         else (model_system_prompt or None)
     )
-    if partner_profile_block:
+    blocks = [block for block in (partner_profile_block, scene_note_block) if block]
+    if blocks:
         if base_prompt:
-            return f"{base_prompt.rstrip()}\n\n{partner_profile_block}"
-        return partner_profile_block
+            return f"{base_prompt.rstrip()}\n\n" + "\n\n".join(blocks)
+        return "\n\n".join(blocks)
 
     return requested_system_prompt
 
@@ -283,6 +290,10 @@ def resolve_effective_persona_state(
     requested_action_ids = list(requested.get("action_ids") or [])
     requested_feature_ids = list(requested.get("default_feature_ids") or [])
     requested_partner_profile = _normalize_partner_profile(requested.get("partner_profile"))
+    requested_scene_note = normalize_scene_note(
+        runtime_context.get("scene_note")
+        or (chat.meta if chat and isinstance(chat.meta, dict) else {}).get("scene_note")
+    )
 
     effective_tool_ids = [tool_id for tool_id in requested_tool_ids if tool_id in available_tool_ids]
     effective_skill_ids = [
@@ -300,13 +311,17 @@ def resolve_effective_persona_state(
 
     requested_system_prompt = requested.get("system_prompt")
     partner_profile_block = _render_partner_profile_block(requested_partner_profile)
+    scene_note_block = render_scene_note_block(requested_scene_note)
     effective_system_prompt = _compose_effective_system_prompt(
         requested_system_prompt,
         _extract_model_system_prompt(runtime_context),
         partner_profile_block,
+        scene_note_block,
     )
     system_prompt_override_present = (
-        requested_system_prompt is not None or partner_profile_block is not None
+        requested_system_prompt is not None
+        or partner_profile_block is not None
+        or scene_note_block is not None
     )
 
     voice_speed = requested.get("voice_speed")
@@ -334,6 +349,7 @@ def resolve_effective_persona_state(
             "system_prompt": effective_system_prompt,
             "system_prompt_override_present": system_prompt_override_present,
             "partner_profile": requested_partner_profile,
+            "scene_note": requested_scene_note,
             "voice_id": requested.get("voice_id"),
             "voice_speed": voice_speed,
             "tool_ids": effective_tool_ids,

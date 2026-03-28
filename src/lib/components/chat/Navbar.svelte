@@ -58,6 +58,8 @@
 		description?: string;
 		secondaryLabel?: string;
 	} | null = null;
+	export let sceneNoteLabel: string | null = null;
+	export let onEditSceneNote: () => void = () => {};
 	export let contextWindowPreview: ContextWindowPreview | null = null;
 	export let contextWindowRuntimeState: 'ready' | 'loading' | 'hidden' = 'ready';
 	export let draftPrompt = '';
@@ -152,6 +154,22 @@
 											{$i18n.t(
 												'Identity updates live. Behavior and defaults are pinned to this chat.'
 											)}
+										</div>
+										<div class="mt-1">
+											<button
+												type="button"
+												class="inline-flex max-w-full items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[0.7rem] font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-gray-700 dark:hover:bg-gray-850"
+												on:click={() => {
+													onEditSceneNote();
+												}}
+											>
+												<PencilSquare className="size-3" />
+												<span class="max-w-[18rem] truncate">
+													{sceneNoteLabel
+														? `${$i18n.t('Scene')}: ${sceneNoteLabel}`
+														: $i18n.t('Scene')}
+												</span>
+											</button>
 										</div>
 									</div>
 								{/if}

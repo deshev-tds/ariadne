@@ -63,6 +63,7 @@ The important divergences are not cosmetic.
 - Persona authoring now includes a first-class `partner_profile` layer for always-on relational or operator framing that stays separate from the persona core prompt.
 - The app now has a dedicated `Workspace -> Personas` surface with persona-first chat selection, voice preview, and direct-model fallback.
 - Persona rebinding on an existing chat now refreshes the pinned runtime snapshot instead of silently carrying stale defaults from the previous persona.
+- Persona-attached chats now have a first-class `scene_note` layer for chat-local atmospheric or situational steering without mutating persona identity.
 - Automatic pre-migration SQLite backups were added before Alembic upgrades so local schema changes do not run without a fresh snapshot.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
 - On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
@@ -75,7 +76,7 @@ This fork now has a first usable persona layer on top of the older model-preset 
 
 The important distinction is that persona is no longer treated as "just another model with a different prompt". The runtime shape is:
 
-`persona identity + binding + partner profile + requested defaults + chat attachment`
+`persona identity + binding + partner profile + requested defaults + chat attachment + scene note`
 
 Current Persona V1 behavior:
 
@@ -85,6 +86,7 @@ Current Persona V1 behavior:
 - persona `partner_profile` is a separate always-on layer for relational framing and user/operator-specific stance
 - persona runtime defaults are pinned per chat at creation time
 - changing persona on an existing chat replaces that chat's pinned persona snapshot instead of reusing stale defaults
+- `scene_note` is chat-local, mutable, and injected as forward-only current-scene framing
 - direct model use still exists as a separate fallback path
 - voice belongs to the persona definition and can be previewed inline
 
@@ -92,7 +94,6 @@ That split matters because it keeps older chats stable when a persona's behavior
 
 The current V1 implementation deliberately stops before:
 
-- scene notes
 - lorebooks
 - persona-scoped continuity synthesis
 - persona-scoped recall
@@ -662,6 +663,7 @@ That is a good place to be.
 
 Architecture problems are expensive.
 Ranking problems are irritating, but fixable.
+
 ## Voice / TTS
 
 This fork adds Kokoro because local TTS quality matters, and a lot of local stacks are either too robotic or too heavy for the quality they provide.
