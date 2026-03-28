@@ -29,6 +29,7 @@
 	let draftThumbnailUrl = '';
 	let draftThumbnailPrompt = '';
 	let lastLoadedSignature = '';
+	let wasOpen = false;
 	let generatingThumbnail = false;
 
 	const resetDraft = (sceneNote: SceneNote | null) => {
@@ -39,12 +40,17 @@
 		draftThumbnailPrompt = sceneNote?.thumbnail_prompt ?? '';
 	};
 
-	$: if (show) {
+	$: {
 		const signature = JSON.stringify(value ?? null);
-		if (signature !== lastLoadedSignature) {
+		if (show && !wasOpen) {
+			resetDraft(value);
+			lastLoadedSignature = signature;
+		} else if (show && signature !== lastLoadedSignature) {
 			resetDraft(value);
 			lastLoadedSignature = signature;
 		}
+
+		wasOpen = show;
 	}
 
 	$: resolvedNote = resolveSceneNoteText({
