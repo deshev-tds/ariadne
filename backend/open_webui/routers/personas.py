@@ -6,10 +6,10 @@ from sqlalchemy.orm import Session
 
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.internal.db import get_session
-from open_webui.models.models import Models
 from open_webui.models.personas import PersonaForm, PersonaListResponse, PersonaModel, Personas
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.auth import get_verified_user
+from open_webui.utils.models import get_all_models, get_filtered_models
 
 log = logging.getLogger(__name__)
 
@@ -26,21 +26,18 @@ def _ensure_workspace_access(request: Request, user, db: Session) -> None:
         )
 
 
-def _validate_bound_model(bound_model_id: Optional[str], user, db: Session) -> None:
+async def _validate_bound_model(
+    request: Request, bound_model_id: Optional[str], user, db: Session
+) -> None:
     if not bound_model_id:
         return
 
-    model = Models.get_model_by_id(bound_model_id, db=db)
-    if not model:
+    models = get_filtered_models(await get_all_models(request, user=user), user, db=db)
+    if not any(model.get("id") == bound_model_id for model in models):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Bound model must be an enabled Open WebUI model or preset.",
+            detail="Bound model must be a model currently available to this user in Open WebUI.",
         )
-
-    if user.role != "admin" and model.user_id != user.id:
-        # Access-granted models are still valid; the chat completion path will
-        # enforce access again at runtime, so we allow referenced models here.
-        return
 
 
 @router.get("/", response_model=list[PersonaModel])
@@ -79,7 +76,7 @@ async def create_persona(
     db: Session = Depends(get_session),
 ):
     _ensure_workspace_access(request, user, db)
-    _validate_bound_model(form_data.bound_model_id, user, db)
+    await _validate_bound_model(request, form_data.bound_model_id, user, db)
 
     persona = Personas.insert_new_persona(user.id, form_data, db=db)
     if persona is None:
@@ -104,7 +101,7 @@ async def update_persona(
             detail="Persona id is required.",
         )
 
-    _validate_bound_model(form_data.bound_model_id, user, db)
+    await _validate_bound_model(request, form_data.bound_model_id, user, db)
     persona = Personas.update_persona_by_id(form_data.id, user.id, form_data, db=db)
     if persona is None:
         raise HTTPException(

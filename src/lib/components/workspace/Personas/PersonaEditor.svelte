@@ -166,10 +166,7 @@
 		TTS_ENGINE_LABELS[$config?.audio?.tts?.engine ?? ''] ?? ($config?.audio?.tts?.engine || 'Unknown');
 
 	$: boundModel = $models.find((model) => model.id === boundModelId) ?? null;
-	$: bindableModels = ($models ?? []).filter((model) => {
-		if (model?.info?.meta?.hidden ?? false) return false;
-		return model?.info?.is_active === true;
-	});
+	$: bindableModels = ($models ?? []).filter((model) => !(model?.info?.meta?.hidden ?? false));
 	$: currentBoundModelOption =
 		boundModelId && !bindableModels.some((model) => model.id === boundModelId)
 			? ($models ?? []).find((model) => model.id === boundModelId) ?? null
@@ -471,7 +468,7 @@
 							</div>
 							<div class="mt-1 text-xs text-gray-500">
 								{$i18n.t(
-									'Only models enabled in Open WebUI are bindable here. Raw llama.cpp models must be enabled in Admin Settings -> Models first.'
+									'This list follows the models Open WebUI currently exposes to you. Models disabled or hidden in Admin Settings -> Models will not appear here.'
 								)}
 							</div>
 						</div>
