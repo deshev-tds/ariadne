@@ -1,10 +1,10 @@
 # Persona Partner Profile Spec
 
-Status: draft
+Status: implemented in V1
 
 Owner: local fork
 
-Last updated: 2026-03-27
+Last updated: 2026-03-28
 
 Companion to:
 
@@ -15,6 +15,12 @@ Companion to:
 ## Goal
 
 Add a first-class `Partner Profile` layer for persona-attached chats.
+
+Implementation note:
+
+- the current fork ships `persona.partner_profile` as a first-class persisted field
+- it is editable in `Workspace -> Personas`
+- it is snapshotted per chat as part of pinned persona defaults
 
 This layer should hold stable, always-on context about how a given persona should understand and relate to the operator.
 

@@ -91,6 +91,12 @@ Current Persona V1 behavior:
 - `scene_note` can also carry an optional UI thumbnail without changing prompt/runtime behavior
 - direct model use still exists as a separate fallback path
 - voice belongs to the persona definition and can be previewed inline
+- persona editing now exposes:
+  - bound model
+  - partner profile
+  - per-persona voice override
+  - inherited voice fallback from bound model and app audio defaults
+- active persona chats now have a direct `Edit Persona` path from the navbar
 
 That split matters because it keeps older chats stable when a persona's behavior settings change, while still letting the persona's visible identity update across the interface.
 

@@ -1,10 +1,10 @@
 # Persona Scene Note Spec
 
-Status: draft
+Status: implemented in V1.5
 
 Owner: local fork
 
-Last updated: 2026-03-27
+Last updated: 2026-03-28
 
 Companion to:
 
@@ -14,6 +14,11 @@ Companion to:
 ## Goal
 
 Add a first-class `Scene Note` layer for persona-attached chats so storytelling and roleplay can be steered without bloating the core persona prompt.
+
+Implementation note:
+
+- the current fork ships `chat.meta.scene_note`, preset-based authoring, forward-only runtime injection, and optional thumbnail metadata
+- lorebook and continuity remain separate and are still future work
 
 This is the thin equivalent of:
 

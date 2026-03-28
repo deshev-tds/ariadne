@@ -1,10 +1,10 @@
 # Persona Runtime UX And Implementation Plan
 
-Status: draft
+Status: active, partially implemented
 
 Owner: local fork
 
-Last updated: 2026-03-27
+Last updated: 2026-03-28
 
 Companion to:
 
@@ -22,6 +22,26 @@ The UX should feel like a clean evolution of the current model-preset workflow:
 - models remain visible, but secondary
 - persona creation stays fast
 - roleplay/storytelling quality improves through better prompt layering, not through giant editor surfaces
+
+## Current Implementation Snapshot
+
+Already shipped:
+
+- `Workspace -> Personas`
+- persona list, create, edit, duplicate, enable/disable
+- persona-first navbar selection
+- direct-model fallback lane
+- per-persona bound model, partner profile, and voice controls
+- inline voice preview
+- per-chat pinned runtime defaults
+- chat-local `Scene Note`
+
+Still pending from this plan:
+
+- richer starter archetype defaults
+- opening / greeting as a true runtime directive layer
+- lorebook
+- continuity and persona-scoped recall
 
 ## Product Position
 
@@ -344,6 +364,10 @@ Success signal:
 
 - the maintainer can use personas all day without needing the model workspace for normal use
 
+Status:
+
+- implemented
+
 ### Phase 2: Storytelling Lift
 
 Scope:
@@ -355,6 +379,12 @@ Scope:
 Success signal:
 
 - storyteller and companion personas feel materially different in-chat, not only cosmetically different
+
+Status:
+
+- partially implemented
+- `Scene Note` is shipped
+- richer capability policy and deeper storytelling layering remain
 
 ### Phase 3: Persistent Persona Value
 
@@ -368,6 +398,10 @@ Success signal:
 
 - fictional and relationship-heavy personas feel persistent without prompt sludge
 
+Status:
+
+- not started
+
 ### Phase 4: Hardening
 
 Scope:
@@ -379,6 +413,10 @@ Scope:
 Success signal:
 
 - persona UX remains understandable as the system gains memory and portability
+
+Status:
+
+- not started
 
 ## First Concrete Slice
 
@@ -400,3 +438,7 @@ If implementation starts immediately, the first UX slice should be:
 7. Show persona markers in sidebar and search.
 
 That slice is enough to make persona real in the product before continuity or lorebook work begins.
+
+Current note:
+
+- this initial slice is delivered and is now the baseline substrate for the next layer of work

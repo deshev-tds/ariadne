@@ -1,10 +1,10 @@
 # Persona Runtime And Continuity Layer
 
-Status: proposed
+Status: active, partially implemented
 
 Owner: local fork
 
-Last updated: 2026-03-27
+Last updated: 2026-03-28
 
 ## Executive Summary
 
@@ -32,6 +32,45 @@ The goal is to let the maintainer switch between stable assistants with:
 - scoped continuity across chats
 
 without giving up Ariadne's existing agentic capabilities or contaminating one persona's continuity with another's.
+
+## Current Implementation Snapshot
+
+Implemented so far:
+
+- first-class private personas with their own workspace screen
+- persona-first chat attachment with pinned runtime defaults per chat
+- live persona identity across attached chats
+- per-persona `bound_model_id`
+- per-persona `partner_profile`
+- per-persona voice and speed preferences with inline preview
+- direct-model fallback lane
+- sidebar/search persona markers
+- chat-local `scene_note` with preset-based steering
+- optional scene thumbnails as UI-only metadata
+
+Still intentionally not implemented:
+
+- lorebook
+- persona continuity snapshot
+- recap -> continuity updater
+- persona-scoped recall
+- import/packaging surface
+
+The practical result is that the fork now has a real persona runtime substrate, but not yet the full long-horizon memory and portability layer described later in this epic.
+
+## Highest-ROI Remaining Work
+
+Near-term priorities after the current substrate:
+
+1. `PersonaLorebook`
+2. opening / greeting as a real runtime directive layer
+3. richer starter archetype defaults
+
+Deliberately later:
+
+1. continuity snapshot
+2. recap -> continuity updater
+3. persona-scoped recall
 
 ## Goal
 
@@ -336,6 +375,10 @@ Goal:
 
 Define the first-class persona object and its minimum durable fields.
 
+Implementation status:
+
+- implemented in V1
+
 Tasks:
 
 - define `PersonaProfile`
@@ -370,6 +413,11 @@ Goal:
 
 Separate persona identity from runtime selection.
 
+Implementation status:
+
+- implemented in V1 as a single `bound_model_id`
+- fallback bindings and explicit hard-switch semantics are not implemented yet
+
 Tasks:
 
 - define `PersonaBinding`
@@ -388,6 +436,11 @@ Goal:
 
 Make persona-level tool behavior explicit rather than accidental.
 
+Implementation status:
+
+- partially implemented in V1 through requested default tools, filters, actions, features, and capabilities
+- richer ask-first / disabled policy modes are not implemented yet
+
 Tasks:
 
 - define `PersonaCapabilityPolicy`
@@ -404,6 +457,10 @@ Tasks:
 Goal:
 
 Make personas visually and audibly legible across the whole UI.
+
+Implementation status:
+
+- implemented in V1, including persona-first selection, sidebar/search markers, per-persona voice fields, and inline preview
 
 Tasks:
 
@@ -422,6 +479,11 @@ Tasks:
 Goal:
 
 Make persona creation high-leverage without building a giant creator studio.
+
+Implementation status:
+
+- partially implemented in V1 through the archetype field
+- richer archetype default registry is not implemented yet
 
 Tasks:
 
@@ -448,6 +510,10 @@ Goal:
 
 Attach chats to personas as a first-class relation.
 
+Implementation status:
+
+- implemented in V1
+
 Tasks:
 
 - add `persona_id` to chat metadata or first-class chat state
@@ -460,6 +526,11 @@ Tasks:
 Goal:
 
 Define exactly what a new chat receives when opened under a persona.
+
+Implementation status:
+
+- implemented in V1 for persona core prompt, partner profile, voice defaults, and pinned requested defaults
+- greeting/opening is still only partially realized as authoring data, not a fuller runtime directive layer
 
 Tasks:
 
@@ -475,6 +546,11 @@ Tasks:
 Goal:
 
 Add a thin roleplay/storytelling steering layer without confusing it with long-term memory.
+
+Implementation status:
+
+- implemented in V1.5 as chat-local `scene_note`
+- preset-based authoring, forward-only semantics, and optional thumbnail metadata are shipped
 
 Tasks:
 
@@ -493,6 +569,10 @@ Tasks:
 Goal:
 
 Support high-value situational context injection for storytelling, roleplay, and recurring fictional domains.
+
+Implementation status:
+
+- not started
 
 Tasks:
 
@@ -516,6 +596,10 @@ Goal:
 
 Create a compact continuity artifact for each persona that survives across chats.
 
+Implementation status:
+
+- not started
+
 Tasks:
 
 - define `PersonaContinuitySnapshot`
@@ -536,6 +620,10 @@ Goal:
 
 Generate persona continuity from completed chats rather than from noisy individual turns.
 
+Implementation status:
+
+- not started
+
 Tasks:
 
 - define a per-chat closeout recap artifact
@@ -550,6 +638,10 @@ Tasks:
 Goal:
 
 Let a persona retrieve evidence from its own archived chats without inheriting everything by default.
+
+Implementation status:
+
+- not started
 
 Tasks:
 
