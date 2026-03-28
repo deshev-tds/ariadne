@@ -103,16 +103,16 @@
 			<div class="flex items-center w-full max-w-full">
 				{#if $mobile && !$showSidebar}
 					<div
-						class="-translate-x-0.5 mr-1 mt-1 self-start flex flex-none items-center text-gray-600 dark:text-gray-400"
+						class="-translate-x-0.5 mr-1 flex flex-none items-center self-center text-gray-600 dark:text-gray-400"
 					>
 						<Tooltip content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}>
 							<button
-								class=" cursor-pointer flex rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition"
+								class="inline-flex size-9 cursor-pointer items-center justify-center rounded-xl hover:bg-gray-100 dark:hover:bg-gray-850 transition"
 								on:click={() => {
 									showSidebar.set(!$showSidebar);
 								}}
 							>
-								<div class=" self-center p-1.5">
+								<div class="self-center">
 									<Sidebar />
 								</div>
 							</button>
@@ -126,7 +126,7 @@
 			"
 				>
 					<div class="flex min-w-0 flex-col gap-2">
-						<div class="flex min-w-0 items-start gap-2">
+						<div class="flex min-w-0 gap-2 {$mobile ? 'items-center' : 'items-start'}">
 							{#if showModelSelector}
 								<div class="flex min-w-0 flex-1 flex-col gap-2">
 									<PersonaSelector
@@ -143,7 +143,7 @@
 								</div>
 							{/if}
 							{#if $mobile && showModelSelector && selectedPersonaId}
-								<div class="mt-0.5 flex flex-none items-center gap-1">
+								<div class="flex flex-none items-center gap-1">
 									<Tooltip content={$i18n.t('Scene')}>
 										<button
 											type="button"
@@ -172,7 +172,7 @@
 									</Tooltip>
 								</div>
 							{/if}
-							<div class="flex flex-none self-start">
+							<div class="flex flex-none {$mobile ? 'self-center' : 'self-start'}">
 								{#if contextWindowRuntimeState === 'loading'}
 									<Tooltip content={$i18n.t('Model loading')}>
 										<div

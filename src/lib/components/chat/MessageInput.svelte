@@ -1579,7 +1579,7 @@
 								</div>
 							</div>
 
-							<div class=" flex justify-between mt-0.5 mb-2.5 mx-0.5 max-w-full" dir="ltr">
+							<div class=" flex items-center justify-between mt-0.5 mb-2.5 mx-0.5 max-w-full" dir="ltr">
 								<div class="ml-1 self-end flex min-w-0 flex-1 items-center overflow-x-auto scrollbar-hidden">
 									<InputMenu
 										bind:files
@@ -1630,7 +1630,7 @@
 									>
 										<div
 											id="input-menu-button"
-											class="bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden"
+											class="bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 rounded-full size-8 shrink-0 flex justify-center items-center outline-hidden focus:outline-hidden leading-none"
 										>
 											<PlusAlt className="size-5.5" />
 										</div>
@@ -1664,14 +1664,14 @@
 										>
 											<div
 												id="integration-menu-button"
-												class="bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden"
+												class="bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 rounded-full size-8 shrink-0 flex justify-center items-center outline-hidden focus:outline-hidden leading-none"
 											>
 												<Component className="size-4.5" strokeWidth="1.5" />
 											</div>
 										</IntegrationsMenu>
 									{/if}
 
-									<div class="ml-1 flex shrink-0 gap-1.5">
+									<div class="ml-1 flex shrink-0 items-center gap-1.5">
 										<Tooltip
 											content={thinkingEnabled
 												? $i18n.t('Thinking mode is enabled for this chat')
@@ -1683,7 +1683,7 @@
 												id="thinking-toggle-button"
 												aria-label={$i18n.t('Thinking mode')}
 												aria-pressed={thinkingEnabled}
-												class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {thinkingEnabled
+												class="rounded-full size-8 flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden leading-none transition-colors {thinkingEnabled
 													? 'text-amber-700 bg-amber-100/80 hover:bg-amber-200/80 dark:text-amber-200 dark:bg-amber-700/20 dark:hover:bg-amber-700/30'
 													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 												on:click={async () => {
@@ -1705,7 +1705,7 @@
 												id="agentic-ledger-toggle-button"
 												aria-label={$i18n.t('Agentic memory mode')}
 												aria-pressed={ledgerAgenticEnabled}
-												class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {ledgerAgenticEnabled
+												class="rounded-full size-8 flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden leading-none transition-colors {ledgerAgenticEnabled
 													? 'text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200/80 dark:text-emerald-200 dark:bg-emerald-700/20 dark:hover:bg-emerald-700/30'
 													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 												on:click={async () => {
@@ -1729,7 +1729,7 @@
 													type="button"
 													id="working-mode-button"
 													aria-label="Working mode"
-													class="rounded-full flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden transition-colors font-semibold uppercase tracking-[0.08em] whitespace-nowrap {workingMode ===
+													class="rounded-full flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden leading-none transition-colors font-semibold uppercase tracking-[0.08em] whitespace-nowrap {workingMode ===
 													'offsec'
 														? 'text-orange-700 bg-orange-100/80 hover:bg-orange-200/80 dark:text-orange-200 dark:bg-orange-700/20 dark:hover:bg-orange-700/30'
 														: workingMode === 'science'
@@ -1792,7 +1792,7 @@
 												id="local-corpus-mode-button"
 												aria-label={$i18n.t('Local corpus mode')}
 												aria-pressed={localCorpusMode !== 'off'}
-												class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {localCorpusMode ===
+												class="rounded-full size-8 flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden leading-none transition-colors {localCorpusMode ===
 												'prefer'
 													? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
 													: localCorpusMode === 'auto'
@@ -1824,7 +1824,7 @@
 													id="focused-search-toggle-button"
 													aria-label={$i18n.t('Focused search mode')}
 													aria-pressed={focusedSearchEnabled}
-													class="rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors {focusedSearchEnabled
+													class="rounded-full size-8 flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden leading-none transition-colors {focusedSearchEnabled
 														? 'text-cyan-700 bg-cyan-100/80 hover:bg-cyan-200/80 dark:text-cyan-200 dark:bg-cyan-700/20 dark:hover:bg-cyan-700/30'
 														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 													on:click={async () => {

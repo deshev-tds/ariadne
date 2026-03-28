@@ -29,7 +29,7 @@
 		<button
 			type="button"
 			class="{compact
-				? 'w-auto min-w-10 px-2.5 py-2 text-center text-xs font-semibold tracking-[0.08em] uppercase'
+				? 'h-9 w-auto min-w-10 px-2.5 text-center text-[0.7rem] leading-none font-semibold tracking-[0.08em] uppercase'
 				: 'w-full px-3 py-2 text-left text-sm sm:w-auto'} shrink-0 whitespace-nowrap rounded-xl border transition {selectedPersonaId
 				? 'border-gray-200 text-gray-500 dark:border-gray-800 dark:text-gray-400'
 				: 'border-gray-900 bg-gray-900 text-white dark:border-gray-200 dark:bg-gray-100 dark:text-gray-900'}"
@@ -45,7 +45,7 @@
 
 		<select
 			class="w-full min-w-0 rounded-xl border border-gray-200 bg-transparent dark:border-gray-800 {compact
-				? 'px-2.5 py-2 text-xs'
+				? 'h-9 px-2.5 text-xs leading-none'
 				: 'px-3 py-2 text-sm sm:flex-1'}"
 			bind:value
 			{disabled}
