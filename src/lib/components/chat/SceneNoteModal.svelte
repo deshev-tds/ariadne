@@ -30,6 +30,8 @@
 	let draftThumbnailPrompt = '';
 	let lastLoadedSignature = '';
 	let wasOpen = false;
+	let activeThumbnailKey = '';
+	let thumbnailCache: Record<string, { url: string; prompt: string }> = {};
 	let generatingThumbnail = false;
 
 	const resetDraft = (sceneNote: SceneNote | null) => {
@@ -38,6 +40,14 @@
 		draftNote = sceneNote?.note ?? '';
 		draftThumbnailUrl = sceneNote?.thumbnail_url ?? '';
 		draftThumbnailPrompt = sceneNote?.thumbnail_prompt ?? '';
+		thumbnailCache = {};
+		if (sceneNote?.thumbnail_url && sceneNote?.thumbnail_prompt) {
+			thumbnailCache[sceneNote.thumbnail_prompt] = {
+				url: sceneNote.thumbnail_url,
+				prompt: sceneNote.thumbnail_prompt
+			};
+		}
+		activeThumbnailKey = '';
 	};
 
 	$: {
@@ -65,9 +75,23 @@
 		($config?.features?.enable_image_generation ?? false) &&
 		($user?.role === 'admin' || $user?.permissions?.features?.image_generation) &&
 		!!resolvedNote;
-	$: if (draftThumbnailPrompt && draftThumbnailPrompt !== thumbnailPrompt) {
-		draftThumbnailUrl = '';
-		draftThumbnailPrompt = '';
+	$: if (thumbnailPrompt !== activeThumbnailKey) {
+		if (activeThumbnailKey && draftThumbnailUrl && draftThumbnailPrompt === activeThumbnailKey) {
+			thumbnailCache[activeThumbnailKey] = {
+				url: draftThumbnailUrl,
+				prompt: draftThumbnailPrompt
+			};
+		}
+
+		activeThumbnailKey = thumbnailPrompt;
+		const cachedThumbnail = thumbnailPrompt ? thumbnailCache[thumbnailPrompt] : null;
+		if (cachedThumbnail) {
+			draftThumbnailUrl = cachedThumbnail.url;
+			draftThumbnailPrompt = cachedThumbnail.prompt;
+		} else if (draftThumbnailPrompt !== thumbnailPrompt) {
+			draftThumbnailUrl = '';
+			draftThumbnailPrompt = '';
+		}
 	}
 
 	const handlePresetSelect = (presetId: string | null) => {
@@ -86,6 +110,7 @@
 		draftNote = '';
 		draftThumbnailUrl = '';
 		draftThumbnailPrompt = '';
+		thumbnailCache = {};
 	};
 
 	const handleGenerateThumbnail = async () => {
@@ -104,6 +129,10 @@
 
 			draftThumbnailUrl = nextThumbnailUrl;
 			draftThumbnailPrompt = thumbnailPrompt;
+			thumbnailCache[thumbnailPrompt] = {
+				url: nextThumbnailUrl,
+				prompt: thumbnailPrompt
+			};
 			toast.success($i18n.t('Scene thumbnail generated'));
 		} catch (error) {
 			console.error(error);
@@ -228,6 +257,9 @@
 								bind:value={draftThumbnailUrl}
 								placeholder={$i18n.t('Paste an image URL or auto-generate one')}
 								on:input={() => {
+									if (activeThumbnailKey) {
+										delete thumbnailCache[activeThumbnailKey];
+									}
 									if (draftThumbnailPrompt) {
 										draftThumbnailPrompt = '';
 									}
@@ -274,6 +306,9 @@
 									type="button"
 									class="w-full rounded-full border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:border-gray-700 dark:hover:bg-gray-850"
 									on:click={() => {
+										if (activeThumbnailKey) {
+											delete thumbnailCache[activeThumbnailKey];
+										}
 										draftThumbnailUrl = '';
 										draftThumbnailPrompt = '';
 									}}
