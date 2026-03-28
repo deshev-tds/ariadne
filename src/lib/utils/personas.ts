@@ -250,9 +250,18 @@ export const getEffectiveVoicePreference = ({
 	const requestedVoiceId = overrides.voice_id ?? snapshot?.voice_id ?? null;
 	const requestedVoiceSpeed = overrides.voice_speed ?? snapshot?.voice_speed ?? null;
 
-	if (requestedVoiceId) {
+	const inheritedVoiceId =
+		model?.info?.meta?.tts?.voice ??
+		(settings?.audio?.tts?.defaultVoice === config?.audio?.tts?.voice
+			? (settings?.audio?.tts?.voice ?? config?.audio?.tts?.voice)
+			: null) ??
+		config?.audio?.tts?.voice ??
+		settings?.audio?.tts?.voice ??
+		null;
+
+	if (requestedVoiceId || requestedVoiceSpeed !== null) {
 		return {
-			voiceId: requestedVoiceId,
+			voiceId: requestedVoiceId ?? inheritedVoiceId,
 			speed: requestedVoiceSpeed ?? null
 		};
 	}

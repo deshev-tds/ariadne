@@ -4,7 +4,7 @@
 	import { toast } from 'svelte-sonner';
 
 	import { DEFAULT_CAPABILITIES, WEBUI_BASE_URL } from '$lib/constants';
-	import { functions, models, tools } from '$lib/stores';
+	import { config, functions, models, tools } from '$lib/stores';
 	import { getFunctions } from '$lib/apis/functions';
 	import { getTools } from '$lib/apis/tools';
 	import { getVoices, synthesizeOpenAISpeech } from '$lib/apis/audio';
@@ -52,6 +52,15 @@
 	let availableVoices: { id: string; name: string }[] = [];
 	let previewingVoice = false;
 
+	const TTS_ENGINE_LABELS: Record<string, string> = {
+		'': 'Browser Speech',
+		openai: 'OpenAI',
+		elevenlabs: 'ElevenLabs',
+		azure: 'Azure AI Speech',
+		transformers: 'Transformers',
+		kokoro_onnx: 'Kokoro ONNX'
+	};
+
 	let toolIds: string[] = [];
 	let skillIds: string[] = [];
 	let filterIds: string[] = [];
@@ -62,6 +71,49 @@
 	const voicePreviewText = () =>
 		`Hello. I'm ${name || 'this persona'}. This is my current voice preview.`;
 
+	const sortVoices = (voices: { id: string; name: string }[] = []) =>
+		voices.sort((a, b) => a.name.localeCompare(b.name, $i18n.resolvedLanguage));
+
+	const normalizeVoicesResponse = (response: any) => {
+		if (Array.isArray(response?.voices)) {
+			return sortVoices(
+				response.voices
+					.filter((voice) => voice?.id)
+					.map((voice) => ({
+						id: `${voice.id}`,
+						name: `${voice.name ?? voice.id}`
+					}))
+			);
+		}
+
+		if (response && typeof response === 'object') {
+			return sortVoices(
+				Object.entries(response).map(([id, label]) => ({
+					id,
+					name: `${label ?? id}`
+				}))
+			);
+		}
+
+		return [];
+	};
+
+	const getVoiceName = (id: string | null | undefined) => {
+		if (!id) return null;
+		return availableVoices.find((voice) => voice.id === id)?.name ?? id;
+	};
+
+	const getAudioEngineLabel = () =>
+		TTS_ENGINE_LABELS[$config?.audio?.tts?.engine ?? ''] ?? ($config?.audio?.tts?.engine || 'Unknown');
+
+	$: boundModel = $models.find((model) => model.id === boundModelId) ?? null;
+	$: boundModelVoiceId = boundModel?.info?.meta?.tts?.voice ?? null;
+	$: globalVoiceId = $config?.audio?.tts?.voice ?? null;
+	$: previewVoiceId = voiceId || boundModelVoiceId || globalVoiceId || '';
+	$: previewVoiceName = getVoiceName(previewVoiceId);
+	$: boundModelVoiceName = getVoiceName(boundModelVoiceId);
+	$: globalVoiceName = getVoiceName(globalVoiceId);
+
 	const fileToDataUrl = (file: File) =>
 		new Promise<string>((resolve, reject) => {
 			const reader = new FileReader();
@@ -71,8 +123,13 @@
 		});
 
 	const previewVoice = async () => {
-		if (!voiceId) {
-			toast.error($i18n.t('Choose a voice first.'));
+		if (!$config?.audio?.tts?.engine) {
+			toast.error($i18n.t('Preview requires a backend speech engine.'));
+			return;
+		}
+
+		if (!previewVoiceId) {
+			toast.error($i18n.t('Choose a voice or bind a model with a voice first.'));
 			return;
 		}
 
@@ -80,7 +137,7 @@
 		try {
 			const res = await synthesizeOpenAISpeech(
 				localStorage.token,
-				voiceId,
+				previewVoiceId,
 				voicePreviewText(),
 				undefined,
 				voiceSpeed
@@ -154,7 +211,7 @@
 				greeting: greeting.trim() || null,
 				partner_profile: buildPartnerProfile(),
 				voice_id: voiceId || null,
-				voice_speed: voiceId ? voiceSpeed : null,
+				voice_speed: voiceId || voiceSpeed !== 1 ? voiceSpeed : null,
 				tool_ids: toolIds,
 				skill_ids: skillIds,
 				filter_ids: filterIds,
@@ -177,10 +234,7 @@
 		}
 
 		const voices = await getVoices(localStorage.token).catch(() => null);
-		availableVoices = Object.entries(voices ?? {}).map(([id, label]) => ({
-			id,
-			name: `${label}`
-		}));
+		availableVoices = normalizeVoicesResponse(voices);
 
 		const source = persona ?? (sessionStorage.persona ? JSON.parse(sessionStorage.persona) : null);
 		if (source) {
@@ -316,6 +370,11 @@
 									<option value={model.id}>{model.name}</option>
 								{/each}
 							</select>
+							<div class="mt-2 text-xs text-gray-500">
+								{$i18n.t(
+									'New chats use this bound model. Existing chats keep the bound model snapshot they started with.'
+								)}
+							</div>
 						</div>
 
 						<div class="md:col-span-2">
@@ -385,6 +444,11 @@
 				<div class="mt-1 text-xs text-gray-500">
 					{$i18n.t(
 						'Always-on relational guidance for this persona. Existing chats keep the version they started with.'
+					)}
+				</div>
+				<div class="mt-1 text-xs text-gray-500">
+					{$i18n.t(
+						'Different personas usually need different relational frames. SUNFALL and ADVISOR should not share the same partner profile.'
 					)}
 				</div>
 
@@ -468,6 +532,11 @@
 						</div>
 						<div class="mt-1 text-xs text-gray-500">
 							{$i18n.t(
+								'Leave voice on Default to inherit the bound model voice first, then the app audio default.'
+							)}
+						</div>
+						<div class="mt-1 text-xs text-gray-500">
+							{$i18n.t(
 								'Playback speed is a preference. The active engine may honor, clamp, or ignore it.'
 							)}
 						</div>
@@ -475,7 +544,7 @@
 
 					<button
 						class="rounded-xl border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-50 dark:border-gray-800 dark:hover:bg-gray-900"
-						disabled={previewingVoice || !voiceId}
+						disabled={previewingVoice || !previewVoiceId || !$config?.audio?.tts?.engine}
 						on:click={previewVoice}
 					>
 						{#if previewingVoice}
@@ -483,14 +552,56 @@
 								><Spinner className="size-4" />{$i18n.t('Previewing')}</span
 							>
 						{:else}
-							{$i18n.t('Preview Voice')}
+							{$i18n.t('Preview Current Voice')}
 						{/if}
 					</button>
 				</div>
 
+				<div class="mt-4 rounded-2xl border border-dashed border-gray-200 p-4 text-xs text-gray-600 dark:border-gray-800 dark:text-gray-300">
+					<div class="flex flex-wrap items-center gap-2">
+						<span class="rounded-full bg-gray-100 px-2.5 py-1 dark:bg-gray-900">
+							{$i18n.t('Audio Engine')}: {getAudioEngineLabel()}
+						</span>
+						{#if previewVoiceName}
+							<span class="rounded-full bg-gray-100 px-2.5 py-1 dark:bg-gray-900">
+								{$i18n.t('Current Preview Voice')}: {previewVoiceName}
+							</span>
+						{/if}
+					</div>
+
+					<div class="mt-3 grid gap-2 md:grid-cols-3">
+						<div>
+							<div class="font-medium text-gray-700 dark:text-gray-200">
+								{$i18n.t('Persona Override')}
+							</div>
+							<div class="mt-1 text-gray-500">
+								{voiceId ? (getVoiceName(voiceId) ?? voiceId) : $i18n.t('Default / inherit')}
+							</div>
+						</div>
+						<div>
+							<div class="font-medium text-gray-700 dark:text-gray-200">
+								{$i18n.t('Bound Model Voice')}
+							</div>
+							<div class="mt-1 text-gray-500">
+								{boundModelVoiceName ?? $i18n.t('None')}
+							</div>
+						</div>
+						<div>
+							<div class="font-medium text-gray-700 dark:text-gray-200">
+								{$i18n.t('App Default Voice')}
+							</div>
+							<div class="mt-1 text-gray-500">
+								{globalVoiceName ?? $i18n.t('None')}
+							</div>
+						</div>
+					</div>
+				</div>
+
 				<div class="mt-4 grid gap-4 md:grid-cols-2">
 					<div>
-						<div class="mb-1 text-xs font-medium text-gray-500">{$i18n.t('Voice')}</div>
+						<div class="mb-1 text-xs font-medium text-gray-500">
+							{$i18n.t('Persona Voice Override')}
+						</div>
 						<select
 							class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
 							bind:value={voiceId}
@@ -500,6 +611,13 @@
 								<option value={voice.id}>{voice.name}</option>
 							{/each}
 						</select>
+						<div class="mt-2 text-xs text-gray-500">
+							{#if !availableVoices.length}
+								{$i18n.t('No backend voices are currently available from the active audio engine.')}
+							{:else}
+								{$i18n.t('This uses the same backend voice list as Admin → Settings → Audio.')}
+							{/if}
+						</div>
 					</div>
 
 					<div>
@@ -515,6 +633,9 @@
 							step="0.05"
 							bind:value={voiceSpeed}
 						/>
+						<div class="mt-2 text-xs text-gray-500">
+							{$i18n.t('Speed applies to the effective voice for this persona, even when the voice itself is inherited.')}
+						</div>
 					</div>
 				</div>
 			</section>

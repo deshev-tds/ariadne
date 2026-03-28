@@ -124,6 +124,19 @@
 								{/if}
 							</div>
 
+							<div class="mt-2 flex flex-wrap gap-2">
+								{#if persona.partner_profile?.enabled}
+									<span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-900 dark:text-gray-300">
+										{$i18n.t('Partner Profile')}
+									</span>
+								{/if}
+								{#if persona.voice_id}
+									<span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-900 dark:text-gray-300">
+										{$i18n.t('Voice')}: {persona.voice_id}
+									</span>
+								{/if}
+							</div>
+
 							{#if persona.description}
 								<div class="mt-2 line-clamp-2 text-sm text-gray-600 dark:text-gray-300">
 									{persona.description}
