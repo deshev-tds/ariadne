@@ -56,8 +56,18 @@
 			description: $i18n.t(
 				'Automatically inject system tools in native function calling mode (e.g., timestamps, memory, chat history, notes, etc.)'
 			)
+		},
+		travel_orchestration: {
+			label: $i18n.t('Travel Orchestration'),
+			description: $i18n.t(
+				'Routes broad trip-planning asks through bounded travel orchestration with deterministic weather and map enrichment.'
+			)
 		}
 	};
+
+	const personaOnlyCapabilities = new Set(['travel_orchestration']);
+
+	export let mode: 'model' | 'persona' = 'model';
 
 	export let capabilities: {
 		file_context?: boolean;
@@ -71,10 +81,14 @@
 		citations?: boolean;
 		status_updates?: boolean;
 		builtin_tools?: boolean;
+		travel_orchestration?: boolean;
 	} = {};
 
 	// Hide file_context when file_upload is disabled
 	$: visibleCapabilities = Object.keys(capabilityLabels).filter((cap) => {
+		if (mode !== 'persona' && personaOnlyCapabilities.has(cap)) {
+			return false;
+		}
 		if (cap === 'file_context' && !capabilities.file_upload) {
 			return false;
 		}

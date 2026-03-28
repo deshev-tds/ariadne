@@ -125,7 +125,7 @@
 	let filterIds: string[] = [];
 	let actionIds: string[] = [];
 	let defaultFeatureIds: string[] = [];
-	let capabilities = { ...DEFAULT_CAPABILITIES };
+	let capabilities = { ...DEFAULT_CAPABILITIES, travel_orchestration: false };
 
 	const voicePreviewText = () =>
 		`Hello. I'm ${name || 'this persona'}. This is my current voice preview.`;
@@ -163,13 +163,14 @@
 	};
 
 	const getAudioEngineLabel = () =>
-		TTS_ENGINE_LABELS[$config?.audio?.tts?.engine ?? ''] ?? ($config?.audio?.tts?.engine || 'Unknown');
+		TTS_ENGINE_LABELS[$config?.audio?.tts?.engine ?? ''] ??
+		($config?.audio?.tts?.engine || 'Unknown');
 
 	$: boundModel = $models.find((model) => model.id === boundModelId) ?? null;
 	$: bindableModels = ($models ?? []).filter((model) => !(model?.info?.meta?.hidden ?? false));
 	$: currentBoundModelOption =
 		boundModelId && !bindableModels.some((model) => model.id === boundModelId)
-			? ($models ?? []).find((model) => model.id === boundModelId) ?? null
+			? (($models ?? []).find((model) => model.id === boundModelId) ?? null)
 			: null;
 	$: boundModelVoiceId = boundModel?.info?.meta?.tts?.voice ?? null;
 	$: globalVoiceId = $config?.audio?.tts?.voice ?? null;
@@ -409,14 +410,16 @@
 									<option value="">{$i18n.t('No emoji')}</option>
 									{#if currentCustomEmoji}
 										<option value={currentCustomEmoji}>
-											{currentCustomEmoji} {$i18n.t('(current custom emoji)')}
+											{currentCustomEmoji}
+											{$i18n.t('(current custom emoji)')}
 										</option>
 									{/if}
 									{#each PERSONA_EMOJI_GROUPS as group}
 										<optgroup label={group.label}>
 											{#each group.options as option}
 												<option value={option.value}>
-													{option.value} {option.label}
+													{option.value}
+													{option.label}
 												</option>
 											{/each}
 										</optgroup>
@@ -454,7 +457,8 @@
 								<option value="">{$i18n.t('Select a model')}</option>
 								{#if currentBoundModelOption}
 									<option value={currentBoundModelOption.id}>
-										{currentBoundModelOption.name} {$i18n.t('(not currently bindable)')}
+										{currentBoundModelOption.name}
+										{$i18n.t('(not currently bindable)')}
 									</option>
 								{/if}
 								{#each bindableModels as model}
@@ -653,7 +657,9 @@
 					</button>
 				</div>
 
-				<div class="mt-4 rounded-2xl border border-dashed border-gray-200 p-4 text-xs text-gray-600 dark:border-gray-800 dark:text-gray-300">
+				<div
+					class="mt-4 rounded-2xl border border-dashed border-gray-200 p-4 text-xs text-gray-600 dark:border-gray-800 dark:text-gray-300"
+				>
 					<div class="flex flex-wrap items-center gap-2">
 						<span class="rounded-full bg-gray-100 px-2.5 py-1 dark:bg-gray-900">
 							{$i18n.t('Audio Engine')}: {getAudioEngineLabel()}
@@ -730,7 +736,9 @@
 							bind:value={voiceSpeed}
 						/>
 						<div class="mt-2 text-xs text-gray-500">
-							{$i18n.t('Speed applies to the effective voice for this persona, even when the voice itself is inherited.')}
+							{$i18n.t(
+								'Speed applies to the effective voice for this persona, even when the voice itself is inherited.'
+							)}
 						</div>
 					</div>
 				</div>
@@ -753,7 +761,7 @@
 						bind:selectedActionIds={actionIds}
 					/>
 					<DefaultFeatures bind:featureIds={defaultFeatureIds} />
-					<Capabilities bind:capabilities />
+					<Capabilities mode="persona" bind:capabilities />
 				</div>
 			</section>
 

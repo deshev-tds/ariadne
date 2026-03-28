@@ -150,6 +150,7 @@ from open_webui.utils.prompt_telemetry import (
 from open_webui.utils.runtime_telemetry import runtime_telemetry
 from open_webui.utils.response import normalize_usage
 from open_webui.utils.mcp.client import MCPClient
+from open_webui.utils.travel_orchestration import maybe_run_travel_orchestration
 from open_webui.retrieval.corpus_runtime import resolve_corpus_runtime
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 from open_webui.retrieval.working_mode import normalize_working_mode
@@ -5540,6 +5541,29 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         "files": files,
     }
     form_data["metadata"] = metadata
+
+    travel_orchestration_result = await maybe_run_travel_orchestration(
+        request=request,
+        form_data=form_data,
+        user=user,
+        metadata=metadata,
+        model=model,
+        task_model=models.get(task_model_id),
+        features=features,
+        event_emitter=event_emitter,
+    )
+    if travel_orchestration_result:
+        system_message = get_system_message(form_data.get("messages", []))
+        metadata["system_prompt"] = (
+            get_content_from_message(system_message) if system_message else None
+        )
+        metadata["user_prompt"] = get_last_user_message(form_data.get("messages", []))
+        metadata["sources"] = []
+        metadata["travel_orchestration_response"] = travel_orchestration_result.get(
+            "response"
+        )
+        events.extend(travel_orchestration_result.get("events") or [])
+        return form_data, metadata, events
 
     # When the caller provides an explicit OpenAI-style `tools` array in the
     # request body, skip all server-side tool resolution and pass the caller's

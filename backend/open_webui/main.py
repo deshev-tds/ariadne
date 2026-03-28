@@ -2501,54 +2501,56 @@ async def chat_completion(
                 request, form_data, user, metadata, model
             )
 
-            response = await chat_completion_handler(request, form_data, user)
-            fallback_retry_success = False
-            if _request_includes_logprob_params(form_data):
-                error_detail = _extract_error_detail_from_response(response)
-                if _is_unsupported_logprobs_error(error_detail):
-                    stripped_form_data, stripped = _strip_logprob_params(form_data)
-                    if stripped:
-                        response = await chat_completion_handler(
-                            request, stripped_form_data, user
-                        )
-                        form_data = stripped_form_data
-                        if not _extract_error_detail_from_response(response):
-                            fallback_retry_success = True
+            response = metadata.pop("travel_orchestration_response", None)
+            if response is None:
+                response = await chat_completion_handler(request, form_data, user)
+                fallback_retry_success = False
+                if _request_includes_logprob_params(form_data):
+                    error_detail = _extract_error_detail_from_response(response)
+                    if _is_unsupported_logprobs_error(error_detail):
+                        stripped_form_data, stripped = _strip_logprob_params(form_data)
+                        if stripped:
+                            response = await chat_completion_handler(
+                                request, stripped_form_data, user
+                            )
+                            form_data = stripped_form_data
+                            if not _extract_error_detail_from_response(response):
+                                fallback_retry_success = True
 
-            if fallback_retry_success:
-                events.append(
-                    {
-                        "tokenTelemetryUnavailable": True,
-                        "tokenTelemetryUnavailableReason": "unsupported_logprobs",
-                    }
-                )
+                if fallback_retry_success:
+                    events.append(
+                        {
+                            "tokenTelemetryUnavailable": True,
+                            "tokenTelemetryUnavailableReason": "unsupported_logprobs",
+                        }
+                    )
 
-            (
-                form_data,
-                response,
-                context_overflow_retry,
-            ) = await _attempt_context_overflow_retry(
-                request, form_data, response, user, metadata, model
-            )
-            if context_overflow_retry.get("attempted"):
-                events.append(
-                    {
-                        "contextOverflowRetry": True,
-                        "contextOverflowRetrySucceeded": bool(
-                            context_overflow_retry.get("succeeded")
-                        ),
-                        "contextOverflowCompactionApplied": bool(
-                            context_overflow_retry.get("compaction_applied")
-                        ),
-                        "contextOverflowRequestedTokens": context_overflow_retry.get(
-                            "requested_tokens"
-                        ),
-                        "contextOverflowAvailableTokens": context_overflow_retry.get(
-                            "available_tokens"
-                        ),
-                        "contextOverflowReason": context_overflow_retry.get("reason"),
-                    }
+                (
+                    form_data,
+                    response,
+                    context_overflow_retry,
+                ) = await _attempt_context_overflow_retry(
+                    request, form_data, response, user, metadata, model
                 )
+                if context_overflow_retry.get("attempted"):
+                    events.append(
+                        {
+                            "contextOverflowRetry": True,
+                            "contextOverflowRetrySucceeded": bool(
+                                context_overflow_retry.get("succeeded")
+                            ),
+                            "contextOverflowCompactionApplied": bool(
+                                context_overflow_retry.get("compaction_applied")
+                            ),
+                            "contextOverflowRequestedTokens": context_overflow_retry.get(
+                                "requested_tokens"
+                            ),
+                            "contextOverflowAvailableTokens": context_overflow_retry.get(
+                                "available_tokens"
+                            ),
+                            "contextOverflowReason": context_overflow_retry.get("reason"),
+                        }
+                    )
 
             if metadata.get("chat_id") and metadata.get("message_id"):
                 try:
