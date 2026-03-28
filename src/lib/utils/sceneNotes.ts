@@ -62,6 +62,56 @@ export const SCENE_NOTE_PRESETS: ScenePreset[] = [
 		seed: 'Movement is slow, the world is dimmer and less crowded, and meaning gathers through what is not said immediately. Let silence and pacing carry part of the scene.'
 	},
 	{
+		id: 'train-car-morning-edge',
+		label: 'A Train Car At The Edge Of Morning',
+		seed: 'The world is moving while the hour still feels suspended between night and day. Let distance, passing light, and the strange privacy of shared transit shape the rhythm.'
+	},
+	{
+		id: 'kitchen-before-dawn',
+		label: 'The Kitchen Light Before Dawn',
+		seed: 'A small pool of light in an otherwise sleeping world. Keep the scene intimate, quiet, and grounded in ordinary objects that suddenly feel more charged than they should.'
+	},
+	{
+		id: 'rooftop-city-below',
+		label: 'A Rooftop With The City Below',
+		seed: 'Open air, height, distant noise, and the feeling of being slightly removed from the ordinary flow of things. Let exposure, skyline, and pauses at the edge of speech carry tension.'
+	},
+	{
+		id: 'museum-after-closing',
+		label: 'A Museum After Closing',
+		seed: 'Stillness, controlled light, and the sense that meaning is being held in the walls as much as in the people inside them. Favor restraint, observation, and the pressure of quiet space.'
+	},
+	{
+		id: 'library-bad-weather',
+		label: 'A Library In Bad Weather',
+		seed: 'Muted light, weather at the windows, and a room that makes people lower their voices without thinking. Let closeness build through quiet attention, shared focus, and the patience of the setting.'
+	},
+	{
+		id: 'green-room-door',
+		label: 'The Green Room Before The Door Opens',
+		seed: 'Held breath, low conversation, residual nerves, and the sense that something public is about to break into what still feels private. Keep the pacing taut and the details deliberate.'
+	},
+	{
+		id: 'parking-garage-rain',
+		label: 'A Parking Garage After Rain',
+		seed: 'Concrete, echoes, wet light, and a space that feels both exposed and hidden at once. Use distance, footsteps, reflections, and the after-effect of weather to build atmosphere.'
+	},
+	{
+		id: 'clinic-corridor-night',
+		label: 'A Clinic Corridor At Night',
+		seed: 'Fluorescent quiet, fatigue, and a world reduced to small sounds, soft urgency, and the weight of waiting. Keep the tone controlled, vulnerable, and unspectacular in a way that still carries charge.'
+	},
+	{
+		id: 'cafe-near-closing',
+		label: 'A Half-Empty Cafe Near Closing',
+		seed: 'The room is thinning out, the staff are moving more slowly, and the hour makes everything feel briefly more confessional than daylight would allow. Let the scene breathe.'
+	},
+	{
+		id: 'control-room-glow',
+		label: 'The Control Room Glow',
+		seed: 'Screens, instrument light, low hum, and the focus that comes when the world narrows to signals, timing, and quiet decisions. Keep the energy taut, technical, and slightly intimate.'
+	},
+	{
 		id: 'blank-scene',
 		label: 'Start From A Bare Room',
 		seed: "Do not assume a rich setting. Keep the frame minimal and let the scene become concrete only through the user's cues and the immediate exchange."
