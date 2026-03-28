@@ -125,7 +125,11 @@
 	let filterIds: string[] = [];
 	let actionIds: string[] = [];
 	let defaultFeatureIds: string[] = [];
-	let capabilities = { ...DEFAULT_CAPABILITIES, travel_orchestration: false };
+	let capabilities = {
+		...DEFAULT_CAPABILITIES,
+		travel_orchestration: false,
+		same_turn_tool_output_compaction: false
+	};
 
 	const voicePreviewText = () =>
 		`Hello. I'm ${name || 'this persona'}. This is my current voice preview.`;

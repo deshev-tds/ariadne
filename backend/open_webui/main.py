@@ -335,6 +335,7 @@ from open_webui.config import (
     WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE,
     WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD,
     ENABLE_WEB_SEARCH_EVIDENCE_SATURATION,
+    ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION,
     ENABLE_LOCAL_CORPUS_TOOLS,
     LOCAL_CORPUS_ROOT,
     OFFSEC_CORPUS_ROOT,
@@ -1199,6 +1200,9 @@ app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD = (
 )
 app.state.config.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION = (
     ENABLE_WEB_SEARCH_EVIDENCE_SATURATION
+)
+app.state.config.ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION = (
+    ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION
 )
 app.state.config.ENABLE_LOCAL_CORPUS_TOOLS = ENABLE_LOCAL_CORPUS_TOOLS
 app.state.config.LOCAL_CORPUS_ROOT = LOCAL_CORPUS_ROOT
@@ -2871,6 +2875,7 @@ async def get_app_config(request: Request):
                     "enable_user_status": app.state.config.ENABLE_USER_STATUS,
                     "enable_chat_recall": app.state.config.ENABLE_CHAT_RECALL,
                     "enable_context_maintenance": app.state.config.ENABLE_CONTEXT_MAINTENANCE,
+                    "enable_same_turn_tool_output_compaction": app.state.config.ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION,
                     "enable_admin_export": ENABLE_ADMIN_EXPORT,
                     "enable_admin_chat_access": ENABLE_ADMIN_CHAT_ACCESS,
                     "enable_admin_analytics": ENABLE_ADMIN_ANALYTICS,

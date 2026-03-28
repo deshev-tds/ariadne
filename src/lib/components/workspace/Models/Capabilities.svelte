@@ -31,6 +31,12 @@
 			label: $i18n.t('Code Interpreter'),
 			description: $i18n.t('Model can execute code and perform calculations')
 		},
+		same_turn_tool_output_compaction: {
+			label: $i18n.t('Compact Tool Context'),
+			description: $i18n.t(
+				'Aggressively compacts older same-turn tool outputs before the next model continuation to reduce context bloat.'
+			)
+		},
 		moe_experts_control: {
 			label: $i18n.t('MoE Experts Control'),
 			description: $i18n.t(
@@ -65,7 +71,10 @@
 		}
 	};
 
-	const personaOnlyCapabilities = new Set(['travel_orchestration']);
+	const personaOnlyCapabilities = new Set([
+		'travel_orchestration',
+		'same_turn_tool_output_compaction'
+	]);
 
 	export let mode: 'model' | 'persona' = 'model';
 
@@ -76,6 +85,7 @@
 		web_search?: boolean;
 		image_generation?: boolean;
 		code_interpreter?: boolean;
+		same_turn_tool_output_compaction?: boolean;
 		moe_experts_control?: boolean;
 		usage?: boolean;
 		citations?: boolean;

@@ -19,12 +19,14 @@ def _build_request(
     enable_local_corpus: bool = False,
     local_corpus_root: str | None = None,
     offsec_corpus_root: str | None = None,
+    enable_same_turn_tool_output_compaction: bool = False,
 ):
     return SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(
                 config=SimpleNamespace(
                     ENABLE_LOCAL_CORPUS_TOOLS=enable_local_corpus,
+                    ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION=enable_same_turn_tool_output_compaction,
                     LOCAL_CORPUS_ROOT=local_corpus_root,
                     OFFSEC_CORPUS_ROOT=offsec_corpus_root,
                     TASK_MODEL="",
@@ -771,6 +773,108 @@ def test_build_tool_continuation_messages_uses_temporary_system_append():
     assert "phase guidance" in messages[0]["content"]
     assert "phase guidance" not in form_messages[0]["content"]
     assert messages[-1]["role"] == "assistant"
+
+
+def test_build_tool_continuation_messages_compacts_older_tool_outputs_when_enabled():
+    request = _build_request(enable_same_turn_tool_output_compaction=True)
+    metadata = {
+        "persona_effective_capabilities": {
+            "same_turn_tool_output_compaction": True,
+        }
+    }
+    older_text = "x" * 4000
+    latest_text = "LATEST RAW TOOL OUTPUT"
+    form_messages = [{"role": "system", "content": "base prompt"}]
+    output = [
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_old",
+            "name": "fetch_url",
+            "arguments": json.dumps({"url": "https://example.com/old"}),
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "id": "fco_1",
+            "call_id": "call_old",
+            "output": [{"type": "input_text", "text": older_text}],
+            "status": "completed",
+        },
+        {
+            "type": "function_call",
+            "id": "fc_2",
+            "call_id": "call_latest",
+            "name": "search_web",
+            "arguments": json.dumps({"query": "lecce nightlife"}),
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "id": "fco_2",
+            "call_id": "call_latest",
+            "output": [{"type": "input_text", "text": latest_text}],
+            "status": "completed",
+        },
+    ]
+
+    messages = middleware._build_tool_continuation_messages(
+        form_messages,
+        output,
+        request=request,
+        metadata=metadata,
+        latest_tool_call_ids=["call_latest"],
+    )
+
+    tool_messages = [message for message in messages if message.get("role") == "tool"]
+    assert len(tool_messages) == 2
+    assert "[same-turn tool output compacted for context budget]" in tool_messages[0][
+        "content"
+    ]
+    assert "original_chars: 4000" in tool_messages[0]["content"]
+    assert tool_messages[1]["content"] == latest_text
+    assert metadata["same_turn_tool_output_compaction"]["compacted_call_count"] == 1
+    assert metadata["same_turn_tool_output_compaction"]["saved_chars"] > 0
+
+
+def test_build_tool_continuation_messages_skips_compaction_when_persona_capability_off():
+    request = _build_request(enable_same_turn_tool_output_compaction=True)
+    metadata = {
+        "persona_effective_capabilities": {
+            "same_turn_tool_output_compaction": False,
+        }
+    }
+    raw_text = "RAW SEARCH OUTPUT"
+    form_messages = [{"role": "system", "content": "base prompt"}]
+    output = [
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "search_web",
+            "arguments": json.dumps({"query": "lecce nightlife"}),
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "id": "fco_1",
+            "call_id": "call_1",
+            "output": [{"type": "input_text", "text": raw_text}],
+            "status": "completed",
+        },
+    ]
+
+    messages = middleware._build_tool_continuation_messages(
+        form_messages,
+        output,
+        request=request,
+        metadata=metadata,
+    )
+
+    tool_messages = [message for message in messages if message.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["content"] == raw_text
+    assert "same_turn_tool_output_compaction" not in metadata
 
 
 def test_append_tool_journey_event_is_on_demand():

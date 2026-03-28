@@ -3609,6 +3609,12 @@ ENABLE_WEB_SEARCH_EVIDENCE_SATURATION = PersistentConfig(
     os.getenv("ENABLE_WEB_SEARCH_EVIDENCE_SATURATION", "False").lower() == "true",
 )
 
+ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION = PersistentConfig(
+    "ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION",
+    "chat.tools.same_turn_output_compaction.enable",
+    os.getenv("ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION", "False").lower() == "true",
+)
+
 ENABLE_LOCAL_CORPUS_TOOLS = PersistentConfig(
     "ENABLE_LOCAL_CORPUS_TOOLS",
     "rag.local_corpus.enable",

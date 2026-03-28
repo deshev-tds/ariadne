@@ -668,10 +668,19 @@ def _build_tool_continuation_messages(
     form_data_messages: list[dict[str, Any]],
     output: list[dict[str, Any]],
     narration_instruction: str | None = None,
+    request: Optional[Request] = None,
+    metadata: Optional[dict[str, Any]] = None,
+    latest_tool_call_ids: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
+    continuation_output = _compact_same_turn_tool_outputs_for_continuation(
+        request,
+        metadata,
+        output,
+        latest_tool_call_ids=latest_tool_call_ids,
+    )
     messages = [
         *copy.deepcopy(form_data_messages),
-        *convert_output_to_messages(output, raw=True),
+        *convert_output_to_messages(continuation_output, raw=True),
     ]
     if narration_instruction:
         messages = add_or_update_system_message(
@@ -728,10 +737,204 @@ _BG_CYRILLIC_TO_LATIN = {
 _BG_CYRILLIC_TO_LATIN.update({k.upper(): v.title() for k, v in _BG_CYRILLIC_TO_LATIN.items()})
 
 _CHAT_ARTIFACT_DIR_CACHE: dict[str, Path] = {}
+_SAME_TURN_TOOL_OUTPUT_COMPACTION_PREFIX = (
+    "[same-turn tool output compacted for context budget]"
+)
 
 
 def _transliterate_cyrillic_to_latin(text: str) -> str:
     return "".join(_BG_CYRILLIC_TO_LATIN.get(char, char) for char in str(text or ""))
+
+
+def _resolve_persona_capability_from_metadata(
+    metadata: Optional[dict[str, Any]], capability_name: str
+) -> Optional[bool]:
+    if not isinstance(metadata, dict) or not capability_name:
+        return None
+
+    capability_sources = (
+        metadata.get("persona_effective_capabilities"),
+        (metadata.get("persona_requested_defaults") or {}).get("capabilities"),
+        (metadata.get("persona_snapshot") or {}).get("capabilities"),
+    )
+
+    for source in capability_sources:
+        if isinstance(source, dict) and capability_name in source:
+            return bool(source.get(capability_name))
+
+    return None
+
+
+def _should_compact_same_turn_tool_outputs(
+    request: Optional[Request], metadata: Optional[dict[str, Any]]
+) -> bool:
+    if request is None:
+        return False
+
+    config = getattr(getattr(request, "app", None), "state", None)
+    config = getattr(config, "config", None)
+    if not bool(
+        getattr(config, "ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION", False)
+    ):
+        return False
+
+    capability_enabled = _resolve_persona_capability_from_metadata(
+        metadata, "same_turn_tool_output_compaction"
+    )
+    return bool(capability_enabled)
+
+
+def _extract_function_call_output_text(item: dict[str, Any]) -> str:
+    text_chunks: list[str] = []
+    for part in item.get("output") or []:
+        if isinstance(part, dict) and part.get("type") == "input_text":
+            text_chunks.append(str(part.get("text") or ""))
+    return "".join(text_chunks)
+
+
+def _build_same_turn_tool_output_compaction_text(
+    *,
+    call_id: str,
+    tool_name: str,
+    original_text: str,
+) -> str:
+    summary = _tool_result_summary(tool_name, original_text)
+    try:
+        summary_text = json.dumps(summary, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        summary_text = "{}"
+
+    return "\n".join(
+        [
+            _SAME_TURN_TOOL_OUTPUT_COMPACTION_PREFIX,
+            f"tool: {tool_name or 'unknown'}",
+            f"call_id: {call_id or 'unknown'}",
+            f"original_chars: {len(original_text)}",
+            f"summary: {summary_text}",
+        ]
+    )
+
+
+def _record_same_turn_tool_output_compaction_telemetry(
+    metadata: Optional[dict[str, Any]],
+    *,
+    compacted_call_count: int,
+    kept_raw_call_count: int,
+    raw_chars: int,
+    compacted_chars: int,
+    compacted_by_tool: dict[str, int],
+) -> None:
+    if not isinstance(metadata, dict) or compacted_call_count <= 0:
+        return
+
+    telemetry = metadata.setdefault(
+        "same_turn_tool_output_compaction",
+        {
+            "continuation_calls": 0,
+            "compacted_call_count": 0,
+            "kept_raw_call_count": 0,
+            "raw_chars": 0,
+            "compacted_chars": 0,
+            "saved_chars": 0,
+            "compacted_by_tool": {},
+        },
+    )
+    telemetry["continuation_calls"] = int(telemetry.get("continuation_calls", 0)) + 1
+    telemetry["compacted_call_count"] = int(
+        telemetry.get("compacted_call_count", 0)
+    ) + int(compacted_call_count)
+    telemetry["kept_raw_call_count"] = int(
+        telemetry.get("kept_raw_call_count", 0)
+    ) + int(kept_raw_call_count)
+    telemetry["raw_chars"] = int(telemetry.get("raw_chars", 0)) + int(raw_chars)
+    telemetry["compacted_chars"] = int(
+        telemetry.get("compacted_chars", 0)
+    ) + int(compacted_chars)
+    telemetry["saved_chars"] = int(telemetry.get("saved_chars", 0)) + max(
+        0, int(raw_chars) - int(compacted_chars)
+    )
+
+    compacted_by_tool_total = telemetry.setdefault("compacted_by_tool", {})
+    for tool_name, count in compacted_by_tool.items():
+        compacted_by_tool_total[tool_name] = int(
+            compacted_by_tool_total.get(tool_name, 0)
+        ) + int(count)
+
+
+def _compact_same_turn_tool_outputs_for_continuation(
+    request: Optional[Request],
+    metadata: Optional[dict[str, Any]],
+    output: list[dict[str, Any]],
+    *,
+    latest_tool_call_ids: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
+    if not _should_compact_same_turn_tool_outputs(request, metadata):
+        return output
+    if not isinstance(output, list) or not output:
+        return output
+
+    latest_ids = {
+        str(call_id)
+        for call_id in (latest_tool_call_ids or [])
+        if isinstance(call_id, str) and call_id
+    }
+    call_names = {
+        str(item.get("call_id") or ""): str(item.get("name") or "")
+        for item in output
+        if isinstance(item, dict) and item.get("type") == "function_call"
+    }
+
+    compacted_output: list[dict[str, Any]] = []
+    compacted_call_count = 0
+    kept_raw_call_count = 0
+    raw_chars = 0
+    compacted_chars = 0
+    compacted_by_tool: dict[str, int] = {}
+
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "function_call_output":
+            compacted_output.append(copy.deepcopy(item))
+            continue
+
+        call_id = str(item.get("call_id") or "")
+        if call_id and call_id in latest_ids:
+            kept_raw_call_count += 1
+            compacted_output.append(copy.deepcopy(item))
+            continue
+
+        original_text = _extract_function_call_output_text(item)
+        if not original_text:
+            compacted_output.append(copy.deepcopy(item))
+            continue
+
+        tool_name = call_names.get(call_id, "")
+        compacted_text = _build_same_turn_tool_output_compaction_text(
+            call_id=call_id,
+            tool_name=tool_name,
+            original_text=original_text,
+        )
+
+        compacted_item = copy.deepcopy(item)
+        compacted_item["output"] = [{"type": "input_text", "text": compacted_text}]
+        compacted_output.append(compacted_item)
+
+        compacted_call_count += 1
+        raw_chars += len(original_text)
+        compacted_chars += len(compacted_text)
+        compacted_by_tool[tool_name or "unknown"] = (
+            compacted_by_tool.get(tool_name or "unknown", 0) + 1
+        )
+
+    _record_same_turn_tool_output_compaction_telemetry(
+        metadata,
+        compacted_call_count=compacted_call_count,
+        kept_raw_call_count=kept_raw_call_count,
+        raw_chars=raw_chars,
+        compacted_chars=compacted_chars,
+        compacted_by_tool=compacted_by_tool,
+    )
+
+    return compacted_output
 
 
 def _slugify_chat_title(title: str, max_len: int = 80) -> str:
@@ -7954,6 +8157,11 @@ async def streaming_chat_response_handler(response, ctx):
                             form_data["messages"],
                             output,
                             narration_instruction=narration_instruction,
+                            request=request,
+                            metadata=metadata,
+                            latest_tool_call_ids=[
+                                result.get("tool_call_id", "") for result in results
+                            ],
                         )
                         new_form_data = {
                             **form_data,
@@ -8141,10 +8349,12 @@ async def streaming_chat_response_handler(response, ctx):
                                 **form_data,
                                 "model": model_id,
                                 "stream": True,
-                                "messages": [
-                                    *form_data["messages"],
-                                    *convert_output_to_messages(output, raw=True),
-                                ],
+                                "messages": _build_tool_continuation_messages(
+                                    form_data["messages"],
+                                    output,
+                                    request=request,
+                                    metadata=metadata,
+                                ),
                             }
 
                             res = await generate_chat_completion(

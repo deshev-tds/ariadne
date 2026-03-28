@@ -585,6 +585,7 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE,
             "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD": request.app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD,
             "ENABLE_WEB_SEARCH_EVIDENCE_SATURATION": request.app.state.config.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION,
+            "ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION": request.app.state.config.ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION,
             "WEB_SEARCH_EVIDENCE_MAX_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_TOKENS,
             "WEB_SEARCH_EVIDENCE_CHUNK_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS,
             "WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE": request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE,
@@ -684,6 +685,7 @@ class WebConfig(BaseModel):
     WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE: Optional[float] = None
     WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD: Optional[bool] = None
     ENABLE_WEB_SEARCH_EVIDENCE_SATURATION: Optional[bool] = None
+    ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION: Optional[bool] = None
     WEB_SEARCH_EVIDENCE_MAX_TOKENS: Optional[int] = None
     WEB_SEARCH_EVIDENCE_CHUNK_TOKENS: Optional[int] = None
     WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE: Optional[int] = None
@@ -1361,6 +1363,11 @@ async def update_rag_config(
             if form_data.web.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION is not None
             else request.app.state.config.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION
         )
+        request.app.state.config.ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION = (
+            form_data.web.ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION
+            if form_data.web.ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION is not None
+            else request.app.state.config.ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION
+        )
         request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_TOKENS = (
             form_data.web.WEB_SEARCH_EVIDENCE_MAX_TOKENS
             if form_data.web.WEB_SEARCH_EVIDENCE_MAX_TOKENS is not None
@@ -1616,6 +1623,7 @@ async def update_rag_config(
             "WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE": request.app.state.config.WEB_SEARCH_PLANNER_REWRITER_TEMPERATURE,
             "WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD": request.app.state.config.WEB_SEARCH_PLANNER_ENABLE_INTENT_COVERAGE_GUARD,
             "ENABLE_WEB_SEARCH_EVIDENCE_SATURATION": request.app.state.config.ENABLE_WEB_SEARCH_EVIDENCE_SATURATION,
+            "ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION": request.app.state.config.ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION,
             "WEB_SEARCH_EVIDENCE_MAX_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_TOKENS,
             "WEB_SEARCH_EVIDENCE_CHUNK_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS,
             "WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE": request.app.state.config.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE,
