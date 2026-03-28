@@ -45,8 +45,6 @@
 			resetDraft(value);
 			lastLoadedSignature = signature;
 		}
-	} else {
-		lastLoadedSignature = '';
 	}
 
 	$: resolvedNote = resolveSceneNoteText({
@@ -61,6 +59,10 @@
 		($config?.features?.enable_image_generation ?? false) &&
 		($user?.role === 'admin' || $user?.permissions?.features?.image_generation) &&
 		!!resolvedNote;
+	$: if (draftThumbnailPrompt && draftThumbnailPrompt !== thumbnailPrompt) {
+		draftThumbnailUrl = '';
+		draftThumbnailPrompt = '';
+	}
 
 	const handlePresetSelect = (presetId: string | null) => {
 		const previousPreset = getScenePresetById(draftPresetId);
@@ -219,18 +221,23 @@
 								class="w-full rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2 text-sm text-gray-900 outline-hidden transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-850 dark:text-gray-100 dark:focus:border-gray-600"
 								bind:value={draftThumbnailUrl}
 								placeholder={$i18n.t('Paste an image URL or auto-generate one')}
+								on:input={() => {
+									if (draftThumbnailPrompt) {
+										draftThumbnailPrompt = '';
+									}
+								}}
 							/>
 
-							{#if draftThumbnailPrompt}
+							{#if canGenerateThumbnail || draftThumbnailPrompt}
 								<div
 									class="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-850 dark:text-gray-300"
 								>
 									<div class="mb-1 font-medium text-gray-800 dark:text-gray-100">
-										{$i18n.t('Last generation prompt')}
+										{$i18n.t('Generation prompt')}
 									</div>
-									<div class="line-clamp-4 whitespace-pre-wrap">{draftThumbnailPrompt}</div>
+									<div class="line-clamp-4 whitespace-pre-wrap">{thumbnailPrompt}</div>
 								</div>
-							{:else if canGenerateThumbnail}
+							{:else}
 								<div class="text-xs text-gray-500 dark:text-gray-400">
 									{$i18n.t(
 										'Auto-generate uses the current resolved scene note and title to create a small atmospheric still.'
