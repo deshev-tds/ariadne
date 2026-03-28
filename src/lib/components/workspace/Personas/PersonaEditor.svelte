@@ -107,6 +107,14 @@
 		TTS_ENGINE_LABELS[$config?.audio?.tts?.engine ?? ''] ?? ($config?.audio?.tts?.engine || 'Unknown');
 
 	$: boundModel = $models.find((model) => model.id === boundModelId) ?? null;
+	$: bindableModels = ($models ?? []).filter((model) => {
+		if (model?.info?.meta?.hidden ?? false) return false;
+		return model?.info?.is_active === true;
+	});
+	$: currentBoundModelOption =
+		boundModelId && !bindableModels.some((model) => model.id === boundModelId)
+			? ($models ?? []).find((model) => model.id === boundModelId) ?? null
+			: null;
 	$: boundModelVoiceId = boundModel?.info?.meta?.tts?.voice ?? null;
 	$: globalVoiceId = $config?.audio?.tts?.voice ?? null;
 	$: previewVoiceId = voiceId || boundModelVoiceId || globalVoiceId || '';
@@ -366,13 +374,23 @@
 								bind:value={boundModelId}
 							>
 								<option value="">{$i18n.t('Select a model')}</option>
-								{#each $models.filter((model) => !(model?.info?.meta?.hidden ?? false)) as model}
+								{#if currentBoundModelOption}
+									<option value={currentBoundModelOption.id}>
+										{currentBoundModelOption.name} {$i18n.t('(not currently bindable)')}
+									</option>
+								{/if}
+								{#each bindableModels as model}
 									<option value={model.id}>{model.name}</option>
 								{/each}
 							</select>
 							<div class="mt-2 text-xs text-gray-500">
 								{$i18n.t(
 									'New chats use this bound model. Existing chats keep the bound model snapshot they started with.'
+								)}
+							</div>
+							<div class="mt-1 text-xs text-gray-500">
+								{$i18n.t(
+									'Only models enabled in Open WebUI are bindable here. Raw llama.cpp models must be enabled in Admin Settings -> Models first.'
 								)}
 							</div>
 						</div>

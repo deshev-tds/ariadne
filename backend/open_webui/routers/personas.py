@@ -33,8 +33,8 @@ def _validate_bound_model(bound_model_id: Optional[str], user, db: Session) -> N
     model = Models.get_model_by_id(bound_model_id, db=db)
     if not model:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Bound model not found.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bound model must be an enabled Open WebUI model or preset.",
         )
 
     if user.role != "admin" and model.user_id != user.id:
