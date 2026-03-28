@@ -35,6 +35,10 @@
 			label: $i18n.t('Web Search'),
 			description: $i18n.t('Search the web and fetch URLs')
 		},
+		maps: {
+			label: $i18n.t('Maps'),
+			description: $i18n.t('Resolve places into exact addresses and Google Maps links')
+		},
 		image_generation: {
 			label: $i18n.t('Image Generation'),
 			description: $i18n.t('Generate and edit images')

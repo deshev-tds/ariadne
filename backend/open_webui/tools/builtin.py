@@ -58,6 +58,7 @@ from open_webui.models.messages import Messages, Message
 from open_webui.models.groups import Groups
 from open_webui.models.memories import Memories
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
+from open_webui.utils.google_maps import GoogleMapsError, resolve_place_with_google_maps
 from open_webui.utils.sanitize import sanitize_code
 
 log = logging.getLogger(__name__)
@@ -335,6 +336,58 @@ async def search_strong_sources(
         __metadata__=__metadata__,
         __event_emitter__=__event_emitter__,
     )
+
+
+# =============================================================================
+# GOOGLE MAPS TOOLS
+# =============================================================================
+
+
+async def resolve_place_google_maps(
+    place_name: str,
+    location_context: Optional[str] = None,
+    query_hint: Optional[str] = None,
+    language_code: Optional[str] = None,
+    region_code: Optional[str] = None,
+    max_candidates: int = 3,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Resolve a concrete place into a stable Google Maps link and exact address.
+    Use this only after you have already shortlisted or selected a specific venue.
+    Do not use it for broad discovery like "best wine bars in Italy"; research first, then resolve.
+
+    :param place_name: The specific venue or place name to resolve
+    :param location_context: Optional freeform city, neighborhood, region, or country context
+    :param query_hint: Optional extra hint text to disambiguate the place
+    :param language_code: Optional language code such as en, it, es, ru, or sw
+    :param region_code: Optional two-letter CLDR region code such as IT, ES, RU, or TZ
+    :param max_candidates: Maximum search candidates to inspect before resolving the top match
+    :return: JSON with exact address, coordinates, place ID, map URL, and ambiguity note
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        result = await asyncio.to_thread(
+            resolve_place_with_google_maps,
+            config=__request__.app.state.config,
+            request=__request__,
+            place_name=place_name,
+            location_context=location_context,
+            query_hint=query_hint,
+            language_code=language_code,
+            region_code=region_code,
+            max_candidates=max_candidates,
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except GoogleMapsError as e:
+        log.exception(f"resolve_place_google_maps error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"resolve_place_google_maps unexpected error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 # =============================================================================

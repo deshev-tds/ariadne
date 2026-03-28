@@ -3382,6 +3382,48 @@ ENABLE_WEB_SEARCH = PersistentConfig(
     os.getenv("ENABLE_WEB_SEARCH", "False").lower() == "true",
 )
 
+ENABLE_GOOGLE_MAPS = PersistentConfig(
+    "ENABLE_GOOGLE_MAPS",
+    "maps.enable",
+    os.getenv("ENABLE_GOOGLE_MAPS", "False").lower() == "true",
+)
+
+GOOGLE_MAPS_API_KEY = PersistentConfig(
+    "GOOGLE_MAPS_API_KEY",
+    "maps.google.api_key",
+    os.getenv("GOOGLE_MAPS_API_KEY", ""),
+)
+
+GOOGLE_MAPS_BASE_URL = PersistentConfig(
+    "GOOGLE_MAPS_BASE_URL",
+    "maps.google.base_url",
+    os.getenv("GOOGLE_MAPS_BASE_URL", "https://places.googleapis.com"),
+)
+
+GOOGLE_MAPS_TIMEOUT_SECONDS = PersistentConfig(
+    "GOOGLE_MAPS_TIMEOUT_SECONDS",
+    "maps.google.timeout_seconds",
+    int(os.getenv("GOOGLE_MAPS_TIMEOUT_SECONDS", "10")),
+)
+
+GOOGLE_MAPS_DEFAULT_LANGUAGE_CODE = PersistentConfig(
+    "GOOGLE_MAPS_DEFAULT_LANGUAGE_CODE",
+    "maps.google.default_language_code",
+    os.getenv("GOOGLE_MAPS_DEFAULT_LANGUAGE_CODE", ""),
+)
+
+GOOGLE_MAPS_DEFAULT_REGION_CODE = PersistentConfig(
+    "GOOGLE_MAPS_DEFAULT_REGION_CODE",
+    "maps.google.default_region_code",
+    os.getenv("GOOGLE_MAPS_DEFAULT_REGION_CODE", ""),
+)
+
+GOOGLE_MAPS_MAX_CANDIDATES = PersistentConfig(
+    "GOOGLE_MAPS_MAX_CANDIDATES",
+    "maps.google.max_candidates",
+    int(os.getenv("GOOGLE_MAPS_MAX_CANDIDATES", "5")),
+)
+
 WEB_SEARCH_ENGINE = PersistentConfig(
     "WEB_SEARCH_ENGINE",
     "rag.web.search.engine",

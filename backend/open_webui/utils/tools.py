@@ -53,6 +53,7 @@ from open_webui.env import (
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.tools.builtin import (
     search_web,
+    resolve_place_google_maps,
     web_research_strong,
     offsec_consult,
     offsec_retrieve_evidence,
@@ -502,6 +503,11 @@ def get_builtin_tools(
             builtin_functions.append(web_research_strong)
         if features.get("web_search") or features.get("focused_search"):
             builtin_functions.append(fetch_url)
+
+    if is_builtin_tool_enabled("maps") and getattr(
+        request.app.state.config, "ENABLE_GOOGLE_MAPS", False
+    ):
+        builtin_functions.append(resolve_place_google_maps)
 
     corpus_runtime = resolve_corpus_runtime(
         request.app.state.config,

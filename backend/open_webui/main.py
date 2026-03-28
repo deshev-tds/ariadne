@@ -72,6 +72,7 @@ from open_webui.routers import (
     analytics,
     audio,
     images,
+    maps,
     ollama,
     openai,
     retrieval,
@@ -311,6 +312,7 @@ from open_webui.config import (
     YOUTUBE_LOADER_PROXY_URL,
     # Retrieval (Web Search)
     ENABLE_WEB_SEARCH,
+    ENABLE_GOOGLE_MAPS,
     WEB_SEARCH_ENGINE,
     BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
     BYPASS_WEB_SEARCH_WEB_LOADER,
@@ -386,6 +388,12 @@ from open_webui.config import (
     BOCHA_SEARCH_API_KEY,
     GOOGLE_PSE_API_KEY,
     GOOGLE_PSE_ENGINE_ID,
+    GOOGLE_MAPS_API_KEY,
+    GOOGLE_MAPS_BASE_URL,
+    GOOGLE_MAPS_TIMEOUT_SECONDS,
+    GOOGLE_MAPS_DEFAULT_LANGUAGE_CODE,
+    GOOGLE_MAPS_DEFAULT_REGION_CODE,
+    GOOGLE_MAPS_MAX_CANDIDATES,
     GOOGLE_DRIVE_CLIENT_ID,
     GOOGLE_DRIVE_API_KEY,
     ENABLE_ONEDRIVE_INTEGRATION,
@@ -1137,6 +1145,7 @@ app.state.config.YOUTUBE_LOADER_PROXY_URL = YOUTUBE_LOADER_PROXY_URL
 
 
 app.state.config.ENABLE_WEB_SEARCH = ENABLE_WEB_SEARCH
+app.state.config.ENABLE_GOOGLE_MAPS = ENABLE_GOOGLE_MAPS
 app.state.config.WEB_SEARCH_ENGINE = WEB_SEARCH_ENGINE
 app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST = WEB_SEARCH_DOMAIN_FILTER_LIST
 app.state.config.WEB_SEARCH_RESULT_COUNT = WEB_SEARCH_RESULT_COUNT
@@ -1239,6 +1248,14 @@ app.state.config.YACY_USERNAME = YACY_USERNAME
 app.state.config.YACY_PASSWORD = YACY_PASSWORD
 app.state.config.GOOGLE_PSE_API_KEY = GOOGLE_PSE_API_KEY
 app.state.config.GOOGLE_PSE_ENGINE_ID = GOOGLE_PSE_ENGINE_ID
+app.state.config.GOOGLE_MAPS_API_KEY = GOOGLE_MAPS_API_KEY
+app.state.config.GOOGLE_MAPS_BASE_URL = GOOGLE_MAPS_BASE_URL
+app.state.config.GOOGLE_MAPS_TIMEOUT_SECONDS = GOOGLE_MAPS_TIMEOUT_SECONDS
+app.state.config.GOOGLE_MAPS_DEFAULT_LANGUAGE_CODE = (
+    GOOGLE_MAPS_DEFAULT_LANGUAGE_CODE
+)
+app.state.config.GOOGLE_MAPS_DEFAULT_REGION_CODE = GOOGLE_MAPS_DEFAULT_REGION_CODE
+app.state.config.GOOGLE_MAPS_MAX_CANDIDATES = GOOGLE_MAPS_MAX_CANDIDATES
 app.state.config.BRAVE_SEARCH_API_KEY = BRAVE_SEARCH_API_KEY
 app.state.config.KAGI_SEARCH_API_KEY = KAGI_SEARCH_API_KEY
 app.state.config.MOJEEK_SEARCH_API_KEY = MOJEEK_SEARCH_API_KEY
@@ -1714,6 +1731,7 @@ app.include_router(images.router, prefix="/api/v1/images", tags=["images"])
 
 app.include_router(audio.router, prefix="/api/v1/audio", tags=["audio"])
 app.include_router(retrieval.router, prefix="/api/v1/retrieval", tags=["retrieval"])
+app.include_router(maps.router, prefix="/api/v1/maps", tags=["maps"])
 
 app.include_router(configs.router, prefix="/api/v1/configs", tags=["configs"])
 
@@ -2837,6 +2855,7 @@ async def get_app_config(request: Request):
                     "enable_channels": app.state.config.ENABLE_CHANNELS,
                     "enable_notes": app.state.config.ENABLE_NOTES,
                     "enable_web_search": app.state.config.ENABLE_WEB_SEARCH,
+                    "enable_google_maps": app.state.config.ENABLE_GOOGLE_MAPS,
                     "enable_code_execution": app.state.config.ENABLE_CODE_EXECUTION,
                     "enable_code_interpreter": app.state.config.ENABLE_CODE_INTERPRETER,
                     "enable_image_generation": app.state.config.ENABLE_IMAGE_GENERATION,
