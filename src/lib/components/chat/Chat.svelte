@@ -452,16 +452,14 @@
 	};
 
 	const getPersonaMetaForPersistence = () => {
-		if (!selectedPersona) {
-			return chat?.meta ?? null;
-		}
-
-		const nextMeta = buildPersonaChatMeta(
-			selectedPersona,
-			getCurrentPersonaOverrides(),
-			getSelectedPersonaChatMeta() ?? {},
-			getCurrentPersonaSnapshot()
-		);
+		const nextMeta = selectedPersona
+			? buildPersonaChatMeta(
+					selectedPersona,
+					getCurrentPersonaOverrides(),
+					getSelectedPersonaChatMeta() ?? {},
+					getCurrentPersonaSnapshot()
+				)
+			: (chat?.meta ?? null);
 
 		if (sceneNote) {
 			return {
