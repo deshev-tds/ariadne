@@ -35,6 +35,65 @@
 	let description = '';
 	let archetype: Persona['archetype'] = 'assistant';
 
+	const PERSONA_EMOJI_GROUPS = [
+		{
+			label: 'General',
+			options: [
+				{ value: '🙂', label: 'Friendly' },
+				{ value: '🧠', label: 'Thinking' },
+				{ value: '💬', label: 'Conversational' },
+				{ value: '✨', label: 'Spark' },
+				{ value: '🔍', label: 'Research' },
+				{ value: '🛠️', label: 'Practical' },
+				{ value: '📚', label: 'Knowledge' },
+				{ value: '🧪', label: 'Experimental' }
+			]
+		},
+		{
+			label: 'Companion',
+			options: [
+				{ value: '🌙', label: 'Moonlit' },
+				{ value: '🕯️', label: 'Candlelit' },
+				{ value: '🫧', label: 'Dreamlike' },
+				{ value: '🌫️', label: 'Foggy' },
+				{ value: '🎭', label: 'Dramatic' },
+				{ value: '🖤', label: 'Dark' },
+				{ value: '🥀', label: 'Worn' },
+				{ value: '🫀', label: 'Intimate' }
+			]
+		},
+		{
+			label: 'Travel',
+			options: [
+				{ value: '🧭', label: 'Compass' },
+				{ value: '🗺️', label: 'Map' },
+				{ value: '🧳', label: 'Trip' },
+				{ value: '📷', label: 'Camera' },
+				{ value: '🌆', label: 'City' },
+				{ value: '🍸', label: 'Nightlife' },
+				{ value: '🍜', label: 'Food' },
+				{ value: '🚶', label: 'Walking' }
+			]
+		},
+		{
+			label: 'Specialist',
+			options: [
+				{ value: '🩺', label: 'Clinical' },
+				{ value: '🛰️', label: 'Signals' },
+				{ value: '🛡️', label: 'Defense' },
+				{ value: '🕵️', label: 'Investigation' },
+				{ value: '⚙️', label: 'Systems' },
+				{ value: '📡', label: 'Network' },
+				{ value: '🧷', label: 'Precise' },
+				{ value: '🪶', label: 'Light touch' }
+			]
+		}
+	];
+	const PERSONA_EMOJI_VALUES = PERSONA_EMOJI_GROUPS.flatMap((group) =>
+		group.options.map((option) => option.value)
+	);
+	$: currentCustomEmoji = emoji && !PERSONA_EMOJI_VALUES.includes(emoji) ? emoji : '';
+
 	let boundModelId = '';
 	let useBoundModelSystemPrompt = true;
 	let systemPrompt = '';
@@ -345,11 +404,33 @@
 
 						<div>
 							<div class="mb-1 text-xs font-medium text-gray-500">{$i18n.t('Emoji')}</div>
-							<input
-								class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
-								bind:value={emoji}
-								maxlength="8"
-							/>
+							<div class="flex items-center gap-3">
+								<select
+									class="w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 dark:border-gray-800"
+									bind:value={emoji}
+								>
+									<option value="">{$i18n.t('No emoji')}</option>
+									{#if currentCustomEmoji}
+										<option value={currentCustomEmoji}>
+											{currentCustomEmoji} {$i18n.t('(current custom emoji)')}
+										</option>
+									{/if}
+									{#each PERSONA_EMOJI_GROUPS as group}
+										<optgroup label={group.label}>
+											{#each group.options as option}
+												<option value={option.value}>
+													{option.value} {option.label}
+												</option>
+											{/each}
+										</optgroup>
+									{/each}
+								</select>
+								<div
+									class="flex size-11 shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-lg dark:border-gray-800 dark:bg-gray-900"
+								>
+									{emoji || '◌'}
+								</div>
+							</div>
 						</div>
 
 						<div>

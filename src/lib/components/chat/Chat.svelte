@@ -317,6 +317,7 @@
 	let chatFiles = [];
 	let files = [];
 	let params = {};
+	let paramsHydratedFromSettings = false;
 	let chatThinkingEnabled = false;
 	let chatLedgerAgenticEnabled = false;
 	let chatFocusedSearchEnabled = false;
@@ -324,6 +325,30 @@
 	const CHAT_WORKING_MODES: WorkingMode[] = ['general', 'science', 'offsec'];
 	let chatWorkingMode: WorkingMode = 'general';
 	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
+
+	const cloneChatParams = (value: Record<string, unknown> | null | undefined) => {
+		if (!value || typeof value !== 'object') {
+			return {};
+		}
+
+		try {
+			return structuredClone(value);
+		} catch {
+			return JSON.parse(JSON.stringify(value));
+		}
+	};
+
+	const getDefaultChatParams = () => cloneChatParams($settings?.params ?? {});
+
+	const initializeChatParams = (overrides: Record<string, unknown> = {}) => {
+		params = { ...getDefaultChatParams(), ...cloneChatParams(overrides) };
+		paramsHydratedFromSettings = $settings !== undefined;
+	};
+
+	$: if (!paramsHydratedFromSettings && $settings !== undefined) {
+		params = { ...getDefaultChatParams(), ...(params ?? {}) };
+		paramsHydratedFromSettings = true;
+	}
 
 	$: chatThinkingEnabled =
 		(params?.custom_params?.chat_template_kwargs?.enable_thinking ?? false) === true;
@@ -688,26 +713,25 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						const nextParams = getDefaultChatParams();
 						if (
 							typeof input.workingMode === 'string' &&
 							CHAT_WORKING_MODES.includes(input.workingMode)
 						) {
-							params = {
-								...(params ?? {}),
-								working_mode: input.workingMode
-							};
+							nextParams.working_mode = input.workingMode;
 						}
 						if (typeof input.localCorpusMode === 'string') {
-							params = {
-								...(params ?? {}),
-								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
-									? input.localCorpusMode
-									: 'auto'
-							};
+							nextParams.local_corpus_mode = ['off', 'auto', 'prefer'].includes(
+								input.localCorpusMode
+							)
+								? input.localCorpusMode
+								: 'auto';
 						}
+						initializeChatParams(nextParams);
 					}
 				} catch (e) {}
 			} else {
+				initializeChatParams();
 				await setDefaults();
 			}
 
@@ -1331,23 +1355,21 @@
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
+						const nextParams = getDefaultChatParams();
 						if (
 							typeof input.workingMode === 'string' &&
 							CHAT_WORKING_MODES.includes(input.workingMode)
 						) {
-							params = {
-								...(params ?? {}),
-								working_mode: input.workingMode
-							};
+							nextParams.working_mode = input.workingMode;
 						}
 						if (typeof input.localCorpusMode === 'string') {
-							params = {
-								...(params ?? {}),
-								local_corpus_mode: ['off', 'auto', 'prefer'].includes(input.localCorpusMode)
-									? input.localCorpusMode
-									: 'auto'
-							};
+							nextParams.local_corpus_mode = ['off', 'auto', 'prefer'].includes(
+								input.localCorpusMode
+							)
+								? input.localCorpusMode
+								: 'auto';
 						}
+						initializeChatParams(nextParams);
 					}
 				} catch (e) {}
 			}
@@ -1795,7 +1817,7 @@
 		tags = [];
 
 		chatFiles = [];
-		params = {};
+		initializeChatParams();
 		taskIds = null;
 		messageQueue = [];
 
@@ -1917,7 +1939,7 @@
 
 				chatTitle.set(chatContent.title);
 
-				params = chatContent?.params ?? {};
+				initializeChatParams(chatContent?.params ?? {});
 				chatFiles = chatContent?.files ?? [];
 
 				autoScroll = true;
