@@ -51,9 +51,9 @@
 
 <div class="flex flex-col w-full items-start">
 	{#each selectedModels as selectedModel, selectedModelIdx}
-		<div class="flex w-full max-w-fit">
-			<div class="overflow-hidden w-full">
-				<div class="max-w-full {($settings?.highContrastMode ?? false) ? 'm-1' : 'mr-1'}">
+		<div class="flex w-full min-w-0 max-w-full">
+			<div class="min-w-0 overflow-hidden w-full">
+				<div class="min-w-0 max-w-full {($settings?.highContrastMode ?? false) ? 'm-1' : 'mr-1'}">
 					<Selector
 						id={`${selectedModelIdx}`}
 						placeholder={$i18n.t('Select a model')}

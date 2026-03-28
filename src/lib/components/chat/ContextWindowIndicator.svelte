@@ -47,9 +47,9 @@
 					preview.maintenance_enabled && metrics.showBand
 						? `<div>${
 								metrics.degraded ? 'Approximate maintenance range' : 'Maintenance likely around'
-						  } ~${formatTokenCount(metrics.softTriggerTokens ?? 0)}-${formatTokenCount(
+							} ~${formatTokenCount(metrics.softTriggerTokens ?? 0)}-${formatTokenCount(
 								metrics.hardTriggerTokens ?? 0
-						  )}</div>`
+							)}</div>`
 						: `<div>Context maintenance off</div>`
 				}
 				${preview.multi_model ? `<div>Limited by ${preview.limiting_model_name}</div>` : ''}
@@ -63,7 +63,7 @@
 {#if preview}
 	<Tooltip content={tooltipContent} placement="bottom" offset={[0, 8]} interactive={true}>
 		<button
-			class="relative ml-1.5 flex size-9 items-center justify-center rounded-xl transition hover:bg-gray-50 dark:hover:bg-gray-850"
+			class="relative flex size-9 items-center justify-center rounded-xl transition hover:bg-gray-50 dark:hover:bg-gray-850 sm:ml-1.5"
 			aria-label="Context window"
 		>
 			<svg viewBox="0 0 40 40" class="-rotate-90 size-7">
@@ -80,13 +80,13 @@
 					<circle
 						cx="20"
 						cy="20"
-					r={radius}
-					fill="none"
-					stroke-width="4"
-					stroke-linecap="round"
-					style={`${arcStyle(metrics.softRatio, metrics.hardRatio)} stroke: ${bandStroke};`}
-				/>
-			{/if}
+						r={radius}
+						fill="none"
+						stroke-width="4"
+						stroke-linecap="round"
+						style={`${arcStyle(metrics.softRatio, metrics.hardRatio)} stroke: ${bandStroke};`}
+					/>
+				{/if}
 
 				<circle
 					cx="20"

@@ -125,66 +125,66 @@
 			{$showSidebar ? 'ml-1' : ''}
 			"
 				>
-					<div class="flex items-center">
-						{#if showModelSelector}
-							<div class="flex flex-col gap-2">
-								<PersonaSelector
-									{selectedPersonaId}
-									showSetDefault={!shareEnabled}
-									on:select={(event) => {
-										onPersonaSelect(event.detail);
-									}}
-								/>
-								{#if !selectedPersonaId}
-									<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
-								{/if}
-								{#if selectedPersonaId}
-									<div class="px-1 text-[0.7rem] text-gray-500 dark:text-gray-400">
-										<div class="line-clamp-1">
-											{activeChatIdentity?.emoji
-												? `${activeChatIdentity.emoji} `
-												: ''}{activeChatIdentity?.name}
-											{#if activeChatIdentity?.secondaryLabel}
-												<span class="ml-1 text-gray-400 dark:text-gray-500">
-													· {activeChatIdentity.secondaryLabel}
-												</span>
-											{/if}
+					<div class="flex min-w-0 flex-col gap-2">
+						<div class="flex min-w-0 items-start gap-2">
+							{#if showModelSelector}
+								<div class="flex min-w-0 flex-1 flex-col gap-2">
+									<PersonaSelector
+										{selectedPersonaId}
+										showSetDefault={!shareEnabled}
+										on:select={(event) => {
+											onPersonaSelect(event.detail);
+										}}
+									/>
+									{#if !selectedPersonaId}
+										<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
+									{/if}
+								</div>
+							{/if}
+							<div class="flex flex-none self-start">
+								{#if contextWindowRuntimeState === 'loading'}
+									<Tooltip content={$i18n.t('Model loading')}>
+										<div
+											class="flex size-9 items-center justify-center rounded-xl text-gray-500 dark:text-gray-400 sm:ml-1.5"
+										>
+											<Spinner className="size-4" />
 										</div>
-										<div class="line-clamp-1">
-											{$i18n.t(
-												'Identity updates live. Behavior and defaults are pinned to this chat.'
-											)}
-										</div>
-										<div class="mt-1">
-											<button
-												type="button"
-												class="inline-flex max-w-full items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[0.7rem] font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-gray-700 dark:hover:bg-gray-850"
-												on:click={() => {
-													onEditSceneNote();
-												}}
-											>
-												<PencilSquare className="size-3" />
-												<span class="max-w-[18rem] truncate">
-													{sceneNoteLabel
-														? `${$i18n.t('Scene')}: ${sceneNoteLabel}`
-														: $i18n.t('Scene')}
-												</span>
-											</button>
-										</div>
-									</div>
+									</Tooltip>
+								{:else if contextWindowRuntimeState === 'ready'}
+									<ContextWindowIndicator preview={contextWindowPreview} {draftPrompt} />
 								{/if}
 							</div>
-						{/if}
-						{#if contextWindowRuntimeState === 'loading'}
-							<Tooltip content={$i18n.t('Model loading')}>
-								<div
-									class="ml-1.5 flex size-9 items-center justify-center rounded-xl text-gray-500 dark:text-gray-400"
-								>
-									<Spinner className="size-4" />
+						</div>
+						{#if showModelSelector && selectedPersonaId}
+							<div class="px-1 text-[0.7rem] text-gray-500 dark:text-gray-400">
+								<div class="line-clamp-1">
+									{activeChatIdentity?.emoji
+										? `${activeChatIdentity.emoji} `
+										: ''}{activeChatIdentity?.name}
+									{#if activeChatIdentity?.secondaryLabel}
+										<span class="ml-1 text-gray-400 dark:text-gray-500">
+											· {activeChatIdentity.secondaryLabel}
+										</span>
+									{/if}
 								</div>
-							</Tooltip>
-						{:else if contextWindowRuntimeState === 'ready'}
-							<ContextWindowIndicator preview={contextWindowPreview} {draftPrompt} />
+								<div class="line-clamp-1">
+									{$i18n.t('Identity updates live. Behavior and defaults are pinned to this chat.')}
+								</div>
+								<div class="mt-1">
+									<button
+										type="button"
+										class="inline-flex max-w-full items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[0.7rem] font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-gray-700 dark:hover:bg-gray-850"
+										on:click={() => {
+											onEditSceneNote();
+										}}
+									>
+										<PencilSquare className="size-3" />
+										<span class="max-w-[18rem] truncate">
+											{sceneNoteLabel ? `${$i18n.t('Scene')}: ${sceneNoteLabel}` : $i18n.t('Scene')}
+										</span>
+									</button>
+								</div>
+							</div>
 						{/if}
 					</div>
 				</div>

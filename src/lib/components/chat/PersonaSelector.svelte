@@ -19,11 +19,11 @@
 	};
 </script>
 
-<div class="flex flex-col items-start gap-1">
-	<div class="flex items-center gap-2">
+<div class="flex w-full min-w-0 flex-col items-start gap-1">
+	<div class="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
 		<button
 			type="button"
-			class="rounded-xl border px-3 py-2 text-sm transition {selectedPersonaId
+			class="w-full shrink-0 whitespace-nowrap rounded-xl border px-3 py-2 text-left text-sm transition sm:w-auto {selectedPersonaId
 				? 'border-gray-200 text-gray-500 dark:border-gray-800 dark:text-gray-400'
 				: 'border-gray-900 bg-gray-900 text-white dark:border-gray-200 dark:bg-gray-100 dark:text-gray-900'}"
 			{disabled}
@@ -36,7 +36,7 @@
 		</button>
 
 		<select
-			class="max-w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2 text-sm dark:border-gray-800"
+			class="w-full min-w-0 rounded-xl border border-gray-200 bg-transparent px-3 py-2 text-sm dark:border-gray-800 sm:flex-1"
 			bind:value
 			{disabled}
 			on:change={() => {
