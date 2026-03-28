@@ -131,6 +131,7 @@
 								<div class="flex min-w-0 flex-1 flex-col gap-2">
 									<PersonaSelector
 										{selectedPersonaId}
+										compact={$mobile}
 										showSetDefault={!shareEnabled}
 										on:select={(event) => {
 											onPersonaSelect(event.detail);
@@ -139,6 +140,36 @@
 									{#if !selectedPersonaId}
 										<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
 									{/if}
+								</div>
+							{/if}
+							{#if $mobile && showModelSelector && selectedPersonaId}
+								<div class="mt-0.5 flex flex-none items-center gap-1">
+									<Tooltip content={$i18n.t('Scene')}>
+										<button
+											type="button"
+											aria-label={$i18n.t('Scene')}
+											class="inline-flex size-9 items-center justify-center rounded-xl border border-gray-200 bg-white text-[0.65rem] font-semibold uppercase tracking-[0.08em] text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-gray-700 dark:hover:bg-gray-850"
+											on:click={() => {
+												onEditSceneNote();
+											}}
+										>
+											S
+										</button>
+									</Tooltip>
+									<Tooltip content={$i18n.t('Edit Persona')}>
+										<button
+											type="button"
+											aria-label={$i18n.t('Edit Persona')}
+											class="inline-flex size-9 items-center justify-center rounded-xl border border-gray-200 bg-white text-[0.65rem] font-semibold uppercase tracking-[0.08em] text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-gray-700 dark:hover:bg-gray-850"
+											on:click={() => {
+												if (selectedPersonaId) {
+													goto(`/workspace/personas/edit?id=${encodeURIComponent(selectedPersonaId)}`);
+												}
+											}}
+										>
+											P
+										</button>
+									</Tooltip>
 								</div>
 							{/if}
 							<div class="flex flex-none self-start">
@@ -155,7 +186,7 @@
 								{/if}
 							</div>
 						</div>
-						{#if showModelSelector && selectedPersonaId}
+						{#if showModelSelector && selectedPersonaId && !$mobile}
 							<div class="px-1 text-[0.7rem] text-gray-500 dark:text-gray-400">
 								<div class="line-clamp-1">
 									{activeChatIdentity?.emoji

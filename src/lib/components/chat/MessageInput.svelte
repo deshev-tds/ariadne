@@ -215,8 +215,21 @@
 	const getWorkingModeLabel = (mode: WorkingMode): string =>
 		WORKING_MODE_OPTIONS.find((option) => option.value === mode)?.label ?? 'General';
 
+	const getWorkingModeCompactLabel = (mode: WorkingMode): string =>
+		mode === 'science' ? 'S' : mode === 'offsec' ? 'O' : 'G';
+
 	const getWorkingModeStatusText = (mode: WorkingMode): string =>
 		`${getWorkingModeLabel(mode)} mode is active for this chat`;
+
+	const restoreChatInputFocus = async () => {
+		await tick();
+
+		if ($mobile) {
+			return;
+		}
+
+		document.getElementById('chat-input')?.focus();
+	};
 
 	const inputVariableHandler = async (text: string): Promise<string> => {
 		inputVariables = extractInputVariables(text);
@@ -1567,7 +1580,7 @@
 							</div>
 
 							<div class=" flex justify-between mt-0.5 mb-2.5 mx-0.5 max-w-full" dir="ltr">
-								<div class="ml-1 self-end flex items-center flex-1 max-w-[80%]">
+								<div class="ml-1 self-end flex min-w-0 flex-1 items-center overflow-x-auto scrollbar-hidden">
 									<InputMenu
 										bind:files
 										selectedModels={atSelectedModel ? [atSelectedModel.id] : selectedModels}
@@ -1613,12 +1626,7 @@
 											}
 										}}
 										{onUpload}
-										onClose={async () => {
-											await tick();
-
-											const chatInput = document.getElementById('chat-input');
-											chatInput?.focus();
-										}}
+										onClose={restoreChatInputFocus}
 									>
 										<div
 											id="input-menu-button"
@@ -1652,12 +1660,7 @@
 												showValvesModal = true;
 												integrationsMenuCloseOnOutsideClick = false;
 											}}
-											onClose={async () => {
-												await tick();
-
-												const chatInput = document.getElementById('chat-input');
-												chatInput?.focus();
-											}}
+											onClose={restoreChatInputFocus}
 										>
 											<div
 												id="integration-menu-button"
@@ -1668,7 +1671,7 @@
 										</IntegrationsMenu>
 									{/if}
 
-									<div class="ml-1 flex gap-1.5">
+									<div class="ml-1 flex shrink-0 gap-1.5">
 										<Tooltip
 											content={thinkingEnabled
 												? $i18n.t('Thinking mode is enabled for this chat')
@@ -1685,8 +1688,7 @@
 													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 												on:click={async () => {
 													setChatThinkingEnabled(!thinkingEnabled);
-													await tick();
-													document.getElementById('chat-input')?.focus();
+													await restoreChatInputFocus();
 												}}
 											>
 												<LightBulb className="size-4.5" strokeWidth="1.75" />
@@ -1708,8 +1710,7 @@
 													: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 												on:click={async () => {
 													setChatLedgerAgenticEnabled(!ledgerAgenticEnabled);
-													await tick();
-													document.getElementById('chat-input')?.focus();
+													await restoreChatInputFocus();
 												}}
 											>
 												<CommandLine className="size-4.5" strokeWidth="1.75" />
@@ -1719,8 +1720,7 @@
 											bind:show={showWorkingModeMenu}
 											on:change={async (e) => {
 												if (e.detail === false) {
-													await tick();
-													document.getElementById('chat-input')?.focus();
+													await restoreChatInputFocus();
 												}
 											}}
 										>
@@ -1729,14 +1729,18 @@
 													type="button"
 													id="working-mode-button"
 													aria-label="Working mode"
-													class="rounded-full h-8 min-w-[4.5rem] px-2.5 flex justify-center items-center outline-hidden focus:outline-hidden transition-colors text-[11px] font-semibold uppercase tracking-[0.08em] {workingMode ===
+													class="rounded-full flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden transition-colors font-semibold uppercase tracking-[0.08em] whitespace-nowrap {workingMode ===
 													'offsec'
 														? 'text-orange-700 bg-orange-100/80 hover:bg-orange-200/80 dark:text-orange-200 dark:bg-orange-700/20 dark:hover:bg-orange-700/30'
 														: workingMode === 'science'
 															? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
-															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'} {$mobile
+														? 'size-8 text-[0.65rem]'
+														: 'h-8 min-w-[4.5rem] px-2.5 text-[11px]'}"
 												>
-													{getWorkingModeLabel(workingMode)}
+													{$mobile
+														? getWorkingModeCompactLabel(workingMode)
+														: getWorkingModeLabel(workingMode)}
 												</button>
 											</Tooltip>
 
@@ -1754,8 +1758,7 @@
 															on:click={async () => {
 																setChatWorkingMode(option.value);
 																showWorkingModeMenu = false;
-																await tick();
-																document.getElementById('chat-input')?.focus();
+																await restoreChatInputFocus();
 															}}
 														>
 															<div class="flex items-center gap-2 text-sm font-medium">
@@ -1803,8 +1806,7 @@
 																? 'prefer'
 																: 'off';
 													setChatLocalCorpusMode(nextMode);
-													await tick();
-													document.getElementById('chat-input')?.focus();
+													await restoreChatInputFocus();
 												}}
 											>
 												<BookOpen className="size-4.5" strokeWidth="1.75" />
@@ -1827,8 +1829,7 @@
 														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 													on:click={async () => {
 														setChatFocusedSearchEnabled(!focusedSearchEnabled);
-														await tick();
-														document.getElementById('chat-input')?.focus();
+														await restoreChatInputFocus();
 													}}
 												>
 													<GlobeAlt className="size-4.5" strokeWidth="1.75" />
