@@ -54,6 +54,7 @@ from open_webui.utils.headers import include_user_info_headers
 from open_webui.tools.builtin import (
     search_web,
     resolve_place_google_maps,
+    get_trip_weather_forecast,
     web_research_strong,
     offsec_consult,
     offsec_retrieve_evidence,
@@ -508,6 +509,9 @@ def get_builtin_tools(
         request.app.state.config, "ENABLE_GOOGLE_MAPS", False
     ):
         builtin_functions.append(resolve_place_google_maps)
+
+    if is_builtin_tool_enabled("weather"):
+        builtin_functions.append(get_trip_weather_forecast)
 
     corpus_runtime = resolve_corpus_runtime(
         request.app.state.config,

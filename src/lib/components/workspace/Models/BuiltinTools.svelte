@@ -39,6 +39,10 @@
 			label: $i18n.t('Maps'),
 			description: $i18n.t('Resolve places into exact addresses and Google Maps links')
 		},
+		weather: {
+			label: $i18n.t('Weather'),
+			description: $i18n.t('Get daily weather forecasts for destinations and trip dates')
+		},
 		image_generation: {
 			label: $i18n.t('Image Generation'),
 			description: $i18n.t('Generate and edit images')

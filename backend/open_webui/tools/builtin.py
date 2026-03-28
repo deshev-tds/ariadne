@@ -60,6 +60,7 @@ from open_webui.models.memories import Memories
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.utils.google_maps import GoogleMapsError, resolve_place_with_google_maps
 from open_webui.utils.sanitize import sanitize_code
+from open_webui.utils.weather import WeatherError, get_weather_forecast
 
 log = logging.getLogger(__name__)
 
@@ -387,6 +388,79 @@ async def resolve_place_google_maps(
         return json.dumps({"error": str(e)}, ensure_ascii=False)
     except Exception as e:
         log.exception(f"resolve_place_google_maps unexpected error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# =============================================================================
+# WEATHER TOOLS
+# =============================================================================
+
+
+async def get_trip_weather_forecast(
+    place_name: Optional[str] = None,
+    location_context: Optional[str] = None,
+    query_hint: Optional[str] = None,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    language_code: Optional[str] = None,
+    region_code: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    timezone: Optional[str] = None,
+    temperature_unit: Optional[str] = None,
+    wind_speed_unit: Optional[str] = None,
+    precipitation_unit: Optional[str] = None,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Get a daily weather forecast for a concrete city, district, or trip base.
+    Prefer using this after the destination and trip dates are known.
+    You can pass coordinates directly, or pass a place name and let the tool resolve it first.
+
+    :param place_name: Optional city, town, district, or specific place name
+    :param location_context: Optional city, region, or country context for place resolution
+    :param query_hint: Optional hint such as city center, hotel area, or old town
+    :param latitude: Optional latitude if already known
+    :param longitude: Optional longitude if already known
+    :param language_code: Optional language code for place resolution such as en, it, es, ru, or sw
+    :param region_code: Optional two-letter CLDR region code for place resolution such as IT or ES
+    :param start_date: Optional forecast start date in YYYY-MM-DD format
+    :param end_date: Optional forecast end date in YYYY-MM-DD format
+    :param timezone: Optional IANA timezone such as Europe/Rome. Defaults to auto
+    :param temperature_unit: Optional temperature unit such as celsius or fahrenheit
+    :param wind_speed_unit: Optional wind speed unit such as kmh, ms, mph, or kn
+    :param precipitation_unit: Optional precipitation unit such as mm or inch
+    :return: JSON with daily forecast, current conditions, units, and resolved location
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        result = await asyncio.to_thread(
+            get_weather_forecast,
+            request=__request__,
+            config=__request__.app.state.config,
+            place_name=place_name,
+            location_context=location_context,
+            query_hint=query_hint,
+            latitude=latitude,
+            longitude=longitude,
+            language_code=language_code,
+            region_code=region_code,
+            start_date=start_date,
+            end_date=end_date,
+            timezone=timezone,
+            temperature_unit=temperature_unit,
+            wind_speed_unit=wind_speed_unit,
+            precipitation_unit=precipitation_unit,
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except WeatherError as e:
+        log.exception(f"get_trip_weather_forecast error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"get_trip_weather_forecast unexpected error: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
