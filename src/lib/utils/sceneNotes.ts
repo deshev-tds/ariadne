@@ -10,6 +10,8 @@ export type SceneNote = {
 	title: string | null;
 	note: string;
 	resolved_note: string;
+	thumbnail_url: string | null;
+	thumbnail_prompt: string | null;
 	updated_at: number | null;
 };
 
@@ -104,6 +106,8 @@ export const normalizeSceneNote = (sceneNote?: Record<string, any> | null): Scen
 	}
 
 	const title = normalizeString(sceneNote.title) || preset?.label || '';
+	const thumbnail_url = normalizeString(sceneNote.thumbnail_url) || null;
+	const thumbnail_prompt = normalizeString(sceneNote.thumbnail_prompt) || null;
 
 	return {
 		enabled: true,
@@ -111,6 +115,8 @@ export const normalizeSceneNote = (sceneNote?: Record<string, any> | null): Scen
 		title: title || null,
 		note,
 		resolved_note,
+		thumbnail_url,
+		thumbnail_prompt,
 		updated_at: typeof sceneNote.updated_at === 'number' ? sceneNote.updated_at : null
 	};
 };
@@ -118,11 +124,15 @@ export const normalizeSceneNote = (sceneNote?: Record<string, any> | null): Scen
 export const buildSceneNote = ({
 	preset_id,
 	title,
-	note
+	note,
+	thumbnail_url,
+	thumbnail_prompt
 }: {
 	preset_id?: string | null;
 	title?: string | null;
 	note?: string | null;
+	thumbnail_url?: string | null;
+	thumbnail_prompt?: string | null;
 }) =>
 	normalizeSceneNote({
 		enabled: true,
@@ -130,8 +140,33 @@ export const buildSceneNote = ({
 		title: title ?? null,
 		note: note ?? '',
 		resolved_note: resolveSceneNoteText({ preset_id: preset_id ?? null, note: note ?? '' }),
+		thumbnail_url: thumbnail_url ?? null,
+		thumbnail_prompt: thumbnail_prompt ?? null,
 		updated_at: Date.now()
 	});
+
+export const buildSceneThumbnailPrompt = ({
+	title,
+	resolved_note
+}: {
+	title?: string | null;
+	resolved_note?: string | null;
+}) => {
+	const label = normalizeString(title) || 'Untitled Scene';
+	const framing = normalizeString(resolved_note);
+
+	return [
+		'Create a cinematic scene thumbnail for a chat persona interface.',
+		'No text, no logos, no letters, no UI, no split panels, no watermark.',
+		'Focus on environment, lighting, mood, atmosphere, and composition.',
+		'The image should feel evocative, grounded, and immediately readable at thumbnail size.',
+		`Scene title: ${label}.`,
+		framing ? `Scene framing: ${framing}` : '',
+		'Favor a polished, atmospheric still frame rather than a poster.'
+	]
+		.filter(Boolean)
+		.join(' ');
+};
 
 export const getSceneNoteLabel = (sceneNote?: Record<string, any> | null) => {
 	const normalized = normalizeSceneNote(sceneNote);

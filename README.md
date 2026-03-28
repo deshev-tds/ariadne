@@ -64,6 +64,7 @@ The important divergences are not cosmetic.
 - The app now has a dedicated `Workspace -> Personas` surface with persona-first chat selection, voice preview, and direct-model fallback.
 - Persona rebinding on an existing chat now refreshes the pinned runtime snapshot instead of silently carrying stale defaults from the previous persona.
 - Persona-attached chats now have a first-class `scene_note` layer for chat-local atmospheric or situational steering without mutating persona identity.
+- `scene_note` authoring now supports optional thumbnails, including one-click generation through the existing image generation backend when that feature is enabled.
 - Automatic pre-migration SQLite backups were added before Alembic upgrades so local schema changes do not run without a fresh snapshot.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
 - On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
@@ -87,6 +88,7 @@ Current Persona V1 behavior:
 - persona runtime defaults are pinned per chat at creation time
 - changing persona on an existing chat replaces that chat's pinned persona snapshot instead of reusing stale defaults
 - `scene_note` is chat-local, mutable, and injected as forward-only current-scene framing
+- `scene_note` can also carry an optional UI thumbnail without changing prompt/runtime behavior
 - direct model use still exists as a separate fallback path
 - voice belongs to the persona definition and can be previewed inline
 

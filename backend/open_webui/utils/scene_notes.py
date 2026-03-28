@@ -26,6 +26,16 @@ def normalize_scene_note(scene_note: Any) -> Optional[dict[str, Any]]:
     resolved_note = resolved_note.strip() if isinstance(resolved_note, str) else None
     resolved_note = resolved_note or None
 
+    thumbnail_url = scene_note.get("thumbnail_url")
+    thumbnail_url = thumbnail_url.strip() if isinstance(thumbnail_url, str) else None
+    thumbnail_url = thumbnail_url or None
+
+    thumbnail_prompt = scene_note.get("thumbnail_prompt")
+    thumbnail_prompt = (
+        thumbnail_prompt.strip() if isinstance(thumbnail_prompt, str) else None
+    )
+    thumbnail_prompt = thumbnail_prompt or None
+
     # The backend should trust the resolved note provided by the UI, but it
     # still needs a safe fallback when older chats only persisted the freeform
     # note itself.
@@ -41,6 +51,8 @@ def normalize_scene_note(scene_note: Any) -> Optional[dict[str, Any]]:
         "title": title,
         "note": note,
         "resolved_note": resolved_note,
+        "thumbnail_url": thumbnail_url,
+        "thumbnail_prompt": thumbnail_prompt,
         "updated_at": scene_note.get("updated_at"),
     }
 
