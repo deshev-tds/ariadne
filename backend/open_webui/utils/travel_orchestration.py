@@ -634,6 +634,15 @@ def _extract_json_string(raw_text: str) -> str:
     return text
 
 
+def _schema_retry_instruction(schema_model: type[BaseModel]) -> str:
+    schema_json = json.dumps(schema_model.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
+    return (
+        "Return only JSON that matches the required schema exactly. "
+        "Do not rename fields, do not coerce types, and do not omit required keys.\n"
+        f"JSON Schema:{schema_json}"
+    )
+
+
 async def _call_structured_model(
     *,
     request: Request,
@@ -679,12 +688,23 @@ async def _call_structured_model(
             "messages": [
                 {
                     "role": "system",
-                    "content": f"{system_prompt}\n\nReturn JSON only. Do not include markdown fences or explanatory text.",
+                    "content": (
+                        f"{system_prompt}\n\n"
+                        "Return JSON only. Do not include markdown fences or explanatory text.\n"
+                        f"{_schema_retry_instruction(schema_model)}"
+                    ),
                 },
                 {"role": "user", "content": user_prompt},
             ],
             "metadata": {
                 "travel_orchestration_internal": f"{metadata_label}:fallback",
+            },
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_model.__name__,
+                    "schema": schema_model.model_json_schema(),
+                },
             },
         }
         response = await generate_chat_completion(

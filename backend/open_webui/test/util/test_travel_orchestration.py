@@ -1,3 +1,7 @@
+import asyncio
+
+from pydantic import BaseModel
+
 from open_webui.utils.travel_orchestration import (
     TravelBrief,
     TravelCandidate,
@@ -6,6 +10,7 @@ from open_webui.utils.travel_orchestration import (
     TravelFinalPlace,
     TravelRefinementPlan,
     TravelWeatherTarget,
+    _call_structured_model,
     _cap_candidates,
     _get_previous_assistant_answer,
     _normalize_brief,
@@ -248,3 +253,56 @@ def test_previous_assistant_answer_ignores_latest_user_and_returns_prior_answer(
     ]
 
     assert _get_previous_assistant_answer(messages) == "Original travel plan"
+
+
+def test_structured_model_fallback_keeps_json_schema(monkeypatch):
+    class TinySchema(BaseModel):
+        bucket: str
+
+    calls = []
+
+    async def fake_generate_chat_completion(request, payload, user, bypass_system_prompt):
+        calls.append(payload)
+        if len(calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"candidates":[{"id":"x","location":"Lecce","type":"photo","reason":"bad shape"}]}'
+                        }
+                    }
+                ]
+            }
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"bucket":"photography_walks"}'
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "open_webui.utils.travel_orchestration.generate_chat_completion",
+        fake_generate_chat_completion,
+    )
+
+    result = asyncio.run(
+        _call_structured_model(
+            request=None,
+            user=None,
+            model_id="Qwen3.5-35B-A3B-Q8_0",
+            schema_model=TinySchema,
+            system_prompt="Extract candidates.",
+            user_prompt='{"bucket":"photography_walks"}',
+            metadata_label="discovery:photography_walks",
+        )
+    )
+
+    assert result.bucket == "photography_walks"
+    assert len(calls) == 2
+    assert "response_format" in calls[0]
+    assert "response_format" in calls[1]
+    assert calls[1]["metadata"]["travel_orchestration_internal"] == "discovery:photography_walks:fallback"
+    assert "JSON Schema:" in calls[1]["messages"][0]["content"]
