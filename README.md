@@ -65,6 +65,7 @@ The important divergences are not cosmetic.
 - Persona rebinding on an existing chat now refreshes the pinned runtime snapshot instead of silently carrying stale defaults from the previous persona.
 - Persona-attached chats now have a first-class `scene_note` layer for chat-local atmospheric or situational steering without mutating persona identity.
 - `scene_note` authoring now supports optional thumbnails, including one-click generation through the existing image generation backend when that feature is enabled.
+- Persona-scoped workflow hooks can now carry narrow domain logic on top of a bound local model, so a persona can do more than restyle a chat without turning the whole app into a generic always-agentic shell.
 - Automatic pre-migration SQLite backups were added before Alembic upgrades so local schema changes do not run without a fresh snapshot.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
 - On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
@@ -75,9 +76,11 @@ The rest of this README explains the rationale behind those changes.
 
 This fork now has a first usable persona layer on top of the older model-preset substrate.
 
-The important distinction is that persona is no longer treated as "just another model with a different prompt". The runtime shape is:
+The important distinction is that persona is no longer treated as "just another model with a different prompt". The core runtime shape is:
 
 `persona identity + binding + partner profile + requested defaults + chat attachment + scene note`
+
+That core shape is still the right mental model for most persona-attached chats. What has changed more recently is that a persona can also carry optional persona-scoped workflow hooks on top of that base, when a narrow domain path benefits from explicit runtime discipline instead of hoping a long prompt will hold.
 
 Current Persona V1 behavior:
 
@@ -107,6 +110,25 @@ The current V1 implementation deliberately stops before:
 - persona-scoped recall
 
 Those remain roadmap items rather than pretending they already exist.
+
+### A Narrow But Real Persona Workflow Proof
+
+One useful proof has now shown up on top of that persona runtime: a persona can carry a narrow domain workflow that is materially more useful than "same chat, different prompt".
+
+In this fork, the current example is a travel-planning persona bound to a local model and a bounded tool surface. In the successful path, it can:
+
+- turn a broad trip brief into layered research passes instead of one blind query-and-dump turn
+- preserve persona-specific runtime defaults across follow-up refinement turns
+- selectively enrich an accepted plan with map links instead of always restarting research
+- use the local terminal/tool path to emit practical artifacts such as mobile-friendly HTML and PDF guides
+
+That is not presented here as a new standalone product or a claim that personas are now full applets. It is a narrower point:
+
+- persona can be a runtime scaffold, not just a prompt skin
+- business logic can stay persona-scoped instead of contaminating every chat path
+- a local `llama.cpp` stack on real hardware can be pushed far enough to produce outputs that are worth actually taking on a trip
+
+It is still early and intentionally narrow. The point is not that "travel" is special. The point is that this fork now has a real example where persona identity, runtime defaults, tool routing, and artifact production combine into a workflow that would have been much weaker if persona were only cosmetic.
 
 ## Migration Safety
 
