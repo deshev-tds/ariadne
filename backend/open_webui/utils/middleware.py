@@ -150,7 +150,10 @@ from open_webui.utils.prompt_telemetry import (
 from open_webui.utils.runtime_telemetry import runtime_telemetry
 from open_webui.utils.response import normalize_usage
 from open_webui.utils.mcp.client import MCPClient
-from open_webui.utils.travel_orchestration import maybe_run_travel_orchestration
+from open_webui.utils.travel_orchestration import (
+    maybe_run_travel_orchestration,
+    should_activate_travel_orchestration,
+)
 from open_webui.retrieval.corpus_runtime import resolve_corpus_runtime
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 from open_webui.retrieval.working_mode import normalize_working_mode
@@ -5271,6 +5274,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     event_emitter = get_event_emitter(metadata)
     event_caller = get_event_call(metadata)
     chat_recall_enabled = _resolve_chat_recall_enabled(request, user)
+    travel_orchestration_enabled = should_activate_travel_orchestration(model, metadata)
     memory_telemetry: dict[str, Any] = {}
 
     if chat_recall_enabled and raw_history_messages:
@@ -5324,7 +5328,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 )
             memory_telemetry["working_memory"] = maintenance_result.get("telemetry") or {}
 
-    if chat_recall_enabled:
+    if chat_recall_enabled and not (
+        travel_orchestration_enabled and not raw_history_messages
+    ):
         branch_message_ids = (
             extract_branch_message_ids(raw_history_messages) if raw_history_messages else None
         )
@@ -5361,6 +5367,23 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 "fallback_used",
                 "fallback_mode",
             ]
+        }
+    elif chat_recall_enabled and travel_orchestration_enabled:
+        memory_telemetry["recall"] = {
+            "triggered": False,
+            "reason": "travel_orchestration_skip",
+            "mode": None,
+            "depth": 0,
+            "evidence_injected": False,
+            "timed_out": False,
+            "hit_count": 0,
+            "usable_hit_count": 0,
+            "evidence_tokens": 0,
+            "indexed_message_count": 0,
+            "queued_message_count": 0,
+            "missing_message_count": 0,
+            "fallback_used": False,
+            "fallback_mode": None,
         }
 
     form_data["messages"], ledger_result = await maybe_apply_ledger(

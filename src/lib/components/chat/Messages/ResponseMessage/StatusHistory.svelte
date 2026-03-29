@@ -6,7 +6,39 @@
 	export let statusHistory = [];
 	export let expand = false;
 
+	const mergeTravelStatuses = (statuses) => {
+		const merged = [];
+		const phaseIndex = new Map();
+
+		for (const item of statuses ?? []) {
+			if (item?.action !== 'travel_orchestration') {
+				merged.push(item);
+				continue;
+			}
+
+			const phaseKey = item?.phase || item?.description;
+			if (!phaseIndex.has(phaseKey)) {
+				phaseIndex.set(phaseKey, merged.length);
+				merged.push(item);
+				continue;
+			}
+
+			const idx = phaseIndex.get(phaseKey);
+			const previous = merged[idx];
+			merged[idx] = {
+				...previous,
+				...item,
+				description: item?.description ?? previous?.description,
+				detail: item?.detail ?? previous?.detail,
+				done: item?.done ?? previous?.done
+			};
+		}
+
+		return merged;
+	};
+
 	let showHistory = true;
+	let rawHistorySignature = '';
 
 	$: if (expand) {
 		showHistory = true;
@@ -21,11 +53,12 @@
 		status = history.at(-1);
 	}
 
-	$: if (
-		statusHistory.length !== history.length ||
-		JSON.stringify(statusHistory) !== JSON.stringify(history)
-	) {
-		history = statusHistory;
+	$: {
+		const nextSignature = JSON.stringify(statusHistory ?? []);
+		if (nextSignature !== rawHistorySignature) {
+			rawHistorySignature = nextSignature;
+			history = mergeTravelStatuses(statusHistory);
+		}
 	}
 </script>
 
@@ -62,7 +95,7 @@
 										{#if idx !== history.length - 1}
 											<div
 												class="w-[0.5px] ml-[6.5px] h-[calc(100%-14px)] bg-gray-300 dark:bg-gray-700"
-											/>
+											></div>
 										{/if}
 									</div>
 

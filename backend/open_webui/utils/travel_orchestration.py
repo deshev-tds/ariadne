@@ -57,6 +57,15 @@ PHASE_LABELS = {
     "itinerary_build": "Assembling itinerary",
     "maps_enrichment": "Resolving map links",
 }
+BUCKET_STATUS_LABELS = {
+    "food_drink": "food and bars",
+    "nightlife_events": "nightlife and live music",
+    "photography_walks": "street photography spots",
+    "cultural_sites": "architecture and cultural anchors",
+    "day_trips": "day-trip options",
+    "stay_area": "best base areas",
+    "mobility": "train and driving logistics",
+}
 SOURCE_PATTERN_TRAITS = {
     "official_events": (
         "eventbrite",
@@ -700,23 +709,42 @@ def _conversation_excerpt(messages: list[dict[str, Any]], limit: int = 6, max_ch
     return "\n".join(lines)
 
 
-async def _emit_phase_status(event_emitter, phase: str, *, done: bool) -> None:
+async def _emit_phase_status(
+    event_emitter,
+    phase: str,
+    *,
+    done: bool,
+    detail: Optional[str] = None,
+    step: Optional[int] = None,
+    total: Optional[int] = None,
+) -> None:
     if not event_emitter:
         return
     try:
+        payload: dict[str, Any] = {
+            "action": "travel_orchestration",
+            "phase": phase,
+            "description": PHASE_LABELS.get(phase, phase),
+            "done": done,
+        }
+        if detail:
+            payload["detail"] = detail
+        if step is not None:
+            payload["step"] = step
+        if total is not None:
+            payload["total"] = total
         await event_emitter(
             {
                 "type": "status",
-                "data": {
-                    "action": "travel_orchestration",
-                    "phase": phase,
-                    "description": PHASE_LABELS.get(phase, phase),
-                    "done": done,
-                },
+                "data": payload,
             }
         )
     except Exception:
         log.debug("Failed to emit travel orchestration status for %s", phase, exc_info=True)
+
+
+def _bucket_status_label(bucket: str) -> str:
+    return BUCKET_STATUS_LABELS.get(bucket, bucket.replace("_", " "))
 
 
 def _select_utility_model_id(model: dict[str, Any], task_model: Optional[dict[str, Any]]) -> str:
@@ -1124,14 +1152,35 @@ async def _run_discovery_buckets(
     ranked_candidates: dict[str, list[TravelCandidate]] = {}
     weak_source_warnings: list[str] = []
     source_debug: list[dict[str, Any]] = []
+    total_buckets = len(brief.research_buckets)
 
-    for bucket in brief.research_buckets:
+    for bucket_idx, bucket in enumerate(brief.research_buckets, start=1):
+        bucket_label = _bucket_status_label(bucket)
+        await _emit_phase_status(
+            event_emitter,
+            "discovery_buckets",
+            done=False,
+            detail=f"Layer {bucket_idx}/{total_buckets}: researching {bucket_label}",
+            step=bucket_idx,
+            total=total_buckets,
+        )
         queries = _build_bucket_queries(brief, skeleton, bucket)
         bucket_candidates: list[TravelCandidate] = []
         weak_counter: Counter[str] = Counter()
         rounds_without_new = 0
 
         for round_idx, query in enumerate(queries[:DISCOVERY_SEARCH_ROUNDS], start=1):
+            await _emit_phase_status(
+                event_emitter,
+                "discovery_buckets",
+                done=False,
+                detail=(
+                    f"Layer {bucket_idx}/{total_buckets}: checking {bucket_label} "
+                    f"(search {round_idx}/{min(len(queries), DISCOVERY_SEARCH_ROUNDS)})"
+                ),
+                step=bucket_idx,
+                total=total_buckets,
+            )
             search_items = await _strong_or_generic_search(
                 request=request,
                 user=user,
@@ -1163,6 +1212,14 @@ async def _run_discovery_buckets(
                     break
                 continue
 
+            await _emit_phase_status(
+                event_emitter,
+                "discovery_buckets",
+                done=False,
+                detail=f"Layer {bucket_idx}/{total_buckets}: extracting candidates for {bucket_label}",
+                step=bucket_idx,
+                total=total_buckets,
+            )
             bucket_result = await _extract_bucket_candidates(
                 request=request,
                 user=user,
@@ -1418,7 +1475,12 @@ async def maybe_run_travel_orchestration(
 
     try:
         started_at = time.perf_counter()
-        await _emit_phase_status(event_emitter, "brief_extract", done=False)
+        await _emit_phase_status(
+            event_emitter,
+            "brief_extract",
+            done=False,
+            detail="Classifying whether this needs the full trip-planning harness",
+        )
         classifier = await _classify_request(
             request=request,
             user=user,
@@ -1436,6 +1498,12 @@ async def maybe_run_travel_orchestration(
             return None
 
         telemetry["active"] = True
+        await _emit_phase_status(
+            event_emitter,
+            "brief_extract",
+            done=False,
+            detail="Turning the prompt into dates, bases, transport limits, and research buckets",
+        )
         brief = await _extract_brief(
             request=request,
             user=user,
@@ -1445,7 +1513,12 @@ async def maybe_run_travel_orchestration(
         telemetry["brief_confidence"] = brief.brief_confidence
         telemetry["phase_timings_ms"]["brief_extract"] = int((time.perf_counter() - started_at) * 1000)
         debug_artifacts["brief"] = brief.model_dump()
-        await _emit_phase_status(event_emitter, "brief_extract", done=True)
+        await _emit_phase_status(
+            event_emitter,
+            "brief_extract",
+            done=True,
+            detail="Trip brief captured",
+        )
 
         if brief.needs_clarification:
             response = build_synthetic_chat_response(
@@ -1459,7 +1532,12 @@ async def maybe_run_travel_orchestration(
         ledger = TravelLedger(assumed_defaults=brief.assumed_defaults)
 
         started_at = time.perf_counter()
-        await _emit_phase_status(event_emitter, "weather_context", done=False)
+        await _emit_phase_status(
+            event_emitter,
+            "weather_context",
+            done=False,
+            detail="Checking forecast constraints for the travel window",
+        )
         weather_findings, hard_constraints, weather_raw = await _run_weather_context(
             request=request,
             brief=brief,
@@ -1469,10 +1547,20 @@ async def maybe_run_travel_orchestration(
         telemetry["weather_calls"] = len(weather_raw)
         telemetry["phase_timings_ms"]["weather_context"] = int((time.perf_counter() - started_at) * 1000)
         debug_artifacts["weather"] = weather_raw
-        await _emit_phase_status(event_emitter, "weather_context", done=True)
+        await _emit_phase_status(
+            event_emitter,
+            "weather_context",
+            done=True,
+            detail="Weather constraints folded into the plan",
+        )
 
         started_at = time.perf_counter()
-        await _emit_phase_status(event_emitter, "trip_skeleton", done=False)
+        await _emit_phase_status(
+            event_emitter,
+            "trip_skeleton",
+            done=False,
+            detail="Allocating bases, transfers, and day-level focus",
+        )
         skeleton = await _build_trip_skeleton(
             request=request,
             user=user,
@@ -1486,10 +1574,20 @@ async def maybe_run_travel_orchestration(
         ledger.unresolved_questions = _cap_uncertainty_notes(skeleton.open_questions)
         telemetry["phase_timings_ms"]["trip_skeleton"] = int((time.perf_counter() - started_at) * 1000)
         debug_artifacts["skeleton"] = skeleton.model_dump()
-        await _emit_phase_status(event_emitter, "trip_skeleton", done=True)
+        await _emit_phase_status(
+            event_emitter,
+            "trip_skeleton",
+            done=True,
+            detail="Trip skeleton ready",
+        )
 
         started_at = time.perf_counter()
-        await _emit_phase_status(event_emitter, "discovery_buckets", done=False)
+        await _emit_phase_status(
+            event_emitter,
+            "discovery_buckets",
+            done=False,
+            detail="Starting layered source research",
+        )
         ranked_candidates, weak_source_warnings, source_debug = await _run_discovery_buckets(
             request=request,
             user=user,
@@ -1509,10 +1607,24 @@ async def maybe_run_travel_orchestration(
             "weak_source_warnings": weak_source_warnings,
             "source_debug": source_debug,
         }
-        await _emit_phase_status(event_emitter, "discovery_buckets", done=True)
+        await _emit_phase_status(
+            event_emitter,
+            "discovery_buckets",
+            done=True,
+            detail=(
+                "Research complete"
+                if not ledger.covered_buckets
+                else f"Research complete: covered {len(ledger.covered_buckets)} layer(s)"
+            ),
+        )
 
         started_at = time.perf_counter()
-        await _emit_phase_status(event_emitter, "itinerary_build", done=False)
+        await _emit_phase_status(
+            event_emitter,
+            "itinerary_build",
+            done=False,
+            detail="Turning the ledger into a day-by-day itinerary",
+        )
         synthesis = await _build_itinerary(
             request=request,
             user=user,
@@ -1523,15 +1635,30 @@ async def maybe_run_travel_orchestration(
         )
         telemetry["phase_timings_ms"]["itinerary_build"] = int((time.perf_counter() - started_at) * 1000)
         debug_artifacts["synthesis_initial"] = synthesis.model_dump()
-        await _emit_phase_status(event_emitter, "itinerary_build", done=True)
+        await _emit_phase_status(
+            event_emitter,
+            "itinerary_build",
+            done=True,
+            detail="Draft itinerary assembled",
+        )
 
         started_at = time.perf_counter()
-        await _emit_phase_status(event_emitter, "maps_enrichment", done=False)
+        await _emit_phase_status(
+            event_emitter,
+            "maps_enrichment",
+            done=False,
+            detail="Resolving places into map-ready links",
+        )
         map_results = await _run_maps_enrichment(request=request, manifest=synthesis.manifest)
         telemetry["maps_calls"] = len(map_results)
         telemetry["phase_timings_ms"]["maps_enrichment"] = int((time.perf_counter() - started_at) * 1000)
         debug_artifacts["maps"] = map_results
-        await _emit_phase_status(event_emitter, "maps_enrichment", done=True)
+        await _emit_phase_status(
+            event_emitter,
+            "maps_enrichment",
+            done=True,
+            detail="Map links resolved",
+        )
 
         sanity = await _run_final_sanity(
             request=request,
