@@ -4,9 +4,12 @@ from open_webui.utils.travel_orchestration import (
     TravelClassifierResult,
     TravelDateRange,
     TravelFinalPlace,
+    TravelRefinementPlan,
     TravelWeatherTarget,
     _cap_candidates,
+    _get_previous_assistant_answer,
     _normalize_brief,
+    _normalize_refinement_plan,
     _summarize_weather_findings,
     classify_source,
     derive_map_targets,
@@ -216,3 +219,32 @@ def test_dates_within_brief_can_be_normalized_without_affecting_confidence():
 
     assert normalized.brief_confidence == 0.55
     assert normalized.research_buckets == ["cultural_sites", "food_drink"]
+
+
+def test_normalize_refinement_plan_filters_unknown_buckets_and_caps_metadata():
+    plan = TravelRefinementPlan(
+        is_refinement=True,
+        preserve_existing_plan=True,
+        requested_change_summary=(
+            "Update the nightlife picks while keeping the rest of the itinerary intact. "
+            "This should stay concise after normalization."
+        ),
+        target_buckets=["nightlife_events", "food_drink", "not_real", "food_drink"],
+        reasons=["keep the current plan", "refresh nightlife only", "keep the current plan"],
+    )
+
+    normalized = _normalize_refinement_plan(plan)
+
+    assert normalized.target_buckets == ["nightlife_events", "food_drink"]
+    assert normalized.reasons == ["keep the current plan", "refresh nightlife only"]
+    assert normalized.requested_change_summary is not None
+
+
+def test_previous_assistant_answer_ignores_latest_user_and_returns_prior_answer():
+    messages = [
+        {"role": "user", "content": "Plan my trip."},
+        {"role": "assistant", "content": "Original travel plan"},
+        {"role": "user", "content": "Change only nightlife."},
+    ]
+
+    assert _get_previous_assistant_answer(messages) == "Original travel plan"

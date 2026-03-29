@@ -308,6 +308,16 @@ class TravelSynthesisResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class TravelRefinementPlan(BaseModel):
+    is_refinement: bool = False
+    preserve_existing_plan: bool = False
+    requested_change_summary: Optional[str] = None
+    target_buckets: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class TravelSanityIssue(BaseModel):
     issue_type: Literal[
         "contradiction",
@@ -709,6 +719,29 @@ def _conversation_excerpt(messages: list[dict[str, Any]], limit: int = 6, max_ch
     return "\n".join(lines)
 
 
+def _get_previous_assistant_answer(messages: list[dict[str, Any]]) -> Optional[str]:
+    saw_latest_user = False
+    for message in reversed(messages):
+        role = message.get("role")
+        if role == "user" and not saw_latest_user:
+            saw_latest_user = True
+            continue
+        if role == "assistant":
+            content = get_content_from_message(message) or ""
+            cleaned = content.strip()
+            if cleaned:
+                return cleaned
+    return None
+
+
+def _normalize_refinement_plan(plan: TravelRefinementPlan) -> TravelRefinementPlan:
+    bucket_candidates = [bucket for bucket in plan.target_buckets if bucket in DISCOVERY_BUCKETS]
+    plan.target_buckets = _dedupe_strings(bucket_candidates, 4)
+    plan.reasons = _dedupe_strings(plan.reasons, 6)
+    plan.requested_change_summary = _clip_text(plan.requested_change_summary, 220) or None
+    return plan
+
+
 async def _emit_phase_status(
     event_emitter,
     phase: str,
@@ -779,6 +812,42 @@ async def _classify_request(
         user_prompt=prompt,
         metadata_label="classifier",
     )
+
+
+async def _plan_refinement_request(
+    *,
+    request: Request,
+    user: UserModel,
+    utility_model_id: str,
+    messages: list[dict[str, Any]],
+    prior_answer: str,
+    user_prompt: str,
+) -> TravelRefinementPlan:
+    prompt = (
+        "Decide whether the latest user turn is asking to revise an already-accepted travel plan, "
+        "while keeping most of it intact.\n"
+        f"Allowed target_buckets: {', '.join(DISCOVERY_BUCKETS)}.\n"
+        "Use is_refinement=true only when the latest user turn is clearly a follow-up edit, narrow rework, "
+        "or deepen-one-layer request over the previous plan.\n"
+        "If the user is changing only one layer, target_buckets should contain only the affected layers.\n"
+        "If the user is effectively asking for a full redo from scratch, return is_refinement=false.\n\n"
+        f"Previous accepted assistant answer:\n{_clip_text(prior_answer, 9000)}\n\n"
+        f"Latest user request:\n{_clip_text(user_prompt, 2500)}\n\n"
+        f"Recent conversation:\n{_conversation_excerpt(messages, limit=8, max_chars=7000)}"
+    )
+    plan = await _call_structured_model(
+        request=request,
+        user=user,
+        model_id=utility_model_id,
+        schema_model=TravelRefinementPlan,
+        system_prompt=(
+            "You are a travel follow-up router. "
+            "Your job is to decide whether to preserve the prior plan and revise only a bounded subset of it."
+        ),
+        user_prompt=prompt,
+        metadata_label="refinement_router",
+    )
+    return _normalize_refinement_plan(plan)
 
 
 def _normalize_brief(brief: TravelBrief) -> TravelBrief:
@@ -1286,6 +1355,51 @@ async def _build_itinerary(
     return synthesis
 
 
+async def _refine_existing_itinerary(
+    *,
+    request: Request,
+    user: UserModel,
+    model_id: str,
+    brief: TravelBrief,
+    prior_answer: str,
+    user_request: str,
+    ledger: TravelLedger,
+) -> TravelSynthesisResult:
+    payload = {
+        "trip_brief": brief.model_dump(),
+        "user_request": user_request,
+        "prior_answer": _clip_text(prior_answer, 16000),
+        "updated_research_buckets": brief.research_buckets,
+        "refined_candidates": ledger.ranked_candidates,
+        "weak_source_warnings": ledger.weak_source_warnings,
+        "instructions": {
+            "preserve_unchanged_sections": True,
+            "keep_existing_plan_when_new_research_is_weak": True,
+            "do_not_claim_missing_context_if_prior_answer_already_contains_the_baseline_plan": True,
+            "modify_only_requested_layers": True,
+        },
+    }
+    refined = await _call_structured_model(
+        request=request,
+        user=user,
+        model_id=model_id,
+        schema_model=TravelSynthesisResult,
+        system_prompt=(
+            "You are revising an existing travel plan after a follow-up request. "
+            "Treat the prior answer as the accepted baseline. Preserve everything that the user did not ask to change. "
+            "Use the new research only to revise the requested layers. "
+            "If new research is weak or ambiguous, keep the prior recommendations instead of refusing the whole plan."
+        ),
+        user_prompt=json.dumps(payload, ensure_ascii=False),
+        metadata_label="itinerary_refinement",
+    )
+    refined.manifest.final_places = refined.manifest.final_places[:12]
+    refined.manifest.validation_notes = _dedupe_strings(refined.manifest.validation_notes, 8)
+    refined.manifest.unresolved_items = _dedupe_strings(refined.manifest.unresolved_items, 8)
+    refined.manifest.map_targets = derive_map_targets(refined.manifest.final_places)
+    return refined
+
+
 def _build_maps_query_hint(target: TravelMapTarget) -> Optional[str]:
     hints = [_clean_text(target.category)]
     if target.source_snippet:
@@ -1460,6 +1574,9 @@ async def maybe_run_travel_orchestration(
         return None
 
     utility_model_id = _select_utility_model_id(model, task_model)
+    user_prompt = get_last_user_message(messages) or ""
+    previous_assistant_answer = _get_previous_assistant_answer(messages)
+    refinement_plan: Optional[TravelRefinementPlan] = None
     telemetry: dict[str, Any] = {
         "active": False,
         "orchestration_confidence": None,
@@ -1470,10 +1587,174 @@ async def maybe_run_travel_orchestration(
         "stop_reason": None,
         "weather_calls": 0,
         "maps_calls": 0,
+        "mode": "broad_trip",
     }
     debug_artifacts: dict[str, Any] = {}
 
     try:
+        if previous_assistant_answer:
+            refinement_plan = await _plan_refinement_request(
+                request=request,
+                user=user,
+                utility_model_id=utility_model_id,
+                messages=messages,
+                prior_answer=previous_assistant_answer,
+                user_prompt=user_prompt,
+            )
+            telemetry["refinement_router"] = refinement_plan.model_dump()
+
+        if (
+            refinement_plan
+            and refinement_plan.is_refinement
+            and refinement_plan.preserve_existing_plan
+        ):
+            telemetry["active"] = True
+            telemetry["mode"] = "refinement"
+
+            started_at = time.perf_counter()
+            await _emit_phase_status(
+                event_emitter,
+                "brief_extract",
+                done=False,
+                detail="Understanding which parts of the current plan need revision",
+            )
+            brief = await _extract_brief(
+                request=request,
+                user=user,
+                utility_model_id=utility_model_id,
+                messages=messages,
+            )
+            if refinement_plan.target_buckets:
+                brief.research_buckets = refinement_plan.target_buckets
+            telemetry["brief_confidence"] = brief.brief_confidence
+            telemetry["phase_timings_ms"]["brief_extract"] = int((time.perf_counter() - started_at) * 1000)
+            debug_artifacts["brief"] = brief.model_dump()
+            await _emit_phase_status(
+                event_emitter,
+                "brief_extract",
+                done=True,
+                detail="Refinement scope locked",
+            )
+
+            ledger = TravelLedger(assumed_defaults=brief.assumed_defaults)
+
+            started_at = time.perf_counter()
+            await _emit_phase_status(
+                event_emitter,
+                "discovery_buckets",
+                done=False,
+                detail="Researching only the requested layers",
+            )
+            ranked_candidates, weak_source_warnings, source_debug = await _run_discovery_buckets(
+                request=request,
+                user=user,
+                model_id=model["id"],
+                brief=brief,
+                skeleton=TravelSkeletonResult(),
+                features=features,
+                event_emitter=event_emitter,
+            )
+            ledger.ranked_candidates = ranked_candidates
+            ledger.weak_source_warnings = weak_source_warnings
+            ledger.covered_buckets = [bucket for bucket, candidates in ranked_candidates.items() if candidates]
+            ledger.source_debug = source_debug
+            telemetry["covered_buckets"] = ledger.covered_buckets
+            telemetry["phase_timings_ms"]["discovery_buckets"] = int((time.perf_counter() - started_at) * 1000)
+            debug_artifacts["discovery"] = {
+                "weak_source_warnings": weak_source_warnings,
+                "source_debug": source_debug,
+            }
+            await _emit_phase_status(
+                event_emitter,
+                "discovery_buckets",
+                done=True,
+                detail=(
+                    "Requested layers refreshed"
+                    if ledger.covered_buckets
+                    else "Requested layers refreshed with limited new evidence"
+                ),
+            )
+
+            started_at = time.perf_counter()
+            await _emit_phase_status(
+                event_emitter,
+                "itinerary_build",
+                done=False,
+                detail="Applying the requested edits on top of the current plan",
+            )
+            synthesis = await _refine_existing_itinerary(
+                request=request,
+                user=user,
+                model_id=model["id"],
+                brief=brief,
+                prior_answer=previous_assistant_answer or "",
+                user_request=user_prompt,
+                ledger=ledger,
+            )
+            telemetry["phase_timings_ms"]["itinerary_build"] = int((time.perf_counter() - started_at) * 1000)
+            debug_artifacts["synthesis_initial"] = synthesis.model_dump()
+            await _emit_phase_status(
+                event_emitter,
+                "itinerary_build",
+                done=True,
+                detail="Plan revision assembled",
+            )
+
+            started_at = time.perf_counter()
+            await _emit_phase_status(
+                event_emitter,
+                "maps_enrichment",
+                done=False,
+                detail="Refreshing map links for the revised shortlist",
+            )
+            map_results = await _run_maps_enrichment(request=request, manifest=synthesis.manifest)
+            telemetry["maps_calls"] = len(map_results)
+            telemetry["phase_timings_ms"]["maps_enrichment"] = int((time.perf_counter() - started_at) * 1000)
+            debug_artifacts["maps"] = map_results
+            await _emit_phase_status(
+                event_emitter,
+                "maps_enrichment",
+                done=True,
+                detail="Revised map links ready",
+            )
+
+            sanity = await _run_final_sanity(
+                request=request,
+                user=user,
+                utility_model_id=utility_model_id,
+                brief=brief,
+                ledger=ledger,
+                synthesis=synthesis,
+                map_results=map_results,
+            )
+            debug_artifacts["sanity"] = sanity.model_dump()
+
+            if sanity.apply_local_correction:
+                synthesis = await _apply_local_correction(
+                    request=request,
+                    user=user,
+                    model_id=model["id"],
+                    brief=brief,
+                    ledger=ledger,
+                    synthesis=synthesis,
+                    sanity=sanity,
+                )
+                map_results = await _run_maps_enrichment(request=request, manifest=synthesis.manifest)
+                telemetry["maps_calls"] = len(map_results)
+                debug_artifacts["synthesis_corrected"] = synthesis.model_dump()
+                debug_artifacts["maps_corrected"] = map_results
+
+            appendix = _render_map_ready_appendix(map_results)
+            final_answer = synthesis.assistant_answer.strip()
+            if appendix:
+                final_answer = f"{final_answer}\n\n{appendix}"
+
+            response = build_synthetic_chat_response(final_answer, model["id"])
+            metadata["travel_orchestration_telemetry"] = telemetry
+            metadata["travel_orchestration_artifacts"] = debug_artifacts
+            telemetry["stop_reason"] = "refined"
+            return {"response": response, "events": []}
+
         started_at = time.perf_counter()
         await _emit_phase_status(
             event_emitter,
@@ -1694,9 +1975,6 @@ async def maybe_run_travel_orchestration(
 
         appendix = _render_map_ready_appendix(map_results)
         final_answer = synthesis.assistant_answer.strip()
-        if synthesis.manifest.validation_notes:
-            notes = "\n".join(f"- {note}" for note in synthesis.manifest.validation_notes[:4])
-            final_answer = f"{final_answer}\n\nValidation notes:\n{notes}"
         if appendix:
             final_answer = f"{final_answer}\n\n{appendix}"
 
