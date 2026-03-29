@@ -12,6 +12,7 @@ from open_webui.utils.travel_orchestration import (
     TravelWeatherTarget,
     _call_structured_model,
     _cap_candidates,
+    _clean_prior_assistant_answer,
     _get_previous_assistant_answer,
     _normalize_brief,
     _normalize_refinement_plan,
@@ -230,6 +231,7 @@ def test_normalize_refinement_plan_filters_unknown_buckets_and_caps_metadata():
     plan = TravelRefinementPlan(
         is_refinement=True,
         preserve_existing_plan=True,
+        needs_research_refresh=True,
         requested_change_summary=(
             "Update the nightlife picks while keeping the rest of the itinerary intact. "
             "This should stay concise after normalization."
@@ -245,6 +247,19 @@ def test_normalize_refinement_plan_filters_unknown_buckets_and_caps_metadata():
     assert normalized.requested_change_summary is not None
 
 
+def test_normalize_refinement_plan_defaults_transform_only_when_refresh_not_requested():
+    plan = TravelRefinementPlan(
+        is_refinement=True,
+        requested_change_summary="Translate the accepted plan to English and add map links.",
+    )
+
+    normalized = _normalize_refinement_plan(plan)
+
+    assert normalized.preserve_existing_plan is True
+    assert normalized.needs_research_refresh is False
+    assert normalized.target_buckets == []
+
+
 def test_previous_assistant_answer_ignores_latest_user_and_returns_prior_answer():
     messages = [
         {"role": "user", "content": "Plan my trip."},
@@ -253,6 +268,16 @@ def test_previous_assistant_answer_ignores_latest_user_and_returns_prior_answer(
     ]
 
     assert _get_previous_assistant_answer(messages) == "Original travel plan"
+
+
+def test_clean_prior_assistant_answer_strips_transient_details_blocks():
+    content = (
+        '<details type="reasoning" done="true"><summary>Thought</summary>hidden</details>\n'
+        '<details type="tool_calls" done="true"><summary>Tool</summary>hidden</details>\n'
+        "Final visible plan"
+    )
+
+    assert _clean_prior_assistant_answer(content) == "Final visible plan"
 
 
 def test_structured_model_fallback_keeps_json_schema(monkeypatch):
