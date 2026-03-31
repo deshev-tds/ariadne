@@ -312,6 +312,8 @@ AGENTIC_ARTIFACTS_DIR = Path(
     os.getenv("AGENTIC_ARTIFACTS_DIR", BASE_DIR / "agentic_artifacts")
 ).resolve()
 
+DEBUG_PROMPT_DUMP_CHAT_ID = os.getenv("DEBUG_PROMPT_DUMP_CHAT_ID", "").strip()
+
 if FROM_INIT_PY:
     FRONTEND_BUILD_DIR = Path(
         os.getenv("FRONTEND_BUILD_DIR", OPEN_WEBUI_DIR / "frontend")

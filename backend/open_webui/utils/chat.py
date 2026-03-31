@@ -1,6 +1,7 @@
 import time
 import logging
 import sys
+from pathlib import Path
 
 from aiocache import cached
 from typing import Any, Optional
@@ -51,10 +52,62 @@ from open_webui.utils.filter import (
 )
 from open_webui.utils.prompt_telemetry import append_prompt_telemetry
 
-from open_webui.env import GLOBAL_LOG_LEVEL, BYPASS_MODEL_ACCESS_CONTROL
+from open_webui.env import (
+    AGENTIC_ARTIFACTS_DIR,
+    BYPASS_MODEL_ACCESS_CONTROL,
+    DEBUG_PROMPT_DUMP_CHAT_ID,
+    GLOBAL_LOG_LEVEL,
+)
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
+
+
+def _dump_prompt_payload_if_enabled(
+    *,
+    provider: str,
+    form_data: dict,
+    metadata: dict | None,
+    model: dict | None,
+) -> None:
+    try:
+        chat_id = str((metadata or {}).get("chat_id") or "").strip()
+        if (
+            not DEBUG_PROMPT_DUMP_CHAT_ID
+            or not chat_id
+            or chat_id != DEBUG_PROMPT_DUMP_CHAT_ID
+        ):
+            return
+
+        safe_chat_id = "".join(
+            ch if ch.isalnum() or ch in "._-" else "-" for ch in chat_id
+        ).strip(".-") or "chat"
+        target_dir = Path(AGENTIC_ARTIFACTS_DIR) / f"{safe_chat_id}__prompt-debug"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = int(time.time() * 1000)
+        payload = {
+            "captured_at_ms": timestamp,
+            "provider": provider,
+            "chat_id": chat_id,
+            "message_id": (metadata or {}).get("message_id"),
+            "parent_message_id": (metadata or {}).get("parent_message_id"),
+            "session_id": (metadata or {}).get("session_id"),
+            "model_id": form_data.get("model"),
+            "model_name": (model or {}).get("name"),
+            "stream": bool(form_data.get("stream")),
+            "metadata": metadata or {},
+            "form_data": form_data,
+        }
+
+        path = target_dir / f"{timestamp}_{provider}.json"
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        log.info("Prompt payload dump written to %s", path)
+    except Exception as exc:
+        log.warning("Prompt payload dump failed for chat %s: %s", chat_id, exc)
 
 
 async def generate_direct_chat_completion(
@@ -82,6 +135,12 @@ async def generate_direct_chat_completion(
         provider="direct",
         request_url="direct://chat-completion",
         payload=form_data,
+    )
+    _dump_prompt_payload_if_enabled(
+        provider="direct",
+        form_data=form_data,
+        metadata=metadata,
+        model=models.get(form_data.get("model")),
     )
 
     if form_data.get("stream"):
@@ -268,12 +327,24 @@ async def generate_chat_completion(
 
         if model.get("pipe"):
             # Below does not require bypass_filter because this is the only route the uses this function and it is already bypassing the filter
+            _dump_prompt_payload_if_enabled(
+                provider="pipe",
+                form_data=form_data,
+                metadata=form_data.get("metadata"),
+                model=model,
+            )
             return await generate_function_chat_completion(
                 request, form_data, user=user, models=models
             )
         if model.get("owned_by") == "ollama":
             # Using /ollama/api/chat endpoint
             form_data = convert_payload_openai_to_ollama(form_data)
+            _dump_prompt_payload_if_enabled(
+                provider="ollama",
+                form_data=form_data,
+                metadata=form_data.get("metadata"),
+                model=model,
+            )
             response = await generate_ollama_chat_completion(
                 request=request,
                 form_data=form_data,
@@ -291,6 +362,12 @@ async def generate_chat_completion(
             else:
                 return convert_response_ollama_to_openai(response)
         else:
+            _dump_prompt_payload_if_enabled(
+                provider="openai",
+                form_data=form_data,
+                metadata=form_data.get("metadata"),
+                model=model,
+            )
             return await generate_openai_chat_completion(
                 request=request,
                 form_data=form_data,
