@@ -41,7 +41,6 @@ def test_process_messages_with_output_omits_history_reasoning_and_caps_tool_outp
     monkeypatch,
 ):
     monkeypatch.setattr(misc, "ENABLE_HISTORY_REASONING_REPLAY", False)
-    monkeypatch.setattr(misc, "HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS", 32)
 
     messages = [
         {
@@ -85,9 +84,9 @@ def test_process_messages_with_output_omits_history_reasoning_and_caps_tool_outp
     assert processed[0]["tool_calls"][0]["function"]["name"] == "search_web"
     assert "<think>" not in (processed[0].get("content") or "")
     assert processed[1]["role"] == "tool"
-    assert "[historical tool output truncated for context replay]" in processed[1]["content"]
-    assert "omitted_chars" in processed[1]["content"]
-    assert "X" * 33 not in processed[1]["content"]
+    assert "[prior tool output omitted from cross-turn replay]" in processed[1]["content"]
+    assert "If exact earlier tool details matter, make a fresh tool call." in processed[1]["content"]
+    assert "X" not in processed[1]["content"]
     assert processed[2]["content"] == "Final answer"
     assert "details type=\"reasoning\"" not in processed[3]["content"]
     assert processed[3]["content"] == "Before\n\nAfter"

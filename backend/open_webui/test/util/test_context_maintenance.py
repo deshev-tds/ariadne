@@ -98,7 +98,6 @@ def test_render_preview_prompt_includes_roles_and_content():
 
 def test_history_message_to_llm_messages_uses_hygienic_replay(monkeypatch):
     monkeypatch.setattr(misc, "ENABLE_HISTORY_REASONING_REPLAY", False)
-    monkeypatch.setattr(misc, "HISTORY_TOOL_OUTPUT_REPLAY_MAX_CHARS", 24)
 
     message = {
         "id": "a2",
@@ -132,13 +131,13 @@ def test_history_message_to_llm_messages_uses_hygienic_replay(monkeypatch):
 
     assert [item["role"] for item in llm_messages] == ["assistant", "tool", "assistant"]
     assert all("<think>" not in str(item.get("content") or "") for item in llm_messages)
-    assert "[historical tool output truncated for context replay]" in llm_messages[1][
+    assert "[prior tool output omitted from cross-turn replay]" in llm_messages[1][
         "content"
     ]
-    assert "tool-result tool-result" in llm_messages[1]["content"]
-    assert "tool-result tool-result tool-result tool-result" not in llm_messages[1][
-        "content"
-    ]
+    assert "If exact earlier tool details matter, make a fresh tool call." in llm_messages[1]["content"]
+    assert "tool-result" not in llm_messages[1]["content"]
+
+
 def test_build_summary_prompt_requests_structured_state_snapshot():
     prompt = build_summary_prompt(transcript="user: hi", max_tokens=512)
 
