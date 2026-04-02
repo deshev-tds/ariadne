@@ -19,53 +19,50 @@ DEFAULT_TOOL_ID = "rerank_eval_harness"
 
 
 CASES: dict[str, dict[str, Any]] = {
-    "sildenafil_natural": {
+    "vasodilator_natural": {
         "kind": "local_corpus",
-        "prompt": "What medicines not to take with sildenafil.",
-        "query": "what medicines not to take with sildenafil",
+        "prompt": "What medicines not to take with a nitrate-sensitive vasodilator.",
+        "query": "what medicines not to take with a nitrate-sensitive vasodilator nitroglycerin hypotension",
         "book_ids": ["a87339f6c294"],
         "top_k": 10,
         "expected_positive_terms": [
-            "sildenafil",
-            "erectile dysfunction",
-            "pde5",
             "nitrate",
             "nitroglycerin",
+            "hypotension",
+            "vasodilator",
         ],
         "expected_negative_terms": [
             "asthma",
             "sedative-hypnotics",
             "case study",
         ],
-        "notes": "Known bad baseline in prior replay: relevant ED section was below unrelated Katzung chunks.",
+        "notes": "Known bad baseline in prior replay: the relevant vasodilator interaction section was below unrelated Katzung chunks.",
     },
-    "sildenafil_contraindications": {
+    "vasodilator_contraindications": {
         "kind": "local_corpus",
-        "prompt": "Find the key contraindication signal for sildenafil with nitrates and hypotension.",
-        "query": "Sildenafil nitrates nitroglycerin contraindicated hypotension phosphodiesterase PDE5 inhibitor",
+        "prompt": "Find the key contraindication signal for a nitrate-sensitive vasodilator with nitrates and hypotension.",
+        "query": "nitrate-sensitive vasodilator nitrates nitroglycerin contraindicated hypotension",
         "book_ids": ["a87339f6c294"],
         "top_k": 10,
         "expected_positive_terms": [
-            "sildenafil",
             "nitrate",
             "nitroglycerin",
             "hypotension",
-            "erectile dysfunction",
+            "vasodilator",
         ],
         "expected_negative_terms": [
             "asthma",
             "sedative-hypnotics",
         ],
-        "notes": "Control case using the more specific reformulation from the earlier tool trace.",
+        "notes": "Control case using a more specific reformulation of the same pharmacology retrieval need.",
     },
-    "sildenafil_metabolism": {
+    "vasodilator_metabolism": {
         "kind": "local_corpus",
-        "prompt": "Find the CYP3A4 interaction evidence for sildenafil.",
-        "query": "sildenafil metabolism CYP3A4 ketoconazole ritonavir clarithromycin grapefruit",
+        "prompt": "Find the CYP3A4 interaction evidence for a nitrate-sensitive vasodilator.",
+        "query": "nitrate-sensitive vasodilator metabolism CYP3A4 ketoconazole ritonavir clarithromycin grapefruit",
         "book_ids": ["a87339f6c294"],
         "top_k": 10,
         "expected_positive_terms": [
-            "sildenafil",
             "cyp3a4",
             "ketoconazole",
             "ritonavir",

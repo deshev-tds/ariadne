@@ -19,7 +19,7 @@ The immediate symptom was not "retrieval is always bad". It was narrower:
 
 The concrete replay cases that mattered most were:
 
-- `sildenafil_natural`
+- `vasodilator_natural`
 - `pneumonia_imaging`
 - `psoriasis_morphology`
 - `sepsis_management`
@@ -104,9 +104,9 @@ That harness replays a fixed set of synthetic but realistic retrieval cases thro
 
 The fixed replay case set used in this work was:
 
-- `sildenafil_natural`
-- `sildenafil_contraindications`
-- `sildenafil_metabolism`
+- `vasodilator_natural`
+- `vasodilator_contraindications`
+- `vasodilator_metabolism`
 - `pneumonia_imaging`
 - `psoriasis_morphology`
 - `sepsis_management`
@@ -191,7 +191,7 @@ That test needed to be measured in warm state, not only immediately after restar
 
 The reranker consistently improved several of the painful cases:
 
-- `sildenafil_natural`
+- `vasodilator_natural`
 - `pneumonia_imaging`
 - `psoriasis_morphology`
 
@@ -294,10 +294,10 @@ These are the numbers that drove the decisions.
 
 These were the concrete before/after examples that drove decisions more than any abstract metric did.
 
-`sildenafil_natural`
+`vasodilator_natural`
 
 - baseline top1: `C A S E S T U D Y > C A S E   S T U D Y`
-- reranked top1: `Drugs Used in the Treatment of Erectile Dysfunction`
+- reranked top1: the relevant vasodilator treatment section
 - this was a real fix, not a cosmetic shuffle
 
 `pneumonia_imaging`
