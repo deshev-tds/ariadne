@@ -209,15 +209,11 @@ async def search_web(
 
 async def _run_web_research_strong(
     query: str,
-    mode: str = "search",
-    selected_categories: Optional[list[str]] = None,
-    selected_domains: Optional[list[str]] = None,
+    allowed_domains: Optional[list[str]] = None,
     selected_time_scope: Optional[str] = None,
-    max_domains: int = 4,
     max_queries: int = 3,
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
-    include_community: bool = False,
     __request__: Request = None,
     __user__: dict = None,
     __metadata__: dict = None,
@@ -231,16 +227,12 @@ async def _run_web_research_strong(
         result = await execute_strong_source_search(
             __request__,
             query=query,
-            mode=mode,
-            selected_categories=selected_categories,
-            selected_domains=selected_domains,
+            allowed_domains=allowed_domains,
             selected_time_scope=selected_time_scope,
-            max_domains=max_domains,
             user=user,
             max_queries=max_queries,
             topic_hint=topic_hint,
             recency_days=recency_days,
-            include_community=include_community,
             event_emitter=__event_emitter__,
             metadata=__metadata__,
         )
@@ -252,15 +244,11 @@ async def _run_web_research_strong(
 
 async def web_research_strong(
     query: str,
-    mode: str = "search",
-    selected_categories: Optional[list[str]] = None,
-    selected_domains: Optional[list[str]] = None,
+    allowed_domains: Optional[list[str]] = None,
     selected_time_scope: Optional[str] = None,
-    max_domains: int = 4,
     max_queries: int = 3,
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
-    include_community: bool = False,
     __request__: Request = None,
     __user__: dict = None,
     __metadata__: dict = None,
@@ -268,33 +256,26 @@ async def web_research_strong(
 ) -> str:
     """
     WEB SOURCES ONLY.
-    Run focused strong-source web research with local-first routing and broad fallback.
+    Run bounded, evidence-first web research with optional domain constraints.
     Use this when evidence is uncertain, time-sensitive, or high-risk, and you need
-    stronger provenance before answering.
+    stronger provenance before answering. If you already know the domains you trust,
+    pass them via `allowed_domains`.
 
     :param query: User question or search objective
-    :param mode: list_categories | list_domains | search (default: search)
-    :param selected_categories: Optional chosen categories (1-2)
-    :param selected_domains: Optional chosen domains (1-4)
+    :param allowed_domains: Optional hard domain constraints (1-6)
     :param selected_time_scope: Optional time scope (evergreen | recent | breaking)
-    :param max_domains: Maximum domains allowed for focused search (default: 4)
     :param max_queries: Maximum site-constrained search queries per phase (default: 3)
     :param topic_hint: Optional topic hint to improve source routing
     :param recency_days: Optional recency hint in days for freshness-sensitive tasks
-    :param include_community: Include community sources in candidate set (default: false)
-    :return: JSON object with queries, ranked items, selected domains, and quality telemetry
+    :return: JSON object with queries, ranked items, allowed domains, and quality telemetry
     """
     return await _run_web_research_strong(
         query=query,
-        mode=mode,
-        selected_categories=selected_categories,
-        selected_domains=selected_domains,
+        allowed_domains=allowed_domains,
         selected_time_scope=selected_time_scope,
-        max_domains=max_domains,
         max_queries=max_queries,
         topic_hint=topic_hint,
         recency_days=recency_days,
-        include_community=include_community,
         __request__=__request__,
         __user__=__user__,
         __metadata__=__metadata__,
@@ -304,15 +285,11 @@ async def web_research_strong(
 
 async def search_strong_sources(
     query: str,
-    mode: str = "search",
-    selected_categories: Optional[list[str]] = None,
-    selected_domains: Optional[list[str]] = None,
+    allowed_domains: Optional[list[str]] = None,
     selected_time_scope: Optional[str] = None,
-    max_domains: int = 4,
     max_queries: int = 3,
     topic_hint: Optional[str] = None,
     recency_days: Optional[int] = None,
-    include_community: bool = False,
     __request__: Request = None,
     __user__: dict = None,
     __metadata__: dict = None,
@@ -323,15 +300,11 @@ async def search_strong_sources(
     """
     return await _run_web_research_strong(
         query=query,
-        mode=mode,
-        selected_categories=selected_categories,
-        selected_domains=selected_domains,
+        allowed_domains=allowed_domains,
         selected_time_scope=selected_time_scope,
-        max_domains=max_domains,
         max_queries=max_queries,
         topic_hint=topic_hint,
         recency_days=recency_days,
-        include_community=include_community,
         __request__=__request__,
         __user__=__user__,
         __metadata__=__metadata__,

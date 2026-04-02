@@ -50,7 +50,7 @@ The important divergences are not cosmetic.
 - Request-scoped memory telemetry can be turned on per turn for debugging without leaving noisy long-lived logging enabled in production.
 - Ledger continuity now uses explicit chat-scoped mode selection: `vibe` by default, `agentic` only when enabled in the UI toggle.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
-- A native focused-web tool (`web_research_strong`, with `search_strong_sources` kept as an alias) was added for local-first strong-source search, with broader fallback only when evidence from locally-listed strong domains is weak.
+- A native focused-web tool (`web_research_strong`, with `search_strong_sources` kept as an alias) was added for bounded evidence-first search, with optional domain constraints and broader fallback only when the first pass is weak.
 - A domain-first local corpus path was added for proprietary or bought literature, with selection-layer markdown, per-book evidence retrieval, and table-aware follow-up tools instead of flattening everything into one generic knowledge pile.
 - The `v2` local-corpus reasoning lane now uses deterministic retrieval projection so user-facing framing text does not quietly pollute axis queries and slow or misroute retrieval.
 - The `default` function-calling selector now has its own runtime discipline layer, so local-corpus preference, retrieval term hygiene, and prior-work fallback do not depend entirely on native tool-calling behavior.
@@ -360,7 +360,7 @@ The rationale is similar to the context work above: the problem is not merely ge
 In practice, this means the web path here is more structured than a flat search integration:
 
 - multiple planner modes exist instead of one hardcoded query flow
-- a source registry provides machine-readable hints about where different kinds of queries should go
+- optional domain constraints can be applied explicitly instead of relying on a giant curated source worldview
 - the active model can be used as a query rewriter when that helps, but the system still keeps explicit fallback paths
 - planner telemetry tracks retries, fallback usage, executed queries, and stopping conditions instead of treating the whole thing as opaque middleware
 
@@ -369,7 +369,7 @@ The important behavioral shift is this:
 - upstream-style web search is often thought of as "query provider -> collect results -> inject results"
 - this fork pushes it toward "plan -> target sources -> bound evidence -> stop when enough evidence exists"
 
-That matters more on local setups than it first appears. Prompt budget is finite, retrieval latency is visible, and low-quality web evidence is actively harmful when it crowds out the rest of the conversation. The planner/rewriter/source-registry work is there to make web retrieval less brute-force and less noisy.
+That matters more on local setups than it first appears. Prompt budget is finite, retrieval latency is visible, and low-quality web evidence is actively harmful when it crowds out the rest of the conversation. The planner/rewriter/bounded-search work is there to make web retrieval less brute-force and less noisy.
 
 At a high level, the current web path behaves more like this:
 
@@ -381,27 +381,21 @@ At a high level, the current web path behaves more like this:
 
 This is the same overall philosophy as the context work: bounded, inspectable, evidence-oriented behavior beats magical but opaque behavior.
 
-### Strong-Source Search Trigger (Hybrid Local-First + Broader Fallback)
+### Strong-Source Search Trigger (Bounded Evidence + Optional Domain Constraints)
 
 The web stack includes a first-class native tool for evidence-critical retrieval: `web_research_strong` (`search_strong_sources` remains as a backward-compatible alias).
 
 This is intentionally not a hard terminal guard. It is a native model-callable path with soft trigger semantics: when confidence is weak, the question is time-sensitive, or provenance quality matters, the model can call the strong-source flow directly.
 
-The tool now supports a stateful contract:
+The tool contract is intentionally simple:
 
-1. `mode=list_categories`
-2. `mode=list_domains` (for selected categories)
-3. `mode=search` (for selected domains)
+- call `web_research_strong` with a `query`
+- optionally pass `allowed_domains` when the task already knows the domains worth constraining to
+- otherwise let the tool run a bounded open-web evidence pass
 
-`mode=search` remains backward-compatible for single-call usage. But when the model needs explicit routing support, the stateful path is available and bounded.
+Instance-level blacklists are enforced server-side through `WEB_SEARCH_DOMAIN_FILTER_LIST`, so noisy domains can be blocked without teaching that policy to the model.
 
-Domain selection is explicit and constrained:
-
-- model picks `1..4` domains
-- domains are validated against the registry-derived allowlist
-- invalid/empty selections return a correction payload, and search is not executed
-
-In short: focused search is now an inspectable interaction protocol, not a one-shot black box.
+In short: focused search is now an inspectable bounded-evidence tool, not a registry-driven wizard.
 
 ### Tool Naming Matters
 
@@ -421,20 +415,17 @@ Tool descriptions were hardened as well:
 
 This significantly improves real-world tool selection behavior, especially in long agentic loops where a model can otherwise get stuck in a misleading callable pattern.
 
-### Hybrid Routing: Coarse Gate + Model Disambiguation
+### Domain Constraints Over Curated Taxonomy
 
-Classifier bloat was avoided on purpose.
+The strong-search lane no longer expects the model to drive a category-to-domain selection ritual.
 
-This fork keeps a lightweight coarse gate with obvious buckets:
+Instead:
 
-- `software`, `medicine`, `legal`, `science`, `news`, `shopping`, `general`
+- `allowed_domains` is an optional hard constraint when the task already has trustworthy domains
+- admin/operator blacklists stay server-side
+- open discovery still works when no domain constraint is provided
 
-Routing behavior is hybrid:
-
-- high-confidence coarse route: skip category pass and jump directly to domain shortlist
-- low-confidence / ambiguous route: model first selects category, then domains, then runs focused search
-
-This preserves speed on easy queries and flexibility on hard queries, without drifting into endless keyword creep.
+That keeps the behavioral contract closer to what models naturally expect from a focused web-research tool, without forcing them through a brittle local taxonomy.
 
 ### Evidence Surface Honesty
 
@@ -479,27 +470,11 @@ If local-first evidence is insufficient, chat explicitly shows escalation:
 
 When search ends, the final focused-search status event is emitted with `done=true`, so the progress shimmer stops and the phase is visibly closed. Planner score is shown only in explicit debug mode.
 
-### Operational Caveat: `is_local` Is a Routing Primitive
+### Operational Caveat: Domain Policy Belongs to the Server
 
-`local-first` depends on `planner_hints.is_local=true` entries inside the source registry. If a selected category has no such entries, there are no local candidates for Phase A, so focused search naturally behaves fallback-heavy (fast escalation to broader/non-local search).
+`web_research_strong` may expose `allowed_domains` to the model as an explicit task constraint, but blocking bad domains is not part of the model contract.
 
-This is expected behavior, not a planner bug: the routing contract is "prefer local-marked domains when they exist".
-
-### Strong Domains in Practice
-
-This fork does not ship a local evidence corpus. It ships a locally maintained strong-source domain registry used for routing and query constraints.
-
-Current examples (from the registry) include:
-
-- `science_academic`: `pubmed.ncbi.nlm.nih.gov`, `ncbi.nlm.nih.gov`
-- `medicine_health`: `who.int`, `cdc.gov`
-- `software_apis_devops`: `docs.python.org`, `kubernetes.io`
-- `legal_compliance`: `eur-lex.europa.eu`, `dv.parliament.bg`
-
-Where this lives:
-
-- static registry file: `backend/open_webui/retrieval/web/source_registry.json`
-- admin API (read/update): `/api/v1/retrieval/web/search/planner/source-registry`
+The infrastructure blacklist lives in `WEB_SEARCH_DOMAIN_FILTER_LIST`, which already supports block syntax such as `!quora.com`. That filter is enforced server-side on search results and can also narrow focused-search runs without teaching the model phantom capabilities.
 
 ## Optional Local Corpus Lane
 

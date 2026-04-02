@@ -1534,6 +1534,12 @@ def infer_domain_trust_score(domain: str, plan: WebSearchPlan) -> float:
     if not normalized:
         return TRUST_FLOOR_UNKNOWN
 
+    explicit_allowed_domains = {
+        normalize_domain(item)
+        for item in (plan.allowed_domains_ranked or [])
+        if normalize_domain(item)
+    }
+
     normalized_sources = load_normalized_source_registry()
     best_cross_topic: float = TRUST_FLOOR_UNKNOWN
     for source in normalized_sources:
@@ -1544,6 +1550,9 @@ def infer_domain_trust_score(domain: str, plan: WebSearchPlan) -> float:
         if source.trust_score > best_cross_topic:
             best_cross_topic = source.trust_score
 
+    if normalized in explicit_allowed_domains:
+        return max(best_cross_topic, 0.85)
+
     return best_cross_topic
 
 
@@ -1551,6 +1560,12 @@ def infer_domain_source_type(domain: str, plan: WebSearchPlan) -> str:
     normalized = normalize_domain(domain)
     if not normalized:
         return "unknown"
+
+    explicit_allowed_domains = {
+        normalize_domain(item)
+        for item in (plan.allowed_domains_ranked or [])
+        if normalize_domain(item)
+    }
 
     normalized_sources = load_normalized_source_registry()
     best_fallback: Optional[NormalizedSource] = None
@@ -1563,7 +1578,13 @@ def infer_domain_source_type(domain: str, plan: WebSearchPlan) -> str:
         if best_fallback is None or source.trust_score > best_fallback.trust_score:
             best_fallback = source
 
-    return best_fallback.source_type if best_fallback else "unknown"
+    if best_fallback is not None:
+        return best_fallback.source_type
+
+    if normalized in explicit_allowed_domains:
+        return "allowed_domain"
+
+    return "unknown"
 
 
 def evaluate_signal_quality(
