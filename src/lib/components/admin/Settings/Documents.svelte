@@ -1185,6 +1185,41 @@
 								</div>
 							{/if}
 
+							<div class="mb-2.5 flex w-full justify-between">
+								<div class="self-center text-xs font-medium">
+									{$i18n.t('Corpus Evidence Reranking')}
+								</div>
+								<div class="flex items-center relative">
+									<Tooltip
+										content={$i18n.t(
+											'Re-rank local corpus and offsec evidence chunks with a cross-encoder. This works even when hybrid search is disabled.'
+										)}
+									>
+										<Switch bind:state={RAGConfig.ENABLE_CORPUS_EVIDENCE_RERANKING} />
+									</Tooltip>
+								</div>
+							</div>
+
+							{#if RAGConfig.ENABLE_CORPUS_EVIDENCE_RERANKING === true}
+								<div class="mb-2.5 flex flex-col w-full">
+									<div class="mb-1 text-xs font-medium">
+										{$i18n.t('Corpus Evidence Reranking Model')}
+									</div>
+
+									<div class="flex w-full">
+										<div class="flex-1 mr-2">
+											<input
+												class="flex-1 w-full text-sm bg-transparent outline-hidden"
+												placeholder={$i18n.t('Set reranking model (e.g. {{model}})', {
+													model: 'BAAI/bge-reranker-v2-m3'
+												})}
+												bind:value={RAGConfig.CORPUS_EVIDENCE_RERANKING_MODEL}
+											/>
+										</div>
+									</div>
+								</div>
+							{/if}
+
 							<div class="  mb-2.5 flex w-full justify-between">
 								<div class=" self-center text-xs font-medium">{$i18n.t('Top K')}</div>
 								<div class="flex items-center relative">

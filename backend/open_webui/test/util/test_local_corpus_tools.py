@@ -634,6 +634,39 @@ def test_retrieve_evidence_penalizes_hap_vap_and_lung_abscess_for_cap_query(
     assert payload["evidence_sufficiency"] == "strong"
 
 
+def test_retrieve_evidence_applies_corpus_reranking_when_enabled(
+    cap_corpus_fixture, monkeypatch
+):
+    def fake_rerank_items(*, query, items, config_or_path, text_getter):
+        reranked = [dict(item) for item in items]
+        assert query == "community-acquired pneumonia initial empiric antibiotics in adults"
+        for item in reranked:
+            item["rerank_score"] = 0.1
+        reranked[1]["rerank_score"] = 0.9
+        return (reranked, "fake-reranker")
+
+    monkeypatch.setattr(local_corpus, "rerank_items", fake_rerank_items)
+
+    config = SimpleNamespace(
+        ENABLE_CORPUS_EVIDENCE_RERANKING=True,
+        CORPUS_EVIDENCE_RERANKING_MODEL="fake-reranker",
+        LOCAL_CORPUS_ROOT=str(cap_corpus_fixture),
+    )
+
+    payload = local_corpus.retrieve_local_corpus_evidence(
+        query="community-acquired pneumonia initial empiric antibiotics in adults",
+        book_ids=["cap-handbook", "vap-guide", "lung-abscess"],
+        include_related_tables=True,
+        config_or_path=config,
+    )
+
+    assert payload["reranked"] is True
+    assert payload["reranker_model"] == "fake-reranker"
+    assert payload["items"][0]["rerank_score"] == 0.9
+    assert "cross_encoder_rerank" in payload["items"][0]["rationale"]
+    assert payload["items"][0]["book_id"] != "cap-handbook"
+
+
 def test_reasoning_pack_loader_reads_canonical_pack():
     pack = local_corpus_reasoning.load_local_corpus_pack("medicine")
 

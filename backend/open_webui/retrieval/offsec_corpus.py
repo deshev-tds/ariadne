@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from open_webui.retrieval.evidence_reranking import rerank_items
 from open_webui.retrieval.corpus_runtime import resolve_offsec_corpus_root
 
 log = logging.getLogger(__name__)
@@ -814,7 +815,8 @@ def _search_offsec_evidence(
     book_ids: Optional[list[str]] = None,
     max_snippets: int = 6,
     anchor: str = "",
-) -> tuple[list[dict[str, Any]], int, list[str]]:
+    config_or_path: Any = None,
+) -> tuple[list[dict[str, Any]], int, list[str], str]:
     bounded_max_snippets = max(1, min(8, int(max_snippets or 6)))
     selected_book_ids = [
         book_id for book_id in (book_ids or []) if book_id in registry.books_by_id
@@ -827,7 +829,7 @@ def _search_offsec_evidence(
 
     terms = _query_terms(query if not anchor else f"{anchor} {query}")
     if not terms:
-        return ([], 0, selected_book_ids or [])
+        return ([], 0, selected_book_ids or [], "")
 
     items: list[dict[str, Any]] = []
     for book in books:
@@ -869,7 +871,29 @@ def _search_offsec_evidence(
             int(item.get("page_no") or 0),
         )
     )
-    top_items = items[:bounded_max_snippets]
+    candidate_window = items[: max(bounded_max_snippets * 6, bounded_max_snippets)]
+    reranked_model = ""
+    candidate_window, reranked_model = rerank_items(
+        query=query,
+        items=candidate_window,
+        config_or_path=config_or_path,
+        text_getter=lambda item: "\n".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("section_path") or ""),
+                str(item.get("content") or ""),
+            ]
+        ),
+    )
+    candidate_window.sort(
+        key=lambda item: (
+            -float(item.get("rerank_score") if reranked_model else item.get("score") or 0.0),
+            -float(item.get("score") or 0.0),
+            str(item.get("title") or ""),
+            int(item.get("page_no") or 0),
+        )
+    )
+    top_items = candidate_window[:bounded_max_snippets]
     result_book_ids: list[str] = []
     seen: set[str] = set()
     for item in top_items:
@@ -877,7 +901,10 @@ def _search_offsec_evidence(
         if book_id and book_id not in seen:
             seen.add(book_id)
             result_book_ids.append(book_id)
-    return (top_items, len(items), result_book_ids)
+    if reranked_model:
+        for item in top_items:
+            item["rerank_score"] = item.get("rerank_score")
+    return (top_items, len(items), result_book_ids, reranked_model)
 
 
 def consult_offsec_corpus(
@@ -913,12 +940,13 @@ def consult_offsec_corpus(
 
     if route == "direct_lookup":
         lookup_anchor = _normalize_text(named_entity or matched_title or objective)
-        preview_items, candidate_count, preview_book_ids = _search_offsec_evidence(
+        preview_items, candidate_count, preview_book_ids, _ = _search_offsec_evidence(
             registry,
             query=objective or lookup_anchor,
             book_ids=None,
             max_snippets=3,
             anchor=lookup_anchor,
+            config_or_path=config_or_path,
         )
         if preview_book_ids:
             books = [
@@ -1028,11 +1056,12 @@ def retrieve_offsec_evidence(
     valid_book_ids = [
         book_id for book_id in (book_ids or []) if book_id in registry.books_by_id
     ]
-    items, candidate_count, result_book_ids = _search_offsec_evidence(
+    items, candidate_count, result_book_ids, reranked_model = _search_offsec_evidence(
         registry,
         query=query,
         book_ids=valid_book_ids or None,
         max_snippets=max_snippets,
+        config_or_path=config_or_path,
     )
     return {
         "status": "ok",
@@ -1042,4 +1071,6 @@ def retrieve_offsec_evidence(
         "book_ids": valid_book_ids or result_book_ids,
         "items": items,
         "candidate_count": candidate_count,
+        "reranked": bool(reranked_model),
+        "reranker_model": reranked_model or None,
     }

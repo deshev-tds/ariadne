@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from open_webui.env import BASE_DIR, DATA_DIR
+from open_webui.retrieval.evidence_reranking import rerank_items
 
 log = logging.getLogger(__name__)
 
@@ -1716,8 +1717,29 @@ def retrieve_local_corpus_evidence(
                 }
             )
 
+    reranked_model = ""
+    scored_items, reranked_model = rerank_items(
+        query=query,
+        items=scored_items,
+        config_or_path=config_or_path,
+        text_getter=lambda item: "\n".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("section_path") or ""),
+                str(item.get("content") or ""),
+            ]
+        ),
+    )
+    if reranked_model:
+        for item in scored_items:
+            rationale = list(item.get("rationale") or [])
+            if "cross_encoder_rerank" not in rationale:
+                rationale.append("cross_encoder_rerank")
+            item["rationale"] = rationale[:5]
+
     scored_items.sort(
         key=lambda item: (
+            -float(item.get("rerank_score") if reranked_model else item["score"]),
             -float(item["score"]),
             item["page_no"] or 0,
             item["title"].lower(),
@@ -1769,6 +1791,8 @@ def retrieve_local_corpus_evidence(
         "evidence_sufficiency": evidence_sufficiency,
         "answer_guidance": answer_guidance,
         "freshness_note": freshness_note,
+        "reranked": bool(reranked_model),
+        "reranker_model": reranked_model or None,
     }
 
 

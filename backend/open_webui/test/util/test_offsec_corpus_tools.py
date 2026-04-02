@@ -297,6 +297,36 @@ def test_retrieve_offsec_evidence_returns_retrieval_snippets_only(offsec_corpus_
     assert "raw broad book" not in json.dumps(payload)
 
 
+def test_retrieve_offsec_evidence_applies_corpus_reranking_when_enabled(
+    offsec_corpus_fixture, monkeypatch
+):
+    def fake_rerank_items(*, query, items, config_or_path, text_getter):
+        reranked = [dict(item) for item in items]
+        assert query == "ffuf endpoint discovery examples"
+        reranked[0]["rerank_score"] = 0.9
+        return (reranked, "fake-reranker")
+
+    monkeypatch.setattr(offsec_corpus, "rerank_items", fake_rerank_items)
+
+    config = SimpleNamespace(
+        ENABLE_CORPUS_EVIDENCE_RERANKING=True,
+        CORPUS_EVIDENCE_RERANKING_MODEL="fake-reranker",
+        ENABLE_LOCAL_CORPUS_TOOLS=True,
+        OFFSEC_CORPUS_ROOT=str(offsec_corpus_fixture),
+        LOCAL_CORPUS_ROOT="",
+    )
+
+    payload = offsec_corpus.retrieve_offsec_evidence(
+        query="ffuf endpoint discovery examples",
+        max_snippets=3,
+        config_or_path=config,
+    )
+
+    assert payload["reranked"] is True
+    assert payload["reranker_model"] == "fake-reranker"
+    assert payload["items"][0]["rerank_score"] == 0.9
+
+
 def test_load_offsec_registry_rebases_stale_absolute_review_paths(offsec_corpus_fixture):
     review_path = (
         offsec_corpus_fixture / "_compiled_docling_review" / "compiled-offsec-review.json"

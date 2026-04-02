@@ -541,6 +541,8 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         "RAG_EXTERNAL_RERANKER_URL": request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
         "RAG_EXTERNAL_RERANKER_API_KEY": request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
         "RAG_EXTERNAL_RERANKER_TIMEOUT": request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+        "ENABLE_CORPUS_EVIDENCE_RERANKING": request.app.state.config.ENABLE_CORPUS_EVIDENCE_RERANKING,
+        "CORPUS_EVIDENCE_RERANKING_MODEL": request.app.state.config.CORPUS_EVIDENCE_RERANKING_MODEL,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
         "ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER": request.app.state.config.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER,
@@ -813,6 +815,8 @@ class ConfigForm(BaseModel):
     RAG_EXTERNAL_RERANKER_URL: Optional[str] = None
     RAG_EXTERNAL_RERANKER_API_KEY: Optional[str] = None
     RAG_EXTERNAL_RERANKER_TIMEOUT: Optional[str] = None
+    ENABLE_CORPUS_EVIDENCE_RERANKING: Optional[bool] = None
+    CORPUS_EVIDENCE_RERANKING_MODEL: Optional[str] = None
 
     # Chunking settings
     TEXT_SPLITTER: Optional[str] = None
@@ -1129,6 +1133,16 @@ async def update_rag_config(
         form_data.RAG_EXTERNAL_RERANKER_TIMEOUT
         if form_data.RAG_EXTERNAL_RERANKER_TIMEOUT is not None
         else request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT
+    )
+    request.app.state.config.ENABLE_CORPUS_EVIDENCE_RERANKING = (
+        form_data.ENABLE_CORPUS_EVIDENCE_RERANKING
+        if form_data.ENABLE_CORPUS_EVIDENCE_RERANKING is not None
+        else request.app.state.config.ENABLE_CORPUS_EVIDENCE_RERANKING
+    )
+    request.app.state.config.CORPUS_EVIDENCE_RERANKING_MODEL = (
+        form_data.CORPUS_EVIDENCE_RERANKING_MODEL
+        if form_data.CORPUS_EVIDENCE_RERANKING_MODEL is not None
+        else request.app.state.config.CORPUS_EVIDENCE_RERANKING_MODEL
     )
 
     log.info(
@@ -1579,6 +1593,8 @@ async def update_rag_config(
         "RAG_EXTERNAL_RERANKER_URL": request.app.state.config.RAG_EXTERNAL_RERANKER_URL,
         "RAG_EXTERNAL_RERANKER_API_KEY": request.app.state.config.RAG_EXTERNAL_RERANKER_API_KEY,
         "RAG_EXTERNAL_RERANKER_TIMEOUT": request.app.state.config.RAG_EXTERNAL_RERANKER_TIMEOUT,
+        "ENABLE_CORPUS_EVIDENCE_RERANKING": request.app.state.config.ENABLE_CORPUS_EVIDENCE_RERANKING,
+        "CORPUS_EVIDENCE_RERANKING_MODEL": request.app.state.config.CORPUS_EVIDENCE_RERANKING_MODEL,
         # Chunking settings
         "TEXT_SPLITTER": request.app.state.config.TEXT_SPLITTER,
         "CHUNK_SIZE": request.app.state.config.CHUNK_SIZE,

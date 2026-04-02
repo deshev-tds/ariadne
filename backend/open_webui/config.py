@@ -3225,6 +3225,18 @@ RAG_EXTERNAL_RERANKER_TIMEOUT = PersistentConfig(
     os.environ.get("RAG_EXTERNAL_RERANKER_TIMEOUT", ""),
 )
 
+ENABLE_CORPUS_EVIDENCE_RERANKING = PersistentConfig(
+    "ENABLE_CORPUS_EVIDENCE_RERANKING",
+    "rag.enable_corpus_evidence_reranking",
+    os.environ.get("ENABLE_CORPUS_EVIDENCE_RERANKING", "False").lower() == "true",
+)
+
+CORPUS_EVIDENCE_RERANKING_MODEL = PersistentConfig(
+    "CORPUS_EVIDENCE_RERANKING_MODEL",
+    "rag.corpus_evidence_reranking_model",
+    os.environ.get("CORPUS_EVIDENCE_RERANKING_MODEL", "BAAI/bge-reranker-v2-m3"),
+)
+
 
 RAG_TEXT_SPLITTER = PersistentConfig(
     "RAG_TEXT_SPLITTER",
