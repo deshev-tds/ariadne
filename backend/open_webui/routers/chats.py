@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 from sqlalchemy.orm import Session
 import asyncio
 from pathlib import Path
@@ -1163,6 +1163,8 @@ class ContextWindowPreviewForm(BaseModel):
     main_model_ids: list[str]
     messages: Optional[list[dict]] = None
     files: Optional[list[dict]] = None
+    params: Optional[dict[str, Any]] = None
+    features: Optional[dict[str, Any]] = None
     system_message: Optional[str] = None
     context_maintenance_enabled: bool = True
 
@@ -1173,6 +1175,8 @@ class ContextWindowModelPreviewResponse(BaseModel):
     live_prompt_cap: int
     live_prompt_cap_source: str
     current_request_tokens: int
+    history_request_tokens: int
+    hidden_request_tokens: int
     soft_trigger_tokens: Optional[int] = None
     hard_trigger_tokens: Optional[int] = None
     summary_active: bool
@@ -1207,6 +1211,12 @@ async def preview_context_window(
     current_chat_id = form_data.chat_id
     history_messages: list[dict] = []
     summary_state: dict | None = None
+    preview_params: dict[str, Any] = (
+        dict(form_data.params or {}) if isinstance(form_data.params, dict) else {}
+    )
+    preview_features: dict[str, Any] = (
+        dict(form_data.features or {}) if isinstance(form_data.features, dict) else {}
+    )
 
     if current_chat_id and not current_chat_id.startswith("local:"):
         chat = Chats.get_chat_by_id_and_user_id(current_chat_id, user.id, db=db)
@@ -1231,6 +1241,9 @@ async def preview_context_window(
 
         if form_data.context_maintenance_enabled:
             summary_state = get_chat_maintenance_state(current_chat_id)
+
+        if not preview_params and isinstance(chat.chat.get("params"), dict):
+            preview_params = dict(chat.chat.get("params") or {})
     else:
         history_messages = inject_image_files_into_history(form_data.messages or [])
 
@@ -1251,8 +1264,16 @@ async def preview_context_window(
         main_model_ids=model_ids,
         system_message=system_message,
         history_messages=history_messages,
-        form_data={"files": form_data.files or []},
-        metadata={"chat_id": current_chat_id},
+        form_data={
+            "files": form_data.files or [],
+            "params": preview_params,
+            "features": preview_features,
+        },
+        metadata={
+            "chat_id": current_chat_id,
+            "params": preview_params,
+            "features": preview_features,
+        },
         summary_state=summary_state,
         maintenance_enabled=form_data.context_maintenance_enabled,
     )

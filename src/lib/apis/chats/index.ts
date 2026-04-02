@@ -7,6 +7,8 @@ export type ContextWindowModelPreview = {
 	live_prompt_cap: number;
 	live_prompt_cap_source: string;
 	current_request_tokens: number;
+	history_request_tokens?: number;
+	hidden_request_tokens?: number;
 	soft_trigger_tokens?: number | null;
 	hard_trigger_tokens?: number | null;
 	summary_active: boolean;
@@ -674,6 +676,8 @@ export const getContextWindowPreview = async (
 		main_model_ids: string[];
 		messages?: unknown[];
 		files?: unknown[];
+		params?: Record<string, unknown>;
+		features?: Record<string, unknown>;
 		system_message?: string | null;
 		context_maintenance_enabled: boolean;
 	}

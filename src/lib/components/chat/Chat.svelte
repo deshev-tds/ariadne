@@ -607,6 +607,8 @@
 			main_model_ids: mainModelIds,
 			messages: persistedChat ? undefined : buildContextWindowPreviewMessages(),
 			files: files.length > 0 ? files : undefined,
+			params,
+			features: getFeatures(),
 			system_message: systemMessage || undefined,
 			context_maintenance_enabled: maintenanceEnabled
 		};

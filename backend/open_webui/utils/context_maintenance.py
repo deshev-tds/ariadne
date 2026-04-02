@@ -33,6 +33,7 @@ from open_webui.utils.misc import (
     sanitize_historical_message_for_llm,
 )
 from open_webui.utils.task import get_task_model_id
+from open_webui.utils.tools import get_builtin_tools
 
 log = logging.getLogger(__name__)
 
@@ -409,7 +410,35 @@ def _flatten_preview_content(content: Any) -> str:
     return ""
 
 
-def render_preview_prompt(messages: list[dict[str, Any]]) -> str:
+def _flatten_preview_tool_spec(tool: dict[str, Any]) -> str:
+    if not isinstance(tool, dict):
+        return ""
+
+    function = tool.get("function") if tool.get("type") == "function" else tool
+    if not isinstance(function, dict):
+        return ""
+
+    lines: list[str] = []
+    name = str(function.get("name") or "").strip()
+    if name:
+        lines.append(f"name: {name}")
+
+    description = str(function.get("description") or "").strip()
+    if description:
+        lines.append(f"description: {description}")
+
+    parameters = function.get("parameters")
+    if parameters:
+        lines.append(f"parameters: {_stable_json_dumps(parameters)}")
+
+    return "\n".join(lines).strip()
+
+
+def render_preview_prompt(
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None = None,
+) -> str:
     rendered_messages: list[str] = []
     for message in messages or []:
         if not isinstance(message, dict):
@@ -424,20 +453,40 @@ def render_preview_prompt(messages: list[dict[str, Any]]) -> str:
 
         tool_calls = message.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
-            tool_names = [
-                str(call.get("function", {}).get("name") or "")
-                for call in tool_calls
-                if isinstance(call, dict)
-            ]
-            tool_names = [name for name in tool_names if name]
-            if tool_names:
-                lines.append("Tool calls: " + ", ".join(tool_names))
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function") or {}
+                name = str(function.get("name") or "").strip()
+                arguments = function.get("arguments")
+                if name:
+                    lines.append(f"Tool call: {name}")
+                if arguments not in (None, ""):
+                    rendered_arguments = (
+                        arguments
+                        if isinstance(arguments, str)
+                        else _stable_json_dumps(arguments)
+                    )
+                    lines.append(f"Arguments: {rendered_arguments}")
+                call_id = str(call.get("id") or "").strip()
+                if call_id:
+                    lines.append(f"Tool call id: {call_id}")
 
         tool_call_id = message.get("tool_call_id")
         if tool_call_id:
             lines.append(f"Tool call id: {tool_call_id}")
 
         rendered_messages.append("\n".join(lines).strip())
+
+    rendered_tools = [
+        tool_block
+        for tool in (tools or [])
+        if (tool_block := _flatten_preview_tool_spec(tool))
+    ]
+    if rendered_tools:
+        rendered_messages.append(
+            "<|available_tools|>\n" + "\n\n".join(rendered_tools)
+        )
 
     return "\n\n".join(block for block in rendered_messages if block).strip()
 
@@ -474,8 +523,10 @@ def count_preview_messages_tokens(
     request,
     model: dict[str, Any],
     messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None = None,
 ) -> tuple[int, str, str]:
-    prompt = render_preview_prompt(messages)
+    prompt = render_preview_prompt(messages, tools=tools)
     if not prompt:
         return 0, "empty", "approximate"
 
@@ -528,6 +579,43 @@ def history_message_to_llm_messages(message: dict[str, Any]) -> list[dict[str, A
         if key not in {"id", "parentId", "childrenIds", "files"}
     }
     return [sanitize_historical_message_for_llm(clean_message)]
+
+
+def build_preview_builtin_tool_specs(
+    request,
+    *,
+    model: dict[str, Any],
+    metadata: dict[str, Any] | None,
+    features: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    params = ((metadata or {}).get("params", {}) or {})
+    if params.get("function_calling") != "native":
+        return []
+
+    builtin_tools_enabled = (
+        model.get("info", {}).get("meta", {}).get("capabilities") or {}
+    ).get("builtin_tools", True)
+    if not builtin_tools_enabled:
+        return []
+
+    try:
+        builtin_tools = get_builtin_tools(
+            request,
+            {
+                "__metadata__": metadata or {},
+            },
+            features or {},
+            model,
+        )
+    except Exception:
+        log.debug("Preview builtin tool estimation failed", exc_info=True)
+        return []
+
+    return [
+        {"type": "function", "function": tool.get("spec", {})}
+        for tool in builtin_tools.values()
+        if isinstance(tool, dict) and isinstance(tool.get("spec"), dict)
+    ]
 
 
 def flatten_history_message_content(message: dict[str, Any]) -> str:
@@ -1516,6 +1604,8 @@ def serialize_context_window_snapshot(snapshot: dict[str, Any]) -> dict[str, Any
         "live_prompt_cap": snapshot["live_prompt_cap"],
         "live_prompt_cap_source": snapshot["live_prompt_cap_source"],
         "current_request_tokens": snapshot["current_request_tokens"],
+        "history_request_tokens": snapshot["history_request_tokens"],
+        "hidden_request_tokens": snapshot["hidden_request_tokens"],
         "soft_trigger_tokens": snapshot.get("soft_trigger_tokens"),
         "hard_trigger_tokens": snapshot.get("hard_trigger_tokens"),
         "summary_active": snapshot["summary_active"],
@@ -1572,11 +1662,27 @@ async def build_context_window_model_snapshot(
         summary_active = False
         compaction_version = 0
 
-    raw_request_tokens, token_count_source, token_count_confidence = (
+    history_request_tokens, token_count_source, token_count_confidence = (
         count_preview_messages_tokens(request, runtime_model, raw_request_messages)
     )
+    preview_builtin_tools = build_preview_builtin_tool_specs(
+        request,
+        model=runtime_model,
+        metadata=metadata,
+        features=(metadata or {}).get("features") or (form_data or {}).get("features") or {},
+    )
+    if preview_builtin_tools:
+        current_request_tokens, _, _ = count_preview_messages_tokens(
+            request,
+            runtime_model,
+            raw_request_messages,
+            tools=preview_builtin_tools,
+        )
+    else:
+        current_request_tokens = history_request_tokens
+
     if raw_request_messages == maintained_request_messages:
-        maintained_request_tokens = raw_request_tokens
+        maintained_request_tokens = history_request_tokens
     else:
         maintained_request_tokens, _, _ = count_preview_messages_tokens(
             request,
@@ -1606,7 +1712,11 @@ async def build_context_window_model_snapshot(
         "model_name": model.get("name") or model["id"],
         "live_prompt_cap": int(budgets["live_prompt_cap"]),
         "live_prompt_cap_source": budgets.get("live_prompt_cap_source") or "default",
-        "current_request_tokens": int(raw_request_tokens),
+        "current_request_tokens": int(current_request_tokens),
+        "history_request_tokens": int(history_request_tokens),
+        "hidden_request_tokens": max(
+            0, int(current_request_tokens) - int(history_request_tokens)
+        ),
         "soft_trigger_tokens": soft_trigger_tokens,
         "hard_trigger_tokens": hard_trigger_tokens,
         "summary_active": summary_active,
@@ -1614,7 +1724,7 @@ async def build_context_window_model_snapshot(
         "maintenance_enabled": bool(maintenance_enabled),
         "token_count_confidence": token_count_confidence,
         "token_count_source": token_count_source,
-        "raw_request_tokens": int(raw_request_tokens),
+        "raw_request_tokens": int(history_request_tokens),
         "maintained_request_tokens": int(maintained_request_tokens),
         "system_request_tokens": int(system_request_tokens),
         "runtime_model": runtime_model,
@@ -1624,6 +1734,7 @@ async def build_context_window_model_snapshot(
         "raw_request_messages": raw_request_messages,
         "maintained_request_messages": maintained_request_messages,
         "request_messages": raw_request_messages,
+        "preview_builtin_tools": preview_builtin_tools,
         "maintenance_payload": payload,
         "resolution": resolution,
     }

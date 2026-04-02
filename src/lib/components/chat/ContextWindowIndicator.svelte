@@ -44,6 +44,16 @@
 				<div>${formatTokenCount(metrics.currentTokens)} / ${formatTokenCount(metrics.livePromptCap)} tokens</div>
 				<div>${Math.round(metrics.currentRatio * 100)}% used</div>
 				${
+					preview.history_request_tokens != null
+						? `<div>Visible request ${formatTokenCount(preview.history_request_tokens)}</div>`
+						: ''
+				}
+				${
+					(preview.hidden_request_tokens ?? 0) > 0
+						? `<div>Estimated hidden overhead +${formatTokenCount(preview.hidden_request_tokens ?? 0)}</div>`
+						: ''
+				}
+				${
 					preview.maintenance_enabled && metrics.showBand
 						? `<div>${
 								metrics.degraded ? 'Approximate maintenance range' : 'Maintenance likely around'

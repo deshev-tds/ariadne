@@ -96,6 +96,43 @@ def test_render_preview_prompt_includes_roles_and_content():
     assert "ship the ring" in rendered
 
 
+def test_render_preview_prompt_includes_tool_call_arguments_and_tool_schemas():
+    rendered = render_preview_prompt(
+        [
+            {
+                "role": "assistant",
+                "content": "Checking",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_web",
+                            "arguments": '{"q":"bari"}',
+                        },
+                    }
+                ],
+            }
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_web",
+                    "description": "Search the web",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                },
+            }
+        ],
+    )
+
+    assert "Tool call: search_web" in rendered
+    assert 'Arguments: {"q":"bari"}' in rendered
+    assert "<|available_tools|>" in rendered
+    assert "name: search_web" in rendered
+    assert "parameters:" in rendered
+
+
 def test_history_message_to_llm_messages_uses_hygienic_replay(monkeypatch):
     monkeypatch.setattr(misc, "ENABLE_HISTORY_REASONING_REPLAY", False)
 
@@ -866,6 +903,76 @@ async def test_build_context_window_model_preview_degrades_confidence_for_local_
     assert preview["token_count_confidence"] == "fallback"
     assert preview["soft_trigger_tokens"] is not None
     assert preview["hard_trigger_tokens"] is not None
+
+
+@pytest.mark.asyncio
+async def test_build_context_window_model_preview_tracks_hidden_native_tool_overhead(
+    monkeypatch,
+):
+    request = _make_request(TIKTOKEN_ENCODING_NAME="cl100k_base")
+    model = {
+        "id": "llama-local",
+        "name": "Llama Local",
+        "owned_by": "ollama",
+        "status": {"args": ["--ctx-size", "32768"]},
+        "info": {"meta": {"capabilities": {"builtin_tools": True}}},
+    }
+
+    monkeypatch.setattr(
+        context_maintenance,
+        "get_builtin_tools",
+        lambda *_args, **_kwargs: {
+            "search_web": {
+                "spec": {
+                    "name": "search_web",
+                    "description": "Search the web",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"q": {"type": "string"}},
+                    },
+                }
+            }
+        },
+    )
+
+    preview = await build_context_window_model_preview(
+        request,
+        models_map={model["id"]: model},
+        model=model,
+        system_message=None,
+        history_messages=[
+            {
+                "id": "m1",
+                "role": "assistant",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "search_web",
+                        "arguments": {"q": "bari guidelines site:nih.gov"},
+                    },
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Done"}],
+                    },
+                ],
+            }
+        ],
+        form_data={"files": [], "features": {"web_search": True}},
+        metadata={
+            "params": {"function_calling": "native"},
+            "features": {"web_search": True},
+        },
+        summary_state={},
+        maintenance_enabled=True,
+    )
+
+    assert preview["history_request_tokens"] > 0
+    assert preview["hidden_request_tokens"] > 0
+    assert (
+        preview["current_request_tokens"]
+        == preview["history_request_tokens"] + preview["hidden_request_tokens"]
+    )
 
 
 @pytest.mark.asyncio
