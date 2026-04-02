@@ -2127,6 +2127,9 @@ async def chat_completion(
                 "debug_memory_telemetry": bool(
                     form_data.get("params", {}).get("debug_memory_telemetry")
                 ),
+                "debug_tool_journey": bool(
+                    form_data.get("params", {}).get("debug_tool_journey")
+                ),
                 "function_calling": (
                     "native"
                     if (

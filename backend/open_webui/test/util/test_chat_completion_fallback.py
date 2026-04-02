@@ -208,3 +208,52 @@ async def test_chat_completion_reports_clear_error_when_overflow_retry_fails(
         event.get("contextOverflowRetrySucceeded") is False
         for event in result["events"]
     )
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_preserves_debug_tool_journey_in_metadata(monkeypatch):
+    captured_metadata = {}
+
+    async def fake_process_chat_payload(request, form_data, user, metadata, model):
+        captured_metadata.update(metadata)
+        return form_data, metadata, []
+
+    async def fake_chat_completion_handler(request, form_data, user):
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    async def fake_process_chat_response(response, ctx):
+        return {
+            "response": response,
+            "metadata": ctx["metadata"],
+        }
+
+    monkeypatch.setattr(main_module, "process_chat_payload", fake_process_chat_payload)
+    monkeypatch.setattr(
+        main_module, "chat_completion_handler", fake_chat_completion_handler
+    )
+    monkeypatch.setattr(
+        main_module, "process_chat_response", fake_process_chat_response
+    )
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                MODELS={"demo-model": {"id": "demo-model"}},
+                config=SimpleNamespace(DEFAULT_MODELS=""),
+            )
+        ),
+        state=SimpleNamespace(),
+    )
+
+    user = SimpleNamespace(id="user-id", role="admin")
+    form_data = {
+        "model": "demo-model",
+        "model_item": {"direct": True, "id": "demo-model", "owned_by": "openai"},
+        "messages": [{"role": "user", "content": "hello"}],
+        "params": {"debug_tool_journey": True},
+    }
+
+    result = await main_module.chat_completion(request, form_data, user=user)
+
+    assert captured_metadata["params"]["debug_tool_journey"] is True
+    assert result["metadata"]["params"]["debug_tool_journey"] is True
