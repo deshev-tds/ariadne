@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import open_webui.config as config
 import open_webui.retrieval.web.planner as planner
 import open_webui.routers.retrieval as retrieval
 import open_webui.tools.builtin as builtin_tools
@@ -111,6 +112,23 @@ def test_infer_domain_trust_score_prefers_explicit_allowed_domains(monkeypatch):
 
     assert planner.infer_domain_trust_score("custom.docs", plan) == pytest.approx(0.85)
     assert planner.infer_domain_source_type("custom.docs", plan) == "allowed_domain"
+
+
+def test_default_tool_prompt_guides_strong_search_then_fetch_url():
+    template = config.DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+
+    assert "prefer `web_research_strong`" in template
+    assert "fetch_url` only after selecting concrete URLs" in template
+    assert "snippet-first evidence pass" in template
+    assert "use `fetch_url` on the most relevant cited URL" in template
+
+
+def test_web_research_strong_docstring_describes_fetch_url_fallback():
+    doc = builtin_tools.web_research_strong.__doc__ or ""
+
+    assert "ranked evidence snippets and" in doc
+    assert "not full-page fetches" in doc
+    assert "call `fetch_url` on the chosen citation URL" in doc
 
 
 @pytest.mark.asyncio

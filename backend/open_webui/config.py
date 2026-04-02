@@ -2235,6 +2235,7 @@ Your task is to choose and return the correct tool(s) from the list of available
 - Return only the JSON object, without any additional text or explanation.
 - For uncertain, time-sensitive, high-risk, or verification-heavy queries, prefer `web_research_strong` when available before generic web tools.
 - Use `search_web` for broad discovery and `fetch_url` only after selecting concrete URLs.
+- Treat `web_research_strong` as a snippet-first evidence pass. If its citations look promising but still do not contain enough detail, use `fetch_url` on the most relevant cited URL rather than repeating broad search.
 
 - If no tools match the query, return an empty array: 
    {

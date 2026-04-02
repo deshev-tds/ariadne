@@ -387,15 +387,25 @@ The web stack includes a first-class native tool for evidence-critical retrieval
 
 This is intentionally not a hard terminal guard. It is a native model-callable path with soft trigger semantics: when confidence is weak, the question is time-sensitive, or provenance quality matters, the model can call the strong-source flow directly.
 
+It is also the second phase of this feature, not the first. The earlier iteration overreached: it tried to teach the model a local worldview of categories, trusted-source classes, and registry-driven domain selection. That looked principled on paper, but it created a brittle behavioral contract, permanent curation debt, and too many ways to miss the obvious next step. This fork did not try to preserve that design out of pride. It was reverted in commit history to get the product back to a simpler working state.
+
+The replacement is intentionally closer to the shape now favored by strong industry signals and a lot of applied retrieval work:
+
+- one bounded evidence-search primitive instead of a multi-step registry ritual
+- optional domain constraints when the task already knows the right sites
+- server-side policy enforcement for blocked domains
+- explicit status, fallback, and evidence surfaces instead of hidden planner magic
+
 The tool contract is intentionally simple:
 
 - call `web_research_strong` with a `query`
 - optionally pass `allowed_domains` when the task already knows the domains worth constraining to
 - otherwise let the tool run a bounded open-web evidence pass
+- if the returned citations look relevant but the snippets are still too thin, use `fetch_url` on the best cited URL rather than restarting broad search
 
 Instance-level blacklists are enforced server-side through `WEB_SEARCH_DOMAIN_FILTER_LIST`, so noisy domains can be blocked without teaching that policy to the model.
 
-In short: focused search is now an inspectable bounded-evidence tool, not a registry-driven wizard.
+In short: focused search is now an inspectable bounded-evidence tool, not a registry-driven wizard pretending to be a source ontology.
 
 ### Tool Naming Matters
 
@@ -419,13 +429,28 @@ This significantly improves real-world tool selection behavior, especially in lo
 
 The strong-search lane no longer expects the model to drive a category-to-domain selection ritual.
 
+That simplification was voluntary. The old design tried to prevent bad source choices by maintaining more local structure than the product could realistically justify. In practice, the maintenance burden was real, the planner assumptions were fragile, and mainstream search engines were often already returning better source mixes than the local registry logic deserved credit for.
+
 Instead:
 
 - `allowed_domains` is an optional hard constraint when the task already has trustworthy domains
 - admin/operator blacklists stay server-side
 - open discovery still works when no domain constraint is provided
 
-That keeps the behavioral contract closer to what models naturally expect from a focused web-research tool, without forcing them through a brittle local taxonomy.
+What was removed on purpose:
+
+- category-to-domain selection as a first-class model ritual
+- giant curated domain worldview as the primary routing mechanism
+- the assumption that focused search must begin with taxonomy before it can begin with evidence
+
+What stayed:
+
+- bounded search
+- explicit domain constraints when they are genuinely useful
+- server-side domain policy
+- inspectable fallback behavior
+
+That keeps the behavioral contract closer to what models naturally expect from a focused web-research tool, while still preserving the operational controls that actually matter.
 
 ### Evidence Surface Honesty
 
@@ -469,6 +494,8 @@ If local-first evidence is insufficient, chat explicitly shows escalation:
 - updated phrases/sites for the broader pass
 
 When search ends, the final focused-search status event is emitted with `done=true`, so the progress shimmer stops and the phase is visibly closed. Planner score is shown only in explicit debug mode.
+
+The intended operator reading is important here: the UI is no longer pretending that focused search is an infallible oracle. It shows where the bounded pass worked, where it degraded, and when the system broadened the search rather than quietly fabricating confidence.
 
 ### Operational Caveat: Domain Policy Belongs to the Server
 
