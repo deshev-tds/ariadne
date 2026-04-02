@@ -8,6 +8,7 @@ log = logging.getLogger(__name__)
 
 _RERANKER_CACHE: dict[str, Any] = {}
 _RERANKER_LOCK = threading.Lock()
+_HEURISTIC_SCORE_RERANK_THRESHOLD = 6.5
 
 
 def _is_runtime_config(config_or_path: Any) -> bool:
@@ -44,6 +45,22 @@ def get_evidence_reranker(config_or_path: Any) -> tuple[Optional[Any], str]:
         return (reranker, model)
 
 
+def _heuristic_score(item: dict[str, Any]) -> Optional[float]:
+    value = item.get("score")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _should_rerank(items: list[dict[str, Any]]) -> bool:
+    top_score = _heuristic_score(items[0]) if items else None
+    if top_score is None:
+        return True
+
+    return top_score < _HEURISTIC_SCORE_RERANK_THRESHOLD
+
+
 def rerank_items(
     *,
     query: str,
@@ -51,8 +68,11 @@ def rerank_items(
     config_or_path: Any,
     text_getter: Callable[[dict[str, Any]], str],
 ) -> tuple[list[dict[str, Any]], str]:
+    if len(items) <= 1 or not _should_rerank(items):
+        return (items, "")
+
     reranker, model = get_evidence_reranker(config_or_path)
-    if reranker is None or len(items) <= 1:
+    if reranker is None:
         return (items, "")
 
     try:
