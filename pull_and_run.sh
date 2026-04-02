@@ -65,6 +65,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_DIR="$ROOT_DIR/.run"
 BACKEND_DIR="$ROOT_DIR/backend"
 BACKEND_VENV="$BACKEND_DIR/.venv"
+BACKEND_ENV_SCRIPT="${BACKEND_ENV_SCRIPT:-/etc/profile.d/rocm-owui.sh}"
 
 BACKEND_PID="$RUN_DIR/backend.pid"
 FRONTEND_PID="$RUN_DIR/frontend.pid"
@@ -382,6 +383,12 @@ start_backend() {
 
   # shellcheck disable=SC1090
   source "$BACKEND_VENV/bin/activate"
+
+  if [[ -f "$BACKEND_ENV_SCRIPT" ]]; then
+    say "Sourcing backend runtime env: $BACKEND_ENV_SCRIPT"
+    # shellcheck disable=SC1090
+    source "$BACKEND_ENV_SCRIPT"
+  fi
 
   say "Upgrading pip/wheel/setuptools…"
   python -m pip install -U pip wheel setuptools

@@ -43,33 +43,28 @@ except ImportError:
 
 DOCKER = os.environ.get("DOCKER", "False").lower() == "true"
 
-# device type embedding models - "cpu" (default), "cuda" (nvidia gpu required) or "mps" (apple silicon) - choosing this right can lead to better performance
+# device type embedding models - "cpu" (default), "cuda" (CUDA or ROCm/HIP), or
+# "mps" (Apple Silicon). Prefer the actual runtime capability over a docker-only flag.
 USE_CUDA = os.environ.get("USE_CUDA_DOCKER", "false")
+DEVICE_TYPE = "cpu"
 
-if USE_CUDA.lower() == "true":
-    try:
-        import torch
+try:
+    import torch
 
-        assert torch.cuda.is_available(), "CUDA not available"
+    if torch.cuda.is_available():
         DEVICE_TYPE = "cuda"
-    except Exception as e:
+    elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
+        DEVICE_TYPE = "mps"
+    elif USE_CUDA.lower() == "true":
+        raise RuntimeError("torch.cuda.is_available() returned False")
+except Exception as e:
+    if USE_CUDA.lower() == "true":
         cuda_error = (
             "Error when testing CUDA but USE_CUDA_DOCKER is true. "
             f"Resetting USE_CUDA_DOCKER to false: {e}"
         )
         os.environ["USE_CUDA_DOCKER"] = "false"
         USE_CUDA = "false"
-        DEVICE_TYPE = "cpu"
-else:
-    DEVICE_TYPE = "cpu"
-
-try:
-    import torch
-
-    if torch.backends.mps.is_available() and torch.backends.mps.is_built():
-        DEVICE_TYPE = "mps"
-except Exception:
-    pass
 
 ####################################
 # LOGGING
