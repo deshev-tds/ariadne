@@ -563,6 +563,10 @@ The path that led here was intentionally incremental.
 6. Use lexical-first retrieval with metadata-aware reranking instead of jumping straight to embedding-heavy complexity.
 7. Validate the whole flow against a live OWUI instance with tool telemetry turned on.
 
+There is now also a field note for the corpus-evidence reranking pilot on the Strix Halo box, including what was tested, what failed, what actually helped, and the exact host setup commands used to get ROCm-backed reranking working without moving OWUI into a toolbox container:
+
+- `docs/rocm-rerank-pilot.md`
+
 That last step matters.
 
 The point was not just to make the tools exist. The point was to prove that a single loaded model could actually:
