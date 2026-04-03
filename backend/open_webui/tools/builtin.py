@@ -260,8 +260,11 @@ async def web_research_strong(
     Use this when evidence is uncertain, time-sensitive, or high-risk, and you need
     stronger provenance before answering. If you already know the domains you trust,
     pass them via `allowed_domains`. This tool returns ranked evidence snippets and
-    citations, not full-page fetches. If the cited snippets look relevant but you still
-    need deeper detail from a specific page, call `fetch_url` on the chosen citation URL.
+    citations, not full-page fetches. When it returns fetched-document excerpts, the full
+    source was inspected server-side and only the most relevant excerpts were kept for the
+    current objective. Treat that as an intentional evidence view, not as a scrape failure.
+    If the cited snippets or excerpts look relevant but you still need broader raw page
+    coverage, call `fetch_url` on the chosen citation URL.
 
     :param query: User question or search objective
     :param allowed_domains: Optional hard domain constraints (1-6)

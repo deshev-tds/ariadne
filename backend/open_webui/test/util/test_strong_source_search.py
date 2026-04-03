@@ -21,6 +21,11 @@ def _make_request(**config_overrides):
         WEB_SEARCH_BRAVE_MIN_INTERVAL_MS=1000,
         WEB_SEARCH_PLANNER_PRIMARY_STOP_SCORE=0.66,
         WEB_SEARCH_PLANNER_MAX_TARGETED_DOMAINS_PER_WAVE=4,
+        WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE=1200,
+        WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP=160,
+        WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS=900,
+        ENABLE_CORPUS_EVIDENCE_RERANKING=False,
+        CORPUS_EVIDENCE_RERANKING_MODEL="BAAI/bge-reranker-v2-m3",
     )
     for key, value in config_overrides.items():
         setattr(config, key, value)
@@ -121,6 +126,7 @@ def test_default_tool_prompt_guides_strong_search_then_fetch_url():
     assert "fetch_url` only after selecting concrete URLs" in template
     assert "snippet-first evidence pass" in template
     assert "use `fetch_url` on the most relevant cited URL" in template
+    assert "full source was inspected server-side" in template
 
 
 def test_web_research_strong_docstring_describes_fetch_url_fallback():
@@ -128,6 +134,7 @@ def test_web_research_strong_docstring_describes_fetch_url_fallback():
 
     assert "ranked evidence snippets and" in doc
     assert "not full-page fetches" in doc
+    assert "full source was inspected server-side" in doc
     assert "call `fetch_url` on the chosen citation URL" in doc
 
 
@@ -563,3 +570,105 @@ async def test_execute_strong_source_search_emits_done_status(monkeypatch):
     assert len(status_events) >= 2
     assert status_events[0]["data"]["done"] is False
     assert status_events[-1]["data"]["done"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_strong_source_search_uses_post_fetch_reranked_excerpts(
+    monkeypatch,
+):
+    request = _make_request(ENABLE_CORPUS_EVIDENCE_RERANKING=True)
+
+    monkeypatch.setattr(
+        retrieval,
+        "build_web_search_plan",
+        lambda *args, **kwargs: _make_plan(time_sensitive=False),
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "search_web",
+        lambda *_args, **_kwargs: [
+            SearchResult(
+                link="https://docs.python.org/3/howto/descriptor.html",
+                title="Descriptor Guide",
+                snippet="Custom validators need to inherit from Validator.",
+            ),
+            SearchResult(
+                link="https://docs.pydantic.dev/latest/concepts/validators/",
+                title="Validators - Pydantic",
+                snippet="Annotated validators, field validators, and model validators.",
+            ),
+        ],
+    )
+
+    def fake_quality(_items, _plan):
+        return {
+            "avg_top_score": 0.58,
+            "trusted_unique_domains": 1,
+            "scored_items": [
+                {
+                    "title": "Descriptor Guide",
+                    "link": "https://docs.python.org/3/howto/descriptor.html",
+                    "snippet": "Custom validators need to inherit from Validator.",
+                    "domain": "docs.python.org",
+                    "quality": 0.58,
+                    "trust": 0.92,
+                },
+                {
+                    "title": "Validators - Pydantic",
+                    "link": "https://docs.pydantic.dev/latest/concepts/validators/",
+                    "snippet": "Annotated validators, field validators, and model validators.",
+                    "domain": "docs.pydantic.dev",
+                    "quality": 0.56,
+                    "trust": 0.55,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(retrieval, "evaluate_signal_quality", fake_quality)
+    monkeypatch.setattr(
+        retrieval,
+        "evaluate_intent_coverage",
+        lambda _items, _plan: {"required": {}, "covered": {}, "complete": True},
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "get_content_from_url",
+        lambda _request, url: (
+            (
+                "This page explains Python descriptors and binding behavior."
+                if "python.org" in url
+                else "Pydantic v2 recommends the Annotated pattern together with Field, "
+                "BeforeValidator, and field_validator for structured validation."
+            ),
+            [],
+        ),
+    )
+
+    def fake_rerank_items(*, query, items, config_or_path, text_getter):
+        ranked = []
+        for item in items:
+            ranked_item = dict(item)
+            ranked_item["rerank_score"] = (
+                0.97 if "Pydantic" in text_getter(item) else 0.21
+            )
+            ranked.append(ranked_item)
+        ranked.sort(key=lambda item: -float(item["rerank_score"]))
+        return (ranked, "BAAI/bge-reranker-v2-m3")
+
+    monkeypatch.setattr(retrieval, "rerank_items", fake_rerank_items)
+
+    payload = await retrieval.execute_strong_source_search(
+        request,
+        query="Find the currently recommended Pydantic v2 pattern for structured validation",
+        allowed_domains=["docs.python.org", "pydantic.dev"],
+        max_queries=2,
+    )
+
+    assert payload["post_fetch_rerank_used"] is True
+    assert payload["post_fetch_reranker_model"] == "BAAI/bge-reranker-v2-m3"
+    assert payload["fetched_url_count"] >= 1
+    assert payload["evidence_view_note"]
+    assert payload["citation_items"][0]["full_document_fetched"] is True
+    assert payload["citation_items"][0]["returned_mode"] == "relevant_excerpt"
+    assert "pydantic" in payload["citation_items"][0]["link"]
+    assert "Annotated pattern" in payload["citation_items"][0]["snippet"]

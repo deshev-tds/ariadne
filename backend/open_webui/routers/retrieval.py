@@ -114,6 +114,10 @@ from open_webui.retrieval.utils import (
     query_doc,
     query_doc_with_hybrid_search,
 )
+from open_webui.retrieval.evidence_reranking import (
+    get_evidence_reranking_settings,
+    rerank_items,
+)
 from open_webui.retrieval.vector.utils import filter_metadata
 from open_webui.utils.misc import (
     calculate_sha256_string,
@@ -597,6 +601,9 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
             "WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS,
             "WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS,
             "WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS,
+            "WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE": request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE,
+            "WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP": request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP,
+            "WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS": request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS,
             "WEB_LOADER_CONCURRENT_REQUESTS": request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
@@ -697,6 +704,9 @@ class WebConfig(BaseModel):
     WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS: Optional[int] = None
     WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS: Optional[int] = None
     WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS: Optional[int] = None
+    WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE: Optional[int] = None
+    WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP: Optional[int] = None
+    WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS: Optional[int] = None
     WEB_LOADER_CONCURRENT_REQUESTS: Optional[int] = None
     WEB_SEARCH_DOMAIN_FILTER_LIST: Optional[List[str]] = []
     BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: Optional[bool] = None
@@ -1427,6 +1437,21 @@ async def update_rag_config(
             if form_data.web.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS is not None
             else request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS
         )
+        request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE = (
+            form_data.web.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE
+            if form_data.web.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE is not None
+            else request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE
+        )
+        request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP = (
+            form_data.web.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP
+            if form_data.web.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP is not None
+            else request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP
+        )
+        request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS = (
+            form_data.web.WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS
+            if form_data.web.WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS is not None
+            else request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS
+        )
         request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS = (
             form_data.web.WEB_LOADER_CONCURRENT_REQUESTS
         )
@@ -1649,6 +1674,9 @@ async def update_rag_config(
             "WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS,
             "WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS,
             "WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS": request.app.state.config.WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS,
+            "WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE": request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE,
+            "WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP": request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP,
+            "WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS": request.app.state.config.WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS,
             "WEB_LOADER_CONCURRENT_REQUESTS": request.app.state.config.WEB_LOADER_CONCURRENT_REQUESTS,
             "WEB_SEARCH_DOMAIN_FILTER_LIST": request.app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST,
             "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
@@ -2840,6 +2868,193 @@ COARSE_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 COARSE_CONFIDENCE_HIGH = 0.75
 CITATION_TRUST_MIN = 0.72
+STRONG_FETCH_RERANK_MAX_URLS = 2
+STRONG_FETCH_RERANK_MAX_CHUNKS_PER_URL = 8
+STRONG_FETCH_RERANK_MAX_EXCERPTS = 4
+DEFAULT_STRONG_FETCH_RERANK_CHUNK_SIZE = 1200
+DEFAULT_STRONG_FETCH_RERANK_CHUNK_OVERLAP = 160
+DEFAULT_STRONG_FETCH_RERANK_EXCERPT_CHARS = 900
+
+
+def _sample_evenly(values: list[str], limit: int) -> list[str]:
+    if limit <= 0 or not values:
+        return []
+    if len(values) <= limit:
+        return values
+    if limit == 1:
+        return [values[0]]
+
+    indices = sorted(
+        {
+            round(position * (len(values) - 1) / (limit - 1))
+            for position in range(limit)
+        }
+    )
+    return [values[index] for index in indices]
+
+
+def _prepare_fetched_excerpt(text: str, excerpt_chars: int) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) > excerpt_chars:
+        return cleaned[:excerpt_chars].rstrip() + "..."
+    return cleaned
+
+
+def _build_post_fetch_citation_items(
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _build_post_fetch_reranked_evidence(
+    *,
+    request: Request,
+    query: str,
+    scored_items: list[dict[str, Any]],
+    plan: WebSearchPlan,
+    max_urls: int,
+) -> tuple[list[dict[str, Any]], list[str], str]:
+    cfg = request.app.state.config
+    reranking_enabled, reranking_model = get_evidence_reranking_settings(cfg)
+    if not reranking_enabled or not reranking_model:
+        return ([], [], "")
+
+    chunk_size = max(
+        256,
+        int(
+            getattr(
+                cfg,
+                "WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE",
+                DEFAULT_STRONG_FETCH_RERANK_CHUNK_SIZE,
+            )
+            or DEFAULT_STRONG_FETCH_RERANK_CHUNK_SIZE
+        ),
+    )
+    chunk_overlap = max(
+        0,
+        int(
+            getattr(
+                cfg,
+                "WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP",
+                DEFAULT_STRONG_FETCH_RERANK_CHUNK_OVERLAP,
+            )
+            or DEFAULT_STRONG_FETCH_RERANK_CHUNK_OVERLAP
+        ),
+    )
+    excerpt_chars = max(
+        240,
+        int(
+            getattr(
+                cfg,
+                "WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS",
+                DEFAULT_STRONG_FETCH_RERANK_EXCERPT_CHARS,
+            )
+            or DEFAULT_STRONG_FETCH_RERANK_EXCERPT_CHARS
+        ),
+    )
+    if chunk_overlap >= chunk_size:
+        chunk_overlap = max(0, chunk_size // 4)
+    candidate_urls: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for item in scored_items:
+        link = str(item.get("link") or "").strip()
+        canonical = canonicalize_url(link) or link
+        if not canonical or canonical in seen_urls:
+            continue
+        seen_urls.add(canonical)
+        candidate_urls.append(item)
+        if len(candidate_urls) >= max_urls:
+            break
+
+    if not candidate_urls:
+        return ([], [], "")
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        length_function=len,
+    )
+
+    candidate_chunks: list[dict[str, Any]] = []
+    fetched_urls: list[str] = []
+
+    for source_rank, item in enumerate(candidate_urls, start=1):
+        link = str(item.get("link") or "").strip()
+        if not link:
+            continue
+        try:
+            content, _docs = get_content_from_url(request, link)
+        except Exception as exc:
+            log.debug("Strong-search post-fetch failed for %s: %s", link, exc)
+            continue
+
+        cleaned_content = re.sub(r"\s+", " ", str(content or "")).strip()
+        if not cleaned_content:
+            continue
+
+        chunks = splitter.split_text(cleaned_content)
+        sampled_chunks = _sample_evenly(
+            [chunk for chunk in chunks if str(chunk or "").strip()],
+            STRONG_FETCH_RERANK_MAX_CHUNKS_PER_URL,
+        )
+        if not sampled_chunks:
+            continue
+
+        fetched_urls.append(link)
+        domain = normalize_domain(item.get("domain") or "")
+        source_type = infer_domain_source_type(domain or "", plan)
+        if source_type == "unknown":
+            source_type = str(item.get("source_type") or "web_search")
+
+        for chunk_index, chunk in enumerate(sampled_chunks, start=1):
+            candidate_chunks.append(
+                {
+                    "title": item.get("title") or link,
+                    "link": link,
+                    "domain": domain,
+                    "source_type": source_type,
+                    "quality": round(float(item.get("quality", 0.0) or 0.0), 4),
+                    "trust": round(float(item.get("trust", 0.0) or 0.0), 4),
+                    "score": float(item.get("quality", 0.0) or 0.0),
+                    "snippet": _prepare_fetched_excerpt(chunk, excerpt_chars),
+                    "full_document_fetched": True,
+                    "returned_mode": "relevant_excerpt",
+                    "fetch_rank": source_rank,
+                    "chunk_index": chunk_index,
+                }
+            )
+
+    if not candidate_chunks:
+        return ([], fetched_urls, "")
+
+    reranked_chunks, reranked_model = rerank_items(
+        query=query,
+        items=candidate_chunks,
+        config_or_path=cfg,
+        text_getter=lambda item: "\n".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("domain") or ""),
+                str(item.get("snippet") or ""),
+            ]
+        ),
+    )
+
+    if not reranked_model:
+        return ([], fetched_urls, "")
+
+    reranked_chunks.sort(
+        key=lambda item: (
+            -float(item.get("rerank_score") or 0.0),
+            -float(item.get("quality") or 0.0),
+            int(item.get("fetch_rank") or 0),
+            int(item.get("chunk_index") or 0),
+        )
+    )
+
+    selected = reranked_chunks[:STRONG_FETCH_RERANK_MAX_EXCERPTS]
+    return (selected, fetched_urls, reranked_model)
 TIME_SCOPE_EVERGREEN = "evergreen"
 TIME_SCOPE_RECENT = "recent"
 TIME_SCOPE_BREAKING = "breaking"
@@ -3416,16 +3631,62 @@ async def execute_strong_source_search(
         combined_intent_coverage = evaluate_intent_coverage(
             combined_quality["scored_items"], plan
         )
-        quality_score = float(combined_quality.get("avg_top_score", 0.0) or 0.0)
-        trusted_domains = int(combined_quality.get("trusted_unique_domains", 0) or 0)
-        coverage_complete = bool(
+        search_quality_score = float(combined_quality.get("avg_top_score", 0.0) or 0.0)
+        search_trusted_domains = int(
+            combined_quality.get("trusted_unique_domains", 0) or 0
+        )
+        search_coverage_complete = bool(
             combined_intent_coverage.get("complete", True)
-            and quality_score >= planner_stop_score
-            and trusted_domains >= 1
+            and search_quality_score >= planner_stop_score
+            and search_trusted_domains >= 1
         )
         items, evidence_items, citation_items = materialize_items(
             combined_quality.get("scored_items", [])
         )
+        fetched_evidence_items: list[dict[str, Any]] = []
+        fetched_urls: list[str] = []
+        post_fetch_reranker_model = ""
+        fetch_max_urls = (
+            STRONG_FETCH_RERANK_MAX_URLS
+            if (
+                normalized_allowed_domains
+                or broader_fallback_used
+                or not search_coverage_complete
+            )
+            else 1
+        )
+        (
+            fetched_evidence_items,
+            fetched_urls,
+            post_fetch_reranker_model,
+        ) = _build_post_fetch_reranked_evidence(
+            request=request,
+            query=cleaned_query,
+            scored_items=combined_quality.get("scored_items", []),
+            plan=plan,
+            max_urls=fetch_max_urls,
+        )
+        post_fetch_rerank_used = bool(fetched_evidence_items)
+        if post_fetch_rerank_used:
+            evidence_items = fetched_evidence_items
+            citation_items = _build_post_fetch_citation_items(fetched_evidence_items)
+            fetched_quality = evaluate_signal_quality(fetched_evidence_items, plan)
+            fetched_coverage = evaluate_intent_coverage(
+                fetched_quality["scored_items"], plan
+            )
+            quality_score = float(fetched_quality.get("avg_top_score", 0.0) or 0.0)
+            trusted_domains = int(
+                fetched_quality.get("trusted_unique_domains", 0) or 0
+            )
+            coverage_complete = bool(
+                fetched_coverage.get("complete", True)
+                and quality_score >= planner_stop_score
+                and trusted_domains >= 1
+            )
+        else:
+            quality_score = search_quality_score
+            trusted_domains = search_trusted_domains
+            coverage_complete = search_coverage_complete
 
         payload = {
             "phase": "completed",
@@ -3445,12 +3706,22 @@ async def execute_strong_source_search(
             "citation_count": len(citation_items),
             "coverage_complete": coverage_complete,
             "quality_score": round(quality_score, 4),
+            "search_quality_score": round(search_quality_score, 4),
             "targeted_phase_executed": targeted_phase_executed,
             "local_phase_executed": targeted_phase_executed,
             "brave_fallback_used": broader_fallback_used,
             "fallback_reason": fallback_reason,
             "topic": plan.topic,
             "trusted_domains": trusted_domains,
+            "post_fetch_rerank_used": post_fetch_rerank_used,
+            "post_fetch_reranker_model": post_fetch_reranker_model,
+            "fetched_urls": fetched_urls,
+            "fetched_url_count": len(fetched_urls),
+            "evidence_view_note": (
+                "Full cited documents were fetched server-side. Only the most relevant excerpts are shown here to preserve context budget. Treat this as an intentional evidence view, not as a scrape failure. Use fetch_url on a cited URL only if broader raw document coverage is still required."
+                if post_fetch_rerank_used
+                else ""
+            ),
             "message": "",
             "category_options": [],
             "domain_options": [],
@@ -3467,6 +3738,9 @@ async def execute_strong_source_search(
             "candidate_count": len(items),
             "evidence_count": len(evidence_items),
             "citation_count": len(citation_items),
+            "post_fetch_rerank_used": post_fetch_rerank_used,
+            "fetched_url_count": len(fetched_urls),
+            "reranker_model": post_fetch_reranker_model,
             "selected_time_scope": normalized_time_scope,
             "effective_recency_days": effective_recency_days,
             "recency_policy_reason": recency_policy_reason,
@@ -3479,7 +3753,9 @@ async def execute_strong_source_search(
             {
                 "action": "web_search",
                 "description": (
-                    "Focused search completed with broader fallback"
+                    "Focused search completed with fetched-document rerank"
+                    if post_fetch_rerank_used and not broader_fallback_used
+                    else "Focused search completed with broader fallback"
                     if broader_fallback_used
                     else "Focused search completed"
                 ),

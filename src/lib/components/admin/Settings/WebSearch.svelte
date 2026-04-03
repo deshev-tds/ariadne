@@ -154,7 +154,10 @@
 				'WEB_SEARCH_EVIDENCE_JUDGE_CONFIDENCE',
 				'WEB_SEARCH_EVIDENCE_JUDGE_TIMEOUT_MS',
 				'WEB_SEARCH_EVIDENCE_JUDGE_MAX_COMPLETION_TOKENS',
-				'WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS'
+				'WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS',
+				'WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE',
+				'WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP',
+				'WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS'
 			];
 		for (const field of plannerNumericFields) {
 			if (webConfig[field] !== '' && webConfig[field] !== null && webConfig[field] !== undefined) {
@@ -1051,6 +1054,52 @@
 									'Enter domains separated by commas (e.g., example.com,site.org,!excludedsite.com)'
 								)}
 								bind:value={webConfig.WEB_SEARCH_DOMAIN_FILTER_LIST}
+							/>
+						</div>
+
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="flex gap-2">
+								<div class="w-full">
+									<div class="self-center text-xs font-medium mb-1">
+										<Tooltip
+											content={$i18n.t(
+												'Chunk size used when web_research_strong fetches a cited page server-side and reranks excerpts.'
+											)}
+											placement="top-start"
+										>
+											{$i18n.t('Strong Fetch Chunk Size')}
+										</Tooltip>
+									</div>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										type="number"
+										min="256"
+										bind:value={webConfig.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE}
+									/>
+								</div>
+								<div class="w-full">
+									<div class="self-center text-xs font-medium mb-1">
+										{$i18n.t('Strong Fetch Chunk Overlap')}
+									</div>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										type="number"
+										min="0"
+										bind:value={webConfig.WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP}
+									/>
+								</div>
+							</div>
+						</div>
+
+						<div class="mb-2.5 flex w-full flex-col">
+							<div class="self-center text-xs font-medium mb-1">
+								{$i18n.t('Strong Fetch Excerpt Chars')}
+							</div>
+							<input
+								class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="number"
+								min="240"
+								bind:value={webConfig.WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS}
 							/>
 						</div>
 

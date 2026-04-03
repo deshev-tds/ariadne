@@ -2236,6 +2236,8 @@ Your task is to choose and return the correct tool(s) from the list of available
 - For uncertain, time-sensitive, high-risk, or verification-heavy queries, prefer `web_research_strong` when available before generic web tools.
 - Use `search_web` for broad discovery and `fetch_url` only after selecting concrete URLs.
 - Treat `web_research_strong` as a snippet-first evidence pass. If its citations look promising but still do not contain enough detail, use `fetch_url` on the most relevant cited URL rather than repeating broad search.
+- When `web_research_strong` returns fetched-document excerpts, assume the full source was inspected server-side and the excerpts were selected intentionally for the current objective. Do not switch to broad search or generic fetch just because the result is excerpted.
+- Escalate from `web_research_strong` only when the evidence is clearly irrelevant, the needed section is still missing, or the task explicitly requires broader raw document coverage.
 
 - If no tools match the query, return an empty array: 
    {
@@ -3702,6 +3704,24 @@ WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS = PersistentConfig(
     "WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS",
     "rag.web.search.evidence_saturation.judge_max_input_chars",
     int(os.getenv("WEB_SEARCH_EVIDENCE_JUDGE_MAX_INPUT_CHARS", "16000")),
+)
+
+WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE = PersistentConfig(
+    "WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE",
+    "rag.web.search.strong_fetch_rerank.chunk_size",
+    int(os.getenv("WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_SIZE", "1200")),
+)
+
+WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP = PersistentConfig(
+    "WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP",
+    "rag.web.search.strong_fetch_rerank.chunk_overlap",
+    int(os.getenv("WEB_SEARCH_STRONG_FETCH_RERANK_CHUNK_OVERLAP", "160")),
+)
+
+WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS = PersistentConfig(
+    "WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS",
+    "rag.web.search.strong_fetch_rerank.excerpt_chars",
+    int(os.getenv("WEB_SEARCH_STRONG_FETCH_RERANK_EXCERPT_CHARS", "900")),
 )
 
 
