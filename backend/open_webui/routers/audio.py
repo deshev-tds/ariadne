@@ -75,8 +75,8 @@ log = logging.getLogger(__name__)
 SPEECH_CACHE_DIR = CACHE_DIR / "audio" / "speech"
 SPEECH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-KOKORO_DEFAULT_MODEL = "backend/models/kokoro-v0_19.onnx"
-KOKORO_DEFAULT_VOICES = "backend/models/voices.bin"
+KOKORO_DEFAULT_MODEL = "backend/models/kokoro-v1.0.onnx"
+KOKORO_DEFAULT_VOICES = "backend/models/voices-v1.0.bin"
 KOKORO_DEFAULT_VOICE = "bm_fable"
 KOKORO_DEFAULT_LANG = "en-us"
 KOKORO_DEFAULT_SPEED = 1.0

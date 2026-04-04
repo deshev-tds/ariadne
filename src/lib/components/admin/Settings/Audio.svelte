@@ -358,6 +358,87 @@
 		toast.success($i18n.t('Preset removed locally. Save settings to apply it.'));
 	};
 
+	const setTTSDefaultsForEngine = (engine: string) => {
+		if (engine === 'openai') {
+			TTS_VOICE = 'alloy';
+			TTS_MODEL = 'tts-1';
+			return;
+		}
+
+		if (engine === 'kokoro_onnx') {
+			if (['', 'alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer', 'auto'].includes(TTS_VOICE)) {
+				TTS_VOICE = 'bm_fable';
+			}
+
+			if (
+				!TTS_MODEL ||
+				['tts-1', 'tts-1-hd', 'k2-fsa/OmniVoice'].includes(TTS_MODEL)
+			) {
+				TTS_MODEL = 'backend/models/kokoro-v1.0.onnx';
+			}
+
+			try {
+				const parsed = TTS_OPENAI_PARAMS ? JSON.parse(TTS_OPENAI_PARAMS) : {};
+				const nextParams = isPlainObject(parsed) ? { ...parsed } : {};
+
+				delete nextParams.device_map;
+				delete nextParams.dtype;
+				delete nextParams.attn_implementation;
+				delete nextParams.num_step;
+				delete nextParams.duration;
+				delete nextParams.voices;
+
+				if (!nextParams.voices_path) {
+					nextParams.voices_path = 'backend/models/voices-v1.0.bin';
+				}
+				if (!nextParams.lang) {
+					nextParams.lang = 'en-us';
+				}
+				if (nextParams.speed === undefined) {
+					nextParams.speed = 1.0;
+				}
+
+				TTS_OPENAI_PARAMS = JSON.stringify(nextParams, null, 2);
+			} catch {
+				TTS_OPENAI_PARAMS = JSON.stringify(
+					{
+						voices_path: 'backend/models/voices-v1.0.bin',
+						lang: 'en-us',
+						speed: 1.0
+					},
+					null,
+					2
+				);
+			}
+
+			return;
+		}
+
+		if (engine === 'omnivoice') {
+			if (!TTS_VOICE || ['alloy', 'bm_fable'].includes(TTS_VOICE)) {
+				TTS_VOICE = 'auto';
+			}
+			if (
+				!TTS_MODEL ||
+				['tts-1', 'tts-1-hd', 'backend/models/kokoro-v1.0.onnx'].includes(TTS_MODEL)
+			) {
+				TTS_MODEL = 'k2-fsa/OmniVoice';
+			}
+			if (!TTS_OPENAI_PARAMS.trim()) {
+				syncTTSParamsFromOmniVoiceEditor();
+			}
+			try {
+				syncOmniVoiceEditorFromParams(TTS_OPENAI_PARAMS ? JSON.parse(TTS_OPENAI_PARAMS) : {});
+			} catch {
+				syncOmniVoiceEditorFromParams({});
+			}
+			return;
+		}
+
+		TTS_VOICE = '';
+		TTS_MODEL = '';
+	};
+
 	const getModels = async () => {
 		if (TTS_ENGINE === '') {
 			models = [];
@@ -879,46 +960,10 @@
 							bind:value={TTS_ENGINE}
 							placeholder={$i18n.t('Select a mode')}
 							on:change={async (e) => {
+								setTTSDefaultsForEngine(e.target?.value ?? '');
 								await updateConfigHandler();
 								await getVoices();
 								await getModels();
-
-								if (e.target?.value === 'openai') {
-									TTS_VOICE = 'alloy';
-									TTS_MODEL = 'tts-1';
-								} else if (e.target?.value === 'kokoro_onnx') {
-									if (
-										['', 'alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].includes(TTS_VOICE)
-									) {
-										TTS_VOICE = 'bm_fable';
-									}
-									if (['', 'tts-1', 'tts-1-hd'].includes(TTS_MODEL)) {
-										TTS_MODEL = 'backend/models/kokoro-v0_19.onnx';
-									}
-								} else if (e.target?.value === 'omnivoice') {
-									if (!TTS_VOICE || ['alloy', 'bm_fable'].includes(TTS_VOICE)) {
-										TTS_VOICE = 'auto';
-									}
-									if (
-										!TTS_MODEL ||
-										['tts-1', 'tts-1-hd', 'backend/models/kokoro-v0_19.onnx'].includes(TTS_MODEL)
-									) {
-										TTS_MODEL = 'k2-fsa/OmniVoice';
-									}
-									if (!TTS_OPENAI_PARAMS.trim()) {
-										syncTTSParamsFromOmniVoiceEditor();
-									}
-									try {
-										syncOmniVoiceEditorFromParams(
-											TTS_OPENAI_PARAMS ? JSON.parse(TTS_OPENAI_PARAMS) : {}
-										);
-									} catch {
-										syncOmniVoiceEditorFromParams({});
-									}
-								} else {
-									TTS_VOICE = '';
-									TTS_MODEL = '';
-								}
 							}}
 						>
 							<option value="">{$i18n.t('Web API')}</option>
@@ -1137,7 +1182,7 @@
 											list="tts-model-list"
 											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 											bind:value={TTS_MODEL}
-											placeholder={$i18n.t('Path to kokoro-v0_19.onnx')}
+											placeholder={$i18n.t('Path to kokoro-v1.0.onnx')}
 										/>
 
 										<datalist id="tts-model-list">
@@ -1159,7 +1204,7 @@
 											className="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 											bind:value={TTS_OPENAI_PARAMS}
 											placeholder={$i18n.t(
-												'JSON: {"voices_path":"backend/models/voices.bin","lang":"en-us","speed":1.0}'
+												'JSON: {"voices_path":"backend/models/voices-v1.0.bin","lang":"en-us","speed":1.0}'
 											)}
 											minSize={100}
 										/>
