@@ -5,6 +5,11 @@ export class AudioQueue {
 		this.current = null;
 		this.id = null;
 
+		// Call overlay temporarily mutes the shared audio element. Read-aloud uses the
+		// same element and must always restore audible playback.
+		this.audio.muted = false;
+		this.audio.volume = 1;
+
 		this._onEnded = () => this.next();
 		this.audio.addEventListener('ended', this._onEnded);
 
@@ -39,6 +44,7 @@ export class AudioQueue {
 		if (!this.current && this.queue.length > 0) {
 			this.next();
 		} else {
+			this.audio.muted = false;
 			this.audio.play();
 		}
 	}
@@ -47,6 +53,8 @@ export class AudioQueue {
 		this.current = this.queue.shift();
 		if (this.current) {
 			this.audio.src = this.current;
+			this.audio.muted = false;
+			this.audio.volume = 1;
 			this.audio.play();
 			console.log('Playing audio URL:', this.current);
 		} else {
