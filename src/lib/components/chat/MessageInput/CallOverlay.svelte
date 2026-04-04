@@ -500,6 +500,7 @@
 						localStorage.token,
 						getVoiceId(),
 						content,
+						undefined,
 						voicePreference?.speed ?? undefined
 					).catch((error) => {
 						console.error(error);

@@ -80,6 +80,35 @@ KOKORO_DEFAULT_VOICES = "backend/models/voices.bin"
 KOKORO_DEFAULT_VOICE = "bm_fable"
 KOKORO_DEFAULT_LANG = "en-us"
 KOKORO_DEFAULT_SPEED = 1.0
+OMNIVOICE_DEFAULT_MODEL = "k2-fsa/OmniVoice"
+OMNIVOICE_DEFAULT_SAMPLE_RATE = 24000
+OMNIVOICE_DEFAULT_VOICES = {
+    "auto": {"name": "Auto"},
+    "female_neutral": {
+        "name": "Female Neutral",
+        "instruct": "female, young adult, moderate pitch"
+    },
+    "female_warm": {
+        "name": "Female Warm",
+        "instruct": "female, young adult, low pitch"
+    },
+    "female_british": {
+        "name": "Female British",
+        "instruct": "female, young adult, moderate pitch, british accent"
+    },
+    "male_neutral": {
+        "name": "Male Neutral",
+        "instruct": "male, young adult, moderate pitch"
+    },
+    "male_warm": {
+        "name": "Male Warm",
+        "instruct": "male, young adult, low pitch"
+    },
+    "male_british": {
+        "name": "Male British",
+        "instruct": "male, young adult, moderate pitch, british accent"
+    },
+}
 KOKORO_OFFICIAL_RELEASE_VOICES = (
     "af_alloy",
     "af_aoede",
@@ -219,6 +248,25 @@ def _resolve_existing_path(raw_path: Optional[str], fallback_path: str) -> Path:
     )
 
 
+def _resolve_optional_existing_path(raw_path: Optional[str]) -> Optional[Path]:
+    if not raw_path:
+        return None
+
+    raw = Path(raw_path).expanduser()
+    candidates = [raw] if raw.is_absolute() else [
+        (OPEN_WEBUI_DIR.parent.parent / raw).resolve(),
+        (OPEN_WEBUI_DIR.parent / raw).resolve(),
+    ]
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    raise FileNotFoundError(
+        f"Unable to locate file. Checked: {', '.join(str(path) for path in candidates)}"
+    )
+
+
 @lru_cache(maxsize=4)
 def get_kokoro_synthesiser(model_path: str, voices_path: str):
     from kokoro_onnx import Kokoro
@@ -232,6 +280,123 @@ def get_kokoro_voice_names(voices_path: str) -> list[str]:
 
     with np.load(voices_path, allow_pickle=False) as style_vectors:
         return [str(name) for name in style_vectors.files]
+
+
+@lru_cache(maxsize=4)
+def get_omnivoice_model(
+    model_id: str,
+    device_map: str,
+    dtype_name: str,
+    attn_implementation: str = "",
+):
+    import torch
+    from omnivoice import OmniVoice
+
+    dtype = getattr(torch, dtype_name, None)
+    if dtype is None:
+        raise ValueError(f"Unsupported OmniVoice dtype: {dtype_name}")
+
+    model_kwargs = {"device_map": device_map, "dtype": dtype}
+    if attn_implementation:
+        model_kwargs["attn_implementation"] = attn_implementation
+
+    return OmniVoice.from_pretrained(model_id, **model_kwargs)
+
+
+def _get_omnivoice_runtime_options(params: dict) -> tuple[str, str, str]:
+    import torch
+
+    requested_device = str(params.get("device_map", "")).strip()
+    requested_dtype = str(params.get("dtype", "")).strip()
+    requested_attn = str(params.get("attn_implementation", "")).strip()
+
+    if requested_device:
+        device_map = requested_device
+    elif torch.cuda.is_available():
+        device_map = "cuda:0"
+    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        device_map = "mps"
+    else:
+        device_map = "cpu"
+
+    if requested_dtype:
+        dtype_name = requested_dtype
+    elif device_map.startswith("cuda") or device_map == "mps":
+        dtype_name = "float16"
+    else:
+        dtype_name = "float32"
+
+    if requested_attn:
+        attn_implementation = requested_attn
+    elif device_map == "mps":
+        # OmniVoice on Apple Metal produced stationary harmonic buzz in local tests
+        # with the default attention path; eager mode generated speech-like output.
+        attn_implementation = "eager"
+    else:
+        attn_implementation = ""
+
+    return device_map, dtype_name, attn_implementation
+
+
+def _normalize_omnivoice_voice_entry(voice_id: str, value) -> dict:
+    if isinstance(value, str):
+        return {
+            "id": voice_id,
+            "name": voice_id.replace("_", " ").title(),
+            "instruct": value,
+        }
+
+    if isinstance(value, dict):
+        return {
+            "id": voice_id,
+            "name": str(value.get("name") or voice_id.replace("_", " ").title()),
+            **{
+                key: value[key]
+                for key in (
+                    "instruct",
+                    "ref_audio",
+                    "ref_text",
+                    "speed",
+                    "num_step",
+                    "duration",
+                )
+                if value.get(key) is not None
+            },
+        }
+
+    return {
+        "id": voice_id,
+        "name": voice_id.replace("_", " ").title(),
+    }
+
+
+def get_omnivoice_voice_registry(request: Request) -> dict[str, dict]:
+    params = _coerce_openai_params(request.app.state.config.TTS_OPENAI_PARAMS)
+    configured_voices = params.get("voices")
+
+    if isinstance(configured_voices, dict) and configured_voices:
+        registry = {
+            str(voice_id): _normalize_omnivoice_voice_entry(str(voice_id), value)
+            for voice_id, value in configured_voices.items()
+        }
+    elif isinstance(configured_voices, list) and configured_voices:
+        registry = {
+            str(voice_id): _normalize_omnivoice_voice_entry(str(voice_id), {})
+            for voice_id in configured_voices
+        }
+    else:
+        registry = {
+            voice_id: {"id": voice_id, **config}
+            for voice_id, config in OMNIVOICE_DEFAULT_VOICES.items()
+        }
+
+    configured_voice = request.app.state.config.TTS_VOICE
+    if configured_voice and configured_voice not in registry:
+        registry[configured_voice] = _normalize_omnivoice_voice_entry(
+            configured_voice, {}
+        )
+
+    return registry
 
 
 ##########################################
@@ -481,7 +646,9 @@ async def speech(request: Request, user=Depends(get_verified_user)):
     ).hexdigest()
 
     speech_ext = (
-        "wav" if request.app.state.config.TTS_ENGINE == "kokoro_onnx" else "mp3"
+        "wav"
+        if request.app.state.config.TTS_ENGINE in {"kokoro_onnx", "omnivoice"}
+        else "mp3"
     )
     file_path = SPEECH_CACHE_DIR.joinpath(f"{name}.{speech_ext}")
     file_body_path = SPEECH_CACHE_DIR.joinpath(f"{name}.json")
@@ -790,6 +957,121 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         except Exception as e:
             log.exception(e)
             raise HTTPException(status_code=500, detail=f"Kokoro TTS failed: {e}")
+    elif request.app.state.config.TTS_ENGINE == "omnivoice":
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except Exception as e:
+            log.exception(e)
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+        text = payload.get("input", "")
+        if not text:
+            raise HTTPException(status_code=400, detail="Missing `input` text")
+
+        params = _coerce_openai_params(request.app.state.config.TTS_OPENAI_PARAMS)
+        voice_registry = get_omnivoice_voice_registry(request)
+        voice_id = (
+            payload.get("voice")
+            or request.app.state.config.TTS_VOICE
+            or params.get("voice")
+            or "auto"
+        )
+
+        voice_config = voice_registry.get(str(voice_id))
+        if voice_config is None:
+            raise HTTPException(status_code=400, detail="Invalid voice id")
+
+        model_id = (
+            payload.get("model")
+            or request.app.state.config.TTS_MODEL
+            or params.get("model")
+            or OMNIVOICE_DEFAULT_MODEL
+        )
+
+        try:
+            speed = float(
+                payload.get(
+                    "speed",
+                    voice_config.get("speed", params.get("speed", 1.0)),
+                )
+            )
+        except (TypeError, ValueError):
+            speed = 1.0
+
+        try:
+            num_step_raw = voice_config.get("num_step", params.get("num_step"))
+            num_step = int(num_step_raw) if num_step_raw is not None else None
+        except (TypeError, ValueError):
+            num_step = None
+
+        try:
+            duration_raw = voice_config.get("duration", params.get("duration"))
+            duration = float(duration_raw) if duration_raw is not None else None
+        except (TypeError, ValueError):
+            duration = None
+
+        try:
+            device_map, dtype_name, attn_implementation = (
+                _get_omnivoice_runtime_options(params)
+            )
+            model = get_omnivoice_model(
+                model_id, device_map, dtype_name, attn_implementation
+            )
+
+            generation_kwargs = {
+                "text": text,
+                "speed": speed,
+            }
+
+            instruct = voice_config.get("instruct")
+            if instruct:
+                generation_kwargs["instruct"] = str(instruct)
+
+            ref_audio = _resolve_optional_existing_path(voice_config.get("ref_audio"))
+            if ref_audio is not None:
+                generation_kwargs["ref_audio"] = str(ref_audio)
+
+            ref_text = voice_config.get("ref_text")
+            if ref_text:
+                generation_kwargs["ref_text"] = str(ref_text)
+
+            if num_step is not None:
+                generation_kwargs["num_step"] = num_step
+
+            if duration is not None:
+                generation_kwargs["duration"] = duration
+
+            audio = await asyncio.to_thread(model.generate, **generation_kwargs)
+
+            import numpy as np
+            import soundfile as sf
+
+            if not audio:
+                raise RuntimeError("OmniVoice returned no audio")
+
+            samples = audio[0].detach().cpu().squeeze(0).numpy()
+            sf.write(file_path, np.asarray(samples), samplerate=OMNIVOICE_DEFAULT_SAMPLE_RATE)
+
+            async with aiofiles.open(file_body_path, "w") as f:
+                await f.write(json.dumps(payload))
+
+            return FileResponse(file_path, media_type="audio/wav")
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "OmniVoice is not installed. Install `omnivoice` plus a compatible "
+                    "PyTorch/torchaudio runtime in the backend environment."
+                ),
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"OmniVoice reference audio not found: {e}",
+            )
+        except Exception as e:
+            log.exception(e)
+            raise HTTPException(status_code=500, detail=f"OmniVoice TTS failed: {e}")
 
 
 def transcription_handler(request, file_path, metadata, user=None):
@@ -1518,6 +1800,9 @@ def get_available_models(request: Request) -> list[dict]:
     elif request.app.state.config.TTS_ENGINE == "kokoro_onnx":
         configured_model = request.app.state.config.TTS_MODEL or KOKORO_DEFAULT_MODEL
         available_models = [{"id": configured_model}]
+    elif request.app.state.config.TTS_ENGINE == "omnivoice":
+        configured_model = request.app.state.config.TTS_MODEL or OMNIVOICE_DEFAULT_MODEL
+        available_models = [{"id": configured_model}]
     return available_models
 
 
@@ -1627,6 +1912,11 @@ def get_available_voices(request) -> dict:
         configured_voice = request.app.state.config.TTS_VOICE
         if configured_voice:
             available_voices[configured_voice] = configured_voice
+    elif request.app.state.config.TTS_ENGINE == "omnivoice":
+        available_voices = {
+            voice_id: str(voice_config.get("name") or voice_id)
+            for voice_id, voice_config in get_omnivoice_voice_registry(request).items()
+        }
 
     return available_voices
 

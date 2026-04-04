@@ -124,19 +124,41 @@
 				TTSModelProgress = null;
 				TTSModelLoading = true;
 
-				const model_id = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+				try {
+					const model_id = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+					const dtype =
+						typeof TTSEngineConfig?.dtype === 'string' ? TTSEngineConfig.dtype : 'fp32';
+					const devices = !!navigator?.gpu ? ['webgpu', 'wasm'] : ['wasm'];
 
-				const { KokoroTTS } = await import('kokoro-js');
-				TTSModel = await KokoroTTS.from_pretrained(model_id, {
-					dtype: TTSEngineConfig.dtype, // Options: "fp32", "fp16", "q8", "q4", "q4f16"
-					device: !!navigator?.gpu ? 'webgpu' : 'wasm', // Detect WebGPU
-					progress_callback: (e) => {
-						TTSModelProgress = e;
-						console.log(e);
+					const { KokoroTTS } = await import('kokoro-js');
+
+					let lastError = null;
+					for (const device of devices) {
+						try {
+							TTSModel = await KokoroTTS.from_pretrained(model_id, {
+								dtype, // Options: "fp32", "fp16", "q8", "q4", "q4f16"
+								device,
+								progress_callback: (e) => {
+									TTSModelProgress = e;
+									console.log(e);
+								}
+							});
+							break;
+						} catch (error) {
+							lastError = error;
+							console.warn(`Kokoro settings init failed on ${device}, trying fallback`, error);
+						}
 					}
-				});
 
-				await getVoices();
+					if (!TTSModel) {
+						toast.error(`${lastError}`);
+						throw lastError;
+					}
+
+					await getVoices();
+				} finally {
+					TTSModelLoading = false;
+				}
 
 				// const rawAudio = await tts.generate(inputText, {
 				// 	// Use `tts.list_voices()` to list all available voices

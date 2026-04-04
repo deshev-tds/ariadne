@@ -524,6 +524,13 @@
 									if (['', 'tts-1', 'tts-1-hd'].includes(TTS_MODEL)) {
 										TTS_MODEL = 'backend/models/kokoro-v0_19.onnx';
 									}
+								} else if (e.target?.value === 'omnivoice') {
+									if (!TTS_VOICE || ['alloy', 'bm_fable'].includes(TTS_VOICE)) {
+										TTS_VOICE = 'auto';
+									}
+									if (!TTS_MODEL || ['tts-1', 'tts-1-hd', 'backend/models/kokoro-v0_19.onnx'].includes(TTS_MODEL)) {
+										TTS_MODEL = 'k2-fsa/OmniVoice';
+									}
 								} else {
 									TTS_VOICE = '';
 									TTS_MODEL = '';
@@ -534,6 +541,7 @@
 							<option value="transformers">{$i18n.t('Transformers')} ({$i18n.t('Local')})</option>
 							<option value="openai">{$i18n.t('OpenAI')}</option>
 							<option value="kokoro_onnx">{$i18n.t('Kokoro ONNX')} ({$i18n.t('Local')})</option>
+							<option value="omnivoice">{$i18n.t('OmniVoice')} ({$i18n.t('Local')})</option>
 							<option value="elevenlabs">{$i18n.t('ElevenLabs')}</option>
 							<option value="azure">{$i18n.t('Azure AI Speech')}</option>
 						</select>
@@ -778,6 +786,72 @@
 							<div class="mt-2">
 								{$i18n.t(
 									'Kokoro uses `model` and `voice` above. Optional JSON keys: `voices_path`, `lang`, `speed`, `voice`, and `voices`.'
+								)}
+							</div>
+						</div>
+					{:else if TTS_ENGINE === 'omnivoice'}
+						<div class=" flex gap-2">
+							<div class="w-full">
+								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Voice')}</div>
+								<div class="flex w-full">
+									<div class="flex-1">
+										<input
+											list="voice-list"
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											bind:value={TTS_VOICE}
+											placeholder={$i18n.t('Select a voice')}
+										/>
+
+										<datalist id="voice-list">
+											{#each voices as voice}
+												<option value={voice.id}>{voice.name}</option>
+											{/each}
+										</datalist>
+									</div>
+								</div>
+							</div>
+
+							<div class="w-full">
+								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('Model ID')}</div>
+								<div class="flex w-full">
+									<div class="flex-1">
+										<input
+											list="tts-model-list"
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											bind:value={TTS_MODEL}
+											placeholder="k2-fsa/OmniVoice"
+										/>
+
+										<datalist id="tts-model-list">
+											{#each models as model}
+												<option value={model.id} class="bg-gray-50 dark:bg-gray-700" />
+											{/each}
+										</datalist>
+									</div>
+								</div>
+							</div>
+						</div>
+
+						<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
+							<div class="w-full">
+								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('Additional Parameters')}</div>
+								<div class="flex w-full">
+									<div class="flex-1">
+										<Textarea
+											className="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											bind:value={TTS_OPENAI_PARAMS}
+											placeholder={$i18n.t(
+												'JSON: {"voices":{"male_warm":{"name":"Male Warm","instruct":"male, young adult, low pitch"},"nika":{"name":"Nika","ref_audio":"backend/models/nika.wav","ref_text":"..."}},"device_map":"cuda:0","dtype":"float16","num_step":16}'
+											)}
+											minSize={120}
+										/>
+									</div>
+								</div>
+							</div>
+
+							<div class="mt-2">
+								{$i18n.t(
+									'OmniVoice uses `model` and `voice` above. Optional JSON keys: `voices`, `device_map`, `dtype`, `attn_implementation`, `speed`, `num_step`, and `duration`. Voice entries may define `name`, `instruct`, `ref_audio`, `ref_text`, `speed`, `num_step`, and `duration`.'
 								)}
 							</div>
 						</div>

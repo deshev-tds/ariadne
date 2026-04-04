@@ -2121,9 +2121,9 @@
 																	// If the user has not initialized the TTS worker, initialize it
 																	if (!$TTSWorker) {
 																		await TTSWorker.set(
-																			new KokoroWorker({
-																				dtype: $settings.audio?.tts?.engineConfig?.dtype ?? 'fp32'
-																			})
+																			new KokoroWorker(
+																				$settings.audio?.tts?.engineConfig?.dtype ?? 'fp32'
+																			)
 																		);
 
 																		await $TTSWorker.init();

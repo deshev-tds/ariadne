@@ -117,7 +117,8 @@
 		elevenlabs: 'ElevenLabs',
 		azure: 'Azure AI Speech',
 		transformers: 'Transformers',
-		kokoro_onnx: 'Kokoro ONNX'
+		kokoro_onnx: 'Kokoro ONNX',
+		omnivoice: 'OmniVoice'
 	};
 
 	let toolIds: string[] = [];

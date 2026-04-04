@@ -309,9 +309,7 @@
 			if ($settings.audio?.tts?.engine === 'browser-kokoro') {
 				if (!$TTSWorker) {
 					await TTSWorker.set(
-						new KokoroWorker({
-							dtype: $settings.audio?.tts?.engineConfig?.dtype ?? 'fp32'
-						})
+						new KokoroWorker($settings.audio?.tts?.engineConfig?.dtype ?? 'fp32')
 					);
 
 					await $TTSWorker.init();
@@ -342,6 +340,7 @@
 						localStorage.token,
 						voiceId,
 						sentence,
+						undefined,
 						voicePreference?.speed ?? undefined
 					).catch((error) => {
 						console.error(error);

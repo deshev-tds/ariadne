@@ -1,9 +1,15 @@
 import WorkerInstance from '$lib/workers/kokoro.worker?worker';
 
+type KokoroWorkerOptions = {
+	dtype?: string;
+	preferWebGPU?: boolean;
+};
+
 export class KokoroWorker {
 	private worker: Worker | null = null;
 	private initialized: boolean = false;
 	private dtype: string;
+	private preferWebGPU: boolean;
 	private requestQueue: Array<{
 		text: string;
 		voice: string;
@@ -12,8 +18,15 @@ export class KokoroWorker {
 	}> = [];
 	private processing = false; // To track if a request is being processed
 
-	constructor(dtype: string = 'fp32') {
-		this.dtype = dtype;
+	constructor(options: string | KokoroWorkerOptions = 'fp32') {
+		if (typeof options === 'string') {
+			this.dtype = options;
+			this.preferWebGPU = true;
+			return;
+		}
+
+		this.dtype = typeof options?.dtype === 'string' ? options.dtype : 'fp32';
+		this.preferWebGPU = options?.preferWebGPU ?? true;
 	}
 
 	public async init() {
@@ -52,7 +65,7 @@ export class KokoroWorker {
 		return new Promise<void>((resolve, reject) => {
 			this.worker!.postMessage({
 				type: 'init',
-				payload: { dtype: this.dtype }
+				payload: { dtype: this.dtype, preferWebGPU: this.preferWebGPU }
 			});
 
 			const handleMessage = (event: MessageEvent) => {
