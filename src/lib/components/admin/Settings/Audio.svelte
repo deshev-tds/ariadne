@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { createEventDispatcher, onMount, getContext } from 'svelte';
+	import { createEventDispatcher, onDestroy, onMount, getContext } from 'svelte';
 	const dispatch = createEventDispatcher();
 
 	import { getBackendConfig } from '$lib/apis';
@@ -8,7 +8,8 @@
 		getAudioConfig,
 		updateAudioConfig,
 		getModels as _getModels,
-		getVoices as _getVoices
+		getVoices as _getVoices,
+		synthesizeOpenAISpeech
 	} from '$lib/apis/audio';
 	import { config, settings } from '$lib/stores';
 
@@ -56,9 +57,306 @@
 
 	let STT_WHISPER_MODEL_LOADING = false;
 
+	type OmniVoicePreset = {
+		name?: string;
+		instruct?: string;
+		ref_audio?: string;
+		ref_text?: string;
+		speed?: number;
+		num_step?: number;
+		duration?: number;
+	};
+
+	type OmniVoiceParams = {
+		voices?: Record<string, OmniVoicePreset>;
+		device_map?: string;
+		dtype?: string;
+		attn_implementation?: string;
+		speed?: number;
+		num_step?: number;
+		duration?: number;
+	};
+
+	const DEFAULT_OMNIVOICE_PREVIEW_TEXT =
+		'This is a short OmniVoice preview so you can hear how the current tuning sounds.';
+
+	let omniVoiceVoices: Record<string, OmniVoicePreset> = {};
+	let omniVoiceDeviceMap = 'cuda:0';
+	let omniVoiceDtype = 'float16';
+	let omniVoiceAttnImplementation = '';
+	let omniVoiceSpeed = '1';
+	let omniVoiceNumStep = '4';
+	let omniVoiceDuration = '';
+	let omniVoiceExtraParams = '{}';
+
+	let omniVoicePresetId = '';
+	let omniVoicePresetName = '';
+	let omniVoicePresetInstruct = '';
+	let omniVoicePresetRefAudio = '';
+	let omniVoicePresetRefText = '';
+	let omniVoicePresetSpeed = '';
+	let omniVoicePresetNumStep = '';
+	let omniVoicePresetDuration = '';
+
+	let omniVoicePreviewText = DEFAULT_OMNIVOICE_PREVIEW_TEXT;
+	let omniVoicePreviewLoading = false;
+	let omniVoicePreviewAudio: HTMLAudioElement | null = null;
+	let omniVoicePreviewUrl = '';
+
 	// eslint-disable-next-line no-undef
 	let voices: SpeechSynthesisVoice[] = [];
 	let models: Awaited<ReturnType<typeof _getModels>>['models'] = [];
+
+	const titleCaseId = (value: string) =>
+		value
+			.replace(/[_-]+/g, ' ')
+			.trim()
+			.replace(/\b\w/g, (char) => char.toUpperCase());
+
+	const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+		typeof value === 'object' && value !== null && !Array.isArray(value);
+
+	const parseOptionalNumber = (value: string, kind: 'float' | 'int' = 'float') => {
+		const normalized = value.trim();
+		if (!normalized) {
+			return undefined;
+		}
+
+		const parsed = kind === 'int' ? parseInt(normalized, 10) : parseFloat(normalized);
+		return Number.isFinite(parsed) ? parsed : undefined;
+	};
+
+	const toInputString = (value: unknown) =>
+		typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+
+	const cleanupOmniVoicePreviewAudio = () => {
+		omniVoicePreviewAudio?.pause();
+		omniVoicePreviewAudio = null;
+
+		if (omniVoicePreviewUrl) {
+			URL.revokeObjectURL(omniVoicePreviewUrl);
+			omniVoicePreviewUrl = '';
+		}
+	};
+
+	const loadOmniVoicePresetDraft = (presetId: string) => {
+		const preset = omniVoiceVoices[presetId] ?? {};
+
+		omniVoicePresetId = presetId;
+		omniVoicePresetName = typeof preset.name === 'string' ? preset.name : titleCaseId(presetId);
+		omniVoicePresetInstruct = typeof preset.instruct === 'string' ? preset.instruct : '';
+		omniVoicePresetRefAudio = typeof preset.ref_audio === 'string' ? preset.ref_audio : '';
+		omniVoicePresetRefText = typeof preset.ref_text === 'string' ? preset.ref_text : '';
+		omniVoicePresetSpeed = toInputString(preset.speed);
+		omniVoicePresetNumStep = toInputString(preset.num_step);
+		omniVoicePresetDuration = toInputString(preset.duration);
+	};
+
+	const syncOmniVoiceEditorFromParams = (params: unknown) => {
+		const normalized = isPlainObject(params) ? params : {};
+		const voicesValue = isPlainObject(normalized.voices) ? normalized.voices : {};
+
+		omniVoiceVoices = Object.fromEntries(
+			Object.entries(voicesValue).map(([id, value]) => [
+				id,
+				isPlainObject(value) ? (value as OmniVoicePreset) : {}
+			])
+		);
+
+		omniVoiceDeviceMap =
+			typeof normalized.device_map === 'string' && normalized.device_map.trim()
+				? normalized.device_map
+				: 'cuda:0';
+		omniVoiceDtype =
+			typeof normalized.dtype === 'string' && normalized.dtype.trim()
+				? normalized.dtype
+				: 'float16';
+		omniVoiceAttnImplementation =
+			typeof normalized.attn_implementation === 'string' ? normalized.attn_implementation : '';
+		omniVoiceSpeed = toInputString(normalized.speed) || '1';
+		omniVoiceNumStep = toInputString(normalized.num_step) || '4';
+		omniVoiceDuration = toInputString(normalized.duration);
+		omniVoiceExtraParams = JSON.stringify(
+			Object.fromEntries(
+				Object.entries(normalized).filter(
+					([key]) =>
+						![
+							'voices',
+							'device_map',
+							'dtype',
+							'attn_implementation',
+							'speed',
+							'num_step',
+							'duration'
+						].includes(key)
+				)
+			),
+			null,
+			2
+		);
+
+		const preferredPresetId =
+			(TTS_VOICE && omniVoiceVoices[TTS_VOICE] ? TTS_VOICE : '') ||
+			Object.keys(omniVoiceVoices)[0] ||
+			'auto';
+
+		loadOmniVoicePresetDraft(preferredPresetId);
+	};
+
+	const buildOmniVoiceParams = (): OmniVoiceParams => {
+		let extraParams: Record<string, unknown> = {};
+		try {
+			extraParams = omniVoiceExtraParams.trim() ? JSON.parse(omniVoiceExtraParams) : {};
+		} catch (error) {
+			throw new Error($i18n.t('Invalid JSON format for OmniVoice advanced parameters'));
+		}
+
+		if (!isPlainObject(extraParams)) {
+			throw new Error($i18n.t('OmniVoice advanced parameters must be a JSON object'));
+		}
+
+		const params: OmniVoiceParams = {
+			...(extraParams as OmniVoiceParams),
+			voices: structuredClone(omniVoiceVoices)
+		};
+
+		if (omniVoiceDeviceMap.trim()) {
+			params.device_map = omniVoiceDeviceMap.trim();
+		}
+
+		if (omniVoiceDtype.trim()) {
+			params.dtype = omniVoiceDtype.trim();
+		}
+
+		if (omniVoiceAttnImplementation.trim()) {
+			params.attn_implementation = omniVoiceAttnImplementation.trim();
+		}
+
+		const speed = parseOptionalNumber(omniVoiceSpeed);
+		if (speed !== undefined) {
+			params.speed = speed;
+		}
+
+		const numStep = parseOptionalNumber(omniVoiceNumStep, 'int');
+		if (numStep !== undefined) {
+			params.num_step = numStep;
+		}
+
+		const duration = parseOptionalNumber(omniVoiceDuration);
+		if (duration !== undefined) {
+			params.duration = duration;
+		}
+
+		if (!Object.keys(params.voices ?? {}).length) {
+			delete params.voices;
+		}
+
+		return params;
+	};
+
+	const syncTTSParamsFromOmniVoiceEditor = () => {
+		TTS_OPENAI_PARAMS = JSON.stringify(buildOmniVoiceParams(), null, 2);
+	};
+
+	const saveOmniVoicePreset = (showToast = true) => {
+		const presetId = omniVoicePresetId.trim();
+		if (!presetId) {
+			if (
+				omniVoicePresetName.trim() ||
+				omniVoicePresetInstruct.trim() ||
+				omniVoicePresetRefAudio.trim() ||
+				omniVoicePresetRefText.trim() ||
+				omniVoicePresetSpeed.trim() ||
+				omniVoicePresetNumStep.trim() ||
+				omniVoicePresetDuration.trim()
+			) {
+				toast.error($i18n.t('Preset ID is required'));
+				return false;
+			}
+
+			return true;
+		}
+
+		const preset: OmniVoicePreset = {};
+
+		if (omniVoicePresetName.trim()) {
+			preset.name = omniVoicePresetName.trim();
+		}
+		if (omniVoicePresetInstruct.trim()) {
+			preset.instruct = omniVoicePresetInstruct.trim();
+		}
+		if (omniVoicePresetRefAudio.trim()) {
+			preset.ref_audio = omniVoicePresetRefAudio.trim();
+		}
+		if (omniVoicePresetRefText.trim()) {
+			preset.ref_text = omniVoicePresetRefText.trim();
+		}
+
+		const speed = parseOptionalNumber(omniVoicePresetSpeed);
+		if (speed !== undefined) {
+			preset.speed = speed;
+		}
+
+		const numStep = parseOptionalNumber(omniVoicePresetNumStep, 'int');
+		if (numStep !== undefined) {
+			preset.num_step = numStep;
+		}
+
+		const duration = parseOptionalNumber(omniVoicePresetDuration);
+		if (duration !== undefined) {
+			preset.duration = duration;
+		}
+
+		omniVoiceVoices = {
+			...omniVoiceVoices,
+			[presetId]: preset
+		};
+		TTS_VOICE = presetId;
+		loadOmniVoicePresetDraft(presetId);
+		syncTTSParamsFromOmniVoiceEditor();
+		if (showToast) {
+			toast.success($i18n.t('Preset saved locally. Save settings to apply it.'));
+		}
+		return true;
+	};
+
+	const newOmniVoicePreset = () => {
+		omniVoicePresetId = '';
+		omniVoicePresetName = '';
+		omniVoicePresetInstruct = '';
+		omniVoicePresetRefAudio = '';
+		omniVoicePresetRefText = '';
+		omniVoicePresetSpeed = '';
+		omniVoicePresetNumStep = '';
+		omniVoicePresetDuration = '';
+	};
+
+	const deleteOmniVoicePreset = () => {
+		const presetId = omniVoicePresetId.trim();
+		if (!presetId || !omniVoiceVoices[presetId]) {
+			return;
+		}
+
+		const nextVoices = { ...omniVoiceVoices };
+		delete nextVoices[presetId];
+		omniVoiceVoices = nextVoices;
+
+		const nextPresetId = Object.keys(nextVoices)[0] || 'auto';
+		if (TTS_VOICE === presetId) {
+			TTS_VOICE = nextPresetId;
+		}
+
+		if (nextPresetId !== 'auto') {
+			loadOmniVoicePresetDraft(nextPresetId);
+		} else {
+			newOmniVoicePreset();
+			omniVoicePresetId = 'auto';
+			omniVoicePresetName = 'Auto';
+		}
+
+		syncTTSParamsFromOmniVoiceEditor();
+		toast.success($i18n.t('Preset removed locally. Save settings to apply it.'));
+	};
 
 	const getModels = async () => {
 		if (TTS_ENGINE === '') {
@@ -103,6 +401,19 @@
 	};
 
 	const updateConfigHandler = async () => {
+		if (TTS_ENGINE === 'omnivoice') {
+			const presetSaved = saveOmniVoicePreset(false);
+			if (!presetSaved) {
+				return false;
+			}
+			try {
+				syncTTSParamsFromOmniVoiceEditor();
+			} catch (error) {
+				toast.error(`${error}`);
+				return false;
+			}
+		}
+
 		let openaiParams = {};
 		try {
 			openaiParams = TTS_OPENAI_PARAMS ? JSON.parse(TTS_OPENAI_PARAMS) : {};
@@ -148,6 +459,59 @@
 		if (res) {
 			saveHandler();
 			config.set(await getBackendConfig());
+			await getVoices();
+			await getModels();
+			return true;
+		}
+
+		return false;
+	};
+
+	const previewOmniVoiceHandler = async () => {
+		if (TTS_ENGINE !== 'omnivoice') {
+			return;
+		}
+
+		const previewText = omniVoicePreviewText.trim();
+		if (!previewText) {
+			toast.error($i18n.t('Preview text is required'));
+			return;
+		}
+
+		const saved = await updateConfigHandler();
+		if (!saved) {
+			return;
+		}
+
+		omniVoicePreviewLoading = true;
+
+		try {
+			cleanupOmniVoicePreviewAudio();
+
+			const res = await synthesizeOpenAISpeech(
+				localStorage.token,
+				TTS_VOICE || omniVoicePresetId || 'auto',
+				previewText
+			);
+
+			if (!res) {
+				return;
+			}
+
+			const blob = await res.blob();
+			const url = URL.createObjectURL(blob);
+			const audio = new Audio(url);
+			omniVoicePreviewUrl = url;
+			audio.onended = cleanupOmniVoicePreviewAudio;
+			audio.onerror = cleanupOmniVoicePreviewAudio;
+
+			omniVoicePreviewAudio = audio;
+			await audio.play();
+		} catch (error) {
+			console.error(error);
+			toast.error(`${error}`);
+		} finally {
+			omniVoicePreviewLoading = false;
 		}
 	};
 
@@ -170,6 +534,7 @@
 			TTS_ENGINE = res.tts.ENGINE;
 			TTS_MODEL = res.tts.MODEL;
 			TTS_VOICE = res.tts.VOICE;
+			syncOmniVoiceEditorFromParams(res?.tts?.OPENAI_PARAMS);
 
 			TTS_SPLIT_ON = res.tts.SPLIT_ON || TTS_RESPONSE_SPLIT.PUNCTUATION;
 
@@ -197,6 +562,10 @@
 
 		await getVoices();
 		await getModels();
+	});
+
+	onDestroy(() => {
+		cleanupOmniVoicePreviewAudio();
 	});
 </script>
 
@@ -518,7 +887,9 @@
 									TTS_VOICE = 'alloy';
 									TTS_MODEL = 'tts-1';
 								} else if (e.target?.value === 'kokoro_onnx') {
-									if (['', 'alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].includes(TTS_VOICE)) {
+									if (
+										['', 'alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].includes(TTS_VOICE)
+									) {
 										TTS_VOICE = 'bm_fable';
 									}
 									if (['', 'tts-1', 'tts-1-hd'].includes(TTS_MODEL)) {
@@ -528,8 +899,21 @@
 									if (!TTS_VOICE || ['alloy', 'bm_fable'].includes(TTS_VOICE)) {
 										TTS_VOICE = 'auto';
 									}
-									if (!TTS_MODEL || ['tts-1', 'tts-1-hd', 'backend/models/kokoro-v0_19.onnx'].includes(TTS_MODEL)) {
+									if (
+										!TTS_MODEL ||
+										['tts-1', 'tts-1-hd', 'backend/models/kokoro-v0_19.onnx'].includes(TTS_MODEL)
+									) {
 										TTS_MODEL = 'k2-fsa/OmniVoice';
+									}
+									if (!TTS_OPENAI_PARAMS.trim()) {
+										syncTTSParamsFromOmniVoiceEditor();
+									}
+									try {
+										syncOmniVoiceEditorFromParams(
+											TTS_OPENAI_PARAMS ? JSON.parse(TTS_OPENAI_PARAMS) : {}
+										);
+									} catch {
+										syncOmniVoiceEditorFromParams({});
 									}
 								} else {
 									TTS_VOICE = '';
@@ -800,6 +1184,11 @@
 											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 											bind:value={TTS_VOICE}
 											placeholder={$i18n.t('Select a voice')}
+											on:change={() => {
+												if (omniVoiceVoices[TTS_VOICE]) {
+													loadOmniVoicePresetDraft(TTS_VOICE);
+												}
+											}}
 										/>
 
 										<datalist id="voice-list">
@@ -832,26 +1221,187 @@
 							</div>
 						</div>
 
-						<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
-							<div class="w-full">
-								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('Additional Parameters')}</div>
-								<div class="flex w-full">
-									<div class="flex-1">
-										<Textarea
-											className="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-											bind:value={TTS_OPENAI_PARAMS}
-											placeholder={$i18n.t(
-												'JSON: {"voices":{"male_warm":{"name":"Male Warm","instruct":"male, young adult, low pitch"},"nika":{"name":"Nika","ref_audio":"backend/models/nika.wav","ref_text":"..."}},"device_map":"cuda:0","dtype":"float16","num_step":16}'
-											)}
-											minSize={120}
-										/>
+						<div class="mt-3 space-y-3">
+							<div>
+								<div class="mb-1.5 text-xs font-medium">{$i18n.t('Runtime Tuning')}</div>
+								<div class="grid grid-cols-2 gap-2">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoiceDeviceMap}
+										placeholder="cuda:0"
+										on:input={syncTTSParamsFromOmniVoiceEditor}
+									/>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoiceDtype}
+										placeholder="float16"
+										on:input={syncTTSParamsFromOmniVoiceEditor}
+									/>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoiceAttnImplementation}
+										placeholder={$i18n.t('Attention impl (optional)')}
+										on:input={syncTTSParamsFromOmniVoiceEditor}
+									/>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoiceSpeed}
+										placeholder={$i18n.t('Default speed')}
+										on:input={syncTTSParamsFromOmniVoiceEditor}
+									/>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoiceNumStep}
+										placeholder={$i18n.t('Default num_step')}
+										on:input={syncTTSParamsFromOmniVoiceEditor}
+									/>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoiceDuration}
+										placeholder={$i18n.t('Default duration')}
+										on:input={syncTTSParamsFromOmniVoiceEditor}
+									/>
+								</div>
+							</div>
+
+							<div>
+								<div class="mb-1.5 text-xs font-medium">{$i18n.t('Voice Preset')}</div>
+								<div class="flex gap-2">
+									<input
+										list="omnivoice-preset-list"
+										class="flex-1 rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoicePresetId}
+										placeholder={$i18n.t('Preset ID')}
+										on:change={() => {
+											if (omniVoiceVoices[omniVoicePresetId]) {
+												loadOmniVoicePresetDraft(omniVoicePresetId);
+												TTS_VOICE = omniVoicePresetId;
+											}
+										}}
+									/>
+									<datalist id="omnivoice-preset-list">
+										{#each Object.entries(omniVoiceVoices) as [presetId, preset]}
+											<option value={presetId}>{preset?.name ?? titleCaseId(presetId)}</option>
+										{/each}
+									</datalist>
+
+									<button
+										class="px-2.5 bg-gray-50 hover:bg-gray-200 text-gray-800 dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-gray-100 rounded-lg transition"
+										type="button"
+										on:click={newOmniVoicePreset}
+									>
+										{$i18n.t('New')}
+									</button>
+									<button
+										class="px-2.5 bg-gray-50 hover:bg-gray-200 text-gray-800 dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-gray-100 rounded-lg transition"
+										type="button"
+										on:click={saveOmniVoicePreset}
+									>
+										{$i18n.t('Save Preset')}
+									</button>
+									<button
+										class="px-2.5 bg-gray-50 hover:bg-gray-200 text-gray-800 dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-gray-100 rounded-lg transition"
+										type="button"
+										on:click={deleteOmniVoicePreset}
+										disabled={!omniVoiceVoices[omniVoicePresetId]}
+									>
+										{$i18n.t('Delete')}
+									</button>
+								</div>
+								<div class="mt-2 grid grid-cols-2 gap-2">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoicePresetName}
+										placeholder={$i18n.t('Preset name')}
+									/>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoicePresetRefAudio}
+										placeholder={$i18n.t('Reference audio path')}
+									/>
+								</div>
+								<div class="mt-2">
+									<Textarea
+										className="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoicePresetInstruct}
+										placeholder={$i18n.t('Free-form voice instructions')}
+										minSize={90}
+									/>
+								</div>
+								<div class="mt-2">
+									<Textarea
+										className="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoicePresetRefText}
+										placeholder={$i18n.t('Reference transcript for cloned voices')}
+										minSize={90}
+									/>
+								</div>
+								<div class="mt-2 grid grid-cols-3 gap-2">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoicePresetSpeed}
+										placeholder={$i18n.t('Preset speed')}
+									/>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoicePresetNumStep}
+										placeholder={$i18n.t('Preset num_step')}
+									/>
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={omniVoicePresetDuration}
+										placeholder={$i18n.t('Preset duration')}
+									/>
+								</div>
+							</div>
+
+							<div>
+								<div class="mb-1.5 text-xs font-medium">{$i18n.t('Preview Text')}</div>
+								<Textarea
+									className="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									bind:value={omniVoicePreviewText}
+									placeholder={$i18n.t('Enter a sample text to preview this preset')}
+									minSize={110}
+								/>
+								<div class="mt-2 flex items-center gap-2">
+									<button
+										class="px-2.5 py-2 bg-gray-50 hover:bg-gray-200 text-gray-800 dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-gray-100 rounded-lg transition disabled:opacity-60"
+										type="button"
+										on:click={previewOmniVoiceHandler}
+										disabled={omniVoicePreviewLoading}
+									>
+										{#if omniVoicePreviewLoading}
+											{$i18n.t('Saving & Previewing')}
+										{:else}
+											{$i18n.t('Save & Preview')}
+										{/if}
+									</button>
+									<div class="text-xs text-gray-400 dark:text-gray-500">
+										{$i18n.t('Preview uses the saved backend settings, not unsaved draft fields.')}
 									</div>
 								</div>
 							</div>
 
-							<div class="mt-2">
+							<div>
+								<div class="mb-1.5 text-xs font-medium">
+									{$i18n.t('Advanced JSON Overrides')}
+								</div>
+								<Textarea
+									className="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 font-mono dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									bind:value={omniVoiceExtraParams}
+									placeholder={$i18n.t('Optional JSON object for OmniVoice parameters not exposed above')}
+									minSize={120}
+								/>
+								<div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
+									{$i18n.t(
+										'Use this for unsupported OmniVoice options. Exposed fields above win if the same key appears in both places.'
+									)}
+								</div>
+							</div>
+
+							<div class="text-xs text-gray-400 dark:text-gray-500">
 								{$i18n.t(
-									'OmniVoice uses `model` and `voice` above. Optional JSON keys: `voices`, `device_map`, `dtype`, `attn_implementation`, `speed`, `num_step`, and `duration`. Voice entries may define `name`, `instruct`, `ref_audio`, `ref_text`, `speed`, `num_step`, and `duration`.'
+									'OmniVoice tuning in this panel is inference-time only. Use presets to store `instruct`, reference audio/text, and per-preset overrides; use Save & Preview to hear the saved result immediately.'
 								)}
 							</div>
 						</div>
