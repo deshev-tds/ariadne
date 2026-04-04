@@ -197,9 +197,26 @@ def set_faster_whisper_model(model: str, auto_update: bool = False):
     if model:
         from faster_whisper import WhisperModel
 
+        whisper_device = "cpu"
+        if DEVICE_TYPE == "cuda":
+            try:
+                import torch
+
+                # faster-whisper/ctranslate2 expects NVIDIA CUDA here; on ROCm/HIP
+                # hosts `torch.cuda.is_available()` is also true, but the runtime is
+                # incompatible with ctranslate2's CUDA backend.
+                if getattr(torch.version, "hip", None) is None:
+                    whisper_device = "cuda"
+                else:
+                    log.info(
+                        "Detected ROCm/HIP runtime; forcing faster-whisper to CPU"
+                    )
+            except Exception:
+                whisper_device = "cuda"
+
         faster_whisper_kwargs = {
             "model_size_or_path": model,
-            "device": DEVICE_TYPE if DEVICE_TYPE and DEVICE_TYPE == "cuda" else "cpu",
+            "device": whisper_device,
             "compute_type": WHISPER_COMPUTE_TYPE,
             "download_root": WHISPER_MODEL_DIR,
             "local_files_only": not auto_update,
