@@ -8,6 +8,9 @@
 		getNewsCategories,
 		getNewsConfig,
 		getNewsSourceRegistry,
+		getLatestNewsBriefing,
+		getLatestNewsSnapshot,
+		getNewsThread,
 		playLatestNews,
 		runNewsDaily,
 		runNewsHourly,
@@ -51,6 +54,10 @@
 	let categoryValidation = null;
 	let sourceSemanticHash = '';
 	let categorySemanticHash = '';
+	let latestSnapshot = null;
+	let latestBriefing = null;
+	let selectedThread = null;
+	let selectedThreadId = '';
 	let busy = false;
 	let workerBusy = false;
 
@@ -69,6 +76,23 @@
 		categoriesRaw = JSON.stringify(categories, null, 2);
 	};
 
+	const loadLatestOutputs = async () => {
+		const [snapshotRes, briefingRes] = await Promise.all([
+			getLatestNewsSnapshot(localStorage.token),
+			getLatestNewsBriefing(localStorage.token)
+		]);
+		latestSnapshot = snapshotRes?.snapshot ?? null;
+		latestBriefing = briefingRes?.briefing ?? null;
+		if (selectedThreadId) {
+			try {
+				const threadRes = await getNewsThread(localStorage.token, selectedThreadId);
+				selectedThread = threadRes ?? null;
+			} catch {
+				selectedThread = null;
+			}
+		}
+	};
+
 	const load = async () => {
 		busy = true;
 		try {
@@ -84,6 +108,7 @@
 			categoryValidation = categoryRes?.validation ?? null;
 			sourceSemanticHash = sourceRes?.semantic_hash ?? '';
 			categorySemanticHash = categoryRes?.semantic_hash ?? '';
+			await loadLatestOutputs();
 			refreshRawBuffers();
 		} catch (e) {
 			toast.error(`${$i18n.t('Failed to load news settings')}: ${e}`);
@@ -138,12 +163,23 @@
 			categoryValidation = categoryRes?.validation ?? categoryValidation;
 			sourceSemanticHash = sourceRes?.semantic_hash ?? sourceSemanticHash;
 			categorySemanticHash = categoryRes?.semantic_hash ?? categorySemanticHash;
+			await loadLatestOutputs();
 			refreshRawBuffers();
 			saveHandler();
 		} catch (e) {
 			toast.error(`${$i18n.t('Failed to save news settings')}: ${e}`);
 		} finally {
 			busy = false;
+		}
+	};
+
+	const inspectThread = async (threadId: string) => {
+		selectedThreadId = threadId;
+		try {
+			selectedThread = await getNewsThread(localStorage.token, threadId);
+		} catch (e) {
+			toast.error(`${$i18n.t('Failed to load thread details')}: ${e}`);
+			selectedThread = null;
 		}
 	};
 
@@ -212,6 +248,7 @@
 				await playLatestNews(localStorage.token);
 				toast.success($i18n.t('Playback started'));
 			}
+			await loadLatestOutputs();
 		} catch (e) {
 			toast.error(`${$i18n.t('News worker action failed')}: ${e}`);
 		} finally {
@@ -334,6 +371,98 @@
 							{$i18n.t('Play Latest')}
 						</button>
 					</div>
+				</div>
+			</div>
+
+			<div>
+				<div class="mb-3">
+					<div class="mt-0.5 mb-2.5 text-base font-medium">{$i18n.t('Latest Output')}</div>
+					<hr class="border-gray-100/30 dark:border-gray-850/30 my-2" />
+					<div class="flex flex-wrap gap-2 mb-3">
+						<button
+							class="px-3 py-2 rounded-xl bg-gray-100 dark:bg-gray-800"
+							type="button"
+							disabled={busy}
+							on:click={loadLatestOutputs}
+						>
+							{$i18n.t('Refresh Latest Artifacts')}
+						</button>
+					</div>
+
+					<div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+						<div class="rounded-2xl border border-gray-100 dark:border-gray-800 p-3 space-y-2">
+							<div class="text-xs font-medium">{$i18n.t('Latest Snapshot')}</div>
+							{#if latestSnapshot}
+								<div class="text-xs text-gray-500 dark:text-gray-400">
+									<div>ID: <code>{latestSnapshot.snapshot_id}</code></div>
+									<div>Status: {latestSnapshot.status}</div>
+									<div>Stories: {latestSnapshot.stats?.story_candidate_count ?? 0}</div>
+									<div>Summarized: {latestSnapshot.stats?.summarized_story_count ?? 0}</div>
+									<div>Pending retry: {latestSnapshot.stats?.pending_retry_story_count ?? 0}</div>
+									<div>Unstable: {latestSnapshot.stats?.unstable_thread_story_count ?? 0}</div>
+									<div>Pending split: {latestSnapshot.stats?.pending_split_story_count ?? 0}</div>
+								</div>
+							{:else}
+								<div class="text-xs text-gray-500 dark:text-gray-400">{$i18n.t('No snapshot yet')}</div>
+							{/if}
+						</div>
+
+						<div class="rounded-2xl border border-gray-100 dark:border-gray-800 p-3 space-y-2">
+							<div class="text-xs font-medium">{$i18n.t('Latest Briefing')}</div>
+							{#if latestBriefing}
+								<div class="text-xs text-gray-500 dark:text-gray-400">
+									<div>Date: {latestBriefing.date}</div>
+									<div>Snapshot: <code>{latestBriefing.snapshot_id}</code></div>
+									<div>Selected stories: {latestBriefing.selected_stories?.length ?? 0}</div>
+									<div>Audio: <code>{latestBriefing.audio_path}</code></div>
+								</div>
+								<div class="text-xs whitespace-pre-wrap rounded-xl bg-gray-50 dark:bg-gray-900 p-3">
+									{latestBriefing.script}
+								</div>
+							{:else}
+								<div class="text-xs text-gray-500 dark:text-gray-400">{$i18n.t('No briefing yet')}</div>
+							{/if}
+						</div>
+					</div>
+
+					{#if latestBriefing?.selected_stories?.length}
+						<div class="mt-3 space-y-2">
+							<div class="text-xs font-medium">{$i18n.t('Selected Stories')}</div>
+							{#each latestBriefing.selected_stories as story}
+								<div class="rounded-2xl border border-gray-100 dark:border-gray-800 p-3 space-y-1">
+									<div class="flex flex-wrap items-center gap-2 justify-between">
+										<div class="text-xs font-medium">{story.title}</div>
+										{#if story.thread_id}
+											<button
+												class="text-xs text-blue-600 dark:text-blue-400"
+												type="button"
+												on:click={() => inspectThread(story.thread_id)}
+											>
+												{story.thread_id}
+											</button>
+										{/if}
+									</div>
+									<div class="text-xs text-gray-500 dark:text-gray-400">
+										{story.thread_state ?? 'stable'} · tension {story.thread_tension_score ?? 0}
+									</div>
+									<div class="text-xs">{story.what_happened}</div>
+									<div class="text-xs text-gray-500 dark:text-gray-400">{story.why_it_matters}</div>
+								</div>
+							{/each}
+						</div>
+					{/if}
+
+					{#if selectedThread?.thread}
+						<div class="mt-3 rounded-2xl border border-gray-100 dark:border-gray-800 p-3 space-y-2">
+							<div class="text-xs font-medium">{$i18n.t('Thread Details')}</div>
+							<div class="text-xs text-gray-500 dark:text-gray-400">
+								<div>ID: <code>{selectedThread.thread.thread_id}</code></div>
+								<div>State: {selectedThread.thread.state ?? 'stable'}</div>
+								<div>Tension: {selectedThread.thread.tension_score ?? 0}</div>
+								<div>Recent stories: {(selectedThread.thread.recent_story_candidate_ids ?? []).join(', ')}</div>
+							</div>
+						</div>
+					{/if}
 				</div>
 			</div>
 

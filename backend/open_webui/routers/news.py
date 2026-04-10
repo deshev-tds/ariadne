@@ -10,7 +10,9 @@ from open_webui.retrieval.news_lane import (
     default_news_category_config,
     default_news_source_registry,
     discover_and_fetch_news,
+    load_latest_briefing,
     load_latest_closed_snapshot,
+    load_news_thread_view,
     load_news_category_config,
     load_news_source_registry,
     news_category_config_semantic_hash,
@@ -209,6 +211,33 @@ async def update_news_categories(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.DEFAULT(exc),
         )
+
+
+@router.get("/latest-snapshot")
+async def get_latest_news_snapshot(request: Request, user=Depends(get_admin_user)):
+    return {
+        "status": True,
+        "snapshot": load_latest_closed_snapshot(request.app.state.config),
+    }
+
+
+@router.get("/latest-briefing")
+async def get_latest_news_briefing(request: Request, user=Depends(get_admin_user)):
+    return {
+        "status": True,
+        "briefing": load_latest_briefing(request.app.state.config),
+    }
+
+
+@router.get("/threads/{thread_id}")
+async def get_news_thread(thread_id: str, request: Request, user=Depends(get_admin_user)):
+    payload = load_news_thread_view(thread_id, config_or_path=request.app.state.config)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown news thread: {thread_id}",
+        )
+    return {"status": True, **payload}
 
 
 @router.post("/worker/run-hourly")

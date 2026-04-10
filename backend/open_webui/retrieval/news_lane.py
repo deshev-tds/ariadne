@@ -35,6 +35,16 @@ NEWS_PREFERRED_SOURCE_BONUS_CAP = 0.08
 DEFAULT_NEWS_MODEL_CONNECT_TIMEOUT_SECONDS = 10
 DEFAULT_NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS = 300
 DEFAULT_NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = 300
+NEWS_STORY_SUMMARY_PROMPT_VERSION = "news-story-summary-v2"
+NEWS_THREAD_LEDGER_VERSION = 1
+NEWS_HOURLY_SUMMARY_MAX_STORIES = 16
+NEWS_DAILY_CATCHUP_MAX_STORIES = 8
+NEWS_SUMMARY_IMMEDIATE_RETRY_LIMIT = 1
+NEWS_SUMMARY_FAILURE_WINDOW = 3
+NEWS_THREAD_PENDING_SPLIT_THRESHOLD = 0.9
+NEWS_THREAD_UNSTABLE_THRESHOLD = 0.45
+NEWS_THREAD_UNSTABLE_PENALTY = 0.15
+NEWS_THREAD_PENDING_SPLIT_PENALTY = 0.35
 NEWS_SUPPORTED_CLAIM_KINDS = (
     "count",
     "status",
@@ -228,6 +238,13 @@ def _normalize_text(value: Any) -> str:
 
 def _normalize_slug(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
 
 
 def _normalize_token_set(values: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
@@ -709,6 +726,18 @@ def resolve_news_roots(config_or_path: Any = None) -> NewsRoots:
     )
 
 
+def _thread_ledger_path(corpus_root: Path) -> Path:
+    return corpus_root / "thread_ledger.json"
+
+
+def _snapshot_dir(corpus_root: Path, snapshot_id: str) -> Path:
+    return corpus_root / "snapshots" / snapshot_id
+
+
+def _story_summaries_path(corpus_root: Path, snapshot_id: str) -> Path:
+    return _snapshot_dir(corpus_root, snapshot_id) / "story_summaries.json"
+
+
 def _article_dir(article_store_root: Path, article_id: str) -> Path:
     return article_store_root / "articles" / article_id
 
@@ -758,6 +787,28 @@ def _list_article_ids(article_store_root: Path) -> list[str]:
     if not articles_root.exists():
         return []
     return sorted(path.name for path in articles_root.iterdir() if path.is_dir())
+
+
+def _load_thread_ledger(corpus_root: Path) -> dict[str, Any]:
+    path = _thread_ledger_path(corpus_root)
+    if not path.exists():
+        return {"version": NEWS_THREAD_LEDGER_VERSION, "threads": []}
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return {"version": NEWS_THREAD_LEDGER_VERSION, "threads": []}
+    threads = payload.get("threads")
+    return {
+        "version": int(payload.get("version") or NEWS_THREAD_LEDGER_VERSION),
+        "threads": threads if isinstance(threads, list) else [],
+    }
+
+
+def _save_thread_ledger(corpus_root: Path, payload: dict[str, Any]) -> None:
+    normalized = {
+        "version": NEWS_THREAD_LEDGER_VERSION,
+        "threads": list(payload.get("threads") or []),
+    }
+    _write_json(_thread_ledger_path(corpus_root), normalized)
 
 
 def _discover_seed_requests(source: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1221,16 +1272,42 @@ def _build_story_hints(article: dict[str, Any], domain_scores: dict[str, float])
     }
 
 
+def _heuristic_article_summary(article: dict[str, Any], spans: list[dict[str, Any]]) -> str:
+    excerpt = _normalize_text(article.get("excerpt"))
+    if excerpt:
+        return excerpt[:320]
+    if spans:
+        return _normalize_text(spans[0].get("verbatim_text"))[:320]
+    return _normalize_text(article.get("title"))[:320]
+
+
 def _analyze_article_heuristic(article: dict[str, Any]) -> dict[str, Any]:
     spans = _build_evidence_spans(article)
     domain_scores = _domain_scores(article)
     text_window = f"{article.get('title', '')} {article.get('excerpt', '')} {article.get('raw_text_md', '')[:2500]}".lower()
     needs_context = any(term in text_window for term in NEWS_CONTEXT_TERMS)
+    entities = _extract_entities(
+        " ".join(
+            [
+                article.get("title", ""),
+                article.get("excerpt", ""),
+                article.get("raw_text_md", "")[:1200],
+            ]
+        )
+    )
     return {
         "article_id": article["article_id"],
+        "article_summary": _heuristic_article_summary(article, spans),
         "evidence_spans": spans,
         "claim_candidates": _build_claim_candidates(spans),
         "story_hints": _build_story_hints(article, domain_scores),
+        "entity_keys": [_normalize_slug(item) for item in entities[:8]],
+        "timeline_hints": {
+            "published_day": _normalize_text(article.get("published_at"))[:10],
+        },
+        "story_merge_hints": _build_story_hints(article, domain_scores),
+        "category_hints": domain_scores,
+        "key_facts": [span.get("verbatim_text") for span in spans[:3] if span.get("verbatim_text")],
         "domain_scores": domain_scores,
         "novelty_score": _freshness_score(article),
         "activity_score": _activity_score(article),
@@ -1342,11 +1419,12 @@ def _merge_remote_analysis(
             timeout_seconds=_news_model_timeout_seconds("article", config_or_path=config_or_path),
             system_prompt=(
                 "You are an article analyst for a local news pipeline. Return compact JSON only. "
-                "Do not invent facts not present in the article."
+                "Do not invent facts not present in the article. Keep summaries source-grounded and concise."
             ),
             user_prompt=(
                 "Analyze this article and return JSON with keys "
-                "`story_hints`, `domain_scores`, `claim_candidates`, `needs_context`, "
+                "`article_summary`, `key_facts`, `entity_keys`, `timeline_hints`, "
+                "`story_merge_hints`, `category_hints`, `needs_context`, "
                 "`novelty_score`, `activity_score`.\n\n"
                 f"Title: {article.get('title', '')}\n"
                 f"Source: {article.get('source_id', '')}\n"
@@ -1357,10 +1435,43 @@ def _merge_remote_analysis(
         if not remote:
             return base_analysis
         merged = dict(base_analysis)
+        if isinstance(remote.get("article_summary"), str):
+            summary = _normalize_text(remote.get("article_summary"))
+            if summary:
+                merged["article_summary"] = summary[:400]
+        if isinstance(remote.get("key_facts"), list):
+            merged["key_facts"] = [
+                _normalize_text(item)[:240]
+                for item in remote["key_facts"]
+                if _normalize_text(item)
+            ][:5]
+        if isinstance(remote.get("entity_keys"), list):
+            merged["entity_keys"] = [
+                _normalize_slug(item)
+                for item in remote["entity_keys"]
+                if _normalize_slug(item)
+            ][:8]
+        if isinstance(remote.get("timeline_hints"), dict):
+            merged["timeline_hints"] = {
+                str(key): remote["timeline_hints"][key]
+                for key in remote["timeline_hints"]
+                if isinstance(key, str)
+            }
+        if isinstance(remote.get("story_merge_hints"), dict):
+            merged["story_merge_hints"] = {
+                **merged.get("story_merge_hints", {}),
+                **remote["story_merge_hints"],
+            }
         if isinstance(remote.get("story_hints"), dict):
             merged["story_hints"] = {
                 **merged.get("story_hints", {}),
                 **remote["story_hints"],
+            }
+        if isinstance(remote.get("category_hints"), dict):
+            merged["category_hints"] = {
+                key: max(0.0, min(1.0, float(value)))
+                for key, value in remote["category_hints"].items()
+                if isinstance(key, str)
             }
         if isinstance(remote.get("domain_scores"), dict):
             merged["domain_scores"] = {
@@ -1420,16 +1531,13 @@ def _title_similarity(a: str, b: str) -> float:
     return len(terms_a & terms_b) / max(1, len(terms_a | terms_b))
 
 
-def _article_representative_summary(article: dict[str, Any], analysis: dict[str, Any] | None) -> str:
-    if analysis:
-        spans = analysis.get("evidence_spans", []) or []
-        if spans:
-            return _normalize_text(spans[0].get("verbatim_text"))
+def _article_summary_for_story(article: dict[str, Any], analysis: dict[str, Any] | None) -> str:
+    if analysis and _normalize_text(analysis.get("article_summary")):
+        return _normalize_text(analysis.get("article_summary"))
     excerpt = _normalize_text(article.get("excerpt"))
     if excerpt:
-        return excerpt
-    first_sentence = article.get("sentence_index", [{}])[0]
-    return _normalize_text(first_sentence.get("text"))
+        return excerpt[:320]
+    return _normalize_text(article.get("title"))[:320]
 
 
 def _cluster_spans_for_story(spans: list[dict[str, Any]], article_lookup: dict[str, dict[str, Any]], story_candidate_id: str) -> list[dict[str, Any]]:
@@ -1539,28 +1647,523 @@ def _detect_conflict_flags(spans: list[dict[str, Any]], article_lookup: dict[str
     return conflicts
 
 
-def _assign_story_categories(
-    story_title: str,
-    story_summary: str,
+def _aggregate_story_entities(
+    member_articles: list[dict[str, Any]],
+    analyses_by_article: dict[str, dict[str, Any]],
+) -> list[str]:
+    entities: set[str] = set()
+    for article in member_articles:
+        analysis = analyses_by_article.get(article["article_id"], {})
+        entities.update(analysis.get("entity_keys") or [])
+        entities.update(
+            _normalize_slug(item)
+            for item in _extract_entities(article.get("title", ""))
+            if _normalize_slug(item)
+        )
+    return sorted(entity for entity in entities if entity)[:12]
+
+
+def _category_weight_for_story(category_id: str) -> float:
+    if category_id in {"geopolitics", "economy", "europe", "bulgaria"}:
+        return 1.0
+    if category_id == "tech_ai":
+        return 0.8
+    return 0.5
+
+
+def _story_category_scores_from_bundle(
+    story: dict[str, Any],
     category_config: list[dict[str, Any]],
-    aggregate_domain_scores: dict[str, float],
+    source_registry: list[dict[str, Any]],
 ) -> tuple[list[str], dict[str, float]]:
-    text = f"{story_title} {story_summary}".lower()
+    source_meta = {item["source_id"]: item for item in source_registry}
+    story_text = " ".join(
+        [
+            story.get("title", ""),
+            " ".join(story.get("article_summaries", [])),
+            " ".join(story.get("aggregate_entities", [])),
+            " ".join(story.get("story_merge_terms", [])),
+            " ".join(story.get("evidence_bundle", [])),
+        ]
+    ).lower()
+    raw_scores = dict(story.get("aggregate_domain_scores") or {})
     category_scores: dict[str, float] = {}
     for category in category_config:
         category_id = category["category_id"]
-        score = float(aggregate_domain_scores.get(category_id, 0.0))
-        score += min(
-            0.6,
-            sum(0.2 for term in category.get("assignment_terms", []) if term in text),
+        score = max(
+            _safe_float(raw_scores.get(category_id), 0.0),
+            _safe_float((story.get("category_hints") or {}).get(category_id), 0.0),
         )
-        category_scores[category_id] = min(1.0, score)
+        if category.get("assignment_terms"):
+            score += min(
+                0.4,
+                sum(0.1 for term in category.get("assignment_terms", []) if term in story_text),
+            )
+        topic_bonus = 0.0
+        for source_id in story.get("source_ids", []):
+            source = source_meta.get(source_id, {})
+            if category_id in set(source.get("topic_tags") or []):
+                topic_bonus += 0.05
+            if category_id in set(source.get("region_tags") or []):
+                topic_bonus += 0.05
+        category_scores[category_id] = min(1.0, score + min(topic_bonus, 0.2))
+
     assigned = [
         category_id
         for category_id, score in sorted(category_scores.items(), key=lambda item: (-item[1], item[0]))
         if score > 0
     ][:2]
     return assigned, category_scores
+
+
+def _story_pre_summary_priority(story: dict[str, Any]) -> float:
+    category_signal = max(
+        (_safe_float(score, 0.0) * _category_weight_for_story(category_id))
+        for category_id, score in (story.get("category_scores") or {}).items()
+    ) if story.get("category_scores") else 0.0
+    return min(
+        1.0,
+        (0.35 * min(1.0, float(story.get("source_count", 0)) / 3.0))
+        + (0.30 * _safe_float(story.get("freshness_score"), 0.0))
+        + (0.15 * _safe_float(story.get("activity_score"), 0.0))
+        + (0.20 * category_signal),
+    )
+
+
+def _seed_thread_record(story: dict[str, Any], snapshot_id: str) -> dict[str, Any]:
+    title_slug = _normalize_slug(story.get("title") or story.get("story_candidate_id"))[:48]
+    base = title_slug or _normalize_slug(story["story_candidate_id"])
+    thread_id = f"thread:{base}:{story['primary_article_id'][:8]}"
+    return {
+        "thread_id": thread_id,
+        "state": "stable",
+        "tension_score": 0.0,
+        "tension_history": [],
+        "attachment_history": [],
+        "recent_story_candidate_ids": [story["story_candidate_id"]],
+        "recent_article_ids": [story["primary_article_id"], *story.get("supporting_article_ids", [])],
+        "entity_keys": list(story.get("aggregate_entities") or []),
+        "category_scores": dict(story.get("category_scores") or {}),
+        "title": story.get("title"),
+        "last_seen_at": snapshot_id,
+        "related_thread_ids": [],
+        "summary_failure_count": 0,
+    }
+
+
+def _thread_attachment_score(story: dict[str, Any], thread: dict[str, Any]) -> float:
+    story_entities = set(story.get("aggregate_entities") or [])
+    thread_entities = set(thread.get("entity_keys") or [])
+    entity_score = (
+        len(story_entities & thread_entities) / max(1, len(story_entities | thread_entities))
+        if story_entities or thread_entities
+        else 0.0
+    )
+    story_terms = set(story.get("story_merge_terms") or [])
+    thread_terms = set(thread.get("merge_terms") or [])
+    term_score = (
+        len(story_terms & thread_terms) / max(1, len(story_terms | thread_terms))
+        if story_terms or thread_terms
+        else 0.0
+    )
+    title_score = _title_similarity(story.get("title", ""), thread.get("title", ""))
+    category_score = max(
+        (
+            min(
+                _safe_float((story.get("category_scores") or {}).get(category_id), 0.0),
+                _safe_float((thread.get("category_scores") or {}).get(category_id), 0.0),
+            )
+            for category_id in set(story.get("category_scores", {})) | set(thread.get("category_scores", {}))
+        ),
+        default=0.0,
+    )
+    story_time = _parse_datetime(story.get("published_at")) or _utc_now()
+    thread_time = _parse_datetime(thread.get("last_story_published_at")) or _parse_datetime(thread.get("last_seen_at")) or _utc_now()
+    time_delta_hours = abs((story_time - thread_time).total_seconds()) / 3600.0
+    time_score = max(0.0, 1.0 - min(time_delta_hours / 168.0, 1.0))
+    return (0.35 * entity_score) + (0.20 * term_score) + (0.20 * title_score) + (0.15 * category_score) + (0.10 * time_score)
+
+
+def _attach_story_candidates_to_threads(
+    stories: list[dict[str, Any]],
+    *,
+    corpus_root: Path,
+    snapshot_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ledger = _load_thread_ledger(corpus_root)
+    threads = list(ledger.get("threads") or [])
+    threads_by_id = {thread["thread_id"]: thread for thread in threads if isinstance(thread, dict) and thread.get("thread_id")}
+
+    attached: list[dict[str, Any]] = []
+    for story in stories:
+        best_thread = None
+        best_score = 0.0
+        for thread in threads:
+            score = _thread_attachment_score(story, thread)
+            if score > best_score:
+                best_score = score
+                best_thread = thread
+
+        related_thread_id = None
+        attach_threshold = 0.38
+        if best_thread is not None and best_thread.get("state") == "unstable":
+            attach_threshold = 0.58
+
+        if best_thread is not None and best_score >= attach_threshold:
+            thread = best_thread
+            thread_id = thread["thread_id"]
+            if thread.get("state") == "unstable" and best_score < 0.7:
+                related_thread_id = thread_id
+                thread = _seed_thread_record(story, snapshot_id)
+                thread["related_thread_ids"] = [related_thread_id]
+                threads.append(thread)
+                threads_by_id[thread["thread_id"]] = thread
+                thread_id = thread["thread_id"]
+        else:
+            thread = _seed_thread_record(story, snapshot_id)
+            threads.append(thread)
+            threads_by_id[thread["thread_id"]] = thread
+            thread_id = thread["thread_id"]
+
+        thread.setdefault("recent_story_candidate_ids", [])
+        thread.setdefault("recent_article_ids", [])
+        thread.setdefault("attachment_history", [])
+        thread.setdefault("related_thread_ids", [])
+        thread["title"] = story.get("title") or thread.get("title")
+        thread["entity_keys"] = sorted(set(thread.get("entity_keys", [])) | set(story.get("aggregate_entities", [])))[:16]
+        thread["merge_terms"] = sorted(set(thread.get("merge_terms", [])) | set(story.get("story_merge_terms", [])))[:24]
+        thread["recent_story_candidate_ids"] = [story["story_candidate_id"], *thread["recent_story_candidate_ids"][:7]]
+        thread["recent_article_ids"] = sorted(
+            {*(thread.get("recent_article_ids") or []), story["primary_article_id"], *story.get("supporting_article_ids", [])}
+        )[:32]
+        thread["category_scores"] = {
+            key: max(
+                _safe_float((thread.get("category_scores") or {}).get(key), 0.0),
+                _safe_float((story.get("category_scores") or {}).get(key), 0.0),
+            )
+            for key in set(thread.get("category_scores", {})) | set(story.get("category_scores", {}))
+        }
+        thread["last_seen_at"] = snapshot_id
+        thread["last_story_published_at"] = story.get("published_at")
+        thread["attachment_history"] = [
+            {
+                "snapshot_id": snapshot_id,
+                "story_candidate_id": story["story_candidate_id"],
+                "attachment_score": round(best_score, 4),
+            },
+            *thread["attachment_history"][:15],
+        ]
+
+        attached_story = {
+            **story,
+            "thread_id": thread_id,
+            "related_thread_id": related_thread_id,
+            "thread_attachment_score": best_score,
+            "thread_state": str(thread.get("state") or "stable"),
+            "thread_tension_score": _safe_float(thread.get("tension_score"), 0.0),
+        }
+        attached.append(attached_story)
+
+    updated = {"version": NEWS_THREAD_LEDGER_VERSION, "threads": list(threads_by_id.values())}
+    return attached, updated
+
+
+def _evaluate_story_thread_tension(story: dict[str, Any], thread: dict[str, Any]) -> float:
+    story_entities = set(story.get("aggregate_entities") or [])
+    thread_entities = set(thread.get("entity_keys") or [])
+    entity_gap = 0.0
+    if story_entities and thread_entities:
+        entity_gap = 1.0 - (
+            len(story_entities & thread_entities) / max(1, len(story_entities | thread_entities))
+        )
+    conflict_score = min(1.0, len(story.get("conflict_flags") or []) / 3.0)
+    attachment_penalty = max(0.0, 0.7 - _safe_float(story.get("thread_attachment_score"), 0.0))
+    category_gap = 0.0
+    if story.get("category_scores") and thread.get("category_scores"):
+        shared = set(story["category_scores"]) | set(thread["category_scores"])
+        if shared:
+            category_gap = sum(
+                abs(
+                    _safe_float((story.get("category_scores") or {}).get(category_id), 0.0)
+                    - _safe_float((thread.get("category_scores") or {}).get(category_id), 0.0)
+                )
+                for category_id in shared
+            ) / max(1, len(shared))
+    return min(1.0, (0.35 * entity_gap) + (0.25 * conflict_score) + (0.20 * attachment_penalty) + (0.20 * category_gap))
+
+
+def _apply_thread_tension(
+    stories: list[dict[str, Any]],
+    *,
+    ledger: dict[str, Any],
+    snapshot_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    threads_by_id = {
+        thread["thread_id"]: thread
+        for thread in list(ledger.get("threads") or [])
+        if isinstance(thread, dict) and thread.get("thread_id")
+    }
+    updated_stories: list[dict[str, Any]] = []
+    for story in stories:
+        thread = threads_by_id.get(story.get("thread_id"))
+        if thread is None:
+            updated_stories.append(story)
+            continue
+        tension = _evaluate_story_thread_tension(story, thread)
+        history = list(thread.get("tension_history") or [])
+        history = [
+            {"snapshot_id": snapshot_id, "score": round(tension, 4)},
+            *history[:5],
+        ]
+        thread["tension_history"] = history
+        prior_scores = [float(item.get("score") or 0.0) for item in history[:3]]
+        if tension >= NEWS_THREAD_PENDING_SPLIT_THRESHOLD or (
+            len(prior_scores) >= 2 and all(score >= NEWS_THREAD_UNSTABLE_THRESHOLD for score in prior_scores[:2]) and tension >= NEWS_THREAD_UNSTABLE_THRESHOLD
+        ):
+            thread_state = "pending_split"
+        elif tension >= NEWS_THREAD_UNSTABLE_THRESHOLD:
+            thread_state = "unstable"
+        else:
+            thread_state = "stable"
+        thread["state"] = thread_state
+        thread["tension_score"] = round(tension, 4)
+        updated_stories.append(
+            {
+                **story,
+                "thread_state": thread_state,
+                "thread_tension_score": round(tension, 4),
+            }
+        )
+    return updated_stories, {"version": NEWS_THREAD_LEDGER_VERSION, "threads": list(threads_by_id.values())}
+
+
+def _story_bundle_payload(story: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": story.get("title"),
+        "article_summaries": story.get("article_summaries", []),
+        "source_ids": story.get("source_ids", []),
+        "category_scores": story.get("category_scores", {}),
+        "entity_keys": story.get("aggregate_entities", []),
+        "evidence_bundle": story.get("evidence_bundle", [])[:8],
+        "conflict_flags": story.get("conflict_flags", []),
+    }
+
+
+def _story_summary_model_config(config_or_path: Any = None) -> tuple[str, str]:
+    endpoint = _normalize_text(_config_value(config_or_path, "NEWS_ARTICLE_MODEL_ENDPOINT", ""))
+    model = _normalize_text(_config_value(config_or_path, "NEWS_ARTICLE_MODEL", ""))
+    return endpoint, model
+
+
+def _summarize_story_candidate_with_model(
+    story: dict[str, Any],
+    *,
+    config_or_path: Any = None,
+) -> Optional[dict[str, Any]]:
+    endpoint, model = _story_summary_model_config(config_or_path)
+    if not endpoint or not model:
+        return None
+    try:
+        response_text = _openai_compatible_chat_completion(
+            endpoint=endpoint,
+            model=model,
+            timeout_seconds=_news_model_timeout_seconds("article", config_or_path=config_or_path),
+            system_prompt=(
+                "You summarize grouped news stories. Return compact JSON only. "
+                "Stay source-grounded. Do not smooth over source conflict."
+            ),
+            user_prompt=(
+                "Given this story evidence bundle, return JSON with keys "
+                "`what_happened`, `why_it_matters`, `category_scores`, `coherence`.\n\n"
+                f"{_canonical_json(_story_bundle_payload(story))}"
+            ),
+        )
+        payload = _extract_json_object(response_text or "")
+        if not payload:
+            return None
+        what_happened = _normalize_text(payload.get("what_happened"))
+        why_it_matters = _normalize_text(payload.get("why_it_matters"))
+        if not what_happened or not why_it_matters:
+            return None
+        return {
+            "what_happened": what_happened[:320],
+            "why_it_matters": why_it_matters[:320],
+            "category_scores": {
+                key: max(0.0, min(1.0, float(value)))
+                for key, value in (payload.get("category_scores") or {}).items()
+                if isinstance(key, str)
+            },
+            "coherence": max(0.0, min(1.0, _safe_float(payload.get("coherence"), 0.0))),
+        }
+    except Exception as exc:
+        log.warning("Story summary model failed for %s: %s", story.get("story_candidate_id"), exc)
+        return None
+
+
+def _apply_story_summary(story: dict[str, Any], summary_payload: Optional[dict[str, Any]], *, retry_count: int) -> dict[str, Any]:
+    if not summary_payload:
+        return {
+            **story,
+            "summary_status": "failed",
+            "retry_count": retry_count,
+            "what_happened": "",
+            "why_it_matters": "",
+            "coherence": 0.0,
+        }
+    merged_category_scores = dict(story.get("category_scores") or {})
+    for key, value in (summary_payload.get("category_scores") or {}).items():
+        merged_category_scores[key] = max(_safe_float(merged_category_scores.get(key), 0.0), _safe_float(value, 0.0))
+    category_ids = [
+        category_id
+        for category_id, score in sorted(merged_category_scores.items(), key=lambda item: (-item[1], item[0]))
+        if score > 0
+    ][:2]
+    return {
+        **story,
+        "what_happened": summary_payload["what_happened"],
+        "why_it_matters": summary_payload["why_it_matters"],
+        "summary_status": "ok",
+        "retry_count": retry_count,
+        "coherence": _safe_float(summary_payload.get("coherence"), 0.0),
+        "category_scores": merged_category_scores,
+        "category_ids": category_ids or list(story.get("category_ids") or []),
+    }
+
+
+def _select_story_summarization_targets(stories: list[dict[str, Any]], *, max_stories: int) -> list[dict[str, Any]]:
+    ranked = sorted(
+        stories,
+        key=lambda story: (
+            not bool(story.get("must_carry")),
+            -_safe_float(story.get("pre_summary_priority"), 0.0),
+            story["story_candidate_id"],
+        ),
+    )
+    return ranked[:max_stories]
+
+
+def _summarize_story_candidates(
+    stories: list[dict[str, Any]],
+    *,
+    config_or_path: Any = None,
+    max_stories: int = NEWS_HOURLY_SUMMARY_MAX_STORIES,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    indexed = {story["story_candidate_id"]: dict(story) for story in stories}
+    attempted = 0
+    summarized = 0
+    pending_retry = 0
+    failed = 0
+    targets = _select_story_summarization_targets(stories, max_stories=max_stories)
+    target_ids = {story["story_candidate_id"] for story in targets}
+    for story in targets:
+        attempted += 1
+        retry_count = 0
+        payload = _summarize_story_candidate_with_model(story, config_or_path=config_or_path)
+        if payload is None and story.get("must_carry"):
+            retry_count += 1
+            payload = _summarize_story_candidate_with_model(story, config_or_path=config_or_path)
+        summarized_story = _apply_story_summary(story, payload, retry_count=retry_count)
+        if summarized_story["summary_status"] == "ok":
+            summarized += 1
+        else:
+            if story.get("must_carry"):
+                summarized_story["summary_status"] = "pending_retry"
+                pending_retry += 1
+            else:
+                failed += 1
+        indexed[story["story_candidate_id"]] = summarized_story
+
+    for story_id, story in list(indexed.items()):
+        if story_id in target_ids:
+            continue
+        indexed[story_id] = {
+            **story,
+            "summary_status": story.get("summary_status") or ("pending_retry" if story.get("must_carry") else "pending"),
+            "retry_count": int(story.get("retry_count") or 0),
+            "what_happened": _normalize_text(story.get("what_happened")),
+            "why_it_matters": _normalize_text(story.get("why_it_matters")),
+            "coherence": _safe_float(story.get("coherence"), 0.0),
+        }
+
+    return list(indexed.values()), {
+        "attempted_story_count": attempted,
+        "summarized_story_count": summarized,
+        "pending_retry_story_count": pending_retry,
+        "failed_story_count": failed,
+    }
+
+
+def _catch_up_pending_story_summaries(
+    snapshot: dict[str, Any],
+    *,
+    config_or_path: Any = None,
+    max_stories: int = NEWS_DAILY_CATCHUP_MAX_STORIES,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    stories = [dict(story) for story in list(snapshot.get("story_candidates") or [])]
+    pending = [
+        story
+        for story in stories
+        if story.get("must_carry")
+        and str(story.get("summary_status") or "") in {"pending_retry", "failed"}
+    ]
+    pending.sort(
+        key=lambda story: (
+            -_safe_float(story.get("pre_summary_priority"), 0.0),
+            story["story_candidate_id"],
+        )
+    )
+    attempted = 0
+    resolved = 0
+    still_pending = 0
+    updated: dict[str, dict[str, Any]] = {story["story_candidate_id"]: story for story in stories}
+    for story in pending[: max_stories]:
+        attempted += 1
+        retry_count = int(story.get("retry_count") or 0)
+        payload = _summarize_story_candidate_with_model(story, config_or_path=config_or_path)
+        summarized_story = _apply_story_summary(story, payload, retry_count=retry_count + 1)
+        summarized_story["summary_model_id"] = _story_summary_model_config(config_or_path)[1]
+        summarized_story["summary_prompt_version"] = NEWS_STORY_SUMMARY_PROMPT_VERSION
+        summarized_story["summary"] = summarized_story.get("what_happened") or ""
+        if summarized_story.get("summary_status") == "ok":
+            resolved += 1
+        else:
+            summarized_story["summary_status"] = "pending_retry"
+            still_pending += 1
+        summarized_story["summary_record"] = _story_summary_record(summarized_story)
+        updated[story["story_candidate_id"]] = summarized_story
+
+    refreshed_snapshot = dict(snapshot)
+    refreshed_snapshot["story_candidates"] = list(updated.values())
+    _refresh_snapshot_stats(refreshed_snapshot)
+    if attempted > 0:
+        roots = resolve_news_roots(config_or_path)
+        _persist_snapshot_payload(roots, refreshed_snapshot)
+    return refreshed_snapshot, {
+        "attempted_story_count": attempted,
+        "resolved_story_count": resolved,
+        "pending_retry_story_count": still_pending,
+    }
+
+
+def _story_summary_record(story: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "story_candidate_id": story["story_candidate_id"],
+        "thread_id": story.get("thread_id"),
+        "related_thread_id": story.get("related_thread_id"),
+        "thread_state": story.get("thread_state", "stable"),
+        "thread_tension_score": _safe_float(story.get("thread_tension_score"), 0.0),
+        "member_article_ids": [story["primary_article_id"], *story.get("supporting_article_ids", [])],
+        "what_happened": _normalize_text(story.get("what_happened")),
+        "why_it_matters": _normalize_text(story.get("why_it_matters")),
+        "category_scores": dict(story.get("category_scores") or {}),
+        "summary_status": story.get("summary_status", "pending"),
+        "must_carry": bool(story.get("must_carry")),
+        "retry_count": int(story.get("retry_count") or 0),
+        "model_id": _normalize_text(story.get("summary_model_id")),
+        "prompt_version": story.get("summary_prompt_version") or NEWS_STORY_SUMMARY_PROMPT_VERSION,
+        "coherence": _safe_float(story.get("coherence"), 0.0),
+        "conflict_flags": list(story.get("conflict_flags") or []),
+    }
 
 
 def compile_story_candidates(
@@ -1571,6 +2174,7 @@ def compile_story_candidates(
 ) -> dict[str, Any]:
     roots = resolve_news_roots(config_or_path)
     category_config = load_news_category_config(config_or_path)
+    source_registry = load_news_source_registry(config_or_path)
     selected_ids = article_ids or _list_article_ids(roots.article_store_root)
 
     articles: list[dict[str, Any]] = []
@@ -1593,6 +2197,9 @@ def compile_story_candidates(
             continue
         story_members = [article]
         used.add(article["article_id"])
+        analysis = analyses_by_article[article["article_id"]]
+        anchor_entities = set(analysis.get("entity_keys") or [])
+        anchor_terms = set((analysis.get("story_merge_hints") or {}).get("headline_terms") or [])
         for other in articles:
             if other["article_id"] in used:
                 continue
@@ -1600,11 +2207,13 @@ def compile_story_candidates(
             published_b = _parse_datetime(other.get("published_at")) or _utc_now()
             if abs((published_b - published_a).total_seconds()) > 72 * 3600:
                 continue
+            other_analysis = analyses_by_article[other["article_id"]]
+            other_entities = set(other_analysis.get("entity_keys") or [])
+            other_terms = set((other_analysis.get("story_merge_hints") or {}).get("headline_terms") or [])
             similarity = _title_similarity(article.get("title", ""), other.get("title", ""))
-            shared_domains = set(
-                analyses_by_article[article["article_id"]].get("story_hints", {}).get("top_domains", [])
-            ) & set(analyses_by_article[other["article_id"]].get("story_hints", {}).get("top_domains", []))
-            if similarity >= 0.35 or (similarity >= 0.2 and shared_domains):
+            entity_overlap = len(anchor_entities & other_entities)
+            term_overlap = len(anchor_terms & other_terms)
+            if similarity >= 0.35 or entity_overlap >= 1 or term_overlap >= 3:
                 story_members.append(other)
                 used.add(other["article_id"])
 
@@ -1612,42 +2221,73 @@ def compile_story_candidates(
         story_candidate_id = f"story:{primary['article_id']}"
         all_spans = []
         aggregate_domains: dict[str, float] = {}
+        category_hints: dict[str, float] = {}
         source_ids = sorted({item.get("source_id") for item in story_members if item.get("source_id")})
+        article_summaries = []
+        story_merge_terms: set[str] = set()
         for member in story_members:
-            analysis = analyses_by_article[member["article_id"]]
-            all_spans.extend(analysis.get("evidence_spans", []))
-            for domain, score in (analysis.get("domain_scores", {}) or {}).items():
+            member_analysis = analyses_by_article[member["article_id"]]
+            all_spans.extend(member_analysis.get("evidence_spans", []))
+            article_summaries.append(_article_summary_for_story(member, member_analysis))
+            story_merge_terms.update((member_analysis.get("story_merge_hints") or {}).get("headline_terms") or [])
+            story_merge_terms.update(member_analysis.get("entity_keys") or [])
+            for domain, score in (member_analysis.get("domain_scores", {}) or {}).items():
                 aggregate_domains[domain] = max(float(score or 0.0), aggregate_domains.get(domain, 0.0))
+            for category_id, score in (member_analysis.get("category_hints", {}) or {}).items():
+                category_hints[category_id] = max(float(score or 0.0), category_hints.get(category_id, 0.0))
 
-        story_summary = _article_representative_summary(primary, analyses_by_article[primary["article_id"]])
-        category_ids, category_scores = _assign_story_categories(
-            primary.get("title", ""),
-            story_summary,
-            category_config,
-            aggregate_domains,
-        )
         clusters = _cluster_spans_for_story(all_spans, article_lookup, story_candidate_id)
         conflicts = _detect_conflict_flags(all_spans, article_lookup)
-        stories.append(
-            {
-                "story_candidate_id": story_candidate_id,
-                "primary_article_id": primary["article_id"],
-                "supporting_article_ids": [item["article_id"] for item in story_members if item["article_id"] != primary["article_id"]],
-                "thread_id": story_candidate_id,
-                "category_ids": category_ids,
-                "category_scores": category_scores,
-                "source_ids": source_ids,
-                "source_count": len(source_ids),
-                "title": primary.get("title"),
-                "summary": story_summary,
-                "conflict_flags": conflicts,
-                "evidence_clusters": clusters,
-                "cluster_ids": [item["cluster_id"] for item in clusters],
-                "freshness_score": max(_freshness_score(item) for item in story_members),
-                "activity_score": max(_activity_score(item) for item in story_members),
-                "relevance_score": max(category_scores.values() or [0.0]),
-            }
+        aggregate_entities = _aggregate_story_entities(story_members, analyses_by_article)
+        provisional_story = {
+            "story_candidate_id": story_candidate_id,
+            "primary_article_id": primary["article_id"],
+            "supporting_article_ids": [item["article_id"] for item in story_members if item["article_id"] != primary["article_id"]],
+            "thread_id": None,
+            "category_ids": [],
+            "category_scores": {},
+            "category_hints": category_hints,
+            "source_ids": source_ids,
+            "source_count": len(source_ids),
+            "title": primary.get("title"),
+            "summary": "",
+            "what_happened": "",
+            "why_it_matters": "",
+            "conflict_flags": conflicts,
+            "evidence_clusters": clusters,
+            "cluster_ids": [item["cluster_id"] for item in clusters],
+            "freshness_score": max(_freshness_score(item) for item in story_members),
+            "activity_score": max(_activity_score(item) for item in story_members),
+            "relevance_score": 0.0,
+            "aggregate_domain_scores": aggregate_domains,
+            "aggregate_entities": aggregate_entities,
+            "article_summaries": [summary for summary in article_summaries if summary],
+            "story_merge_terms": sorted(term for term in story_merge_terms if term)[:24],
+            "evidence_bundle": [cluster.get("preview") for cluster in clusters if cluster.get("preview")][:10],
+            "published_at": primary.get("published_at"),
+        }
+        assigned_categories, category_scores = _story_category_scores_from_bundle(
+            provisional_story,
+            category_config,
+            source_registry,
         )
+        provisional_story["category_ids"] = assigned_categories
+        provisional_story["category_scores"] = category_scores
+        provisional_story["relevance_score"] = max(category_scores.values() or [0.0])
+        provisional_story["pre_summary_priority"] = _story_pre_summary_priority(provisional_story)
+        stories.append(provisional_story)
+
+    ranked = sorted(
+        stories,
+        key=lambda item: (-_safe_float(item.get("pre_summary_priority"), 0.0), item["story_candidate_id"]),
+    )
+    must_carry_ids = {
+        item["story_candidate_id"]
+        for item in ranked[: min(8, len(ranked))]
+        if _safe_float(item.get("pre_summary_priority"), 0.0) >= 0.45
+    }
+    for story in stories:
+        story["must_carry"] = story["story_candidate_id"] in must_carry_ids
 
     return {
         "status": "ok",
@@ -1673,6 +2313,26 @@ def build_snapshot(
     categories = load_news_category_config(config_or_path)
     built_at = _utc_now()
     snapshot_id = built_at.strftime("%Y%m%dT%H%M%SZ")
+    attached, ledger = _attach_story_candidates_to_threads(
+        story_bundle["story_candidates"],
+        corpus_root=roots.corpus_root,
+        snapshot_id=snapshot_id,
+    )
+    tensioned, ledger = _apply_thread_tension(
+        attached,
+        ledger=ledger,
+        snapshot_id=snapshot_id,
+    )
+    summarized, summary_stats = _summarize_story_candidates(
+        tensioned,
+        config_or_path=config_or_path,
+        max_stories=NEWS_HOURLY_SUMMARY_MAX_STORIES,
+    )
+    for story in summarized:
+        story["summary_model_id"] = _story_summary_model_config(config_or_path)[1]
+        story["summary_prompt_version"] = NEWS_STORY_SUMMARY_PROMPT_VERSION
+        story["summary_record"] = _story_summary_record(story)
+        story["summary"] = story.get("what_happened") or ""
     snapshot = {
         "snapshot_id": snapshot_id,
         "status": "closed",
@@ -1681,6 +2341,8 @@ def build_snapshot(
         "prefetched_article_ids": sorted(set(prefetched_article_ids or [])),
         "analyzer_model_id": _normalize_text(_config_value(config_or_path, "NEWS_ARTICLE_MODEL", "")),
         "analyzer_prompt_version": NEWS_ANALYZER_PROMPT_VERSION,
+        "story_summary_model_id": _story_summary_model_config(config_or_path)[1],
+        "story_summary_prompt_version": NEWS_STORY_SUMMARY_PROMPT_VERSION,
         "compiler_version": NEWS_COMPILER_VERSION,
         "category_config_semantic_hash": news_category_config_semantic_hash(
             categories, source_registry=registry
@@ -1688,16 +2350,20 @@ def build_snapshot(
         "source_registry_semantic_hash": news_source_registry_semantic_hash(registry),
         "resolved_category_config": categories,
         "resolved_source_registry": registry,
-        "story_candidates": story_bundle["story_candidates"],
+        "story_candidates": summarized,
+        "summary_stats": summary_stats,
         "stats": {
-            "story_candidate_count": len(story_bundle["story_candidates"]),
+            "story_candidate_count": len(summarized),
             "article_count": story_bundle["article_count"],
+            "summarized_story_count": 0,
+            "pending_retry_story_count": 0,
+            "unstable_thread_story_count": 0,
+            "pending_split_story_count": 0,
         },
     }
-    snapshot_dir = roots.corpus_root / "snapshots" / snapshot_id
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(snapshot_dir / "snapshot.json", snapshot)
-    _write_json(roots.corpus_root / "latest_snapshot.json", snapshot)
+    _refresh_snapshot_stats(snapshot)
+    _persist_snapshot_payload(roots, snapshot)
+    _save_thread_ledger(roots.corpus_root, ledger)
     return snapshot
 
 
@@ -1716,11 +2382,128 @@ def load_latest_closed_snapshot(config_or_path: Any = None) -> Optional[dict[str
     return _read_json(candidates[-1])
 
 
+def _persist_snapshot_payload(
+    roots: NewsRoots,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    snapshot_dir = _snapshot_dir(roots.corpus_root, snapshot["snapshot_id"])
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(snapshot_dir / "snapshot.json", snapshot)
+    _write_json(_story_summaries_path(roots.corpus_root, snapshot["snapshot_id"]), snapshot.get("story_summaries", []))
+    _write_json(roots.corpus_root / "latest_snapshot.json", snapshot)
+    return snapshot
+
+
+def _refresh_snapshot_stats(snapshot: dict[str, Any]) -> dict[str, Any]:
+    stories = list(snapshot.get("story_candidates", []))
+    snapshot["story_summaries"] = [_story_summary_record(story) for story in stories]
+    snapshot["summary_stats"] = {
+        "attempted_story_count": sum(1 for item in stories if item.get("summary_status") not in {"pending", ""}),
+        "summarized_story_count": sum(1 for item in stories if item.get("summary_status") == "ok"),
+        "pending_retry_story_count": sum(1 for item in stories if item.get("summary_status") == "pending_retry"),
+        "failed_story_count": sum(1 for item in stories if item.get("summary_status") == "failed"),
+    }
+    stats = dict(snapshot.get("stats") or {})
+    stats.update(
+        {
+            "story_candidate_count": len(stories),
+            "summarized_story_count": snapshot["summary_stats"]["summarized_story_count"],
+            "pending_retry_story_count": snapshot["summary_stats"]["pending_retry_story_count"],
+            "unstable_thread_story_count": sum(1 for item in stories if item.get("thread_state") == "unstable"),
+            "pending_split_story_count": sum(1 for item in stories if item.get("thread_state") == "pending_split"),
+        }
+    )
+    snapshot["stats"] = stats
+    return snapshot
+
+
+def load_latest_briefing(config_or_path: Any = None) -> Optional[dict[str, Any]]:
+    roots = resolve_news_roots(config_or_path)
+    latest = roots.briefings_root / "latest_briefing.json"
+    if latest.exists():
+        return _read_json(latest)
+    candidates = sorted(roots.briefings_root.glob("*/briefing.json"))
+    if not candidates:
+        return None
+    return _read_json(candidates[-1])
+
+
+def load_news_thread_view(
+    thread_id: str,
+    *,
+    config_or_path: Any = None,
+) -> Optional[dict[str, Any]]:
+    normalized_thread_id = _normalize_text(thread_id)
+    if not normalized_thread_id:
+        return None
+    roots = resolve_news_roots(config_or_path)
+    ledger = _load_thread_ledger(roots.corpus_root)
+    thread = next(
+        (
+            item
+            for item in list(ledger.get("threads") or [])
+            if isinstance(item, dict) and item.get("thread_id") == normalized_thread_id
+        ),
+        None,
+    )
+    if thread is None:
+        return None
+    snapshot = load_latest_closed_snapshot(config_or_path)
+    member_stories = []
+    if snapshot:
+        member_stories = [
+            story
+            for story in snapshot.get("story_candidates", [])
+            if story.get("thread_id") == normalized_thread_id
+            or story.get("related_thread_id") == normalized_thread_id
+        ]
+    return {
+        "thread": thread,
+        "snapshot_id": (snapshot or {}).get("snapshot_id"),
+        "story_candidates": member_stories,
+    }
+
+
 def compute_story_candidate_score(
     story_candidate: dict[str, Any],
     *,
     category: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    summary_status = str(story_candidate.get("summary_status") or "pending")
+    thread_state = str(story_candidate.get("thread_state") or "stable")
+    detached_candidate = bool(story_candidate.get("related_thread_id"))
+    if summary_status != "ok":
+        return {
+            "source_presence": 0.0,
+            "freshness": 0.0,
+            "relevance": 0.0,
+            "activity": 0.0,
+            "coherence": 0.0,
+            "base_score": 0.0,
+            "preferred_bonus": 0.0,
+            "preferred_bonus_applied": False,
+            "must_carry_bonus": 0.0,
+            "thread_penalty": 0.0,
+            "selection_eligible": False,
+            "selection_block_reason": f"summary_status:{summary_status}",
+            "final_score": 0.0,
+        }
+    if thread_state == "pending_split" and not detached_candidate:
+        return {
+            "source_presence": 0.0,
+            "freshness": 0.0,
+            "relevance": 0.0,
+            "activity": 0.0,
+            "coherence": _safe_float(story_candidate.get("coherence"), 0.0),
+            "base_score": 0.0,
+            "preferred_bonus": 0.0,
+            "preferred_bonus_applied": False,
+            "must_carry_bonus": 0.0,
+            "thread_penalty": NEWS_THREAD_PENDING_SPLIT_PENALTY,
+            "selection_eligible": False,
+            "selection_block_reason": "pending_split",
+            "final_score": 0.0,
+        }
     source_presence = min(1.0, float(story_candidate.get("source_count", 0)) / 3.0)
     freshness = float(story_candidate.get("freshness_score") or 0.0)
     relevance = float(story_candidate.get("relevance_score") or 0.0)
@@ -1729,6 +2512,7 @@ def compute_story_candidate_score(
             (story_candidate.get("category_scores", {}) or {}).get(category["category_id"], relevance)
         )
     activity = float(story_candidate.get("activity_score") or 0.0)
+    coherence = _safe_float(story_candidate.get("coherence"), 0.0)
     base_score = min(
         1.0,
         max(
@@ -1746,15 +2530,29 @@ def compute_story_candidate_score(
     ):
         preferred_bonus = NEWS_PREFERRED_SOURCE_BONUS_CAP
         preferred_bonus_applied = True
-    final_score = max(0.0, min(1.0, base_score + preferred_bonus))
+    must_carry_bonus = 0.05 if story_candidate.get("must_carry") else 0.0
+    thread_penalty = 0.0
+    if thread_state == "unstable":
+        thread_penalty = NEWS_THREAD_UNSTABLE_PENALTY
+    elif thread_state == "pending_split":
+        thread_penalty = NEWS_THREAD_PENDING_SPLIT_PENALTY
+    final_score = max(
+        0.0,
+        min(1.0, base_score + preferred_bonus + must_carry_bonus - thread_penalty),
+    )
     return {
         "source_presence": source_presence,
         "freshness": freshness,
         "relevance": relevance,
         "activity": activity,
+        "coherence": coherence,
         "base_score": base_score,
         "preferred_bonus": min(preferred_bonus, NEWS_PREFERRED_SOURCE_BONUS_CAP),
         "preferred_bonus_applied": preferred_bonus_applied,
+        "must_carry_bonus": must_carry_bonus,
+        "thread_penalty": thread_penalty,
+        "selection_eligible": True,
+        "selection_block_reason": "",
         "final_score": final_score,
     }
 
@@ -1782,7 +2580,7 @@ def select_stories_by_categories(
             if float((story.get("category_scores", {}) or {}).get(category["category_id"], 0.0)) <= 0:
                 continue
             score_details = compute_story_candidate_score(story, category=category)
-            if score_details["final_score"] <= 0:
+            if not score_details.get("selection_eligible") or score_details["final_score"] <= 0:
                 continue
             scored.append((score_details["final_score"], story, score_details))
         scored.sort(key=lambda item: (-item[0], item[1]["story_candidate_id"]))
@@ -1827,6 +2625,8 @@ def select_stories_by_categories(
                 if float((story.get("category_scores", {}) or {}).get(category["category_id"], 0.0)) <= 0:
                     continue
                 score_details = compute_story_candidate_score(story, category=category)
+                if not score_details.get("selection_eligible"):
+                    continue
                 if best_score is None or score_details["final_score"] > best_score["final_score"]:
                     best_score = score_details
                     best_category_id = category["category_id"]
@@ -1865,32 +2665,17 @@ def select_stories_by_categories(
     return selected, audit
 
 
-def _bg_why_it_matters(story: dict[str, Any]) -> str:
-    categories = list(story.get("category_ids") or [])
-    if "tech_ai" in categories:
-        return "Има значение, защото това мести терена за AI, compute или софтуерната инфраструктура."
-    if "bulgaria" in categories:
-        return "Има значение, защото това е локален сигнал, а не просто още един шумен цикъл."
-    if "europe" in categories:
-        return "Има значение, защото това почти винаги се превежда в правила, пари или търкания на континентално ниво."
-    if "economy" in categories:
-        return "Има значение, защото икономическите истории рядко питат удобно преди да стигнат до реалния свят."
-    if "weird" in categories:
-        return "Има значение, защото ако звучи странно, често е ранна индикация, че нещо се измества."
-    return "Има значение, защото това променя политическия и оперативния контекст, не само заглавията."
-
-
 def synthesize_briefing_script(selected_stories: list[dict[str, Any]]) -> str:
-    if not selected_stories:
+    valid_stories = [
+        story for story in selected_stories if _normalize_text(story.get("what_happened")) and _normalize_text(story.get("why_it_matters"))
+    ]
+    if not valid_stories:
         return "Днес няма селекция, която да си струва да ти я продавам като брифинг."
 
     parts = ["Сутрешен брифинг."]
-    for story in selected_stories:
-        summary = _normalize_text(story.get("summary") or story.get("title"))
-        if not summary:
-            continue
-        parts.append(summary.rstrip(".") + ".")
-        parts.append(_bg_why_it_matters(story))
+    for story in valid_stories:
+        parts.append(_normalize_text(story.get("what_happened")).rstrip(".") + ".")
+        parts.append(_normalize_text(story.get("why_it_matters")).rstrip(".") + ".")
     return " ".join(parts)
 
 
@@ -1907,9 +2692,12 @@ def _synthesize_briefing_with_model(
     compact = [
         {
             "title": item.get("title"),
-            "summary": item.get("summary"),
+            "what_happened": item.get("what_happened"),
+            "why_it_matters": item.get("why_it_matters"),
             "category_ids": item.get("category_ids", []),
             "source_ids": item.get("source_ids", []),
+            "thread_state": item.get("thread_state", "stable"),
+            "conflict_flags": item.get("conflict_flags", []),
         }
         for item in selected_stories
     ]
@@ -1920,7 +2708,7 @@ def _synthesize_briefing_with_model(
             timeout_seconds=_news_model_timeout_seconds("brief", config_or_path=config_or_path),
             system_prompt=(
                 "You write a Bulgarian morning news briefing. Keep it direct, concise, lightly ironic, "
-                "and under 120 words. Return JSON only with key `script`."
+                "and under 120 words. Use only the provided story summaries. Return JSON only with key `script`."
             ),
             user_prompt=f"Write the briefing from these selected stories:\n{_canonical_json(compact)}",
         )
@@ -1972,6 +2760,11 @@ def build_briefing(
     active_snapshot = snapshot or load_latest_closed_snapshot(config_or_path)
     if not active_snapshot:
         raise FileNotFoundError("No closed news snapshot available")
+    active_snapshot, catchup = _catch_up_pending_story_summaries(
+        active_snapshot,
+        config_or_path=config_or_path,
+        max_stories=NEWS_DAILY_CATCHUP_MAX_STORIES,
+    )
 
     selected_stories, category_audit = select_stories_by_categories(
         active_snapshot,
@@ -1994,6 +2787,7 @@ def build_briefing(
         "date": today,
         "selected_stories": selected_stories,
         "category_decisions": category_audit,
+        "summary_catchup": catchup,
         "script": script,
         "source_refs": [
             {
@@ -2011,23 +2805,12 @@ def build_briefing(
     return payload
 
 
-def _latest_briefing_payload(config_or_path: Any = None) -> Optional[dict[str, Any]]:
-    roots = resolve_news_roots(config_or_path)
-    latest = roots.briefings_root / "latest_briefing.json"
-    if latest.exists():
-        return _read_json(latest)
-    candidates = sorted(roots.briefings_root.glob("*/briefing.json"))
-    if not candidates:
-        return None
-    return _read_json(candidates[-1])
-
-
 def play_latest_briefing(
     *,
     config_or_path: Any = None,
     volume: float = 0.55,
 ) -> dict[str, Any]:
-    briefing = _latest_briefing_payload(config_or_path)
+    briefing = load_latest_briefing(config_or_path)
     if not briefing:
         raise FileNotFoundError("No news briefing available for playback")
 
@@ -2098,7 +2881,11 @@ def _story_documents(snapshot: dict[str, Any], config_or_path: Any = None) -> li
     documents: list[dict[str, Any]] = []
     for story in snapshot.get("story_candidates", []):
         article_ids = [story["primary_article_id"], *story.get("supporting_article_ids", [])]
-        summary_lines = [story.get("summary", ""), f"Sources: {', '.join(story.get('source_ids', []))}"]
+        summary_lines = [
+            story.get("what_happened", "") or story.get("summary", ""),
+            story.get("why_it_matters", ""),
+            f"Sources: {', '.join(story.get('source_ids', []))}",
+        ]
         documents.append(
             {
                 "id": story["story_candidate_id"],
@@ -2132,7 +2919,8 @@ def consult_news_corpus(
         haystack = " ".join(
             [
                 story.get("title", ""),
-                story.get("summary", ""),
+                story.get("what_happened", ""),
+                story.get("why_it_matters", ""),
                 " ".join(story.get("category_ids", [])),
                 " ".join(story.get("source_ids", [])),
             ]
@@ -2215,7 +3003,7 @@ def retrieve_news_timeline(
     for story in snapshot.get("story_candidates", []):
         if thread_ids and story.get("thread_id") not in set(thread_ids):
             continue
-        haystack = f"{story.get('title', '')} {story.get('summary', '')}".lower()
+        haystack = f"{story.get('title', '')} {story.get('what_happened', '')} {story.get('why_it_matters', '')}".lower()
         score = 1.0 if not query_terms else float(sum(1 for term in query_terms if term in haystack))
         if score <= 0:
             continue
@@ -2226,7 +3014,10 @@ def retrieve_news_timeline(
                     "thread_id": story.get("thread_id"),
                     "story_candidate_id": story["story_candidate_id"],
                     "title": story.get("title"),
-                    "summary": story.get("summary"),
+                    "what_happened": story.get("what_happened") or story.get("summary"),
+                    "why_it_matters": story.get("why_it_matters"),
+                    "thread_state": story.get("thread_state", "stable"),
+                    "thread_tension_score": _safe_float(story.get("thread_tension_score"), 0.0),
                     "article_ids": [story["primary_article_id"], *story.get("supporting_article_ids", [])],
                     "source_ids": story.get("source_ids", []),
                     "category_ids": story.get("category_ids", []),
@@ -2243,7 +3034,16 @@ def retrieve_news_timeline(
                 "id": item["story_candidate_id"],
                 "name": item.get("title") or item["story_candidate_id"],
                 "type": "news_timeline_entry",
-                "content": _normalize_text(item.get("summary")),
+                "content": "\n".join(
+                    [
+                        line
+                        for line in [
+                            _normalize_text(item.get("what_happened")),
+                            _normalize_text(item.get("why_it_matters")),
+                        ]
+                        if line
+                    ]
+                ),
                 "source_path": f"timeline:{snapshot.get('snapshot_id')}:{item['story_candidate_id']}",
                 "category_ids": item.get("category_ids", []),
             }

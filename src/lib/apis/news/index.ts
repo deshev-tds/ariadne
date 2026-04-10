@@ -47,6 +47,15 @@ export const updateNewsSourceRegistry = async (token: string, registry: object[]
 
 export const getNewsCategories = async (token: string) => requestJson(token, '/categories');
 
+export const getLatestNewsSnapshot = async (token: string) =>
+	requestJson(token, '/latest-snapshot');
+
+export const getLatestNewsBriefing = async (token: string) =>
+	requestJson(token, '/latest-briefing');
+
+export const getNewsThread = async (token: string, threadId: string) =>
+	requestJson(token, `/threads/${encodeURIComponent(threadId)}`);
+
 export const updateNewsCategories = async (token: string, categories: object[]) =>
 	requestJson(token, '/categories', {
 		method: 'POST',
