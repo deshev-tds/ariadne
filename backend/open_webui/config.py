@@ -3698,6 +3698,18 @@ NEWS_BRIEF_MODEL = PersistentConfig(
     os.getenv("NEWS_BRIEF_MODEL", ""),
 )
 
+NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS = PersistentConfig(
+    "NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS",
+    "rag.news.article_model_timeout_seconds",
+    int(os.getenv("NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS", "300")),
+)
+
+NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = PersistentConfig(
+    "NEWS_BRIEF_MODEL_TIMEOUT_SECONDS",
+    "rag.news.brief_model_timeout_seconds",
+    int(os.getenv("NEWS_BRIEF_MODEL_TIMEOUT_SECONDS", "300")),
+)
+
 NEWS_TTS_VOICE_ID = PersistentConfig(
     "NEWS_TTS_VOICE_ID",
     "rag.news.tts_voice_id",

@@ -32,6 +32,9 @@ NEWS_COMPILER_VERSION = "news-v1.5"
 NEWS_ANALYZER_PROMPT_VERSION = "news-analysis-v1"
 NEWS_BRIEF_PROMPT_VERSION = "news-brief-v1"
 NEWS_PREFERRED_SOURCE_BONUS_CAP = 0.08
+DEFAULT_NEWS_MODEL_CONNECT_TIMEOUT_SECONDS = 10
+DEFAULT_NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS = 300
+DEFAULT_NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = 300
 NEWS_SUPPORTED_CLAIM_KINDS = (
     "count",
     "status",
@@ -1255,12 +1258,41 @@ def _extract_json_object(text: str) -> Optional[dict[str, Any]]:
         return None
 
 
+def _coerce_timeout_seconds(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return default
+    return max(5, parsed)
+
+
+def _news_model_timeout_seconds(kind: str, *, config_or_path: Any = None) -> int:
+    if kind == "brief":
+        return _coerce_timeout_seconds(
+            _config_value(
+                config_or_path,
+                "NEWS_BRIEF_MODEL_TIMEOUT_SECONDS",
+                DEFAULT_NEWS_BRIEF_MODEL_TIMEOUT_SECONDS,
+            ),
+            default=DEFAULT_NEWS_BRIEF_MODEL_TIMEOUT_SECONDS,
+        )
+    return _coerce_timeout_seconds(
+        _config_value(
+            config_or_path,
+            "NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS",
+            DEFAULT_NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS,
+        ),
+        default=DEFAULT_NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS,
+    )
+
+
 def _openai_compatible_chat_completion(
     *,
     endpoint: str,
     model: str,
     system_prompt: str,
     user_prompt: str,
+    timeout_seconds: int,
 ) -> Optional[str]:
     if not endpoint or not model:
         return None
@@ -1271,7 +1303,7 @@ def _openai_compatible_chat_completion(
 
     response = requests.post(
         f"{base_url}/chat/completions",
-        timeout=45,
+        timeout=(DEFAULT_NEWS_MODEL_CONNECT_TIMEOUT_SECONDS, timeout_seconds),
         headers={"Content-Type": "application/json"},
         json={
             "model": model,
@@ -1307,6 +1339,7 @@ def _merge_remote_analysis(
         response_text = _openai_compatible_chat_completion(
             endpoint=endpoint,
             model=model,
+            timeout_seconds=_news_model_timeout_seconds("article", config_or_path=config_or_path),
             system_prompt=(
                 "You are an article analyst for a local news pipeline. Return compact JSON only. "
                 "Do not invent facts not present in the article."
@@ -1884,6 +1917,7 @@ def _synthesize_briefing_with_model(
         response_text = _openai_compatible_chat_completion(
             endpoint=endpoint,
             model=model,
+            timeout_seconds=_news_model_timeout_seconds("brief", config_or_path=config_or_path),
             system_prompt=(
                 "You write a Bulgarian morning news briefing. Keep it direct, concise, lightly ironic, "
                 "and under 120 words. Return JSON only with key `script`."

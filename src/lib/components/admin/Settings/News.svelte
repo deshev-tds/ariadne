@@ -104,6 +104,8 @@
 				NEWS_ARTICLE_MODEL_ENDPOINT: config.NEWS_ARTICLE_MODEL_ENDPOINT,
 				NEWS_ARTICLE_MODEL: config.NEWS_ARTICLE_MODEL,
 				NEWS_BRIEF_MODEL: config.NEWS_BRIEF_MODEL,
+				NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS: Number(config.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS ?? 300),
+				NEWS_BRIEF_MODEL_TIMEOUT_SECONDS: Number(config.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS ?? 300),
 				NEWS_TTS_VOICE_ID: config.NEWS_TTS_VOICE_ID,
 				NEWS_WAKE_TIME: config.NEWS_WAKE_TIME,
 				NEWS_PLAYBACK_DEVICE: config.NEWS_PLAYBACK_DEVICE
@@ -279,6 +281,26 @@
 						<label class="flex flex-col gap-1">
 							<span class="text-xs font-medium">{$i18n.t('Brief Model')}</span>
 							<input class="form-input rounded-xl bg-transparent" bind:value={config.NEWS_BRIEF_MODEL} />
+						</label>
+						<label class="flex flex-col gap-1">
+							<span class="text-xs font-medium">{$i18n.t('Article Model Timeout (s)')}</span>
+							<input
+								class="form-input rounded-xl bg-transparent"
+								type="number"
+								min="5"
+								step="1"
+								bind:value={config.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS}
+							/>
+						</label>
+						<label class="flex flex-col gap-1">
+							<span class="text-xs font-medium">{$i18n.t('Brief Model Timeout (s)')}</span>
+							<input
+								class="form-input rounded-xl bg-transparent"
+								type="number"
+								min="5"
+								step="1"
+								bind:value={config.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS}
+							/>
 						</label>
 						<label class="flex flex-col gap-1">
 							<span class="text-xs font-medium">{$i18n.t('Voice ID')}</span>

@@ -1,10 +1,15 @@
+import asyncio
 import json
+import os
 import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+os.environ.setdefault("VECTOR_DB", "disabled")
 
 
 def _install_optional_dependency_stubs() -> None:
@@ -104,6 +109,15 @@ def _install_optional_dependency_stubs() -> None:
     images_router.CreateImageForm = object
     images_router.EditImageForm = object
     sys.modules.setdefault("open_webui.routers.images", images_router)
+
+    audio_router = types.ModuleType("open_webui.routers.audio")
+    audio_router.transcribe = lambda *args, **kwargs: {}
+    audio_router.speech = lambda *args, **kwargs: {}
+    sys.modules.setdefault("open_webui.routers.audio", audio_router)
+
+    files_router = types.ModuleType("open_webui.routers.files")
+    files_router.upload_file_handler = lambda *args, **kwargs: {}
+    sys.modules.setdefault("open_webui.routers.files", files_router)
 
     memories_router = types.ModuleType("open_webui.routers.memories")
     memories_router.query_memory = lambda *args, **kwargs: {}
@@ -349,6 +363,23 @@ def test_compute_story_candidate_score_caps_preferred_source_bonus():
     assert score["final_score"] <= 1.0
 
 
+def test_news_model_timeouts_default_to_batch_friendly_values():
+    config = SimpleNamespace()
+
+    assert news_lane._news_model_timeout_seconds("article", config_or_path=config) == 300
+    assert news_lane._news_model_timeout_seconds("brief", config_or_path=config) == 300
+
+
+def test_news_model_timeouts_are_sanitized_and_clamped():
+    config = SimpleNamespace(
+        NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS="0",
+        NEWS_BRIEF_MODEL_TIMEOUT_SECONDS="garbage",
+    )
+
+    assert news_lane._news_model_timeout_seconds("article", config_or_path=config) == 5
+    assert news_lane._news_model_timeout_seconds("brief", config_or_path=config) == 300
+
+
 def test_morning_news_persona_form_uses_news_defaults(news_fixture):
     form = persona_utils.build_morning_news_persona_form(news_fixture["config"])
 
@@ -387,14 +418,15 @@ def test_builtin_tools_expose_news_tools_only_in_news_mode(news_fixture):
     assert "offsec_consult" not in tools
 
 
-@pytest.mark.asyncio
-async def test_builtin_news_consult_reads_latest_snapshot(news_fixture):
+def test_builtin_news_consult_reads_latest_snapshot(news_fixture):
     payload = json.loads(
-        await builtin_tools.news_consult(
-            objective="What is the latest on EU sanctions after the strike?",
-            phase="start",
-            named_entity="EU",
-            __request__=news_fixture["request"],
+        asyncio.run(
+            builtin_tools.news_consult(
+                objective="What is the latest on EU sanctions after the strike?",
+                phase="start",
+                named_entity="EU",
+                __request__=news_fixture["request"],
+            )
         )
     )
 
