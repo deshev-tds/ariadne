@@ -69,6 +69,10 @@ The important divergences are not cosmetic.
 - Automatic pre-migration SQLite backups were added before Alembic upgrades so local schema changes do not run without a fresh snapshot.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
 - On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
+- A news lane was added for local-first morning briefings: configurable source registry, RSS fetch and article analysis pipeline, story threading with stability scoring, daily briefing synthesis, and Kokoro TTS playback.
+- Model timeouts in the news pipeline are now configurable and batch-safe, with separate connect, article analysis, and briefing synthesis timeout floors to prevent long batch runs from dying on a single slow call.
+- A `Morning News` system persona is now seeded automatically for admin accounts on startup, pre-bound to the briefing model and TTS voice from config.
+- Persona `capabilities` now support a `preferred_working_mode` field that routes the chat runtime into a specialized workflow path when a compatible persona is active, without relying on chat-text inference.
 
 The rest of this README explains the rationale behind those changes.
 
@@ -80,7 +84,7 @@ The important distinction is that persona is no longer treated as "just another 
 
 `persona identity + binding + partner profile + requested defaults + chat attachment + scene note`
 
-That core shape is still the right mental model for most persona-attached chats. What has changed more recently is that a persona can also carry optional persona-scoped workflow hooks on top of that base, when a narrow domain path benefits from explicit runtime discipline instead of hoping a long prompt will hold.
+That core shape is still the right mental model for most persona-attached chats. What has changed more recently is that a persona can also carry optional persona-scoped workflow hooks on top of that base, when a narrow domain path benefits from explicit runtime discipline instead of hoping a long prompt will hold. A persona can now also declare a `preferred_working_mode` in its `capabilities`, which routes the chat backend into a specialized runtime path without requiring the user to flip a chat-level toggle or inferring intent from message text.
 
 Current Persona V1 behavior:
 
@@ -115,20 +119,126 @@ Those remain roadmap items rather than pretending they already exist.
 
 One useful proof has now shown up on top of that persona runtime: a persona can carry a narrow domain workflow that is materially more useful than "same chat, different prompt".
 
-In this fork, the current example is a travel-planning persona bound to a local model and a bounded tool surface. In the successful path, it can:
+There are now two concrete examples of that in this fork.
+
+The first is a travel-planning persona bound to a local model and a bounded tool surface. In the successful path, it can:
 
 - turn a broad trip brief into layered research passes instead of one blind query-and-dump turn
 - preserve persona-specific runtime defaults across follow-up refinement turns
 - selectively enrich an accepted plan with map links instead of always restarting research
 - use the local terminal/tool path to emit practical artifacts such as mobile-friendly HTML and PDF guides
 
-That is not presented here as a new standalone product or a claim that personas are now full applets. It is a narrower point:
+The second is the `Morning News` persona, which declares `preferred_working_mode: "news"` in its capabilities. When a chat is attached to that persona, the backend routes into the news lane runtime instead of the default chat path. The persona is pre-bound to the configured briefing model and TTS voice, and is seeded automatically for admin accounts on startup so it is ready without manual setup.
+
+That is not presented here as a claim that personas are now full applets. It is a narrower point:
 
 - persona can be a runtime scaffold, not just a prompt skin
 - business logic can stay persona-scoped instead of contaminating every chat path
-- a local `llama.cpp` stack on real hardware can be pushed far enough to produce outputs that are worth actually taking on a trip
+- a local `llama.cpp` stack on real hardware can be pushed far enough to produce outputs that are worth actually using
 
-It is still early and intentionally narrow. The point is not that "travel" is special. The point is that this fork now has a real example where persona identity, runtime defaults, tool routing, and artifact production combine into a workflow that would have been much weaker if persona were only cosmetic.
+The point is not that "travel" or "morning news" is special. The point is that this fork now has concrete examples where persona identity, runtime defaults, tool routing, and specialized backend paths combine into workflows that would have been weaker if persona were only cosmetic.
+
+## News Lane
+
+This fork adds a local-first news pipeline for structured morning briefings over a private news corpus.
+
+The design premise is the same one that shows up in the local corpus and context work: do not flatten everything into one generic retrieval step, and do not make quality depend on an opaque inference chain you cannot inspect.
+
+A news briefing has a different job than a general web search result:
+
+- it should follow a consistent source set over time, not rediscover the same sources on each run
+- articles about the same story from different sources should be threaded, not treated as independent items
+- the briefing should surface genuine conflicts between sources rather than smoothing them into a confident-sounding synthesis
+- the output should be speakable, not just readable
+
+The news lane was built around those requirements.
+
+### Pipeline Architecture
+
+The news pipeline runs in two stages: an hourly collection pass and a daily briefing synthesis.
+
+**Hourly pass:**
+
+1. Discover and fetch new articles from the configured source registry
+2. Prefetch related pages for any articles that need additional context
+3. Analyze articles: extract claims, identify supported claim kinds (`count`, `status`, `decision`, `date_time`, `official_position`), and score source alignment
+4. Build or update a story snapshot: thread articles that cover the same event, score thread stability, and close threads that have converged
+
+**Daily pass:**
+
+1. Load the latest closed snapshot
+2. Synthesize a briefing from the top-scoring threads, capped at a bounded story count (`NEWS_DAILY_CATCHUP_MAX_STORIES`)
+3. Render the briefing as speakable audio using Kokoro TTS with the configured voice
+
+The hourly and daily workers can also be triggered manually through the admin API, so the pipeline does not depend on a scheduler to be useful during development or first-time setup.
+
+### Thread Stability and Scoring
+
+Articles about the same story are grouped into threads. Each thread carries a stability score based on how much the source coverage has settled.
+
+Two thresholds shape story candidate selection:
+
+- `NEWS_THREAD_UNSTABLE_THRESHOLD` (0.45): threads below this score are penalized in briefing candidate ranking because they are still in flux
+- `NEWS_THREAD_PENDING_SPLIT_THRESHOLD` (0.90): threads near a split point get a separate penalty because they are likely covering two stories that have not yet diverged into distinct threads
+
+The result is that briefing candidates tend toward stories where coverage has stabilized and sources are no longer contradicting each other on basic facts, without requiring the pipeline to wait until every thread is fully resolved.
+
+### Source Registry and Category Config
+
+Sources are defined in a `NEWS_SOURCE_REGISTRY`, a structured list of feeds with associated metadata. Categories are defined separately in `NEWS_CATEGORY_CONFIG`, which maps source groups to topic areas.
+
+Both registry and category config are versioned and hash-tracked so the system can detect when configuration has changed between runs. Normalization and validation run on update to catch structural problems before they reach the fetch or analysis step.
+
+The source registry is per-instance and intended to be a curated set, not a directory of every available feed. The point is that the sources you track are a deliberate choice, not a discovery problem to outsource to a search engine.
+
+### Model Configuration and Timeout Safety
+
+The news pipeline uses two separate model roles:
+
+- `NEWS_ARTICLE_MODEL`: used for per-article claim extraction and analysis; can be a smaller or faster model
+- `NEWS_BRIEF_MODEL`: used for final briefing synthesis; benefits from stronger instruction-following
+
+Both roles use a configurable OpenAI-compatible endpoint (`NEWS_ARTICLE_MODEL_ENDPOINT`) so the news pipeline can target a different local server than the main chat path if needed.
+
+Model timeouts are also configurable and batch-safe:
+
+- `NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS` (default 300s): applies per article analysis call
+- `NEWS_BRIEF_MODEL_TIMEOUT_SECONDS` (default 300s): applies to the briefing synthesis call
+- connect timeout is separate (10s fixed) so a slow article does not close the underlying connection pool
+
+The separation matters because a batch of 10+ articles runs sequentially. A single timeout value covering both connect and read would either time out on slow but valid analysis calls or leave hung connections open across the batch.
+
+### Morning News Persona
+
+On startup, the backend automatically seeds a `Morning News` system persona for each admin account.
+
+The persona is pre-configured with:
+
+- bound to `NEWS_BRIEF_MODEL` from config
+- voice set from `NEWS_TTS_VOICE_ID` from config
+- system prompt biased toward local news corpus preference and source-grounded output
+- `preferred_working_mode: "news"` in capabilities, which routes attached chats into the news lane runtime instead of the default chat path
+
+The persona ID is deterministic per user (`system-morning-news-{user_id}`), so re-running startup is idempotent: existing personas are updated in place rather than duplicated.
+
+### Configuration Reference
+
+The important config keys for the news lane:
+
+- `NEWS_ENABLED`: toggles the entire lane on or off
+- `NEWS_ARTICLE_STORE_ROOT`: where fetched article data is stored on disk
+- `NEWS_CORPUS_ROOT`: the local news corpus directory used for retrieval
+- `NEWS_BRIEFINGS_ROOT`: where synthesized briefings are written
+- `NEWS_ARTICLE_MODEL_ENDPOINT`: OpenAI-compatible endpoint for article analysis and briefing
+- `NEWS_ARTICLE_MODEL`: model ID for article analysis
+- `NEWS_BRIEF_MODEL`: model ID for briefing synthesis
+- `NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS`: per-call timeout for article analysis
+- `NEWS_BRIEF_MODEL_TIMEOUT_SECONDS`: timeout for briefing synthesis
+- `NEWS_TTS_VOICE_ID`: Kokoro voice used for spoken briefings
+- `NEWS_WAKE_TIME`: target playback time for the daily briefing
+- `NEWS_PLAYBACK_DEVICE`: audio output device for TTS playback
+
+All config is managed through the admin Settings → News panel, which also exposes the source registry editor, category config, latest snapshot view, and manual worker triggers.
 
 ## Migration Safety
 
