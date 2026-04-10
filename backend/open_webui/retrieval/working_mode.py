@@ -2,7 +2,7 @@ from typing import Any
 
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 
-WORKING_MODES = {"general", "science", "offsec"}
+WORKING_MODES = {"general", "science", "offsec", "news"}
 
 
 def normalize_working_mode(value: Any, *, local_corpus_mode: Any = None) -> str:

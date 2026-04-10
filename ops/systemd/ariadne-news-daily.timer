@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Ariadne News Lane daily briefing build
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+Unit=ariadne-news-daily.service
+
+[Install]
+WantedBy=timers.target

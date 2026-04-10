@@ -56,6 +56,10 @@ from open_webui.tools.builtin import (
     resolve_place_google_maps,
     get_trip_weather_forecast,
     web_research_strong,
+    news_consult,
+    news_retrieve_articles,
+    news_retrieve_timeline,
+    news_view_articles,
     offsec_consult,
     offsec_retrieve_evidence,
     local_corpus_list_domains,
@@ -540,6 +544,16 @@ def get_builtin_tools(
             [
                 offsec_consult,
                 offsec_retrieve_evidence,
+            ]
+        )
+
+    if is_builtin_tool_enabled("news") and corpus_runtime.news_enabled:
+        builtin_functions.extend(
+            [
+                news_consult,
+                news_retrieve_articles,
+                news_retrieve_timeline,
+                news_view_articles,
             ]
         )
 

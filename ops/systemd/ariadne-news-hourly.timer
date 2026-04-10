@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Ariadne News Lane hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=ariadne-news-hourly.service
+
+[Install]
+WantedBy=timers.target

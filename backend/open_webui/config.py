@@ -39,6 +39,10 @@ from open_webui.env import (
 )
 from open_webui.internal.db_backup import create_pre_migration_backup
 from open_webui.internal.db import Base, get_db
+from open_webui.retrieval.news_lane import (
+    default_news_category_config,
+    default_news_source_registry,
+)
 from open_webui.utils.redis import get_redis_connection
 
 
@@ -3650,6 +3654,78 @@ OFFSEC_CORPUS_ROOT = PersistentConfig(
     "OFFSEC_CORPUS_ROOT",
     "rag.offsec.root",
     os.getenv("OFFSEC_CORPUS_ROOT", "offsec_corpus"),
+)
+
+NEWS_ENABLED = PersistentConfig(
+    "NEWS_ENABLED",
+    "rag.news.enable",
+    os.getenv("NEWS_ENABLED", "False").lower() == "true",
+)
+
+NEWS_ARTICLE_STORE_ROOT = PersistentConfig(
+    "NEWS_ARTICLE_STORE_ROOT",
+    "rag.news.article_store_root",
+    os.getenv("NEWS_ARTICLE_STORE_ROOT", "news_articles"),
+)
+
+NEWS_CORPUS_ROOT = PersistentConfig(
+    "NEWS_CORPUS_ROOT",
+    "rag.news.corpus_root",
+    os.getenv("NEWS_CORPUS_ROOT", "news_corpus"),
+)
+
+NEWS_BRIEFINGS_ROOT = PersistentConfig(
+    "NEWS_BRIEFINGS_ROOT",
+    "rag.news.briefings_root",
+    os.getenv("NEWS_BRIEFINGS_ROOT", "news_briefings"),
+)
+
+NEWS_ARTICLE_MODEL_ENDPOINT = PersistentConfig(
+    "NEWS_ARTICLE_MODEL_ENDPOINT",
+    "rag.news.article_model_endpoint",
+    os.getenv("NEWS_ARTICLE_MODEL_ENDPOINT", ""),
+)
+
+NEWS_ARTICLE_MODEL = PersistentConfig(
+    "NEWS_ARTICLE_MODEL",
+    "rag.news.article_model",
+    os.getenv("NEWS_ARTICLE_MODEL", ""),
+)
+
+NEWS_BRIEF_MODEL = PersistentConfig(
+    "NEWS_BRIEF_MODEL",
+    "rag.news.brief_model",
+    os.getenv("NEWS_BRIEF_MODEL", ""),
+)
+
+NEWS_TTS_VOICE_ID = PersistentConfig(
+    "NEWS_TTS_VOICE_ID",
+    "rag.news.tts_voice_id",
+    os.getenv("NEWS_TTS_VOICE_ID", "bg"),
+)
+
+NEWS_WAKE_TIME = PersistentConfig(
+    "NEWS_WAKE_TIME",
+    "rag.news.wake_time",
+    os.getenv("NEWS_WAKE_TIME", "07:30"),
+)
+
+NEWS_PLAYBACK_DEVICE = PersistentConfig(
+    "NEWS_PLAYBACK_DEVICE",
+    "rag.news.playback_device",
+    os.getenv("NEWS_PLAYBACK_DEVICE", ""),
+)
+
+NEWS_SOURCE_REGISTRY = PersistentConfig(
+    "NEWS_SOURCE_REGISTRY",
+    "rag.news.source_registry",
+    default_news_source_registry(),
+)
+
+NEWS_CATEGORY_CONFIG = PersistentConfig(
+    "NEWS_CATEGORY_CONFIG",
+    "rag.news.category_config",
+    default_news_category_config(),
 )
 
 WEB_SEARCH_EVIDENCE_MAX_TOKENS = PersistentConfig(

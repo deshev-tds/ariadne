@@ -106,7 +106,7 @@
 
 	const i18n = getContext('i18n');
 
-	type WorkingMode = 'general' | 'science' | 'offsec';
+	type WorkingMode = 'general' | 'science' | 'offsec' | 'news';
 	const WORKING_MODE_OPTIONS: {
 		value: WorkingMode;
 		label: string;
@@ -126,6 +126,11 @@
 			value: 'offsec',
 			label: 'Offsec',
 			description: 'Workflow-first consultation for terminal-centric offensive security work.'
+		},
+		{
+			value: 'news',
+			label: 'News',
+			description: 'Local news corpus for selective briefings, timelines and article-grounded retrieval.'
 		}
 	];
 
@@ -216,7 +221,7 @@
 		WORKING_MODE_OPTIONS.find((option) => option.value === mode)?.label ?? 'General';
 
 	const getWorkingModeCompactLabel = (mode: WorkingMode): string =>
-		mode === 'science' ? 'S' : mode === 'offsec' ? 'O' : 'G';
+		mode === 'science' ? 'S' : mode === 'offsec' ? 'O' : mode === 'news' ? 'N' : 'G';
 
 	const getWorkingModeStatusText = (mode: WorkingMode): string =>
 		`${getWorkingModeLabel(mode)} mode is active for this chat`;
@@ -1732,6 +1737,8 @@
 													class="rounded-full flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden leading-none transition-colors font-semibold uppercase tracking-[0.08em] whitespace-nowrap {workingMode ===
 													'offsec'
 														? 'text-orange-700 bg-orange-100/80 hover:bg-orange-200/80 dark:text-orange-200 dark:bg-orange-700/20 dark:hover:bg-orange-700/30'
+														: workingMode === 'news'
+															? 'text-sky-700 bg-sky-100/80 hover:bg-sky-200/80 dark:text-sky-200 dark:bg-sky-700/20 dark:hover:bg-sky-700/30'
 														: workingMode === 'science'
 															? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
 															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'} {$mobile
@@ -1779,39 +1786,41 @@
 												</DropdownMenu.Content>
 											</div>
 										</Dropdown>
-										<Tooltip
-											content={localCorpusMode === 'prefer'
-												? $i18n.t('Prefer local corpus mode is enabled for this chat')
-												: localCorpusMode === 'off'
-													? $i18n.t('Local corpus mode is off for this chat')
-													: $i18n.t('Local corpus mode is automatic for this chat')}
-											placement="top"
-										>
-											<button
-												type="button"
-												id="local-corpus-mode-button"
-												aria-label={$i18n.t('Local corpus mode')}
-												aria-pressed={localCorpusMode !== 'off'}
-												class="rounded-full size-8 flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden leading-none transition-colors {localCorpusMode ===
-												'prefer'
-													? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
-													: localCorpusMode === 'auto'
-														? 'text-sky-700 bg-sky-100/80 hover:bg-sky-200/80 dark:text-sky-200 dark:bg-sky-700/20 dark:hover:bg-sky-700/30'
-														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
-												on:click={async () => {
-													const nextMode =
-														localCorpusMode === 'off'
-															? 'auto'
-															: localCorpusMode === 'auto'
-																? 'prefer'
-																: 'off';
-													setChatLocalCorpusMode(nextMode);
-													await restoreChatInputFocus();
-												}}
+										{#if workingMode !== 'news'}
+											<Tooltip
+												content={localCorpusMode === 'prefer'
+													? $i18n.t('Prefer local corpus mode is enabled for this chat')
+													: localCorpusMode === 'off'
+														? $i18n.t('Local corpus mode is off for this chat')
+														: $i18n.t('Local corpus mode is automatic for this chat')}
+												placement="top"
 											>
-												<BookOpen className="size-4.5" strokeWidth="1.75" />
-											</button>
-										</Tooltip>
+												<button
+													type="button"
+													id="local-corpus-mode-button"
+													aria-label={$i18n.t('Local corpus mode')}
+													aria-pressed={localCorpusMode !== 'off'}
+													class="rounded-full size-8 flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden leading-none transition-colors {localCorpusMode ===
+													'prefer'
+														? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
+														: localCorpusMode === 'auto'
+															? 'text-sky-700 bg-sky-100/80 hover:bg-sky-200/80 dark:text-sky-200 dark:bg-sky-700/20 dark:hover:bg-sky-700/30'
+															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+													on:click={async () => {
+														const nextMode =
+															localCorpusMode === 'off'
+																? 'auto'
+																: localCorpusMode === 'auto'
+																	? 'prefer'
+																	: 'off';
+														setChatLocalCorpusMode(nextMode);
+														await restoreChatInputFocus();
+													}}
+												>
+													<BookOpen className="size-4.5" strokeWidth="1.75" />
+												</button>
+											</Tooltip>
+										{/if}
 										{#if showWebSearchButton}
 											<Tooltip
 												content={focusedSearchEnabled

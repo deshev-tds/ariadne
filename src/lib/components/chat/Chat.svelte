@@ -321,8 +321,8 @@
 	let chatThinkingEnabled = false;
 	let chatLedgerAgenticEnabled = false;
 	let chatFocusedSearchEnabled = false;
-	type WorkingMode = 'general' | 'science' | 'offsec';
-	const CHAT_WORKING_MODES: WorkingMode[] = ['general', 'science', 'offsec'];
+	type WorkingMode = 'general' | 'science' | 'offsec' | 'news';
+	const CHAT_WORKING_MODES: WorkingMode[] = ['general', 'science', 'offsec', 'news'];
 	let chatWorkingMode: WorkingMode = 'general';
 	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 

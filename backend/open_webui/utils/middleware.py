@@ -190,6 +190,13 @@ OFFSEC_CONSULT_SYSTEM_PROMPT = (
     "When exact syntax, flags, or version-specific behavior becomes the blocker, prefer official or "
     "project/GitHub docs before broad web search."
 )
+NEWS_CONSULT_SYSTEM_PROMPT = (
+    "This chat is in News mode. Use the local News lane first. Start with news_consult to orient around "
+    "the relevant local stories, then retrieve article-grounded evidence with news_retrieve_articles and "
+    "use news_retrieve_timeline only when continuity matters. Treat source text as canonical. Do not "
+    "silently reconcile disagreements between sources. If details conflict, attribute them or state that "
+    "the reporting diverges."
+)
 TOOL_NARRATION_SYSTEM_PROMPT = (
     "For compatible tool-heavy runs, you may give the user brief journey updates in the assistant text. "
     "When entering the first major tool phase, you may begin with a short orientation preamble. After that, "
@@ -208,6 +215,10 @@ TOOL_NARRATION_PHASE_ORDER = {
     "final_response": 5,
 }
 TOOL_NARRATION_TOOL_PHASES = {
+    "news_consult": "orientation",
+    "news_retrieve_articles": "evidence_gathering",
+    "news_retrieve_timeline": "evidence_gathering",
+    "news_view_articles": "evidence_gathering",
     "offsec_consult": "orientation",
     "offsec_retrieve_evidence": "evidence_gathering",
     "local_corpus_list_domains": "orientation",
@@ -277,6 +288,12 @@ DEFAULT_SELECTOR_OFFSEC_TERMINAL_GUIDANCE = (
     "When terminal tools are available, keep the terminal as the primary execution lane "
     "and use the Offsec corpus as a sparing consult layer."
 )
+DEFAULT_SELECTOR_NEWS_GUIDANCE = (
+    "In News mode, start with news_consult to orient around the relevant local stories. "
+    "Prefer article-grounded retrieval with news_retrieve_articles before broader timeline "
+    "summaries. Treat source text as canonical, and do not flatten source disagreements into "
+    "a single confident claim."
+)
 
 DEFAULT_SELECTOR_PRIOR_WORK_FALLBACK_GUIDANCE = (
     "When primary evidence lanes are unavailable, before answering from model knowledge "
@@ -286,6 +303,9 @@ DEFAULT_SELECTOR_PRIOR_WORK_FALLBACK_GUIDANCE = (
 )
 
 DEFAULT_SELECTOR_RETRIEVAL_TOOL_NAMES = {
+    "news_consult",
+    "news_retrieve_articles",
+    "news_retrieve_timeline",
     "offsec_consult",
     "offsec_retrieve_evidence",
     "local_corpus_frame_problem",
@@ -311,6 +331,13 @@ DEFAULT_SELECTOR_RETRIEVAL_TOOL_NAMES = {
 DEFAULT_SELECTOR_OFFSEC_TOOL_NAMES = {
     "offsec_consult",
     "offsec_retrieve_evidence",
+}
+
+DEFAULT_SELECTOR_NEWS_TOOL_NAMES = {
+    "news_consult",
+    "news_retrieve_articles",
+    "news_retrieve_timeline",
+    "news_view_articles",
 }
 
 DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES = {
@@ -495,6 +522,11 @@ def _build_default_selector_guidance(
         clauses.append(DEFAULT_SELECTOR_OFFSEC_GUIDANCE)
         if _selector_has_any_tool(tools, DEFAULT_SELECTOR_TERMINAL_TOOL_NAMES):
             clauses.append(DEFAULT_SELECTOR_OFFSEC_TERMINAL_GUIDANCE)
+    elif (
+        working_mode == "news"
+        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_NEWS_TOOL_NAMES)
+    ):
+        clauses.append(DEFAULT_SELECTOR_NEWS_GUIDANCE)
 
     web_enabled = any(bool(features.get(name)) for name in DEFAULT_SELECTOR_WEB_FEATURE_NAMES)
     if local_corpus_mode == "off" and not web_enabled:
@@ -589,8 +621,9 @@ def _should_enable_shared_tool_narration(
         and local_corpus_mode != "off"
         and corpus_runtime.offsec_enabled
     )
+    news_enabled = working_mode == "news" and corpus_runtime.news_enabled
     focused_search_enabled = bool(features.get("focused_search"))
-    return bool(local_corpus_enabled or offsec_enabled or focused_search_enabled)
+    return bool(local_corpus_enabled or offsec_enabled or news_enabled or focused_search_enabled)
 
 
 def _initialize_tool_narration_state(
@@ -610,15 +643,16 @@ def _initialize_tool_narration_state(
         and local_corpus_mode != "off"
         and corpus_runtime.offsec_enabled
     )
+    news_mode = working_mode == "news" and corpus_runtime.news_enabled
     focused_search_enabled = bool(features.get("focused_search"))
     return {
         "enabled": _should_enable_shared_tool_narration(request, metadata, features),
-        "last_narrated_phase": "orientation" if (local_corpus_prefer or offsec_mode) else None,
+        "last_narrated_phase": "orientation" if (local_corpus_prefer or offsec_mode or news_mode) else None,
         "current_major_phase": None,
-        "narration_count": 1 if (local_corpus_prefer or offsec_mode) else 0,
+        "narration_count": 1 if (local_corpus_prefer or offsec_mode or news_mode) else 0,
         "max_beats": TOOL_NARRATION_MAX_BEATS,
         "initial_preamble_expected": bool(
-            local_corpus_prefer or offsec_mode or focused_search_enabled
+            local_corpus_prefer or offsec_mode or news_mode or focused_search_enabled
         ),
     }
 
@@ -1486,6 +1520,10 @@ def get_citation_source_from_tool_result(
     _EXPECTS_LIST = {"search_web", "query_knowledge_files"}
     _EXPECTS_DICT = {
         "view_knowledge_file",
+        "news_consult",
+        "news_retrieve_articles",
+        "news_retrieve_timeline",
+        "news_view_articles",
         "search_strong_sources",
         "web_research_strong",
         "offsec_consult",
@@ -1631,7 +1669,7 @@ def get_citation_source_from_tool_result(
                 }
             ]
 
-        elif tool_name == "offsec_consult":
+        elif tool_name in {"offsec_consult", "news_consult", "news_retrieve_timeline"}:
             payload = tool_result if isinstance(tool_result, dict) else {}
             source_documents = (
                 payload.get("source_documents", []) if isinstance(payload, dict) else []
@@ -1651,11 +1689,13 @@ def get_citation_source_from_tool_result(
                         "metadata": [
                             {
                                 "source": item.get("source_path", item.get("name", "")),
-                                "name": item.get("name", "offsec consult"),
+                                "name": item.get("name", tool_name),
                                 "book_id": item.get("book_id", ""),
                                 "domain": item.get("domain", ""),
                                 "page_no": item.get("page_no"),
                                 "section_path": item.get("section_path", ""),
+                                "article_ids": item.get("article_ids", []),
+                                "category_ids": item.get("category_ids", []),
                             }
                         ],
                     }
@@ -1694,6 +1734,66 @@ def get_citation_source_from_tool_result(
                     }
                 )
             return list(grouped_sources.values())
+
+        elif tool_name == "news_retrieve_articles":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            documents = []
+            metadata = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                title = item.get("title", "") or "news evidence"
+                preview = item.get("preview", "")
+                documents.append(f"{title}\n{preview}".strip())
+                metadata.append(
+                    {
+                        "source": item.get("story_candidate_id", title),
+                        "name": title,
+                        "story_candidate_id": item.get("story_candidate_id", ""),
+                        "cluster_id": item.get("cluster_id", ""),
+                        "article_ids": item.get("article_ids", []),
+                        "category_ids": item.get("category_ids", []),
+                    }
+                )
+            return [
+                {
+                    "source": {
+                        "name": "news_retrieve_articles",
+                        "id": "news_retrieve_articles",
+                    },
+                    "document": documents,
+                    "metadata": metadata,
+                }
+            ]
+
+        elif tool_name == "news_view_articles":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            sources = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                sources.append(
+                    {
+                        "source": {
+                            "id": item.get("article_id", ""),
+                            "name": item.get("title", "news article"),
+                            "type": "news_article",
+                        },
+                        "document": [item.get("raw_text_md", "")],
+                        "metadata": [
+                            {
+                                "source": item.get("url", ""),
+                                "name": item.get("title", "news article"),
+                                "article_id": item.get("article_id", ""),
+                                "source_id": item.get("source_id", ""),
+                                "published_at": item.get("published_at", ""),
+                            }
+                        ],
+                    }
+                )
+            return sources
 
         elif tool_name == "local_corpus_retrieve_evidence":
             payload = tool_result if isinstance(tool_result, dict) else {}
@@ -1943,6 +2043,30 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
             "book_ids": len(parsed.get("book_ids") or []),
             "items": len(parsed.get("items") or []),
             "candidate_count": parsed.get("candidate_count"),
+        }
+
+    if tool_name == "news_consult" and isinstance(parsed, dict):
+        return {
+            "phase": parsed.get("phase"),
+            "snapshot_id": parsed.get("snapshot_id"),
+            "matched_stories": len(parsed.get("matched_stories") or []),
+        }
+
+    if tool_name == "news_retrieve_articles" and isinstance(parsed, dict):
+        return {
+            "snapshot_id": parsed.get("snapshot_id"),
+            "items": len(parsed.get("items") or []),
+        }
+
+    if tool_name == "news_retrieve_timeline" and isinstance(parsed, dict):
+        return {
+            "snapshot_id": parsed.get("snapshot_id"),
+            "items": len(parsed.get("items") or []),
+        }
+
+    if tool_name == "news_view_articles" and isinstance(parsed, dict):
+        return {
+            "items": len(parsed.get("items") or []),
         }
 
     if tool_name == "local_corpus_collect_axis_evidence" and isinstance(parsed, dict):
@@ -5670,6 +5794,20 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if OFFSEC_CONSULT_SYSTEM_PROMPT not in str(current_content):
             form_data["messages"] = add_or_update_system_message(
                 OFFSEC_CONSULT_SYSTEM_PROMPT,
+                form_data["messages"],
+                append=True,
+            )
+
+    if (
+        working_mode == "news"
+        and metadata.get("params", {}).get("function_calling") == "native"
+        and corpus_runtime.news_enabled
+    ):
+        current_system = get_system_message(form_data.get("messages", []))
+        current_content = current_system.get("content", "") if current_system else ""
+        if NEWS_CONSULT_SYSTEM_PROMPT not in str(current_content):
+            form_data["messages"] = add_or_update_system_message(
+                NEWS_CONSULT_SYSTEM_PROMPT,
                 form_data["messages"],
                 append=True,
             )

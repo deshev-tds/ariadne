@@ -1,0 +1,9 @@
+[Unit]
+Description=Ariadne News Lane daily briefing build
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/Users/damyandeshev/projects/ariadne
+ExecStart=/usr/bin/env news-worker run-daily

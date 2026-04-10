@@ -37,6 +37,12 @@ from open_webui.retrieval.offsec_corpus import (
     consult_offsec_corpus,
     retrieve_offsec_evidence,
 )
+from open_webui.retrieval.news_lane import (
+    consult_news_corpus,
+    retrieve_news_articles,
+    retrieve_news_timeline,
+    view_news_articles,
+)
 from open_webui.routers.images import (
     image_generations,
     image_edits,
@@ -839,6 +845,133 @@ async def offsec_retrieve_evidence(
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"offsec_retrieve_evidence error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def news_consult(
+    objective: str,
+    phase: str = "start",
+    current_findings: str = "",
+    current_hypothesis: str = "",
+    named_entity: str = "",
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Consult the compiled News lane to route a topic toward the right local stories and article set.
+    Use this first in News mode before drilling into article-level evidence.
+
+    :param objective: The current news/research objective
+    :param phase: Short phase label like start, planning, or follow_up
+    :param current_findings: Important findings collected so far
+    :param current_hypothesis: Current working hypothesis, if any
+    :param named_entity: Specific person, organization, place, or conflict to anchor around
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            consult_news_corpus,
+            objective=objective,
+            phase=phase,
+            current_findings=current_findings,
+            current_hypothesis=current_hypothesis,
+            named_entity=named_entity,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"news_consult error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def news_retrieve_articles(
+    query: str,
+    article_ids: Optional[list[str]] = None,
+    top_k: int = 8,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Retrieve de-noised article evidence previews from the News lane.
+    Use this after news_consult when you need article-grounded snippets and refs.
+
+    :param query: Focused retrieval need
+    :param article_ids: Optional article ids to constrain retrieval
+    :param top_k: Maximum previews to return, capped by backend policy
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            retrieve_news_articles,
+            query=query,
+            article_ids=article_ids,
+            top_k=top_k,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"news_retrieve_articles error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def news_retrieve_timeline(
+    query: str = "",
+    thread_ids: Optional[list[str]] = None,
+    top_k: int = 8,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Retrieve derived timeline slices from News story candidates.
+    Use this after news_consult when continuity matters more than isolated snippets.
+
+    :param query: Optional continuity query
+    :param thread_ids: Optional thread ids to constrain retrieval
+    :param top_k: Maximum timeline entries to return, capped by backend policy
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            retrieve_news_timeline,
+            query=query,
+            thread_ids=thread_ids,
+            top_k=top_k,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"news_retrieve_timeline error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def news_view_articles(
+    article_ids: list[str],
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    View normalized full-text News articles by article id.
+
+    :param article_ids: News article ids to open
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"})
+
+    try:
+        payload = await asyncio.to_thread(
+            view_news_articles,
+            article_ids=article_ids,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"news_view_articles error: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

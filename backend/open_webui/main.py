@@ -82,6 +82,7 @@ from open_webui.routers import (
     channels,
     chats,
     notes,
+    news,
     personas,
     folders,
     configs,
@@ -341,6 +342,18 @@ from open_webui.config import (
     ENABLE_LOCAL_CORPUS_TOOLS,
     LOCAL_CORPUS_ROOT,
     OFFSEC_CORPUS_ROOT,
+    NEWS_ENABLED,
+    NEWS_ARTICLE_STORE_ROOT,
+    NEWS_CORPUS_ROOT,
+    NEWS_BRIEFINGS_ROOT,
+    NEWS_ARTICLE_MODEL_ENDPOINT,
+    NEWS_ARTICLE_MODEL,
+    NEWS_BRIEF_MODEL,
+    NEWS_TTS_VOICE_ID,
+    NEWS_WAKE_TIME,
+    NEWS_PLAYBACK_DEVICE,
+    NEWS_SOURCE_REGISTRY,
+    NEWS_CATEGORY_CONFIG,
     WEB_SEARCH_EVIDENCE_MAX_TOKENS,
     WEB_SEARCH_EVIDENCE_CHUNK_TOKENS,
     WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE,
@@ -1214,6 +1227,18 @@ app.state.config.ENABLE_SAME_TURN_TOOL_OUTPUT_COMPACTION = (
 app.state.config.ENABLE_LOCAL_CORPUS_TOOLS = ENABLE_LOCAL_CORPUS_TOOLS
 app.state.config.LOCAL_CORPUS_ROOT = LOCAL_CORPUS_ROOT
 app.state.config.OFFSEC_CORPUS_ROOT = OFFSEC_CORPUS_ROOT
+app.state.config.NEWS_ENABLED = NEWS_ENABLED
+app.state.config.NEWS_ARTICLE_STORE_ROOT = NEWS_ARTICLE_STORE_ROOT
+app.state.config.NEWS_CORPUS_ROOT = NEWS_CORPUS_ROOT
+app.state.config.NEWS_BRIEFINGS_ROOT = NEWS_BRIEFINGS_ROOT
+app.state.config.NEWS_ARTICLE_MODEL_ENDPOINT = NEWS_ARTICLE_MODEL_ENDPOINT
+app.state.config.NEWS_ARTICLE_MODEL = NEWS_ARTICLE_MODEL
+app.state.config.NEWS_BRIEF_MODEL = NEWS_BRIEF_MODEL
+app.state.config.NEWS_TTS_VOICE_ID = NEWS_TTS_VOICE_ID
+app.state.config.NEWS_WAKE_TIME = NEWS_WAKE_TIME
+app.state.config.NEWS_PLAYBACK_DEVICE = NEWS_PLAYBACK_DEVICE
+app.state.config.NEWS_SOURCE_REGISTRY = NEWS_SOURCE_REGISTRY
+app.state.config.NEWS_CATEGORY_CONFIG = NEWS_CATEGORY_CONFIG
 app.state.config.WEB_SEARCH_EVIDENCE_MAX_TOKENS = WEB_SEARCH_EVIDENCE_MAX_TOKENS
 app.state.config.WEB_SEARCH_EVIDENCE_CHUNK_TOKENS = WEB_SEARCH_EVIDENCE_CHUNK_TOKENS
 app.state.config.WEB_SEARCH_EVIDENCE_MAX_CHUNKS_PER_SOURCE = (
@@ -1750,6 +1775,7 @@ app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["tasks"])
 app.include_router(images.router, prefix="/api/v1/images", tags=["images"])
 
 app.include_router(audio.router, prefix="/api/v1/audio", tags=["audio"])
+app.include_router(news.router, prefix="/api/v1/news", tags=["news"])
 app.include_router(retrieval.router, prefix="/api/v1/retrieval", tags=["retrieval"])
 app.include_router(maps.router, prefix="/api/v1/maps", tags=["maps"])
 
