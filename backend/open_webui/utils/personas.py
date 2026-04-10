@@ -4,7 +4,8 @@ from copy import deepcopy
 from typing import Any, Optional
 
 from open_webui.models.functions import Functions
-from open_webui.models.personas import PersonaModel
+from open_webui.models.personas import PersonaForm, PersonaModel, Personas
+from open_webui.models.users import Users
 from open_webui.models.skills import Skills
 from open_webui.models.tools import Tools
 from open_webui.utils.access_control import has_permission
@@ -17,6 +18,88 @@ PERSONA_DEFAULT_FEATURE_IDS = (
     "memory",
     "voice",
 )
+
+MORNING_NEWS_PERSONA_NAME = "Morning News"
+MORNING_NEWS_PERSONA_ID_PREFIX = "system-morning-news"
+MORNING_NEWS_PERSONA_PREFERRED_WORKING_MODE = "news"
+
+
+def build_morning_news_persona_id(user_id: str) -> str:
+    return f"{MORNING_NEWS_PERSONA_ID_PREFIX}-{user_id}"
+
+
+def build_morning_news_persona_form(config_or_path: Any = None) -> PersonaForm:
+    bound_model_id = None
+    voice_id = None
+
+    if config_or_path is not None:
+        bound_model_id = getattr(config_or_path, "NEWS_BRIEF_MODEL", None) or None
+        voice_id = getattr(config_or_path, "NEWS_TTS_VOICE_ID", None) or None
+
+    return PersonaForm(
+        id=None,
+        name=MORNING_NEWS_PERSONA_NAME,
+        description="Source-grounded morning briefings over the local news corpus.",
+        archetype="assistant",
+        bound_model_id=bound_model_id,
+        system_prompt=(
+            "You are Morning News. Prefer the local news corpus and source-grounded "
+            "evidence, keep updates compact, and do not smooth over conflicts between "
+            "sources."
+        ),
+        greeting="Ready with the short version or the full timeline.",
+        voice_id=voice_id,
+        tool_ids=[],
+        skill_ids=[],
+        filter_ids=[],
+        action_ids=[],
+        default_feature_ids=["voice"],
+        capabilities={
+            "preferred_working_mode": MORNING_NEWS_PERSONA_PREFERRED_WORKING_MODE,
+            "news_persona": True,
+        },
+        is_active=True,
+    )
+
+
+def ensure_morning_news_persona_for_user(
+    user_id: str,
+    config_or_path: Any = None,
+) -> Optional[PersonaModel]:
+    persona_id = build_morning_news_persona_id(user_id)
+    form = build_morning_news_persona_form(config_or_path)
+
+    existing = Personas.get_persona_by_id_and_user_id(persona_id, user_id)
+    if existing is not None:
+        form.id = persona_id
+        return Personas.update_persona_by_id(persona_id, user_id, form)
+
+    form.id = persona_id
+    return Personas.insert_new_persona(user_id, form)
+
+
+def ensure_morning_news_personas_for_admins(config_or_path: Any = None) -> list[PersonaModel]:
+    admins = Users.get_users(filter={"roles": ["admin"]}).get("users", [])
+    seeded: list[PersonaModel] = []
+    for admin in admins:
+        persona = ensure_morning_news_persona_for_user(admin.id, config_or_path)
+        if persona is not None:
+            seeded.append(persona)
+    return seeded
+
+
+def get_persona_preferred_working_mode(
+    effective_persona_state: Optional[dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(effective_persona_state, dict):
+        return None
+
+    capabilities = effective_persona_state.get("capabilities") or {}
+    preferred = capabilities.get("preferred_working_mode")
+    if isinstance(preferred, str):
+        preferred = preferred.strip().lower()
+        return preferred or None
+    return None
 
 
 def build_persona_defaults_snapshot(persona: PersonaModel) -> dict[str, Any]:

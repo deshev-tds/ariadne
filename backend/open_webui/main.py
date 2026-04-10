@@ -123,6 +123,8 @@ from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_m
 from open_webui.retrieval.working_mode import normalize_working_mode
 from open_webui.utils.personas import (
     build_persona_defaults_snapshot,
+    ensure_morning_news_personas_for_admins,
+    get_persona_preferred_working_mode,
     resolve_effective_persona_state,
 )
 
@@ -713,6 +715,11 @@ async def lifespan(app: FastAPI):
         if create_admin_user(WEBUI_ADMIN_EMAIL, WEBUI_ADMIN_PASSWORD, WEBUI_ADMIN_NAME):
             # Disable signup since we now have an admin
             app.state.config.ENABLE_SIGNUP = False
+
+    try:
+        ensure_morning_news_personas_for_admins(app.state.config)
+    except Exception as exc:
+        log.warning("Failed to seed Morning News persona: %s", exc)
 
     # This should be blocking (sync) so functions are not deactivated on first /get_models calls
     # when the first user lands on the / route.
@@ -2124,8 +2131,12 @@ async def chat_completion(
         local_corpus_mode = normalize_local_corpus_mode(
             form_data.get("params", {}).get("local_corpus_mode")
         )
+        persona_preferred_working_mode = get_persona_preferred_working_mode(
+            (persona_state or {}).get("effective")
+        )
         working_mode = normalize_working_mode(
-            form_data.get("params", {}).get("working_mode"),
+            form_data.get("params", {}).get("working_mode")
+            or persona_preferred_working_mode,
             local_corpus_mode=local_corpus_mode,
         )
 

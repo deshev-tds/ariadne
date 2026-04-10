@@ -1,13 +1,157 @@
 import json
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+
+def _install_optional_dependency_stubs() -> None:
+    boto3 = types.ModuleType("boto3")
+    boto3.client = lambda *args, **kwargs: None
+    sys.modules.setdefault("boto3", boto3)
+
+    botocore = types.ModuleType("botocore")
+    sys.modules.setdefault("botocore", botocore)
+
+    botocore_config = types.ModuleType("botocore.config")
+
+    class Config:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    botocore_config.Config = Config
+    sys.modules.setdefault("botocore.config", botocore_config)
+
+    botocore_exceptions = types.ModuleType("botocore.exceptions")
+
+    class ClientError(Exception):
+        pass
+
+    botocore_exceptions.ClientError = ClientError
+    sys.modules.setdefault("botocore.exceptions", botocore_exceptions)
+
+    google_cloud = types.ModuleType("google.cloud")
+    google_cloud.__path__ = []
+    sys.modules.setdefault("google.cloud", google_cloud)
+
+    google_cloud_storage = types.ModuleType("google.cloud.storage")
+    google_cloud_storage.Client = object
+    sys.modules.setdefault("google.cloud.storage", google_cloud_storage)
+
+    google_cloud_exceptions = types.ModuleType("google.cloud.exceptions")
+
+    class GoogleCloudError(Exception):
+        pass
+
+    class NotFound(Exception):
+        pass
+
+    google_cloud_exceptions.GoogleCloudError = GoogleCloudError
+    google_cloud_exceptions.NotFound = NotFound
+    sys.modules.setdefault("google.cloud.exceptions", google_cloud_exceptions)
+
+    azure = types.ModuleType("azure")
+    azure.__path__ = []
+    sys.modules.setdefault("azure", azure)
+
+    azure_identity = types.ModuleType("azure.identity")
+    azure_identity.DefaultAzureCredential = object
+    azure_identity.get_bearer_token_provider = lambda *args, **kwargs: None
+    sys.modules.setdefault("azure.identity", azure_identity)
+
+    azure_storage = types.ModuleType("azure.storage")
+    azure_storage.__path__ = []
+    sys.modules.setdefault("azure.storage", azure_storage)
+
+    azure_storage_blob = types.ModuleType("azure.storage.blob")
+    azure_storage_blob.BlobServiceClient = object
+    sys.modules.setdefault("azure.storage.blob", azure_storage_blob)
+
+    azure_core = types.ModuleType("azure.core")
+    azure_core.__path__ = []
+    sys.modules.setdefault("azure.core", azure_core)
+
+    azure_core_exceptions = types.ModuleType("azure.core.exceptions")
+
+    class ResourceNotFoundError(Exception):
+        pass
+
+    azure_core_exceptions.ResourceNotFoundError = ResourceNotFoundError
+    sys.modules.setdefault("azure.core.exceptions", azure_core_exceptions)
+
+    retrieval_router = types.ModuleType("open_webui.routers.retrieval")
+    retrieval_router.search_web = lambda *args, **kwargs: []
+    retrieval_router.execute_strong_source_search = lambda *args, **kwargs: {}
+    retrieval_router.process_web_search = lambda *args, **kwargs: {}
+    retrieval_router.SearchForm = object
+    retrieval_router.process_file = lambda *args, **kwargs: {}
+    retrieval_router.ProcessFileForm = object
+    sys.modules.setdefault("open_webui.routers.retrieval", retrieval_router)
+
+    retrieval_utils = types.ModuleType("open_webui.retrieval.utils")
+    retrieval_utils.get_content_from_url = lambda *args, **kwargs: {}
+    retrieval_utils.get_sources_from_items = lambda *args, **kwargs: []
+    sys.modules.setdefault("open_webui.retrieval.utils", retrieval_utils)
+
+    images_router = types.ModuleType("open_webui.routers.images")
+    images_router.image_generations = lambda *args, **kwargs: {}
+    images_router.image_edits = lambda *args, **kwargs: {}
+    images_router.get_image_data = lambda *args, **kwargs: (None, None)
+    images_router.upload_image = lambda *args, **kwargs: (None, "")
+    images_router.CreateImageForm = object
+    images_router.EditImageForm = object
+    sys.modules.setdefault("open_webui.routers.images", images_router)
+
+    memories_router = types.ModuleType("open_webui.routers.memories")
+    memories_router.query_memory = lambda *args, **kwargs: {}
+    memories_router.add_memory = lambda *args, **kwargs: {}
+    memories_router.update_memory_by_id = lambda *args, **kwargs: {}
+    memories_router.QueryMemoryForm = object
+    memories_router.AddMemoryForm = object
+    memories_router.MemoryUpdateModel = object
+    sys.modules.setdefault("open_webui.routers.memories", memories_router)
+
+    vector_factory = types.ModuleType("open_webui.retrieval.vector.factory")
+    vector_factory.VECTOR_DB_CLIENT = None
+    sys.modules.setdefault("open_webui.retrieval.vector.factory", vector_factory)
+
+    google_maps_utils = types.ModuleType("open_webui.utils.google_maps")
+
+    class GoogleMapsError(Exception):
+        pass
+
+    google_maps_utils.GoogleMapsError = GoogleMapsError
+    google_maps_utils.resolve_place_with_google_maps = lambda *args, **kwargs: {}
+    sys.modules.setdefault("open_webui.utils.google_maps", google_maps_utils)
+
+    sanitize_utils = types.ModuleType("open_webui.utils.sanitize")
+    sanitize_utils.sanitize_code = lambda value, *args, **kwargs: value
+    sys.modules.setdefault("open_webui.utils.sanitize", sanitize_utils)
+
+    weather_utils = types.ModuleType("open_webui.utils.weather")
+
+    class WeatherError(Exception):
+        pass
+
+    weather_utils.WeatherError = WeatherError
+    weather_utils.get_weather_forecast = lambda *args, **kwargs: {}
+    sys.modules.setdefault("open_webui.utils.weather", weather_utils)
+
+    retrieval_web_utils = types.ModuleType("open_webui.retrieval.web.utils")
+    retrieval_web_utils.validate_url = lambda *args, **kwargs: True
+    sys.modules.setdefault("open_webui.retrieval.web.utils", retrieval_web_utils)
+
+
+_install_optional_dependency_stubs()
+
 import open_webui.retrieval.corpus_runtime as corpus_runtime
 import open_webui.retrieval.news_lane as news_lane
 import open_webui.tools.builtin as builtin_tools
 import open_webui.utils.middleware as middleware
+import open_webui.utils.personas as persona_utils
 import open_webui.utils.tools as tool_utils
 
 
@@ -205,6 +349,16 @@ def test_compute_story_candidate_score_caps_preferred_source_bonus():
     assert score["final_score"] <= 1.0
 
 
+def test_morning_news_persona_form_uses_news_defaults(news_fixture):
+    form = persona_utils.build_morning_news_persona_form(news_fixture["config"])
+
+    assert form.name == persona_utils.MORNING_NEWS_PERSONA_NAME
+    assert form.bound_model_id is None
+    assert form.voice_id == "bg"
+    assert form.capabilities["preferred_working_mode"] == "news"
+    assert form.default_feature_ids == ["voice"]
+
+
 def test_resolve_corpus_runtime_enables_news_mode(news_fixture):
     runtime = corpus_runtime.resolve_corpus_runtime(
         news_fixture["config"],
@@ -263,6 +417,14 @@ def test_news_selector_guidance_prefers_news_lane():
 
     assert "start with news_consult" in guidance
     assert "Treat source text as canonical" in guidance
+
+
+def test_persona_preferred_working_mode_reports_news():
+    preferred = persona_utils.get_persona_preferred_working_mode(
+        {"capabilities": {"preferred_working_mode": "news"}}
+    )
+
+    assert preferred == "news"
 
 
 def test_should_enable_shared_tool_narration_for_news_mode(news_fixture):
