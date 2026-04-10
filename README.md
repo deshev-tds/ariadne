@@ -717,6 +717,21 @@ This fork supports Kokoro in the places where it is actually useful:
 
 The point is not to chase the largest TTS stack. The point is to improve voice quality per watt, latency, and setup complexity.
 
+There is also an important dependency split in this fork:
+
+- the normal backend runtime lives in `backend/.venv`, and `pull_and_run.sh` restores that environment with `python -m pip install -r backend/requirements.txt`
+- Kokoro ONNX belongs to that base backend dependency set and is expected to work from the regular backend install path
+- OmniVoice is intentionally optional and is not part of the base requirements; the code lazy-imports it and expects `omnivoice` plus a compatible `torch` / `torchaudio` runtime to be installed separately into `backend/.venv`
+
+On the Strix Halo / ROCm box, the right mental model is:
+
+- base backend install first
+- then host ROCm runtime
+- then ROCm `torch` / `torchvision` / `torchaudio` wheels into `backend/.venv`
+- then optional extras such as OmniVoice on top of that same backend virtualenv
+
+That layering matters because breaking or replacing a root-level repo `.venv` should not be treated as a backend TTS/runtime migration. The app itself is wired around `backend/.venv`.
+
 ## Token Exploration and Response Branching
 
 Most chat UIs hide generation internals completely. That is convenient until you need to inspect why a response happened, or you want to deliberately fork from a different token path.
