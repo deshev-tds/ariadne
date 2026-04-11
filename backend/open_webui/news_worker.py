@@ -19,6 +19,11 @@ from open_webui.config import (
     NEWS_TTS_VOICE_ID,
     NEWS_WAKE_TIME,
 )
+from open_webui.routers.news import (
+    coerce_news_wake_time,
+    run_news_daily_briefing_pipeline,
+    run_news_morning_pipeline,
+)
 from open_webui.retrieval.news_lane import (
     analyze_articles,
     build_briefing,
@@ -48,7 +53,7 @@ def _config() -> SimpleNamespace:
         NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS=int(_value(NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS)),
         NEWS_BRIEF_MODEL_TIMEOUT_SECONDS=int(_value(NEWS_BRIEF_MODEL_TIMEOUT_SECONDS)),
         NEWS_TTS_VOICE_ID=str(_value(NEWS_TTS_VOICE_ID)),
-        NEWS_WAKE_TIME=str(_value(NEWS_WAKE_TIME)),
+        NEWS_WAKE_TIME=coerce_news_wake_time(str(_value(NEWS_WAKE_TIME))),
         NEWS_PLAYBACK_DEVICE=str(_value(NEWS_PLAYBACK_DEVICE)),
         NEWS_SOURCE_REGISTRY=_value(NEWS_SOURCE_REGISTRY),
         NEWS_CATEGORY_CONFIG=_value(NEWS_CATEGORY_CONFIG),
@@ -117,34 +122,16 @@ def play_latest():
     _echo(play_latest_briefing(config_or_path=_config()))
 
 
+@app.command("run-morning")
+def run_morning():
+    _echo(run_news_morning_pipeline(config_or_path=_config()))
+
+
 @app.command("run-hourly")
 def run_hourly():
-    fetch = discover_and_fetch_news(config_or_path=_config())
-    prefetch = prefetch_related_once(
-        config_or_path=_config(),
-        article_ids=fetch.get("fetched_article_ids", []),
-    )
-    analysis = analyze_articles(
-        config_or_path=_config(),
-        article_ids=fetch.get("fetched_article_ids", []),
-    )
-    snapshot = build_snapshot(
-        config_or_path=_config(),
-        article_ids=fetch.get("fetched_article_ids", []),
-        prefetched_article_ids=prefetch.get("prefetched_article_ids", []),
-    )
-    _echo(
-        {
-            "fetch": fetch,
-            "prefetch": prefetch,
-            "analysis": analysis,
-            "snapshot": snapshot,
-        }
-    )
+    _echo(run_news_morning_pipeline(config_or_path=_config()))
 
 
 @app.command("run-daily")
 def run_daily():
-    snapshot = load_latest_closed_snapshot(_config())
-    briefing = build_briefing(config_or_path=_config(), snapshot=snapshot)
-    _echo({"briefing": briefing})
+    _echo(run_news_daily_briefing_pipeline(config_or_path=_config()))

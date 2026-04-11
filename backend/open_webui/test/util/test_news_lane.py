@@ -167,6 +167,7 @@ _install_optional_dependency_stubs()
 
 import open_webui.retrieval.corpus_runtime as corpus_runtime
 import open_webui.retrieval.news_lane as news_lane
+import open_webui.routers.news as news_router
 import open_webui.tools.builtin as builtin_tools
 import open_webui.utils.middleware as middleware
 import open_webui.utils.personas as persona_utils
@@ -1461,3 +1462,51 @@ def test_discover_and_fetch_news_skips_entries_older_than_24_hours(monkeypatch, 
     assert len(article_files) == 1
     payload = json.loads(article_files[0].read_text(encoding="utf-8"))
     assert payload["url"] == "https://example.com/fresh"
+
+
+def test_normalize_news_wake_time_accepts_and_zero_pads():
+    assert news_router.normalize_news_wake_time("5:8") == "05:08"
+    assert news_router.normalize_news_wake_time("05:08") == "05:08"
+
+
+def test_normalize_news_wake_time_defaults_when_empty():
+    assert news_router.normalize_news_wake_time("") == "05:08"
+    assert news_router.normalize_news_wake_time(None) == "05:08"
+
+
+def test_normalize_news_wake_time_rejects_invalid_values():
+    with pytest.raises(ValueError):
+        news_router.normalize_news_wake_time("25:00")
+
+    with pytest.raises(ValueError):
+        news_router.normalize_news_wake_time("abc")
+
+
+def test_run_news_morning_pipeline_chains_snapshot_and_briefing(monkeypatch):
+    captured = {}
+
+    def fake_snapshot_pipeline(config_or_path):
+        captured["snapshot_config"] = config_or_path
+        return {
+            "fetch": {"fetched_article_ids": ["a1"]},
+            "prefetch": {"prefetched_article_ids": []},
+            "analysis": {"analyzed_article_ids": ["a1"]},
+            "snapshot": {"snapshot_id": "snap-1"},
+        }
+
+    def fake_build_briefing(config_or_path, snapshot):
+        captured["briefing_config"] = config_or_path
+        captured["briefing_snapshot"] = snapshot
+        return {"briefing_id": "brief-1"}
+
+    monkeypatch.setattr(news_router, "run_news_snapshot_pipeline", fake_snapshot_pipeline)
+    monkeypatch.setattr(news_router, "build_briefing", fake_build_briefing)
+
+    config = SimpleNamespace(NEWS_ENABLED=True)
+    result = news_router.run_news_morning_pipeline(config)
+
+    assert result["snapshot"]["snapshot_id"] == "snap-1"
+    assert result["briefing"]["briefing_id"] == "brief-1"
+    assert captured["snapshot_config"] is config
+    assert captured["briefing_config"] is config
+    assert captured["briefing_snapshot"] == {"snapshot_id": "snap-1"}

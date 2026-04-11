@@ -31,6 +31,7 @@ from open_webui.utils.auth import get_admin_user
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+DEFAULT_NEWS_WAKE_TIME = "05:08"
 
 
 class NewsConfigForm(BaseModel):
@@ -57,6 +58,80 @@ class CategoriesUpdateForm(BaseModel):
     categories: list[dict[str, Any]]
 
 
+def normalize_news_wake_time(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return DEFAULT_NEWS_WAKE_TIME
+    parts = raw.split(":")
+    if len(parts) != 2:
+        raise ValueError("NEWS_WAKE_TIME must use HH:MM format.")
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError as exc:
+        raise ValueError("NEWS_WAKE_TIME must use numeric HH:MM format.") from exc
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError("NEWS_WAKE_TIME must be between 00:00 and 23:59.")
+    return f"{hour:02d}:{minute:02d}"
+
+
+def coerce_news_wake_time(value: str | None) -> str:
+    try:
+        return normalize_news_wake_time(value)
+    except ValueError:
+        return DEFAULT_NEWS_WAKE_TIME
+
+
+def _refresh_news_scheduler(request: Request) -> None:
+    refresh = getattr(request.app.state, "refresh_news_scheduler", None)
+    if callable(refresh):
+        refresh()
+
+
+def run_news_snapshot_pipeline(config_or_path: Any) -> dict[str, Any]:
+    fetch_result = discover_and_fetch_news(config_or_path=config_or_path)
+    prefetch_result = prefetch_related_once(
+        config_or_path=config_or_path,
+        article_ids=fetch_result.get("fetched_article_ids", []),
+    )
+    analysis_result = analyze_articles(
+        config_or_path=config_or_path,
+        article_ids=fetch_result.get("fetched_article_ids", []),
+    )
+    snapshot = build_snapshot(
+        config_or_path=config_or_path,
+        article_ids=fetch_result.get("fetched_article_ids", []),
+        prefetched_article_ids=prefetch_result.get("prefetched_article_ids", []),
+    )
+    return {
+        "fetch": fetch_result,
+        "prefetch": prefetch_result,
+        "analysis": analysis_result,
+        "snapshot": snapshot,
+    }
+
+
+def run_news_daily_briefing_pipeline(config_or_path: Any) -> dict[str, Any]:
+    snapshot = load_latest_closed_snapshot(config_or_path)
+    briefing = build_briefing(
+        config_or_path=config_or_path,
+        snapshot=snapshot,
+    )
+    return {"briefing": briefing}
+
+
+def run_news_morning_pipeline(config_or_path: Any) -> dict[str, Any]:
+    snapshot_result = run_news_snapshot_pipeline(config_or_path)
+    briefing = build_briefing(
+        config_or_path=config_or_path,
+        snapshot=snapshot_result["snapshot"],
+    )
+    return {
+        **snapshot_result,
+        "briefing": briefing,
+    }
+
+
 def _news_config_payload(request: Request) -> dict[str, Any]:
     config = request.app.state.config
     registry = load_news_source_registry(config)
@@ -73,7 +148,7 @@ def _news_config_payload(request: Request) -> dict[str, Any]:
         "NEWS_BRIEF_MODEL_TIMEOUT_SECONDS": int(config.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS),
         "NEWS_BRIEF_TARGET_ITEM_COUNT": int(config.NEWS_BRIEF_TARGET_ITEM_COUNT),
         "NEWS_TTS_VOICE_ID": str(config.NEWS_TTS_VOICE_ID or ""),
-        "NEWS_WAKE_TIME": str(config.NEWS_WAKE_TIME or ""),
+        "NEWS_WAKE_TIME": coerce_news_wake_time(str(config.NEWS_WAKE_TIME or "")),
         "NEWS_PLAYBACK_DEVICE": str(config.NEWS_PLAYBACK_DEVICE or ""),
         "source_registry_semantic_hash": news_source_registry_semantic_hash(registry),
         "category_config_semantic_hash": news_category_config_semantic_hash(
@@ -97,38 +172,45 @@ async def update_news_config(
     user=Depends(get_admin_user),
 ):
     config = request.app.state.config
-    if form_data.NEWS_ENABLED is not None:
-        config.NEWS_ENABLED = bool(form_data.NEWS_ENABLED)
-    if form_data.NEWS_ARTICLE_STORE_ROOT is not None:
-        config.NEWS_ARTICLE_STORE_ROOT = form_data.NEWS_ARTICLE_STORE_ROOT
-    if form_data.NEWS_CORPUS_ROOT is not None:
-        config.NEWS_CORPUS_ROOT = form_data.NEWS_CORPUS_ROOT
-    if form_data.NEWS_BRIEFINGS_ROOT is not None:
-        config.NEWS_BRIEFINGS_ROOT = form_data.NEWS_BRIEFINGS_ROOT
-    if form_data.NEWS_ARTICLE_MODEL_ENDPOINT is not None:
-        config.NEWS_ARTICLE_MODEL_ENDPOINT = form_data.NEWS_ARTICLE_MODEL_ENDPOINT
-    if form_data.NEWS_ARTICLE_MODEL is not None:
-        config.NEWS_ARTICLE_MODEL = form_data.NEWS_ARTICLE_MODEL
-    if form_data.NEWS_BRIEF_MODEL is not None:
-        config.NEWS_BRIEF_MODEL = form_data.NEWS_BRIEF_MODEL
-    if form_data.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS is not None:
-        config.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS = max(
-            5, int(form_data.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS)
+    try:
+        if form_data.NEWS_ENABLED is not None:
+            config.NEWS_ENABLED = bool(form_data.NEWS_ENABLED)
+        if form_data.NEWS_ARTICLE_STORE_ROOT is not None:
+            config.NEWS_ARTICLE_STORE_ROOT = form_data.NEWS_ARTICLE_STORE_ROOT
+        if form_data.NEWS_CORPUS_ROOT is not None:
+            config.NEWS_CORPUS_ROOT = form_data.NEWS_CORPUS_ROOT
+        if form_data.NEWS_BRIEFINGS_ROOT is not None:
+            config.NEWS_BRIEFINGS_ROOT = form_data.NEWS_BRIEFINGS_ROOT
+        if form_data.NEWS_ARTICLE_MODEL_ENDPOINT is not None:
+            config.NEWS_ARTICLE_MODEL_ENDPOINT = form_data.NEWS_ARTICLE_MODEL_ENDPOINT
+        if form_data.NEWS_ARTICLE_MODEL is not None:
+            config.NEWS_ARTICLE_MODEL = form_data.NEWS_ARTICLE_MODEL
+        if form_data.NEWS_BRIEF_MODEL is not None:
+            config.NEWS_BRIEF_MODEL = form_data.NEWS_BRIEF_MODEL
+        if form_data.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS is not None:
+            config.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS = max(
+                5, int(form_data.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS)
+            )
+        if form_data.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS is not None:
+            config.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = max(
+                5, int(form_data.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS)
+            )
+        if form_data.NEWS_BRIEF_TARGET_ITEM_COUNT is not None:
+            config.NEWS_BRIEF_TARGET_ITEM_COUNT = max(
+                1, min(24, int(form_data.NEWS_BRIEF_TARGET_ITEM_COUNT))
+            )
+        if form_data.NEWS_TTS_VOICE_ID is not None:
+            config.NEWS_TTS_VOICE_ID = form_data.NEWS_TTS_VOICE_ID
+        if form_data.NEWS_WAKE_TIME is not None:
+            config.NEWS_WAKE_TIME = normalize_news_wake_time(form_data.NEWS_WAKE_TIME)
+        if form_data.NEWS_PLAYBACK_DEVICE is not None:
+            config.NEWS_PLAYBACK_DEVICE = form_data.NEWS_PLAYBACK_DEVICE
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
         )
-    if form_data.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS is not None:
-        config.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = max(
-            5, int(form_data.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS)
-        )
-    if form_data.NEWS_BRIEF_TARGET_ITEM_COUNT is not None:
-        config.NEWS_BRIEF_TARGET_ITEM_COUNT = max(
-            1, min(24, int(form_data.NEWS_BRIEF_TARGET_ITEM_COUNT))
-        )
-    if form_data.NEWS_TTS_VOICE_ID is not None:
-        config.NEWS_TTS_VOICE_ID = form_data.NEWS_TTS_VOICE_ID
-    if form_data.NEWS_WAKE_TIME is not None:
-        config.NEWS_WAKE_TIME = form_data.NEWS_WAKE_TIME
-    if form_data.NEWS_PLAYBACK_DEVICE is not None:
-        config.NEWS_PLAYBACK_DEVICE = form_data.NEWS_PLAYBACK_DEVICE
+    _refresh_news_scheduler(request)
     return {"status": True, "config": _news_config_payload(request)}
 
 
@@ -246,32 +328,26 @@ async def get_news_thread(thread_id: str, request: Request, user=Depends(get_adm
     return {"status": True, **payload}
 
 
+@router.post("/worker/run-morning")
+async def run_news_morning(request: Request, user=Depends(get_admin_user)):
+    try:
+        result = run_news_morning_pipeline(request.app.state.config)
+        return {"status": True, **result}
+    except Exception as exc:
+        log.exception("News morning worker failed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(exc),
+        )
+
+
 @router.post("/worker/run-hourly")
 async def run_news_hourly(request: Request, user=Depends(get_admin_user)):
     try:
-        fetch_result = discover_and_fetch_news(config_or_path=request.app.state.config)
-        prefetch_result = prefetch_related_once(
-            config_or_path=request.app.state.config,
-            article_ids=fetch_result.get("fetched_article_ids", []),
-        )
-        analysis_result = analyze_articles(
-            config_or_path=request.app.state.config,
-            article_ids=fetch_result.get("fetched_article_ids", []),
-        )
-        snapshot = build_snapshot(
-            config_or_path=request.app.state.config,
-            article_ids=fetch_result.get("fetched_article_ids", []),
-            prefetched_article_ids=prefetch_result.get("prefetched_article_ids", []),
-        )
-        return {
-            "status": True,
-            "fetch": fetch_result,
-            "prefetch": prefetch_result,
-            "analysis": analysis_result,
-            "snapshot": snapshot,
-        }
+        result = run_news_morning_pipeline(request.app.state.config)
+        return {"status": True, **result}
     except Exception as exc:
-        log.exception("News hourly worker failed")
+        log.exception("News morning worker alias failed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.DEFAULT(exc),
@@ -281,12 +357,7 @@ async def run_news_hourly(request: Request, user=Depends(get_admin_user)):
 @router.post("/worker/run-daily")
 async def run_news_daily(request: Request, user=Depends(get_admin_user)):
     try:
-        snapshot = load_latest_closed_snapshot(request.app.state.config)
-        briefing = build_briefing(
-            config_or_path=request.app.state.config,
-            snapshot=snapshot,
-        )
-        return {"status": True, "briefing": briefing}
+        return {"status": True, **run_news_daily_briefing_pipeline(request.app.state.config)}
     except Exception as exc:
         log.exception("News daily worker failed")
         raise HTTPException(

@@ -3725,7 +3725,7 @@ NEWS_TTS_VOICE_ID = PersistentConfig(
 NEWS_WAKE_TIME = PersistentConfig(
     "NEWS_WAKE_TIME",
     "rag.news.wake_time",
-    os.getenv("NEWS_WAKE_TIME", "07:30"),
+    os.getenv("NEWS_WAKE_TIME", "05:08"),
 )
 
 NEWS_PLAYBACK_DEVICE = PersistentConfig(

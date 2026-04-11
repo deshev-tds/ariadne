@@ -158,22 +158,18 @@ The news lane was built around those requirements.
 
 ### Pipeline Architecture
 
-The news pipeline runs in two stages: an hourly collection pass and a daily briefing synthesis.
+The news pipeline now runs as a single scheduled morning prep pass.
 
-**Hourly pass:**
+**Morning prep pass:**
 
 1. Discover and fetch only feed entries published within the last rolling `24h` from the configured source registry
 2. Prefetch related pages for any articles that need additional context
 3. Analyze articles: extract claims, identify supported claim kinds (`count`, `status`, `decision`, `date_time`, `official_position`), and score source alignment
 4. Build or update a story snapshot: thread articles that cover the same event, score thread stability, and close threads that have converged
+5. Immediately synthesize a full morning briefing from the kept snapshot pool, with a runtime target floor of `18` items and an admin-configurable ceiling of `24`
+6. Render the briefing as speakable audio using Kokoro TTS with the configured voice when playback is requested
 
-**Daily pass:**
-
-1. Load the latest closed snapshot
-2. Synthesize a full morning briefing from the kept snapshot pool, with a runtime target floor of `18` items and an admin-configurable ceiling of `24`
-3. Render the briefing as speakable audio using Kokoro TTS with the configured voice
-
-The hourly and daily workers can also be triggered manually through the admin API, so the pipeline does not depend on a scheduler to be useful during development or first-time setup.
+By default the scheduler runs this once per day at `05:08`. The morning prep pass and the briefing-only rebuild can also be triggered manually through the admin API, so the pipeline does not depend on the scheduler to be useful during development or first-time setup.
 
 ### Briefing Runtime Contract
 
@@ -259,7 +255,7 @@ The important config keys for the news lane:
 - `NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS`: per-call timeout for article analysis
 - `NEWS_BRIEF_MODEL_TIMEOUT_SECONDS`: timeout for briefing synthesis
 - `NEWS_TTS_VOICE_ID`: Kokoro voice used for spoken briefings
-- `NEWS_WAKE_TIME`: target playback time for the daily briefing
+- `NEWS_WAKE_TIME`: daily morning prep time in `HH:MM`, defaulting to `05:08`
 - `NEWS_PLAYBACK_DEVICE`: audio output device for TTS playback
 
 All config is managed through the admin Settings → News panel, which also exposes the source registry editor, category config, latest snapshot view, and manual worker triggers.

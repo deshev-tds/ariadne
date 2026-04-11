@@ -12,7 +12,7 @@
 		getLatestNewsSnapshot,
 		playLatestNews,
 		runNewsDaily,
-		runNewsHourly,
+		runNewsMorning,
 		updateNewsCategories,
 		updateNewsConfig,
 		updateNewsSourceRegistry
@@ -215,15 +215,15 @@
 		refreshRawBuffers();
 	};
 
-	const runWorker = async (mode: 'hourly' | 'daily' | 'play') => {
+	const runWorker = async (mode: 'morning' | 'daily' | 'play') => {
 		workerBusy = true;
 		try {
-			if (mode === 'hourly') {
-				await runNewsHourly(localStorage.token);
-				toast.success($i18n.t('Hourly news worker completed'));
+			if (mode === 'morning') {
+				await runNewsMorning(localStorage.token);
+				toast.success($i18n.t('Morning news prep completed'));
 			} else if (mode === 'daily') {
 				await runNewsDaily(localStorage.token);
-				toast.success($i18n.t('Daily news briefing completed'));
+				toast.success($i18n.t('Briefing rebuild completed'));
 			} else {
 				await playLatestNews(localStorage.token);
 				toast.success($i18n.t('Playback started'));
@@ -271,8 +271,16 @@
 							<input class="form-input rounded-xl bg-transparent" bind:value={config.NEWS_BRIEFINGS_ROOT} />
 						</label>
 						<label class="flex flex-col gap-1">
-							<span class="text-xs font-medium">{$i18n.t('Wake Time')}</span>
-							<input class="form-input rounded-xl bg-transparent" bind:value={config.NEWS_WAKE_TIME} />
+							<span class="text-xs font-medium">{$i18n.t('Morning Run Time')}</span>
+							<input
+								class="form-input rounded-xl bg-transparent"
+								type="time"
+								step="60"
+								bind:value={config.NEWS_WAKE_TIME}
+							/>
+							<span class="text-[11px] text-gray-500 dark:text-gray-400">
+								{$i18n.t('Runs once daily and immediately rebuilds the briefing.')}
+							</span>
 						</label>
 						<label class="flex flex-col gap-1">
 							<span class="text-xs font-medium">{$i18n.t('Playback Device')}</span>
@@ -325,7 +333,7 @@
 								class="form-input rounded-xl bg-transparent"
 								type="number"
 								min="1"
-								max="20"
+								max="24"
 								step="1"
 								bind:value={config.NEWS_BRIEF_TARGET_ITEM_COUNT}
 							/>
@@ -341,9 +349,9 @@
 							class="px-3 py-2 rounded-xl bg-gray-100 dark:bg-gray-800"
 							type="button"
 							disabled={workerBusy}
-							on:click={() => runWorker('hourly')}
+							on:click={() => runWorker('morning')}
 						>
-							{$i18n.t('Run Hourly')}
+							{$i18n.t('Run Morning Prep')}
 						</button>
 						<button
 							class="px-3 py-2 rounded-xl bg-gray-100 dark:bg-gray-800"
@@ -351,7 +359,7 @@
 							disabled={workerBusy}
 							on:click={() => runWorker('daily')}
 						>
-							{$i18n.t('Run Daily')}
+							{$i18n.t('Rebuild Briefing')}
 						</button>
 						<button
 							class="px-3 py-2 rounded-xl bg-gray-100 dark:bg-gray-800"

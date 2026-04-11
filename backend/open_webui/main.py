@@ -10,6 +10,7 @@ import time
 import random
 import re
 from uuid import uuid4
+from datetime import datetime
 
 
 from contextlib import asynccontextmanager
@@ -23,6 +24,8 @@ import aiohttp
 import anyio.to_thread
 import requests
 from redis import Redis
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 
 from fastapi import (
@@ -698,6 +701,58 @@ https://github.com/open-webui/open-webui
 """)
 
 
+NEWS_MORNING_JOB_ID = "news-morning-refresh"
+
+
+async def _run_news_morning_scheduler_job(app: FastAPI):
+    if not bool(app.state.config.NEWS_ENABLED):
+        log.info("Skipping scheduled news morning run because the news lane is disabled.")
+        return
+
+    wake_time = news.coerce_news_wake_time(getattr(app.state.config, "NEWS_WAKE_TIME", None))
+    log.info("Starting scheduled news morning run for %s", wake_time)
+    try:
+        result = await asyncio.to_thread(news.run_news_morning_pipeline, app.state.config)
+        snapshot_id = result.get("snapshot", {}).get("snapshot_id")
+        briefing_id = result.get("briefing", {}).get("briefing_id")
+        log.info(
+            "Scheduled news morning run completed (snapshot_id=%s, briefing_id=%s)",
+            snapshot_id,
+            briefing_id,
+        )
+    except Exception:
+        log.exception("Scheduled news morning run failed")
+
+
+def _refresh_news_scheduler(app: FastAPI) -> None:
+    scheduler = getattr(app.state, "news_scheduler", None)
+    if scheduler is None:
+        return
+
+    existing_job = scheduler.get_job(NEWS_MORNING_JOB_ID)
+    if existing_job is not None:
+        scheduler.remove_job(NEWS_MORNING_JOB_ID)
+
+    if not bool(app.state.config.NEWS_ENABLED):
+        log.info("News scheduler disabled; no morning job will be scheduled.")
+        return
+
+    wake_time = news.coerce_news_wake_time(getattr(app.state.config, "NEWS_WAKE_TIME", None))
+    hour_str, minute_str = wake_time.split(":", 1)
+    scheduler.add_job(
+        _run_news_morning_scheduler_job,
+        trigger=CronTrigger(
+            hour=int(hour_str),
+            minute=int(minute_str),
+            timezone=datetime.now().astimezone().tzinfo,
+        ),
+        id=NEWS_MORNING_JOB_ID,
+        replace_existing=True,
+        kwargs={"app": app},
+    )
+    log.info("Scheduled daily news morning run for %s", wake_time)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Store reference to main event loop for sync->async calls (e.g., embedding generation)
@@ -757,6 +812,16 @@ async def lifespan(app: FastAPI):
     if THREAD_POOL_SIZE and THREAD_POOL_SIZE > 0:
         limiter = anyio.to_thread.current_default_thread_limiter()
         limiter.total_tokens = THREAD_POOL_SIZE
+
+    try:
+        app.state.news_scheduler = AsyncIOScheduler(
+            timezone=datetime.now().astimezone().tzinfo
+        )
+        app.state.news_scheduler.start()
+        app.state.refresh_news_scheduler = lambda: _refresh_news_scheduler(app)
+        _refresh_news_scheduler(app)
+    except Exception as exc:
+        log.warning("Failed to initialize news scheduler: %s", exc)
 
     asyncio.create_task(periodic_usage_pool_cleanup())
     asyncio.create_task(periodic_session_pool_cleanup())
@@ -822,6 +887,8 @@ async def lifespan(app: FastAPI):
         app.state.simon_lex_stop_event.set()
     if hasattr(app.state, "simon_lex_worker"):
         app.state.simon_lex_worker.cancel()
+    if hasattr(app.state, "news_scheduler"):
+        app.state.news_scheduler.shutdown(wait=False)
 
 
 app = FastAPI(

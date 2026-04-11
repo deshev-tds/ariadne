@@ -65,6 +65,9 @@ export const updateNewsCategories = async (token: string, categories: object[]) 
 export const runNewsHourly = async (token: string) =>
 	requestJson(token, '/worker/run-hourly', { method: 'POST' });
 
+export const runNewsMorning = async (token: string) =>
+	requestJson(token, '/worker/run-morning', { method: 'POST' });
+
 export const runNewsDaily = async (token: string) =>
 	requestJson(token, '/worker/run-daily', { method: 'POST' });
 
