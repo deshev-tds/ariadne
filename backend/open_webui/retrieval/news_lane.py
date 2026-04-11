@@ -3638,11 +3638,12 @@ def consult_news_corpus(
             "matched_stories": selected_items,
             "response_contract": {
                 "mode": "full_briefing",
+                "default_briefing_policy": "full_unless_user_requests_shorter",
                 "preserve_paragraph_granularity": True,
                 "instruction": (
-                    "If the user asks for the full morning briefing or all available detail, "
-                    "stay close to the selected item paragraphs. Do not compress multiple items "
-                    "into short thematic bullets unless the user explicitly asks for a shorter overview."
+                    "Default to the full morning briefing and stay close to the selected item paragraphs. "
+                    "Do not compress multiple items into short thematic bullets unless the user explicitly "
+                    "asks for a shorter overview or a compressed version."
                 ),
             },
             "latest_briefing": {
