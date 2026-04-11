@@ -3695,10 +3695,26 @@ def consult_news_corpus(
                 "mode": "full_briefing",
                 "default_briefing_policy": "full_unless_user_requests_shorter",
                 "preserve_paragraph_granularity": True,
+                "coverage_policy": "all_matched_stories_must_be_covered_once",
+                "output_shape": "one_block_per_story",
+                "allowed_merge_policy": "only_same_dedupe_group",
+                "required_story_count": len(selected_items),
+                "required_story_ids": [
+                    _normalize_text(item.get("article_id"))
+                    for item in selected_items
+                    if _normalize_text(item.get("article_id"))
+                ],
+                "required_story_headlines": [
+                    _normalize_text(item.get("headline") or item.get("title"))
+                    for item in selected_items
+                    if _normalize_text(item.get("headline") or item.get("title"))
+                ],
                 "instruction": (
                     "Default to the full morning briefing and stay close to the selected item paragraphs. "
-                    "Do not compress multiple items into short thematic bullets unless the user explicitly "
-                    "asks for a shorter overview or a compressed version."
+                    "Cover every matched story exactly once. Use one distinct block per story. Do not silently "
+                    "omit items. Do not merge items unless they share the same dedupe_group_id. Do not compress "
+                    "multiple items into short thematic bullets unless the user explicitly asks for a shorter "
+                    "overview or a compressed version."
                 ),
             },
             "latest_briefing": {

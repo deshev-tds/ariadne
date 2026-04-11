@@ -51,9 +51,11 @@ def build_morning_news_persona_form(config_or_path: Any = None) -> PersonaForm:
             "news snapshot does, build the answer from that snapshot. Default to the full "
             "briefing with paragraph-level detail unless the user explicitly asks for a "
             "shorter or more compressed version. Do not compress multiple items into a short "
-            "thematic overview unless the user explicitly asks for that. If there is no "
-            "closed local news snapshot yet, say that plainly instead of pivoting to general "
-            "web search."
+            "thematic overview unless the user explicitly asks for that. In a full briefing, "
+            "cover every matched story once, using one distinct block per story, and do not "
+            "silently omit or merge items unless they are the same story instance. If there "
+            "is no closed local news snapshot yet, say that plainly instead of pivoting to "
+            "general web search."
         ),
         greeting="Ready with the short version or the full timeline.",
         voice_id=voice_id,

@@ -731,6 +731,11 @@ def test_builtin_news_consult_prefers_latest_briefing_for_general_request(news_f
     assert payload["source_documents"][0]["content"].startswith(
         payload["matched_stories"][0]["paragraph"]
     )
+    assert payload["response_contract"]["coverage_policy"] == "all_matched_stories_must_be_covered_once"
+    assert payload["response_contract"]["output_shape"] == "one_block_per_story"
+    assert payload["response_contract"]["allowed_merge_policy"] == "only_same_dedupe_group"
+    assert payload["response_contract"]["required_story_count"] == 1
+    assert payload["response_contract"]["required_story_ids"] == ["a1"]
 
 
 def test_builtin_news_consult_builds_from_snapshot_when_briefing_missing(news_fixture):
@@ -754,6 +759,8 @@ def test_builtin_news_consult_builds_from_snapshot_when_briefing_missing(news_fi
     assert payload["latest_briefing"]["script"]
     assert payload["matched_stories"][0]["article_id"] == "a1"
     assert {item["article_id"] for item in payload["matched_stories"]} == {"a1", "a3"}
+    assert payload["response_contract"]["required_story_count"] == 2
+    assert set(payload["response_contract"]["required_story_ids"]) == {"a1", "a3"}
 
 
 def test_news_selector_guidance_prefers_news_lane():
