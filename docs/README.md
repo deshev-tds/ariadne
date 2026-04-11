@@ -6,3 +6,8 @@
 
 - [Roadmap Index](./roadmap/README.md)
 - [Verification-Native Agent Improvement Platform](./roadmap/verification-native-agent-improvement-platform.md)
+
+## Operational Notes
+
+- The main operational documentation for the local news pipeline lives in the repository [README](../README.md), in the `News Lane` section.
+- Keep that section in sync with runtime contract changes such as ingestion windows, source-registry assumptions, briefing selection limits, and `Morning News` persona behavior.

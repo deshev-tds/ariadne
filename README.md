@@ -73,6 +73,9 @@ The important divergences are not cosmetic.
 - Model timeouts in the news pipeline are now configurable and batch-safe, with separate connect, article analysis, and briefing synthesis timeout floors to prevent long batch runs from dying on a single slow call.
 - A `Morning News` system persona is now seeded automatically for admin accounts on startup, pre-bound to the briefing model and TTS voice from config.
 - Persona `capabilities` now support a `preferred_working_mode` field that routes the chat runtime into a specialized workflow path when a compatible persona is active, without relying on chat-text inference.
+- The news lane now has an explicit local-state contract for broad briefing asks: read `latest_briefing` when present, build on demand from the latest closed snapshot when no saved briefing exists yet, and return a plain empty-state when there is still no closed snapshot.
+- Feed discovery in the news lane now gates candidates to a rolling `24h` recency window before article fetch, so weekly or stale feeds do not quietly recycle old stories into a "today" briefing.
+- Morning briefings now run as full briefings by default rather than a tight executive-summary funnel: the target item count was widened, the editorial keep pool was expanded, and paragraph-level detail is preserved more aggressively.
 
 The rest of this README explains the rationale behind those changes.
 
@@ -159,7 +162,7 @@ The news pipeline runs in two stages: an hourly collection pass and a daily brie
 
 **Hourly pass:**
 
-1. Discover and fetch new articles from the configured source registry
+1. Discover and fetch only feed entries published within the last rolling `24h` from the configured source registry
 2. Prefetch related pages for any articles that need additional context
 3. Analyze articles: extract claims, identify supported claim kinds (`count`, `status`, `decision`, `date_time`, `official_position`), and score source alignment
 4. Build or update a story snapshot: thread articles that cover the same event, score thread stability, and close threads that have converged
@@ -167,10 +170,20 @@ The news pipeline runs in two stages: an hourly collection pass and a daily brie
 **Daily pass:**
 
 1. Load the latest closed snapshot
-2. Synthesize a briefing from the top-scoring threads, capped at a bounded story count (`NEWS_DAILY_CATCHUP_MAX_STORIES`)
+2. Synthesize a full morning briefing from the kept snapshot pool, with a runtime target floor of `18` items and an admin-configurable ceiling of `24`
 3. Render the briefing as speakable audio using Kokoro TTS with the configured voice
 
 The hourly and daily workers can also be triggered manually through the admin API, so the pipeline does not depend on a scheduler to be useful during development or first-time setup.
+
+### Briefing Runtime Contract
+
+Broad briefing requests in `Morning News` no longer rely on a single happy path.
+
+- If a saved compiled briefing exists, `news_consult` returns `route=latest_briefing`.
+- If no compiled briefing exists yet but a closed snapshot does, `news_consult` returns `route=build_from_snapshot` and synthesizes an ephemeral briefing from the snapshot on demand.
+- If there is still no closed snapshot, `news_consult` returns `route=empty_state` with an explicit local-state message instead of pretending it is still "looking" or pivoting to generic web search.
+
+This matters because the user-facing chat contract is now aligned with the actual local corpus state: no briefing artifact means "build from snapshot now", while no snapshot means "say that plainly".
 
 ### Thread Stability and Scoring
 
@@ -190,6 +203,14 @@ Sources are defined in a `NEWS_SOURCE_REGISTRY`, a structured list of feeds with
 Both registry and category config are versioned and hash-tracked so the system can detect when configuration has changed between runs. Normalization and validation run on update to catch structural problems before they reach the fetch or analysis step.
 
 The source registry is per-instance and intended to be a curated set, not a directory of every available feed. The point is that the sources you track are a deliberate choice, not a discovery problem to outsource to a search engine.
+
+This became more important once the ingestion layer started enforcing a rolling `24h` freshness gate. A source that only publishes weekly can still be a good source in the abstract, but it is a bad fit for a daily morning-news lane unless it gets a source-specific age window. In practice that means the registry should prefer durable, machine-readable feeds with daily or near-daily cadence.
+
+Recent additions that fit those constraints and expand weaker coverage areas:
+
+- `ars_ai` for a real `tech_ai` lane
+- `smithsonian_smartnews` for lighter science and `weird` coverage
+- `sciencedaily_strange` for a dedicated `weird / anomaly` lane
 
 ### Model Configuration and Timeout Safety
 
@@ -218,6 +239,8 @@ The persona is pre-configured with:
 - voice set from `NEWS_TTS_VOICE_ID` from config
 - system prompt biased toward local news corpus preference and source-grounded output
 - `preferred_working_mode: "news"` in capabilities, which routes attached chats into the news lane runtime instead of the default chat path
+- full-briefing behavior for broad asks: preserve paragraph-level detail, prefer the compiled briefing when present, and build from the latest closed snapshot when it is not
+- explicit empty-state behavior when there is still no closed local snapshot, instead of falling through to a fake-progress response or generic web search
 
 The persona ID is deterministic per user (`system-morning-news-{user_id}`), so re-running startup is idempotent: existing personas are updated in place rather than duplicated.
 
@@ -232,6 +255,7 @@ The important config keys for the news lane:
 - `NEWS_ARTICLE_MODEL_ENDPOINT`: OpenAI-compatible endpoint for article analysis and briefing
 - `NEWS_ARTICLE_MODEL`: model ID for article analysis
 - `NEWS_BRIEF_MODEL`: model ID for briefing synthesis
+- `NEWS_BRIEF_TARGET_ITEM_COUNT`: admin-set target item count for briefing selection, runtime-capped to `24` and floored to `18` for full briefings
 - `NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS`: per-call timeout for article analysis
 - `NEWS_BRIEF_MODEL_TIMEOUT_SECONDS`: timeout for briefing synthesis
 - `NEWS_TTS_VOICE_ID`: Kokoro voice used for spoken briefings
@@ -239,6 +263,16 @@ The important config keys for the news lane:
 - `NEWS_PLAYBACK_DEVICE`: audio output device for TTS playback
 
 All config is managed through the admin Settings → News panel, which also exposes the source registry editor, category config, latest snapshot view, and manual worker triggers.
+
+### Regression Notes and Lessons
+
+The current shape of the news lane came out of a few concrete failures rather than abstract cleanup:
+
+- `no_closed_snapshot` needed an explicit UX contract. Returning a bare empty payload let the model fake progress instead of explaining the local state.
+- A compiled briefing is not guaranteed to exist at request time. The right fallback is "build from latest closed snapshot", not "act empty".
+- Weekly or stale feeds are dangerous in a daily lane if ingestion only looks at "most recent available". A rolling `24h` gate fixed that class of regression.
+- Richer sources were not enough on their own. The editorial keep limit, per-category caps, and briefing target count were all compressing too early, so the funnel had to be widened to get a genuinely fuller briefing.
+- Paragraph quality mattered more than expected. Tight `4-6 sentence` summaries were still too telegraphic for the intended product; `7-9 sentence` source-grounded paragraphs gave the model enough substrate to stop collapsing everything into short thematic bullets.
 
 ## Migration Safety
 
