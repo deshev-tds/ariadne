@@ -145,6 +145,8 @@ The point is not that "travel" or "morning news" is special. The point is that t
 
 This fork adds a local-first news pipeline for structured morning briefings over a private news corpus.
 
+For the product framing behind this lane, including why the token budget, scheduled precomputation, persona packaging, and TTS ritual are intentional rather than incidental, see [docs/morning-news-poc.md](./docs/morning-news-poc.md).
+
 The design premise is the same one that shows up in the local corpus and context work: do not flatten everything into one generic retrieval step, and do not make quality depend on an opaque inference chain you cannot inspect.
 
 A news briefing has a different job than a general web search result:
