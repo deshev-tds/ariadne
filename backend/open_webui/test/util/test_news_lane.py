@@ -810,6 +810,12 @@ def test_select_stories_by_categories_records_preferred_source_audit(news_fixtur
     assert sum(item["selection_score_details"]["preferred_bonus_applied"] for item in selected) >= 0
 
 
+def test_news_brief_target_item_count_enforces_full_brief_floor():
+    config = SimpleNamespace(NEWS_BRIEF_TARGET_ITEM_COUNT=7)
+
+    assert news_lane._news_brief_target_item_count(config) == 18
+
+
 def test_load_latest_briefing(news_fixture):
     briefing = news_lane.load_latest_briefing(news_fixture["config"])
 
@@ -1103,8 +1109,8 @@ def test_selector_reserves_category_coverage_on_synthetic_heavy_lane():
 
     selected_categories = [item["selected_category_id"] for item in selected]
 
-    assert len(selected) == 7
-    assert selected_categories.count("tech_ai") <= 2
+    assert len(selected) >= 7
+    assert selected_categories.count("tech_ai") <= 4
     assert audit["bulgaria"]["selected_story_count"] >= 1
     assert audit["economy"]["selected_story_count"] >= 1
     assert audit["geopolitics"]["selected_story_count"] >= 1

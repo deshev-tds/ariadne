@@ -39,11 +39,12 @@ DEFAULT_NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = 300
 NEWS_DEDUPE_PROMPT_VERSION = "news-dedupe-v1"
 NEWS_EDITORIAL_PROMPT_VERSION = "news-editorial-v1"
 NEWS_BRIEF_ITEM_PROMPT_VERSION = "news-brief-item-v3"
-DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT = 12
+DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT = 18
+MIN_NEWS_FULL_BRIEF_TARGET_ITEM_COUNT = 18
 NEWS_MIN_ITEMS_PER_ELIGIBLE_CATEGORY = 2
 NEWS_CATEGORY_ELIGIBILITY_THRESHOLD = 0.75
-NEWS_CATEGORY_MAX_ITEMS_FLOOR = 2
-NEWS_CATEGORY_MAX_ITEMS_CEILING = 4
+NEWS_CATEGORY_MAX_ITEMS_FLOOR = 3
+NEWS_CATEGORY_MAX_ITEMS_CEILING = 6
 NEWS_THREAD_LEDGER_VERSION = 1
 NEWS_HOURLY_SUMMARY_MAX_STORIES = 16
 NEWS_DAILY_CATCHUP_MAX_STORIES = 8
@@ -1418,7 +1419,7 @@ def _news_brief_target_item_count(config_or_path: Any = None) -> int:
         parsed = int(value)
     except Exception:
         parsed = DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT
-    return max(1, min(20, parsed))
+    return max(MIN_NEWS_FULL_BRIEF_TARGET_ITEM_COUNT, min(24, parsed))
 
 
 def _openai_compatible_chat_completion(
@@ -2548,7 +2549,7 @@ def _editorial_preferred_bonus(
 
 def _editorial_keep_limit(config_or_path: Any = None) -> int:
     target_count = _news_brief_target_item_count(config_or_path)
-    return max(target_count * 2, target_count + 4)
+    return max(target_count * 3, target_count + 10, 24)
 
 
 def _editorial_decision_with_model(
@@ -2795,7 +2796,7 @@ def _build_brief_items(
                 "entity_keys": list(representative.get("entity_keys") or [])[:8],
                 "what_happened": _normalize_text((payload or {}).get("what_happened"))[:420],
                 "why_it_matters": _normalize_text((payload or {}).get("why_it_matters"))[:420],
-                "paragraph": _normalize_text((payload or {}).get("paragraph"))[:1200],
+                "paragraph": _normalize_text((payload or {}).get("paragraph"))[:2400],
                 "category_ids": category_ids,
                 "category_scores": merged_category_scores,
                 "selection_score": _safe_float(representative.get("selection_score"), 0.0),
@@ -3110,10 +3111,12 @@ def _category_selection_cap(
     if len(eligible) <= NEWS_CATEGORY_MAX_ITEMS_FLOOR:
         return len(eligible)
     strong = sum(1 for item in eligible if _safe_float(item.get("allocator_score"), 0.0) >= (threshold + 0.10))
-    if len(eligible) >= 4 and strong >= 4:
+    if len(eligible) >= 6 and strong >= 5:
+        return 6
+    if len(eligible) >= 5 and strong >= 4:
+        return 5
+    if len(eligible) >= 4 and strong >= 3:
         return 4
-    if len(eligible) >= 3 and strong >= 3:
-        return 3
     return NEWS_CATEGORY_MAX_ITEMS_FLOOR
 
 

@@ -121,7 +121,7 @@ async def update_news_config(
         )
     if form_data.NEWS_BRIEF_TARGET_ITEM_COUNT is not None:
         config.NEWS_BRIEF_TARGET_ITEM_COUNT = max(
-            1, min(20, int(form_data.NEWS_BRIEF_TARGET_ITEM_COUNT))
+            1, min(24, int(form_data.NEWS_BRIEF_TARGET_ITEM_COUNT))
         )
     if form_data.NEWS_TTS_VOICE_ID is not None:
         config.NEWS_TTS_VOICE_ID = form_data.NEWS_TTS_VOICE_ID
