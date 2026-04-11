@@ -2268,7 +2268,15 @@ def _canonicalize_category_scores(
         for category_id, score in dict(base_scores or {}).items()
         if category_id in allowed_ids
     }
-    for key, value in dict(raw_scores or {}).items():
+    raw_mapping: dict[str, Any] = {}
+    if isinstance(raw_scores, dict):
+        raw_mapping = raw_scores
+    elif hasattr(raw_scores, "items"):
+        try:
+            raw_mapping = dict(raw_scores.items())
+        except Exception:
+            raw_mapping = {}
+    for key, value in raw_mapping.items():
         if not isinstance(key, str) or key not in allowed_ids:
             continue
         canonical[key] = max(

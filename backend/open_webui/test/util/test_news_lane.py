@@ -514,6 +514,16 @@ def test_canonicalize_category_scores_filters_non_admin_keys():
     assert canonical == {"economy": 0.4, "geopolitics": 0.9}
 
 
+def test_canonicalize_category_scores_ignores_malformed_model_payload():
+    categories = news_lane.default_news_category_config()
+
+    assert news_lane._canonicalize_category_scores(
+        "middle_east",
+        categories=categories,
+        base_scores={"geopolitics": 0.6},
+    ) == {"geopolitics": 0.6}
+
+
 def test_build_brief_items_canonicalizes_model_category_scores(monkeypatch):
     categories = news_lane.default_news_category_config()
     article = {
