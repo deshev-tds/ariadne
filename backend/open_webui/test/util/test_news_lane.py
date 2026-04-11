@@ -502,6 +502,74 @@ def test_compute_story_candidate_score_uses_selection_score():
     assert higher["final_score"] > lower["final_score"]
 
 
+def test_canonicalize_category_scores_filters_non_admin_keys():
+    categories = news_lane.default_news_category_config()
+
+    canonical = news_lane._canonicalize_category_scores(
+        {"geopolitics": 0.9, "middle_east": 0.95, "politics": 0.8},
+        categories=categories,
+        base_scores={"economy": 0.4},
+    )
+
+    assert canonical == {"economy": 0.4, "geopolitics": 0.9}
+
+
+def test_build_brief_items_canonicalizes_model_category_scores(monkeypatch):
+    categories = news_lane.default_news_category_config()
+    article = {
+        "article_id": "a1",
+        "source_id": "bbc_news",
+        "url": "https://example.com/a1",
+        "title": "Example article",
+        "published_at": "2026-04-10T05:00:00Z",
+        "raw_text_md": "Body",
+    }
+    analysis = {
+        "article_summary_short": "Short summary",
+        "entity_keys": ["entity_a"],
+        "key_facts": ["fact_a"],
+    }
+    representative = {
+        "article_id": "a1",
+        "dedupe_group_id": "dedupe:a1",
+        "duplicate_article_ids": [],
+        "category_scores": {"geopolitics": 0.8, "europe": 0.5},
+        "selection_score": 0.9,
+        "editorial_status": "kept",
+        "entity_keys": ["entity_a"],
+    }
+    config = SimpleNamespace(
+        NEWS_CATEGORY_CONFIG=categories,
+        NEWS_BRIEF_MODEL="gemma",
+        NEWS_ARTICLE_MODEL="gemma",
+        NEWS_ARTICLE_MODEL_ENDPOINT="http://example.com",
+        NEWS_BRIEF_MODEL_TIMEOUT_SECONDS=300,
+    )
+
+    monkeypatch.setattr(
+        news_lane,
+        "_summarize_brief_item_with_model",
+        lambda *args, **kwargs: {
+            "headline": "Заглавие",
+            "what_happened": "Стана нещо важно.",
+            "why_it_matters": "Има значение.",
+            "paragraph": "Това е един по-пълен параграф с контекст, а не телеграфно изречение.",
+            "category_scores": {"middle_east": 0.95, "geopolitics": 0.91},
+        },
+    )
+
+    items = news_lane._build_brief_items(
+        [representative],
+        {"a1": article},
+        {"a1": analysis},
+        config_or_path=config,
+    )
+
+    assert len(items) == 1
+    assert items[0]["category_scores"] == {"geopolitics": 0.91, "europe": 0.5}
+    assert items[0]["category_ids"] == ["geopolitics", "europe"]
+
+
 def test_news_model_timeouts_default_to_batch_friendly_values():
     config = SimpleNamespace()
 

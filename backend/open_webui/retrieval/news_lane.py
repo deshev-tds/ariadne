@@ -37,7 +37,7 @@ DEFAULT_NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS = 300
 DEFAULT_NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = 300
 NEWS_DEDUPE_PROMPT_VERSION = "news-dedupe-v1"
 NEWS_EDITORIAL_PROMPT_VERSION = "news-editorial-v1"
-NEWS_BRIEF_ITEM_PROMPT_VERSION = "news-brief-item-v1"
+NEWS_BRIEF_ITEM_PROMPT_VERSION = "news-brief-item-v2"
 DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT = 12
 NEWS_MIN_ITEMS_PER_ELIGIBLE_CATEGORY = 2
 NEWS_CATEGORY_ELIGIBILITY_THRESHOLD = 0.75
@@ -2256,6 +2256,28 @@ def _article_category_scores(
     return assigned, category_scores
 
 
+def _canonicalize_category_scores(
+    raw_scores: dict[str, Any] | None,
+    *,
+    categories: list[dict[str, Any]],
+    base_scores: dict[str, float] | None = None,
+) -> dict[str, float]:
+    allowed_ids = {str(category["category_id"]) for category in categories}
+    canonical: dict[str, float] = {
+        category_id: max(0.0, min(1.0, _safe_float(score, 0.0)))
+        for category_id, score in dict(base_scores or {}).items()
+        if category_id in allowed_ids
+    }
+    for key, value in dict(raw_scores or {}).items():
+        if not isinstance(key, str) or key not in allowed_ids:
+            continue
+        canonical[key] = max(
+            _safe_float(canonical.get(key), 0.0),
+            max(0.0, min(1.0, _safe_float(value, 0.0))),
+        )
+    return canonical
+
+
 def _category_priority_score(category_scores: dict[str, float], category_config: list[dict[str, Any]]) -> float:
     if not category_scores:
         return 0.0
@@ -2509,6 +2531,7 @@ def _editorial_decision_with_model(
     endpoint, model = _article_model_config(config_or_path)
     if not endpoint or not model:
         return None
+    categories = load_news_category_config(config_or_path)
     payload = {
         "article": _article_brief_card(article, analysis),
         "category_scores": category_scores,
@@ -2534,11 +2557,10 @@ def _editorial_decision_with_model(
             "keep": bool(parsed.get("keep")),
             "selection_score": max(0.0, min(1.0, _safe_float(parsed.get("selection_score"), 0.0))),
             "selection_reason": _normalize_text(parsed.get("selection_reason"))[:200],
-            "category_scores": {
-                key: max(0.0, min(1.0, float(value)))
-                for key, value in (parsed.get("category_scores") or {}).items()
-                if isinstance(key, str)
-            },
+            "category_scores": _canonicalize_category_scores(
+                parsed.get("category_scores"),
+                categories=categories,
+            ),
         }
     except Exception as exc:
         log.warning("News editorial selection model failed for %s: %s", article.get("article_id"), exc)
@@ -2578,10 +2600,11 @@ def _build_representative_articles(
             category_scores=category_scores,
             config_or_path=config_or_path,
         )
-        merged_category_scores = dict(category_scores)
-        if model_decision and model_decision.get("category_scores"):
-            for key, value in model_decision["category_scores"].items():
-                merged_category_scores[key] = max(_safe_float(merged_category_scores.get(key), 0.0), _safe_float(value, 0.0))
+        merged_category_scores = _canonicalize_category_scores(
+            (model_decision or {}).get("category_scores"),
+            categories=categories,
+            base_scores=category_scores,
+        )
         assigned_categories = [
             category_id
             for category_id, score in sorted(merged_category_scores.items(), key=lambda item: (-item[1], item[0]))
@@ -2640,6 +2663,7 @@ def _summarize_brief_item_with_model(
     endpoint, model = _brief_item_model_config(config_or_path)
     if not endpoint or not model:
         return None
+    categories = load_news_category_config(config_or_path)
     payload = {
         "article": {
             "article_id": article["article_id"],
@@ -2660,11 +2684,21 @@ def _summarize_brief_item_with_model(
             model=model,
             timeout_seconds=_news_model_timeout_seconds("brief", config_or_path=config_or_path),
             system_prompt=(
-                "You write one Bulgarian news briefing item from a single source article. "
-                "Return compact JSON only. Stay source-grounded. No hype."
+                "You write one Bulgarian morning-news paragraph from a single source article. "
+                "Return compact JSON only. Stay source-grounded. No hype. "
+                "Write for an informed listener, not as a telegram."
             ),
             user_prompt=(
-                "Return JSON with keys `headline`, `what_happened`, `why_it_matters`, `paragraph`, `category_scores`.\n\n"
+                "Return JSON with keys `headline`, `what_happened`, `why_it_matters`, `paragraph`, `category_scores`.\n"
+                "`headline`: short Bulgarian headline.\n"
+                "`what_happened`: one sentence.\n"
+                "`why_it_matters`: one sentence.\n"
+                "`paragraph`: exactly one Bulgarian paragraph of 4 to 6 sentences, usually 90 to 170 words, combining "
+                "the event, why it matters, and one layer of concrete context from the source article. "
+                "Do not write bullets. Do not write a telegraphic summary. Do not invent facts.\n"
+                "`category_scores`: ONLY these category ids are allowed: "
+                + ", ".join(category["category_id"] for category in categories)
+                + ".\n\n"
                 f"{_canonical_json(payload)}"
             ),
         )
@@ -2681,12 +2715,11 @@ def _summarize_brief_item_with_model(
             "headline": headline or _normalize_text(article.get("title"))[:220],
             "what_happened": what_happened[:420],
             "why_it_matters": why_it_matters[:420],
-            "paragraph": paragraph[:1200],
-            "category_scores": {
-                key: max(0.0, min(1.0, float(value)))
-                for key, value in (parsed.get("category_scores") or {}).items()
-                if isinstance(key, str)
-            },
+            "paragraph": paragraph[:1600],
+            "category_scores": _canonicalize_category_scores(
+                parsed.get("category_scores"),
+                categories=categories,
+            ),
         }
     except Exception as exc:
         log.warning("News brief item model failed for %s: %s", article.get("article_id"), exc)
@@ -2701,6 +2734,7 @@ def _build_brief_items(
     config_or_path: Any = None,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    categories = load_news_category_config(config_or_path)
     for representative in representatives:
         if representative.get("editorial_status") != "kept":
             continue
@@ -2712,10 +2746,11 @@ def _build_brief_items(
             representative,
             config_or_path=config_or_path,
         )
-        merged_category_scores = dict(representative.get("category_scores") or {})
-        if payload and payload.get("category_scores"):
-            for key, value in payload["category_scores"].items():
-                merged_category_scores[key] = max(_safe_float(merged_category_scores.get(key), 0.0), _safe_float(value, 0.0))
+        merged_category_scores = _canonicalize_category_scores(
+            (payload or {}).get("category_scores"),
+            categories=categories,
+            base_scores=representative.get("category_scores"),
+        )
         category_ids = [
             category_id
             for category_id, score in sorted(merged_category_scores.items(), key=lambda item: (-item[1], item[0]))
