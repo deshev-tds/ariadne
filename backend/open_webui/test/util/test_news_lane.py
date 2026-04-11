@@ -668,6 +668,31 @@ def test_builtin_news_consult_prefers_latest_briefing_for_general_request(news_f
     assert payload["latest_briefing"]["script"]
     assert payload["matched_stories"][0]["article_id"] == "a1"
     assert payload["source_documents"][0]["type"] == "news_briefing_item"
+    assert payload["source_documents"][0]["content"].startswith(
+        payload["matched_stories"][0]["paragraph"]
+    )
+
+
+def test_builtin_news_consult_builds_from_snapshot_when_briefing_missing(news_fixture):
+    (news_fixture["briefings_root"] / "latest_briefing.json").unlink()
+    (news_fixture["briefings_root"] / "2026-04-10" / "briefing.json").unlink()
+
+    payload = json.loads(
+        asyncio.run(
+            builtin_tools.news_consult(
+                objective="Give me the full morning briefing in English with all available detail.",
+                phase="start",
+                __request__=news_fixture["request"],
+            )
+        )
+    )
+
+    assert payload["route"] == "build_from_snapshot"
+    assert payload["snapshot_id"] == "20260410T060000Z"
+    assert payload["selected_item_count"] >= 1
+    assert payload["latest_briefing"]["ephemeral"] is True
+    assert payload["latest_briefing"]["script"]
+    assert payload["matched_stories"][0]["article_id"] == "a1"
 
 
 def test_news_selector_guidance_prefers_news_lane():
@@ -749,6 +774,40 @@ def test_general_briefing_request_detection():
         )
         is False
     )
+
+
+def test_builtin_news_consult_returns_graceful_empty_state_for_general_briefing(tmp_path):
+    config = SimpleNamespace(
+        ENABLE_LOCAL_CORPUS_TOOLS=False,
+        LOCAL_CORPUS_ROOT="",
+        OFFSEC_CORPUS_ROOT="",
+        NEWS_ENABLED=True,
+        NEWS_ARTICLE_STORE_ROOT=str(tmp_path / "news_articles"),
+        NEWS_CORPUS_ROOT=str(tmp_path / "news_corpus"),
+        NEWS_BRIEFINGS_ROOT=str(tmp_path / "news_briefings"),
+        NEWS_SOURCE_REGISTRY=news_lane.default_news_source_registry(),
+        NEWS_CATEGORY_CONFIG=news_lane.default_news_category_config(),
+        NEWS_BRIEF_TARGET_ITEM_COUNT=12,
+        NEWS_TTS_VOICE_ID="bg",
+        TASK_MODEL="",
+        TASK_MODEL_EXTERNAL=False,
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=config)))
+
+    payload = json.loads(
+        asyncio.run(
+            builtin_tools.news_consult(
+                objective="Дай ми сутрешния news briefing - не ми спестявай нищо.",
+                phase="start",
+                __request__=request,
+            )
+        )
+    )
+
+    assert payload["status"] == "empty"
+    assert payload["reason"] == "no_closed_snapshot"
+    assert payload["route"] == "empty_state"
+    assert "няма затворен" in payload["message"].lower()
 
 
 def _synthetic_brief_item(

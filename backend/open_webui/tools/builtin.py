@@ -861,7 +861,9 @@ async def news_consult(
     Consult the compiled News lane to route a topic toward the right local stories and article set.
     Use this first in News mode before drilling into article-level evidence.
     For broad requests like the morning briefing, today's briefing, or everything important from today,
-    this may return the latest compiled briefing directly via route=latest_briefing.
+    this may return the latest compiled briefing directly via route=latest_briefing, or synthesize an
+    on-demand briefing from the latest closed snapshot via route=build_from_snapshot when no saved
+    briefing exists yet.
 
     :param objective: The current news/research objective
     :param phase: Short phase label like start, planning, or follow_up

@@ -3497,7 +3497,9 @@ def _selected_briefing_documents(
         if not article_id:
             continue
         source_ref = dict(item.get("source_ref") or {})
+        paragraph = _normalize_text(item.get("paragraph"))
         summary_lines = [
+            paragraph,
             _normalize_text(item.get("what_happened")),
             _normalize_text(item.get("why_it_matters")),
             f"Source: {_normalize_text(source_ref.get('source_id'))}",
@@ -3516,6 +3518,39 @@ def _selected_briefing_documents(
     return documents
 
 
+def _build_ephemeral_briefing_from_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    config_or_path: Any = None,
+) -> dict[str, Any]:
+    selected_items, category_audit = select_stories_by_categories(
+        snapshot,
+        config_or_path=config_or_path,
+    )
+    script = synthesize_briefing_script(selected_items)
+    built_at = _parse_datetime(snapshot.get("built_at")) or _utc_now()
+    return {
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "date": built_at.date().isoformat(),
+        "target_item_count": _news_brief_target_item_count(config_or_path),
+        "selected_items": [
+            {
+                **item,
+                "selected_for_brief": True,
+            }
+            for item in selected_items
+        ],
+        "category_decisions": category_audit,
+        "script": script,
+        "source_refs": [
+            item.get("source_ref", {})
+            for item in selected_items
+        ],
+        "audio_path": "",
+        "tts": {"status": "not_rendered", "engine": "none", "path": ""},
+    }
+
+
 def consult_news_corpus(
     *,
     objective: str,
@@ -3525,40 +3560,75 @@ def consult_news_corpus(
     named_entity: str = "",
     config_or_path: Any = None,
 ) -> dict[str, Any]:
-    snapshot = load_latest_closed_snapshot(config_or_path)
-    if not snapshot:
-        return {"status": "empty", "reason": "no_closed_snapshot"}
-
-    briefing = load_latest_briefing(config_or_path)
-    if briefing and _looks_like_general_briefing_request(
+    general_briefing_request = _looks_like_general_briefing_request(
         objective=objective,
         phase=phase,
         current_findings=current_findings,
         current_hypothesis=current_hypothesis,
         named_entity=named_entity,
-    ):
+    )
+    snapshot = load_latest_closed_snapshot(config_or_path)
+    if not snapshot:
+        payload = {"status": "empty", "reason": "no_closed_snapshot"}
+        if general_briefing_request:
+            payload.update(
+                {
+                    "route": "empty_state",
+                    "response_contract": {
+                        "mode": "empty_state",
+                        "instruction": (
+                            "Tell the user plainly that there is no closed local news snapshot yet, "
+                            "so no morning briefing can be read or built from the corpus right now."
+                        ),
+                    },
+                    "message": (
+                        "Няма затворен local news snapshot още, така че няма от какво да прочета "
+                        "или сглобя сутрешен briefing. Пусни hourly/daily или изчакай ingestion-а да приключи."
+                    ),
+                    "source_documents": [],
+                    "matched_stories": [],
+                }
+            )
+        return payload
+
+    briefing = load_latest_briefing(config_or_path)
+    if general_briefing_request:
+        active_briefing = briefing or _build_ephemeral_briefing_from_snapshot(
+            snapshot,
+            config_or_path=config_or_path,
+        )
         selected_items = [
             item
-            for item in (briefing.get("selected_items") or [])
+            for item in (active_briefing.get("selected_items") or [])
             if isinstance(item, dict)
         ]
         return {
             "status": "ok",
             "phase": phase,
-            "route": "latest_briefing",
+            "route": "latest_briefing" if briefing else "build_from_snapshot",
             "objective": _normalize_text(objective),
-            "snapshot_id": briefing.get("snapshot_id") or snapshot.get("snapshot_id"),
-            "briefing_date": briefing.get("date"),
+            "snapshot_id": active_briefing.get("snapshot_id") or snapshot.get("snapshot_id"),
+            "briefing_date": active_briefing.get("date"),
             "selected_item_count": len(selected_items),
             "matched_stories": selected_items,
-            "latest_briefing": {
-                "date": briefing.get("date"),
-                "target_item_count": briefing.get("target_item_count"),
-                "selected_item_count": len(selected_items),
-                "script": briefing.get("script", ""),
-                "selected_items": selected_items,
+            "response_contract": {
+                "mode": "full_briefing",
+                "preserve_paragraph_granularity": True,
+                "instruction": (
+                    "If the user asks for the full morning briefing or all available detail, "
+                    "stay close to the selected item paragraphs. Do not compress multiple items "
+                    "into short thematic bullets unless the user explicitly asks for a shorter overview."
+                ),
             },
-            "source_documents": _selected_briefing_documents(briefing),
+            "latest_briefing": {
+                "date": active_briefing.get("date"),
+                "target_item_count": active_briefing.get("target_item_count"),
+                "selected_item_count": len(selected_items),
+                "script": active_briefing.get("script", ""),
+                "selected_items": selected_items,
+                "ephemeral": briefing is None,
+            },
+            "source_documents": _selected_briefing_documents(active_briefing),
         }
 
     query_terms = _significant_terms(" ".join([objective, current_findings, current_hypothesis, named_entity]))

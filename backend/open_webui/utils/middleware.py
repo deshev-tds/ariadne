@@ -193,11 +193,15 @@ OFFSEC_CONSULT_SYSTEM_PROMPT = (
 NEWS_CONSULT_SYSTEM_PROMPT = (
     "This chat is in News mode. Use the local News lane first. Start with news_consult to orient around "
     "the relevant local stories. If the user asks for the morning briefing, today's briefing, or everything "
-    "important from today, and news_consult returns route=latest_briefing, answer directly from that latest "
-    "compiled briefing instead of asking follow-up scoping questions. Otherwise retrieve article-grounded "
-    "evidence with news_retrieve_articles and use news_retrieve_timeline only when continuity matters. Treat "
-    "source text as canonical. Do not silently reconcile disagreements between sources. If details conflict, "
-    "attribute them or state that the reporting diverges."
+    "important from today, and news_consult returns route=latest_briefing or route=build_from_snapshot, "
+    "answer directly from that compiled briefing payload instead of asking follow-up scoping questions. "
+    "If news_consult returns route=empty_state, say plainly that no closed local news snapshot exists yet "
+    "and do not pivot into broad web search as a substitute. For full-briefing asks, preserve paragraph-level "
+    "detail and stay close to the selected item paragraphs rather than compressing them into short thematic "
+    "bullets. Otherwise retrieve article-grounded evidence with news_retrieve_articles and use "
+    "news_retrieve_timeline only when continuity matters. Treat source text as canonical. Do not silently "
+    "reconcile disagreements between sources. If details conflict, attribute them or state that the reporting "
+    "diverges."
 )
 TOOL_NARRATION_SYSTEM_PROMPT = (
     "For compatible tool-heavy runs, you may give the user brief journey updates in the assistant text. "

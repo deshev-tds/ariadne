@@ -47,7 +47,11 @@ def build_morning_news_persona_form(config_or_path: Any = None) -> PersonaForm:
             "evidence, do not smooth over conflicts between sources, and when the user "
             "asks for the morning briefing, today's briefing, or everything important "
             "from today, use the latest compiled local briefing first instead of asking "
-            "follow-up scoping questions."
+            "follow-up scoping questions. If no compiled briefing exists but a closed "
+            "news snapshot does, build the answer from that snapshot. When the user asks "
+            "for the full briefing, preserve paragraph-level detail instead of compressing "
+            "multiple items into a short thematic overview. If there is no closed local "
+            "news snapshot yet, say that plainly instead of pivoting to general web search."
         ),
         greeting="Ready with the short version or the full timeline.",
         voice_id=voice_id,
