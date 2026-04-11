@@ -3449,6 +3449,73 @@ def _brief_documents(snapshot: dict[str, Any], config_or_path: Any = None) -> li
     return documents
 
 
+def _looks_like_general_briefing_request(
+    *,
+    objective: str,
+    phase: str = "",
+    current_findings: str = "",
+    current_hypothesis: str = "",
+    named_entity: str = "",
+) -> bool:
+    if _normalize_text(named_entity):
+        return False
+    if _normalize_text(current_findings) or _normalize_text(current_hypothesis):
+        return False
+    phase_value = _normalize_text(phase).lower()
+    if phase_value and phase_value not in {"start", "briefing", "overview"}:
+        return False
+
+    objective_value = _normalize_text(objective).lower()
+    if not objective_value:
+        return False
+
+    broad_markers = (
+        "сутреш",
+        "бриф",
+        "brief",
+        "overview",
+        "общ обзор",
+        "общ преглед",
+        "всичко от днес",
+        "всичко важно",
+        "днес",
+        "today",
+        "full briefing",
+        "morning news",
+    )
+    return any(marker in objective_value for marker in broad_markers)
+
+
+def _selected_briefing_documents(
+    briefing: dict[str, Any],
+) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+    for item in briefing.get("selected_items", []) or []:
+        if not isinstance(item, dict):
+            continue
+        article_id = _normalize_text(item.get("article_id"))
+        if not article_id:
+            continue
+        source_ref = dict(item.get("source_ref") or {})
+        summary_lines = [
+            _normalize_text(item.get("what_happened")),
+            _normalize_text(item.get("why_it_matters")),
+            f"Source: {_normalize_text(source_ref.get('source_id'))}",
+        ]
+        documents.append(
+            {
+                "id": article_id,
+                "name": item.get("headline") or item.get("title") or article_id,
+                "type": "news_briefing_item",
+                "content": "\n".join(line for line in summary_lines if line),
+                "source_path": f"briefing:{briefing.get('snapshot_id')}:{article_id}",
+                "article_ids": [article_id],
+                "category_ids": list(item.get("category_ids") or []),
+            }
+        )
+    return documents
+
+
 def consult_news_corpus(
     *,
     objective: str,
@@ -3461,6 +3528,38 @@ def consult_news_corpus(
     snapshot = load_latest_closed_snapshot(config_or_path)
     if not snapshot:
         return {"status": "empty", "reason": "no_closed_snapshot"}
+
+    briefing = load_latest_briefing(config_or_path)
+    if briefing and _looks_like_general_briefing_request(
+        objective=objective,
+        phase=phase,
+        current_findings=current_findings,
+        current_hypothesis=current_hypothesis,
+        named_entity=named_entity,
+    ):
+        selected_items = [
+            item
+            for item in (briefing.get("selected_items") or [])
+            if isinstance(item, dict)
+        ]
+        return {
+            "status": "ok",
+            "phase": phase,
+            "route": "latest_briefing",
+            "objective": _normalize_text(objective),
+            "snapshot_id": briefing.get("snapshot_id") or snapshot.get("snapshot_id"),
+            "briefing_date": briefing.get("date"),
+            "selected_item_count": len(selected_items),
+            "matched_stories": selected_items,
+            "latest_briefing": {
+                "date": briefing.get("date"),
+                "target_item_count": briefing.get("target_item_count"),
+                "selected_item_count": len(selected_items),
+                "script": briefing.get("script", ""),
+                "selected_items": selected_items,
+            },
+            "source_documents": _selected_briefing_documents(briefing),
+        }
 
     query_terms = _significant_terms(" ".join([objective, current_findings, current_hypothesis, named_entity]))
     brief_items_by_article = {

@@ -651,6 +651,25 @@ def test_builtin_news_consult_reads_latest_snapshot(news_fixture):
     assert payload["matched_stories"][0]["article_id"] == "a1"
 
 
+def test_builtin_news_consult_prefers_latest_briefing_for_general_request(news_fixture):
+    payload = json.loads(
+        asyncio.run(
+            builtin_tools.news_consult(
+                objective="Дай ми сутрешния news briefing и всичко от днес.",
+                phase="start",
+                __request__=news_fixture["request"],
+            )
+        )
+    )
+
+    assert payload["route"] == "latest_briefing"
+    assert payload["snapshot_id"] == "20260410T060000Z"
+    assert payload["selected_item_count"] == 1
+    assert payload["latest_briefing"]["script"]
+    assert payload["matched_stories"][0]["article_id"] == "a1"
+    assert payload["source_documents"][0]["type"] == "news_briefing_item"
+
+
 def test_news_selector_guidance_prefers_news_lane():
     metadata = {
         "params": {
@@ -712,6 +731,24 @@ def test_load_latest_briefing(news_fixture):
     assert briefing is not None
     assert briefing["snapshot_id"] == "20260410T060000Z"
     assert briefing["selected_items"][0]["article_id"] == "a1"
+
+
+def test_general_briefing_request_detection():
+    assert (
+        news_lane._looks_like_general_briefing_request(
+            objective="Дай ми всичко от днес в сутрешния briefing",
+            phase="start",
+        )
+        is True
+    )
+    assert (
+        news_lane._looks_like_general_briefing_request(
+            objective="What is the latest on EU sanctions after the strike?",
+            phase="start",
+            named_entity="EU",
+        )
+        is False
+    )
 
 
 def _synthetic_brief_item(

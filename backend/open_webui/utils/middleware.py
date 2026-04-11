@@ -192,10 +192,12 @@ OFFSEC_CONSULT_SYSTEM_PROMPT = (
 )
 NEWS_CONSULT_SYSTEM_PROMPT = (
     "This chat is in News mode. Use the local News lane first. Start with news_consult to orient around "
-    "the relevant local stories, then retrieve article-grounded evidence with news_retrieve_articles and "
-    "use news_retrieve_timeline only when continuity matters. Treat source text as canonical. Do not "
-    "silently reconcile disagreements between sources. If details conflict, attribute them or state that "
-    "the reporting diverges."
+    "the relevant local stories. If the user asks for the morning briefing, today's briefing, or everything "
+    "important from today, and news_consult returns route=latest_briefing, answer directly from that latest "
+    "compiled briefing instead of asking follow-up scoping questions. Otherwise retrieve article-grounded "
+    "evidence with news_retrieve_articles and use news_retrieve_timeline only when continuity matters. Treat "
+    "source text as canonical. Do not silently reconcile disagreements between sources. If details conflict, "
+    "attribute them or state that the reporting diverges."
 )
 TOOL_NARRATION_SYSTEM_PROMPT = (
     "For compatible tool-heavy runs, you may give the user brief journey updates in the assistant text. "
@@ -2048,8 +2050,10 @@ def _tool_result_summary(tool_name: str, tool_result: Any) -> dict[str, Any]:
     if tool_name == "news_consult" and isinstance(parsed, dict):
         return {
             "phase": parsed.get("phase"),
+            "route": parsed.get("route"),
             "snapshot_id": parsed.get("snapshot_id"),
             "matched_stories": len(parsed.get("matched_stories") or []),
+            "selected_item_count": parsed.get("selected_item_count"),
         }
 
     if tool_name == "news_retrieve_articles" and isinstance(parsed, dict):

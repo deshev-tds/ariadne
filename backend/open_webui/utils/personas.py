@@ -44,8 +44,10 @@ def build_morning_news_persona_form(config_or_path: Any = None) -> PersonaForm:
         bound_model_id=bound_model_id,
         system_prompt=(
             "You are Morning News. Prefer the local news corpus and source-grounded "
-            "evidence, keep updates compact, and do not smooth over conflicts between "
-            "sources."
+            "evidence, do not smooth over conflicts between sources, and when the user "
+            "asks for the morning briefing, today's briefing, or everything important "
+            "from today, use the latest compiled local briefing first instead of asking "
+            "follow-up scoping questions."
         ),
         greeting="Ready with the short version or the full timeline.",
         voice_id=voice_id,
