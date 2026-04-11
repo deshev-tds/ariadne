@@ -28,7 +28,7 @@ DEFAULT_NEWS_CORPUS_ROOT_SETTING = Path("news_corpus")
 DEFAULT_NEWS_BRIEFINGS_ROOT_SETTING = Path("news_briefings")
 NEWS_SOURCE_REGISTRY_VERSION = 1
 NEWS_CATEGORY_CONFIG_VERSION = 1
-NEWS_COMPILER_VERSION = "news-v3"
+NEWS_COMPILER_VERSION = "news-v4"
 NEWS_ANALYZER_PROMPT_VERSION = "news-analysis-v2"
 NEWS_BRIEF_PROMPT_VERSION = "news-brief-v2"
 NEWS_PREFERRED_SOURCE_BONUS_CAP = 0.08
@@ -38,7 +38,11 @@ DEFAULT_NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = 300
 NEWS_DEDUPE_PROMPT_VERSION = "news-dedupe-v1"
 NEWS_EDITORIAL_PROMPT_VERSION = "news-editorial-v1"
 NEWS_BRIEF_ITEM_PROMPT_VERSION = "news-brief-item-v1"
-DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT = 7
+DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT = 12
+NEWS_MIN_ITEMS_PER_ELIGIBLE_CATEGORY = 2
+NEWS_CATEGORY_ELIGIBILITY_THRESHOLD = 0.75
+NEWS_CATEGORY_MAX_ITEMS_FLOOR = 2
+NEWS_CATEGORY_MAX_ITEMS_CEILING = 4
 NEWS_THREAD_LEDGER_VERSION = 1
 NEWS_HOURLY_SUMMARY_MAX_STORIES = 16
 NEWS_DAILY_CATCHUP_MAX_STORIES = 8
@@ -2723,6 +2727,7 @@ def _build_brief_items(
                 "article_id": representative["article_id"],
                 "headline": _normalize_text((payload or {}).get("headline") or article.get("title"))[:220],
                 "title": article.get("title"),
+                "entity_keys": list(representative.get("entity_keys") or [])[:8],
                 "what_happened": _normalize_text((payload or {}).get("what_happened"))[:420],
                 "why_it_matters": _normalize_text((payload or {}).get("why_it_matters"))[:420],
                 "paragraph": _normalize_text((payload or {}).get("paragraph"))[:1200],
@@ -2977,6 +2982,118 @@ def compute_story_candidate_score(
     }
 
 
+def _brief_item_title_terms(item: dict[str, Any]) -> set[str]:
+    text = _normalize_text(item.get("headline") or item.get("title"))
+    return set(_significant_terms(text))
+
+
+def _brief_item_entity_keys(item: dict[str, Any]) -> set[str]:
+    return set(_normalize_token_set(item.get("entity_keys")))
+
+
+def _brief_items_are_redundant(
+    candidate: dict[str, Any],
+    selected_item: dict[str, Any],
+) -> bool:
+    candidate_ref = dict(candidate.get("source_ref") or {})
+    selected_ref = dict(selected_item.get("source_ref") or {})
+    candidate_group = _normalize_text(candidate_ref.get("dedupe_group_id"))
+    selected_group = _normalize_text(selected_ref.get("dedupe_group_id"))
+    if candidate_group and selected_group and candidate_group == selected_group:
+        return True
+
+    candidate_entities = _brief_item_entity_keys(candidate)
+    selected_entities = _brief_item_entity_keys(selected_item)
+    candidate_terms = _brief_item_title_terms(candidate)
+    selected_terms = _brief_item_title_terms(selected_item)
+    entity_overlap = len(candidate_entities & selected_entities)
+    term_overlap = len(candidate_terms & selected_terms)
+
+    if term_overlap >= 4:
+        return True
+    if (
+        candidate.get("selected_category_id") == selected_item.get("selected_category_id")
+        and entity_overlap >= 1
+        and term_overlap >= 2
+    ):
+        return True
+    return False
+
+
+def _best_category_score_for_brief_item(
+    item: dict[str, Any],
+    categories: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    best_category: dict[str, Any] | None = None
+    best_score_details: dict[str, Any] | None = None
+    for category in categories:
+        if not category.get("enabled"):
+            continue
+        score_details = compute_story_candidate_score(item, category=category)
+        if not best_score_details or score_details["final_score"] > best_score_details["final_score"]:
+            best_score_details = score_details
+            best_category = category
+    return best_category, best_score_details
+
+
+def _category_selection_cap(
+    items: list[dict[str, Any]],
+    *,
+    threshold: float,
+) -> int:
+    eligible = [item for item in items if _safe_float(item.get("allocator_score"), 0.0) >= threshold]
+    if len(eligible) <= NEWS_CATEGORY_MAX_ITEMS_FLOOR:
+        return len(eligible)
+    strong = sum(1 for item in eligible if _safe_float(item.get("allocator_score"), 0.0) >= (threshold + 0.10))
+    if len(eligible) >= 4 and strong >= 4:
+        return 4
+    if len(eligible) >= 3 and strong >= 3:
+        return 3
+    return NEWS_CATEGORY_MAX_ITEMS_FLOOR
+
+
+def _reserve_counts_by_category(
+    buckets: dict[str, list[dict[str, Any]]],
+    *,
+    categories: list[dict[str, Any]],
+    target_count: int,
+    threshold: float,
+) -> dict[str, int]:
+    reserves: dict[str, int] = {}
+    enabled_categories = [category for category in categories if category.get("enabled")]
+    for category in enabled_categories:
+        eligible_count = sum(
+            1
+            for item in buckets.get(category["category_id"], [])
+            if _safe_float(item.get("allocator_score"), 0.0) >= threshold
+        )
+        reserves[category["category_id"]] = min(
+            eligible_count,
+            NEWS_MIN_ITEMS_PER_ELIGIBLE_CATEGORY if eligible_count >= NEWS_MIN_ITEMS_PER_ELIGIBLE_CATEGORY else eligible_count,
+        )
+
+    total_reserved = sum(reserves.values())
+    if total_reserved <= target_count:
+        return reserves
+
+    scaled: dict[str, int] = {category["category_id"]: 0 for category in enabled_categories}
+    remaining_slots = target_count
+    while remaining_slots > 0:
+        changed = False
+        for category in enabled_categories:
+            category_id = category["category_id"]
+            if scaled[category_id] >= reserves.get(category_id, 0):
+                continue
+            scaled[category_id] += 1
+            remaining_slots -= 1
+            changed = True
+            if remaining_slots <= 0:
+                break
+        if not changed:
+            break
+    return scaled
+
+
 def select_stories_by_categories(
     snapshot: dict[str, Any],
     *,
@@ -2989,33 +3106,93 @@ def select_stories_by_categories(
         for item in list(snapshot.get("brief_items") or [])
         if item.get("summary_status") == "ok"
     ]
-    scored: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+    scored: list[dict[str, Any]] = []
     for item in items:
-        best_category: dict[str, Any] | None = None
-        best_score_details: dict[str, Any] | None = None
-        for category in categories:
-            if not category.get("enabled"):
-                continue
-            score_details = compute_story_candidate_score(item, category=category)
-            if not best_score_details or score_details["final_score"] > best_score_details["final_score"]:
-                best_score_details = score_details
-                best_category = category
+        best_category, best_score_details = _best_category_score_for_brief_item(item, categories)
         if best_score_details is None:
             continue
         scored.append(
-            (
-                best_score_details["final_score"],
-                {
-                    **item,
-                    "selected_category_id": (best_category or {}).get("category_id"),
-                    "selection_score": best_score_details["final_score"],
-                    "selection_score_details": best_score_details,
-                },
-                best_score_details,
-            )
+            {
+                **item,
+                "selected_category_id": (best_category or {}).get("category_id"),
+                "selection_score": best_score_details["final_score"],
+                "selection_score_details": best_score_details,
+                "allocator_score": best_score_details["final_score"],
+            }
         )
-    scored.sort(key=lambda entry: (-entry[0], entry[1]["brief_item_id"]))
-    selected = [entry[1] for entry in scored[:target_count]]
+
+    by_category: dict[str, list[dict[str, Any]]] = {}
+    for item in scored:
+        by_category.setdefault(str(item.get("selected_category_id") or ""), []).append(item)
+    for bucket in by_category.values():
+        bucket.sort(key=lambda item: (-_safe_float(item.get("allocator_score"), 0.0), item["brief_item_id"]))
+
+    category_caps = {
+        category["category_id"]: _category_selection_cap(
+            by_category.get(category["category_id"], []),
+            threshold=NEWS_CATEGORY_ELIGIBILITY_THRESHOLD,
+        )
+        for category in categories
+        if category.get("enabled")
+    }
+    reserve_counts = _reserve_counts_by_category(
+        by_category,
+        categories=categories,
+        target_count=target_count,
+        threshold=NEWS_CATEGORY_ELIGIBILITY_THRESHOLD,
+    )
+
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    counts_by_category: dict[str, int] = {}
+
+    def maybe_add(item: dict[str, Any], *, allow_redundant: bool = False) -> bool:
+        category_id = str(item.get("selected_category_id") or "")
+        if item["brief_item_id"] in selected_ids:
+            return False
+        if not item["selection_score_details"].get("selection_eligible"):
+            return False
+        if _safe_float(item.get("allocator_score"), 0.0) < NEWS_CATEGORY_ELIGIBILITY_THRESHOLD:
+            return False
+        if counts_by_category.get(category_id, 0) >= category_caps.get(category_id, NEWS_CATEGORY_MAX_ITEMS_CEILING):
+            return False
+        if not allow_redundant and any(_brief_items_are_redundant(item, chosen) for chosen in selected):
+            return False
+        selected.append(item)
+        selected_ids.add(item["brief_item_id"])
+        counts_by_category[category_id] = counts_by_category.get(category_id, 0) + 1
+        return True
+
+    for category in categories:
+        if not category.get("enabled"):
+            continue
+        category_id = category["category_id"]
+        needed = reserve_counts.get(category_id, 0)
+        if needed <= 0:
+            continue
+        taken = 0
+        for item in by_category.get(category_id, []):
+            if len(selected) >= target_count or taken >= needed:
+                break
+            if maybe_add(item):
+                taken += 1
+
+    remaining = sorted(
+        [item for item in scored if item["brief_item_id"] not in selected_ids],
+        key=lambda item: (-_safe_float(item.get("allocator_score"), 0.0), item["brief_item_id"]),
+    )
+    for item in remaining:
+        if len(selected) >= target_count:
+            break
+        maybe_add(item)
+
+    if len(selected) < target_count:
+        for item in remaining:
+            if len(selected) >= target_count:
+                break
+            if item["brief_item_id"] in selected_ids:
+                continue
+            maybe_add(item, allow_redundant=True)
 
     audit: dict[str, Any] = {}
     for category in categories:

@@ -38,6 +38,10 @@ def _install_optional_dependency_stubs() -> None:
     botocore_exceptions.ClientError = ClientError
     sys.modules.setdefault("botocore.exceptions", botocore_exceptions)
 
+    google = types.ModuleType("google")
+    google.__path__ = []
+    sys.modules.setdefault("google", google)
+
     google_cloud = types.ModuleType("google.cloud")
     google_cloud.__path__ = []
     sys.modules.setdefault("google.cloud", google_cloud)
@@ -630,3 +634,487 @@ def test_load_latest_briefing(news_fixture):
     assert briefing is not None
     assert briefing["snapshot_id"] == "20260410T060000Z"
     assert briefing["selected_items"][0]["article_id"] == "a1"
+
+
+def _synthetic_brief_item(
+    brief_item_id: str,
+    *,
+    source_id: str,
+    selection_score: float,
+    category_scores: dict[str, float],
+    summary_status: str = "ok",
+    topic_key: str | None = None,
+):
+    return {
+        "brief_item_id": brief_item_id,
+        "article_id": brief_item_id.replace("brief:", "article:"),
+        "headline": brief_item_id,
+        "title": brief_item_id,
+        "what_happened": "what happened",
+        "why_it_matters": "why it matters",
+        "paragraph": "paragraph",
+        "category_ids": [key for key, value in category_scores.items() if value > 0],
+        "category_scores": category_scores,
+        "selection_score": selection_score,
+        "selected_for_brief": False,
+        "summary_status": summary_status,
+        "source_ref": {"source_id": source_id},
+        "topic_key": topic_key or brief_item_id,
+    }
+
+
+def _best_category_for_item(item: dict[str, object], categories: list[dict[str, object]]):
+    best_category = None
+    best_score = None
+    for category in categories:
+        if not category.get("enabled"):
+            continue
+        score = news_lane.compute_story_candidate_score(item, category=category)
+        if best_score is None or score["final_score"] > best_score["final_score"]:
+            best_category = category
+            best_score = score
+    return best_category, best_score
+
+
+def _simulate_editorial_allocator(
+    items: list[dict[str, object]],
+    *,
+    categories: list[dict[str, object]],
+    target_count: int = 12,
+    per_category_min: int = 2,
+    per_category_max: int = 4,
+    eligibility_threshold: float = 0.75,
+):
+    enriched: list[dict[str, object]] = []
+    for item in items:
+        best_category, best_score = _best_category_for_item(item, categories)
+        if best_category is None or best_score is None:
+            continue
+        enriched.append(
+            {
+                **item,
+                "selected_category_id": best_category["category_id"],
+                "selection_score_details": best_score,
+                "allocator_score": best_score["final_score"],
+            }
+        )
+
+    by_category: dict[str, list[dict[str, object]]] = {}
+    for item in enriched:
+        by_category.setdefault(item["selected_category_id"], []).append(item)
+    for bucket in by_category.values():
+        bucket.sort(key=lambda item: (-item["allocator_score"], item["brief_item_id"]))
+
+    selected: list[dict[str, object]] = []
+    selected_ids: set[str] = set()
+    selected_topics: set[str] = set()
+    counts_by_category: dict[str, int] = {}
+
+    def maybe_add(item: dict[str, object]) -> bool:
+        category_id = str(item["selected_category_id"])
+        topic_key = str(item.get("topic_key") or item["brief_item_id"])
+        if item["brief_item_id"] in selected_ids:
+            return False
+        if topic_key in selected_topics:
+            return False
+        if item["allocator_score"] < eligibility_threshold:
+            return False
+        if counts_by_category.get(category_id, 0) >= per_category_max:
+            return False
+        selected.append(item)
+        selected_ids.add(item["brief_item_id"])
+        selected_topics.add(topic_key)
+        counts_by_category[category_id] = counts_by_category.get(category_id, 0) + 1
+        return True
+
+    for category in categories:
+        if not category.get("enabled"):
+            continue
+        bucket = by_category.get(category["category_id"], [])
+        eligible = [
+            item for item in bucket if item["allocator_score"] >= eligibility_threshold
+        ]
+        reserve = min(
+            per_category_max,
+            len(eligible),
+            per_category_min if len(eligible) >= per_category_min else len(eligible),
+        )
+        taken = 0
+        for item in eligible:
+            if taken >= reserve or len(selected) >= target_count:
+                break
+            if maybe_add(item):
+                taken += 1
+
+    remaining = sorted(
+        [item for item in enriched if item["brief_item_id"] not in selected_ids],
+        key=lambda item: (-item["allocator_score"], item["brief_item_id"]),
+    )
+    for item in remaining:
+        if len(selected) >= target_count:
+            break
+        maybe_add(item)
+
+    audit = {
+        category["category_id"]: sum(
+            1 for item in selected if item["selected_category_id"] == category["category_id"]
+        )
+        for category in categories
+        if category.get("enabled")
+    }
+    return selected, audit
+
+
+def test_selector_reserves_category_coverage_on_synthetic_heavy_lane():
+    categories = news_lane.default_news_category_config()
+    snapshot = {
+        "snapshot_id": "synthetic-heavy-lane",
+        "brief_items": [
+            _synthetic_brief_item(
+                "brief:tech-1",
+                source_id="bbc_news",
+                selection_score=0.96,
+                category_scores={"tech_ai": 1.0, "geopolitics": 0.15},
+                topic_key="tech-1",
+            ),
+            _synthetic_brief_item(
+                "brief:tech-2",
+                source_id="politico_europe",
+                selection_score=0.91,
+                category_scores={"tech_ai": 0.95, "europe": 0.20},
+                topic_key="tech-2",
+            ),
+            _synthetic_brief_item(
+                "brief:tech-3",
+                source_id="bbc_news",
+                selection_score=0.88,
+                category_scores={"tech_ai": 0.93},
+                topic_key="tech-3",
+            ),
+            _synthetic_brief_item(
+                "brief:tech-4",
+                source_id="politico_europe",
+                selection_score=0.86,
+                category_scores={"tech_ai": 0.90},
+                topic_key="tech-4",
+            ),
+            _synthetic_brief_item(
+                "brief:bg-1",
+                source_id="svobodna_tochka_news",
+                selection_score=0.81,
+                category_scores={"bulgaria": 0.92, "geopolitics": 0.10},
+                topic_key="bg-1",
+            ),
+            _synthetic_brief_item(
+                "brief:bg-2",
+                source_id="svobodna_tochka_news",
+                selection_score=0.79,
+                category_scores={"bulgaria": 0.88},
+                topic_key="bg-2",
+            ),
+            _synthetic_brief_item(
+                "brief:eu-1",
+                source_id="politico_europe",
+                selection_score=0.80,
+                category_scores={"europe": 0.89, "economy": 0.30},
+                topic_key="eu-1",
+            ),
+            _synthetic_brief_item(
+                "brief:econ-1",
+                source_id="bbc_news",
+                selection_score=0.77,
+                category_scores={"economy": 0.84},
+                topic_key="econ-1",
+            ),
+            _synthetic_brief_item(
+                "brief:econ-2",
+                source_id="bbc_news",
+                selection_score=0.72,
+                category_scores={"economy": 0.79},
+                topic_key="econ-2",
+            ),
+            _synthetic_brief_item(
+                "brief:geo-1",
+                source_id="bbc_news",
+                selection_score=0.83,
+                category_scores={"geopolitics": 0.90},
+                topic_key="geo-1",
+            ),
+            _synthetic_brief_item(
+                "brief:geo-2",
+                source_id="politico_europe",
+                selection_score=0.78,
+                category_scores={"geopolitics": 0.86, "europe": 0.22},
+                topic_key="geo-2",
+            ),
+            _synthetic_brief_item(
+                "brief:weird-1",
+                source_id="bbc_news",
+                selection_score=0.68,
+                category_scores={"weird": 0.80},
+                topic_key="weird-1",
+            ),
+        ],
+    }
+
+    config = SimpleNamespace(
+        NEWS_CATEGORY_CONFIG=categories,
+        NEWS_BRIEF_TARGET_ITEM_COUNT=7,
+    )
+
+    selected, audit = news_lane.select_stories_by_categories(
+        snapshot,
+        config_or_path=config,
+    )
+
+    selected_categories = [item["selected_category_id"] for item in selected]
+
+    assert len(selected) == 7
+    assert selected_categories.count("tech_ai") <= 2
+    assert audit["bulgaria"]["selected_story_count"] >= 1
+    assert audit["economy"]["selected_story_count"] >= 1
+    assert audit["geopolitics"]["selected_story_count"] >= 1
+
+
+def test_synthetic_allocator_reserves_two_per_category_when_eligible():
+    categories = news_lane.default_news_category_config()
+    items = [
+        _synthetic_brief_item(
+            "brief:geo-1",
+            source_id="bbc_news",
+            selection_score=0.90,
+            category_scores={"geopolitics": 0.95},
+            topic_key="geo-1",
+        ),
+        _synthetic_brief_item(
+            "brief:geo-2",
+            source_id="politico_europe",
+            selection_score=0.86,
+            category_scores={"geopolitics": 0.90},
+            topic_key="geo-2",
+        ),
+        _synthetic_brief_item(
+            "brief:econ-1",
+            source_id="bbc_news",
+            selection_score=0.88,
+            category_scores={"economy": 0.92},
+            topic_key="econ-1",
+        ),
+        _synthetic_brief_item(
+            "brief:econ-2",
+            source_id="politico_europe",
+            selection_score=0.83,
+            category_scores={"economy": 0.87},
+            topic_key="econ-2",
+        ),
+        _synthetic_brief_item(
+            "brief:tech-1",
+            source_id="bbc_news",
+            selection_score=0.98,
+            category_scores={"tech_ai": 0.99},
+            topic_key="tech-1",
+        ),
+        _synthetic_brief_item(
+            "brief:tech-2",
+            source_id="politico_europe",
+            selection_score=0.94,
+            category_scores={"tech_ai": 0.95},
+            topic_key="tech-2",
+        ),
+        _synthetic_brief_item(
+            "brief:eu-1",
+            source_id="politico_europe",
+            selection_score=0.89,
+            category_scores={"europe": 0.94},
+            topic_key="eu-1",
+        ),
+        _synthetic_brief_item(
+            "brief:eu-2",
+            source_id="bbc_news",
+            selection_score=0.84,
+            category_scores={"europe": 0.88},
+            topic_key="eu-2",
+        ),
+        _synthetic_brief_item(
+            "brief:bg-1",
+            source_id="svobodna_tochka_news",
+            selection_score=0.91,
+            category_scores={"bulgaria": 0.96},
+            topic_key="bg-1",
+        ),
+        _synthetic_brief_item(
+            "brief:bg-2",
+            source_id="svobodna_tochka_news",
+            selection_score=0.85,
+            category_scores={"bulgaria": 0.90},
+            topic_key="bg-2",
+        ),
+        _synthetic_brief_item(
+            "brief:weird-1",
+            source_id="bbc_news",
+            selection_score=0.87,
+            category_scores={"weird": 0.93},
+            topic_key="weird-1",
+        ),
+        _synthetic_brief_item(
+            "brief:weird-2",
+            source_id="politico_europe",
+            selection_score=0.81,
+            category_scores={"weird": 0.86},
+            topic_key="weird-2",
+        ),
+    ]
+
+    selected, audit = _simulate_editorial_allocator(
+        items,
+        categories=categories,
+        target_count=12,
+        per_category_min=2,
+        per_category_max=4,
+        eligibility_threshold=0.75,
+    )
+
+    assert len(selected) == 12
+    assert audit["geopolitics"] >= 2
+    assert audit["economy"] >= 2
+    assert audit["tech_ai"] >= 2
+    assert audit["europe"] >= 2
+    assert audit["bulgaria"] >= 2
+    assert audit["weird"] >= 2
+
+
+def test_synthetic_allocator_caps_single_lane_and_skips_redundant_topics():
+    categories = news_lane.default_news_category_config()
+    items = [
+        _synthetic_brief_item(
+            "brief:tech-1",
+            source_id="bbc_news",
+            selection_score=0.97,
+            category_scores={"tech_ai": 0.99},
+            topic_key="openai-launch",
+        ),
+        _synthetic_brief_item(
+            "brief:tech-2",
+            source_id="politico_europe",
+            selection_score=0.96,
+            category_scores={"tech_ai": 0.98},
+            topic_key="openai-launch",
+        ),
+        _synthetic_brief_item(
+            "brief:tech-3",
+            source_id="bbc_news",
+            selection_score=0.95,
+            category_scores={"tech_ai": 0.97},
+            topic_key="chip-export",
+        ),
+        _synthetic_brief_item(
+            "brief:tech-4",
+            source_id="politico_europe",
+            selection_score=0.94,
+            category_scores={"tech_ai": 0.96},
+            topic_key="model-benchmark",
+        ),
+        _synthetic_brief_item(
+            "brief:tech-5",
+            source_id="bbc_news",
+            selection_score=0.93,
+            category_scores={"tech_ai": 0.95},
+            topic_key="datacenter-power",
+        ),
+        _synthetic_brief_item(
+            "brief:bg-1",
+            source_id="svobodna_tochka_news",
+            selection_score=0.84,
+            category_scores={"bulgaria": 0.92},
+            topic_key="bg-1",
+        ),
+        _synthetic_brief_item(
+            "brief:bg-2",
+            source_id="svobodna_tochka_news",
+            selection_score=0.82,
+            category_scores={"bulgaria": 0.89},
+            topic_key="bg-2",
+        ),
+        _synthetic_brief_item(
+            "brief:geo-1",
+            source_id="bbc_news",
+            selection_score=0.86,
+            category_scores={"geopolitics": 0.91},
+            topic_key="geo-1",
+        ),
+        _synthetic_brief_item(
+            "brief:geo-2",
+            source_id="politico_europe",
+            selection_score=0.83,
+            category_scores={"geopolitics": 0.87},
+            topic_key="geo-2",
+        ),
+    ]
+
+    selected, audit = _simulate_editorial_allocator(
+        items,
+        categories=categories,
+        target_count=8,
+        per_category_min=2,
+        per_category_max=4,
+        eligibility_threshold=0.75,
+    )
+
+    selected_ids = {item["brief_item_id"] for item in selected}
+
+    assert len(selected) == 8
+    assert audit["tech_ai"] <= 4
+    assert not {"brief:tech-1", "brief:tech-2"} <= selected_ids
+
+
+def test_synthetic_allocator_does_not_force_low_quality_category_fill():
+    categories = news_lane.default_news_category_config()
+    items = [
+        _synthetic_brief_item(
+            "brief:geo-1",
+            source_id="bbc_news",
+            selection_score=0.89,
+            category_scores={"geopolitics": 0.94},
+            topic_key="geo-1",
+        ),
+        _synthetic_brief_item(
+            "brief:geo-2",
+            source_id="politico_europe",
+            selection_score=0.84,
+            category_scores={"geopolitics": 0.89},
+            topic_key="geo-2",
+        ),
+        _synthetic_brief_item(
+            "brief:bg-1",
+            source_id="svobodna_tochka_news",
+            selection_score=0.87,
+            category_scores={"bulgaria": 0.93},
+            topic_key="bg-1",
+        ),
+        _synthetic_brief_item(
+            "brief:bg-2",
+            source_id="svobodna_tochka_news",
+            selection_score=0.81,
+            category_scores={"bulgaria": 0.88},
+            topic_key="bg-2",
+        ),
+        _synthetic_brief_item(
+            "brief:weird-weak",
+            source_id="bbc_news",
+            selection_score=0.40,
+            category_scores={"weird": 0.45},
+            topic_key="weird-weak",
+        ),
+    ]
+
+    selected, audit = _simulate_editorial_allocator(
+        items,
+        categories=categories,
+        target_count=6,
+        per_category_min=2,
+        per_category_max=4,
+        eligibility_threshold=0.75,
+    )
+
+    assert audit["weird"] == 0
+    assert all(item["brief_item_id"] != "brief:weird-weak" for item in selected)
