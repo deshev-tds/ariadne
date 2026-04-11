@@ -37,7 +37,7 @@ DEFAULT_NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS = 300
 DEFAULT_NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = 300
 NEWS_DEDUPE_PROMPT_VERSION = "news-dedupe-v1"
 NEWS_EDITORIAL_PROMPT_VERSION = "news-editorial-v1"
-NEWS_BRIEF_ITEM_PROMPT_VERSION = "news-brief-item-v2"
+NEWS_BRIEF_ITEM_PROMPT_VERSION = "news-brief-item-v3"
 DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT = 12
 NEWS_MIN_ITEMS_PER_ELIGIBLE_CATEGORY = 2
 NEWS_CATEGORY_ELIGIBILITY_THRESHOLD = 0.75
@@ -2701,8 +2701,8 @@ def _summarize_brief_item_with_model(
                 "`headline`: short Bulgarian headline.\n"
                 "`what_happened`: one sentence.\n"
                 "`why_it_matters`: one sentence.\n"
-                "`paragraph`: exactly one Bulgarian paragraph of 4 to 6 sentences, usually 90 to 170 words, combining "
-                "the event, why it matters, and one layer of concrete context from the source article. "
+                "`paragraph`: exactly one Bulgarian paragraph of 7 to 9 sentences, usually 140 to 260 words, combining "
+                "the event, why it matters, and at least two layers of concrete context or implications from the source article. "
                 "Do not write bullets. Do not write a telegraphic summary. Do not invent facts.\n"
                 "`category_scores`: ONLY these category ids are allowed: "
                 + ", ".join(category["category_id"] for category in categories)
@@ -2723,7 +2723,7 @@ def _summarize_brief_item_with_model(
             "headline": headline or _normalize_text(article.get("title"))[:220],
             "what_happened": what_happened[:420],
             "why_it_matters": why_it_matters[:420],
-            "paragraph": paragraph[:1600],
+            "paragraph": paragraph[:2400],
             "category_scores": _canonicalize_category_scores(
                 parsed.get("category_scores"),
                 categories=categories,

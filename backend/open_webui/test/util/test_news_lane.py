@@ -580,6 +580,66 @@ def test_build_brief_items_canonicalizes_model_category_scores(monkeypatch):
     assert items[0]["category_ids"] == ["geopolitics", "europe"]
 
 
+def test_brief_item_prompt_targets_longer_paragraphs(monkeypatch):
+    article = {
+        "article_id": "a1",
+        "source_id": "bbc_news",
+        "url": "https://example.com/a1",
+        "title": "Example article",
+        "published_at": "2026-04-10T05:00:00Z",
+        "raw_text_md": "Body",
+    }
+    analysis = {
+        "article_summary_short": "Short summary",
+        "entity_keys": ["entity_a"],
+        "key_facts": ["fact_a"],
+    }
+    representative = {
+        "article_id": "a1",
+        "dedupe_group_id": "dedupe:a1",
+        "duplicate_article_ids": [],
+        "category_scores": {"geopolitics": 0.8, "europe": 0.5},
+        "selection_score": 0.9,
+        "editorial_status": "kept",
+        "entity_keys": ["entity_a"],
+    }
+    config = SimpleNamespace(
+        NEWS_CATEGORY_CONFIG=news_lane.default_news_category_config(),
+        NEWS_BRIEF_MODEL="gemma",
+        NEWS_ARTICLE_MODEL="gemma",
+        NEWS_ARTICLE_MODEL_ENDPOINT="http://example.com",
+        NEWS_BRIEF_MODEL_TIMEOUT_SECONDS=300,
+    )
+    captured = {}
+
+    def _fake_completion(**kwargs):
+        captured["user_prompt"] = kwargs["user_prompt"]
+        return json.dumps(
+            {
+                "headline": "Заглавие",
+                "what_happened": "Стана нещо важно.",
+                "why_it_matters": "Има значение.",
+                "paragraph": "Изречение едно. Изречение две. Изречение три. Изречение четири. Изречение пет. Изречение шест. Изречение седем.",
+                "category_scores": {"geopolitics": 0.9},
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(news_lane, "_openai_compatible_chat_completion", _fake_completion)
+
+    result = news_lane._summarize_brief_item_with_model(
+        article,
+        analysis,
+        representative,
+        config_or_path=config,
+    )
+
+    assert result is not None
+    assert "7 to 9 sentences" in captured["user_prompt"]
+    assert "140 to 260 words" in captured["user_prompt"]
+    assert news_lane.NEWS_BRIEF_ITEM_PROMPT_VERSION == "news-brief-item-v3"
+
+
 def test_news_model_timeouts_default_to_batch_friendly_values():
     config = SimpleNamespace()
 
