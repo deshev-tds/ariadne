@@ -43,6 +43,7 @@ class NewsConfigForm(BaseModel):
     NEWS_BRIEF_MODEL: Optional[str] = None
     NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS: Optional[int] = None
     NEWS_BRIEF_MODEL_TIMEOUT_SECONDS: Optional[int] = None
+    NEWS_BRIEF_TARGET_ITEM_COUNT: Optional[int] = None
     NEWS_TTS_VOICE_ID: Optional[str] = None
     NEWS_WAKE_TIME: Optional[str] = None
     NEWS_PLAYBACK_DEVICE: Optional[str] = None
@@ -70,6 +71,7 @@ def _news_config_payload(request: Request) -> dict[str, Any]:
         "NEWS_BRIEF_MODEL": str(config.NEWS_BRIEF_MODEL or ""),
         "NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS": int(config.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS),
         "NEWS_BRIEF_MODEL_TIMEOUT_SECONDS": int(config.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS),
+        "NEWS_BRIEF_TARGET_ITEM_COUNT": int(config.NEWS_BRIEF_TARGET_ITEM_COUNT),
         "NEWS_TTS_VOICE_ID": str(config.NEWS_TTS_VOICE_ID or ""),
         "NEWS_WAKE_TIME": str(config.NEWS_WAKE_TIME or ""),
         "NEWS_PLAYBACK_DEVICE": str(config.NEWS_PLAYBACK_DEVICE or ""),
@@ -116,6 +118,10 @@ async def update_news_config(
     if form_data.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS is not None:
         config.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = max(
             5, int(form_data.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS)
+        )
+    if form_data.NEWS_BRIEF_TARGET_ITEM_COUNT is not None:
+        config.NEWS_BRIEF_TARGET_ITEM_COUNT = max(
+            1, min(20, int(form_data.NEWS_BRIEF_TARGET_ITEM_COUNT))
         )
     if form_data.NEWS_TTS_VOICE_ID is not None:
         config.NEWS_TTS_VOICE_ID = form_data.NEWS_TTS_VOICE_ID

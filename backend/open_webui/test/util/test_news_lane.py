@@ -179,148 +179,147 @@ def _mini_news_snapshot(root: Path, article_store_root: Path) -> None:
         "snapshot_id": "20260410T060000Z",
         "status": "closed",
         "built_at": "2026-04-10T06:00:00Z",
-        "story_candidates": [
+        "dedupe_groups": [
             {
-                "story_candidate_id": "story:a1",
-                "primary_article_id": "a1",
-                "supporting_article_ids": ["a2"],
-                "thread_id": "story:a1",
-                "category_ids": ["geopolitics", "europe"],
-                "category_scores": {
-                    "geopolitics": 0.9,
-                    "europe": 0.6,
-                },
-                "source_ids": ["reuters", "bbc_news"],
-                "source_count": 2,
-                "title": "EU leaders press for new sanctions after weekend strike",
-                "summary": "Европейски лидери натискат за нови санкции след удар през уикенда.",
-                "what_happened": "Европейски лидери натискат за нови санкции след удар през уикенда.",
-                "why_it_matters": "Това може да ускори нов пакет от европейски мерки и да вдигне напрежението още малко.",
-                "summary_status": "ok",
-                "must_carry": True,
-                "retry_count": 0,
-                "thread_state": "stable",
-                "thread_tension_score": 0.12,
-                "coherence": 0.91,
-                "conflict_flags": [],
-                "evidence_clusters": [
-                    {
-                        "cluster_id": "story:a1:cluster:1",
-                        "story_candidate_id": "story:a1",
-                        "representative_span_id": "a1:span:1",
-                        "article_ids": ["a1", "a2"],
-                        "source_count": 2,
-                        "preview": "EU leaders said they would coordinate another sanctions package.",
-                    }
-                ],
-                "cluster_ids": ["story:a1:cluster:1"],
-                "freshness_score": 0.9,
-                "activity_score": 0.1,
-                "relevance_score": 0.9,
+                "group_id": "dedupe:a1",
+                "representative_article_id": "a1",
+                "duplicate_article_ids": ["a2"],
+                "all_article_ids": ["a1", "a2"],
+                "dedupe_confidence": 0.92,
+                "dedupe_reason": "high_title_similarity",
             },
             {
-                "story_candidate_id": "story:a3",
-                "primary_article_id": "a3",
-                "supporting_article_ids": [],
-                "thread_id": "story:a3",
-                "category_ids": ["tech_ai"],
-                "category_scores": {
-                    "tech_ai": 0.8,
-                    "geopolitics": 0.0,
-                },
-                "source_ids": ["hacker_news"],
-                "source_count": 1,
+                "group_id": "dedupe:a3",
+                "representative_article_id": "a3",
+                "duplicate_article_ids": [],
+                "all_article_ids": ["a3"],
+                "dedupe_confidence": 1.0,
+                "dedupe_reason": "single_article",
+            },
+        ],
+        "representative_articles": [
+            {
+                "article_id": "a1",
+                "dedupe_group_id": "dedupe:a1",
+                "duplicate_article_ids": ["a2"],
+                "dedupe_confidence": 0.92,
+                "dedupe_reason": "high_title_similarity",
+                "title": "EU leaders press for new sanctions after weekend strike",
+                "url": "https://example.com/a1",
+                "source_id": "reuters",
+                "published_at": "2026-04-10T05:00:00Z",
+                "article_summary_short": "Европейски лидери натискат за нови санкции след удар през уикенда.",
+                "entity_keys": ["eu_leaders"],
+                "category_ids": ["geopolitics", "europe"],
+                "category_scores": {"geopolitics": 0.9, "europe": 0.6},
+                "selection_score": 0.88,
+                "selection_reason": "High-significance geopolitics item.",
+                "editorial_status": "kept",
+                "preferred_source_bonus": 0.0,
+                "freshness_score": 0.9,
+                "activity_score": 0.1,
+                "selection_model_id": "gemma",
+                "selection_prompt_version": "news-editorial-v1",
+            },
+            {
+                "article_id": "a3",
+                "dedupe_group_id": "dedupe:a3",
+                "duplicate_article_ids": [],
+                "dedupe_confidence": 1.0,
+                "dedupe_reason": "single_article",
                 "title": "Tiny inference stack lands on Hacker News front page",
-                "summary": "Малък inference stack изплува на Hacker News и събра прилична инерция.",
-                "what_happened": "Малък inference stack изплува на Hacker News и събра прилична инерция.",
-                "why_it_matters": "Това е сигнал, че локалният AI toolchain пак натиска към по-леки и евтини стекове.",
-                "summary_status": "ok",
-                "must_carry": False,
-                "retry_count": 0,
-                "thread_state": "unstable",
-                "thread_tension_score": 0.52,
-                "coherence": 0.77,
-                "conflict_flags": [],
-                "evidence_clusters": [
-                    {
-                        "cluster_id": "story:a3:cluster:1",
-                        "story_candidate_id": "story:a3",
-                        "representative_span_id": "a3:span:1",
-                        "article_ids": ["a3"],
-                        "source_count": 1,
-                        "preview": "The project focuses on fast local inference with small models.",
-                    }
-                ],
-                "cluster_ids": ["story:a3:cluster:1"],
+                "url": "https://example.com/a3",
+                "source_id": "hacker_news",
+                "published_at": "2026-04-10T05:30:00Z",
+                "article_summary_short": "Малък inference stack изплува на Hacker News и събра прилична инерция.",
+                "entity_keys": ["inference_stack"],
+                "category_ids": ["tech_ai"],
+                "category_scores": {"tech_ai": 0.8, "geopolitics": 0.0},
+                "selection_score": 0.74,
+                "selection_reason": "Relevant tech item with lighter weight.",
+                "editorial_status": "kept",
+                "preferred_source_bonus": 0.0,
                 "freshness_score": 0.8,
                 "activity_score": 0.7,
-                "relevance_score": 0.8,
+                "selection_model_id": "gemma",
+                "selection_prompt_version": "news-editorial-v1",
+            },
+        ],
+        "kept_article_ids": ["a1", "a3"],
+        "dropped_article_ids": [],
+        "brief_items": [
+            {
+                "brief_item_id": "brief:a1",
+                "article_id": "a1",
+                "headline": "ЕС натиска за нови санкции",
+                "title": "EU leaders press for new sanctions after weekend strike",
+                "what_happened": "Европейски лидери натискат за нови санкции след удар през уикенда.",
+                "why_it_matters": "Това може да ускори нов пакет от европейски мерки и да вдигне напрежението още малко.",
+                "paragraph": "Европейски лидери натискат за нови санкции след удар през уикенда. Това може да ускори нов пакет от европейски мерки и да вдигне напрежението още малко.",
+                "category_ids": ["geopolitics", "europe"],
+                "category_scores": {"geopolitics": 0.9, "europe": 0.6},
+                "selection_score": 0.88,
+                "selected_for_brief": False,
+                "summary_status": "ok",
+                "summary_model_id": "gemma",
+                "summary_prompt_version": "news-brief-item-v1",
+                "source_ref": {
+                    "article_id": "a1",
+                    "duplicate_article_ids": ["a2"],
+                    "source_id": "reuters",
+                    "url": "https://example.com/a1",
+                    "published_at": "2026-04-10T05:00:00Z",
+                    "dedupe_group_id": "dedupe:a1",
+                },
+            },
+            {
+                "brief_item_id": "brief:a3",
+                "article_id": "a3",
+                "headline": "Малък inference stack изплува на HN",
+                "title": "Tiny inference stack lands on Hacker News front page",
+                "what_happened": "Малък inference stack изплува на Hacker News и събра прилична инерция.",
+                "why_it_matters": "Това е сигнал, че локалният AI toolchain пак натиска към по-леки и евтини стекове.",
+                "paragraph": "Малък inference stack изплува на Hacker News и събра прилична инерция. Това е сигнал, че локалният AI toolchain пак натиска към по-леки и евтини стекове.",
+                "category_ids": ["tech_ai"],
+                "category_scores": {"tech_ai": 0.8},
+                "selection_score": 0.74,
+                "selected_for_brief": False,
+                "summary_status": "ok",
+                "summary_model_id": "gemma",
+                "summary_prompt_version": "news-brief-item-v1",
+                "source_ref": {
+                    "article_id": "a3",
+                    "duplicate_article_ids": [],
+                    "source_id": "hacker_news",
+                    "url": "https://example.com/a3",
+                    "published_at": "2026-04-10T05:30:00Z",
+                    "dedupe_group_id": "dedupe:a3",
+                },
             },
         ],
     }
-    snapshot["story_summaries"] = [
-        {
-            "story_candidate_id": story["story_candidate_id"],
-            "thread_id": story["thread_id"],
-            "related_thread_id": story.get("related_thread_id"),
-            "thread_state": story["thread_state"],
-            "thread_tension_score": story["thread_tension_score"],
-            "member_article_ids": [story["primary_article_id"], *story.get("supporting_article_ids", [])],
-            "what_happened": story["what_happened"],
-            "why_it_matters": story["why_it_matters"],
-            "category_scores": story["category_scores"],
-            "summary_status": story["summary_status"],
-            "must_carry": story["must_carry"],
-            "retry_count": story["retry_count"],
-            "model_id": "gemma",
-            "prompt_version": "news-story-summary-v2",
-            "coherence": story["coherence"],
-            "conflict_flags": story["conflict_flags"],
-        }
-        for story in snapshot["story_candidates"]
-    ]
     snapshot["stats"] = {
-        "story_candidate_count": 2,
         "article_count": 3,
-        "summarized_story_count": 2,
-        "pending_retry_story_count": 0,
-        "unstable_thread_story_count": 1,
-        "pending_split_story_count": 0,
+        "dedupe_group_count": 2,
+        "representative_article_count": 2,
+        "kept_article_count": 2,
+        "dropped_article_count": 0,
+        "brief_item_count": 2,
+        "summarized_brief_item_count": 2,
+        "failed_brief_item_count": 0,
     }
     _write_json(root / "latest_snapshot.json", snapshot)
     _write_json(root / "snapshots" / snapshot["snapshot_id"] / "snapshot.json", snapshot)
-    _write_json(root / "snapshots" / snapshot["snapshot_id"] / "story_summaries.json", snapshot["story_summaries"])
-    _write_json(
-        root / "thread_ledger.json",
-        {
-            "version": 1,
-            "threads": [
-                {
-                    "thread_id": "story:a1",
-                    "state": "stable",
-                    "tension_score": 0.12,
-                    "recent_story_candidate_ids": ["story:a1"],
-                    "entity_keys": ["eu_leaders"],
-                },
-                {
-                    "thread_id": "story:a3",
-                    "state": "unstable",
-                    "tension_score": 0.52,
-                    "recent_story_candidate_ids": ["story:a3"],
-                    "entity_keys": ["inference_stack"],
-                },
-            ],
-        },
-    )
+    _write_json(root / "snapshots" / snapshot["snapshot_id"] / "brief_items.json", snapshot["brief_items"])
     _write_json(
         root.parent / "news_briefings" / "2026-04-10" / "briefing.json",
         {
             "snapshot_id": "20260410T060000Z",
             "date": "2026-04-10",
-            "selected_stories": [snapshot["story_candidates"][0]],
+            "target_item_count": 7,
+            "selected_items": [{**snapshot["brief_items"][0], "selected_for_brief": True}],
             "category_decisions": {},
-            "summary_catchup": {"attempted_story_count": 0, "resolved_story_count": 0, "pending_retry_story_count": 0},
-            "script": "Сутрешен брифинг. Европейски лидери натискат за нови санкции след удар през уикенда. Това може да ускори нов пакет от европейски мерки и да вдигне напрежението още малко.",
+            "script": snapshot["brief_items"][0]["paragraph"],
             "source_refs": [],
             "audio_path": "/tmp/briefing.wav",
             "tts": {"status": "ok", "engine": "silent_fallback", "path": "/tmp/briefing.wav"},
@@ -331,10 +330,10 @@ def _mini_news_snapshot(root: Path, article_store_root: Path) -> None:
         {
             "snapshot_id": "20260410T060000Z",
             "date": "2026-04-10",
-            "selected_stories": [snapshot["story_candidates"][0]],
+            "target_item_count": 7,
+            "selected_items": [{**snapshot["brief_items"][0], "selected_for_brief": True}],
             "category_decisions": {},
-            "summary_catchup": {"attempted_story_count": 0, "resolved_story_count": 0, "pending_retry_story_count": 0},
-            "script": "Сутрешен брифинг. Европейски лидери натискат за нови санкции след удар през уикенда. Това може да ускори нов пакет от европейски мерки и да вдигне напрежението още малко.",
+            "script": snapshot["brief_items"][0]["paragraph"],
             "source_refs": [],
             "audio_path": "/tmp/briefing.wav",
             "tts": {"status": "ok", "engine": "silent_fallback", "path": "/tmp/briefing.wav"},
@@ -399,6 +398,7 @@ def news_fixture(tmp_path):
         NEWS_BRIEFINGS_ROOT=str(briefings_root),
         NEWS_SOURCE_REGISTRY=news_lane.default_news_source_registry(),
         NEWS_CATEGORY_CONFIG=news_lane.default_news_category_config(),
+        NEWS_BRIEF_TARGET_ITEM_COUNT=7,
         NEWS_TTS_VOICE_ID="bg",
         TASK_MODEL="",
         TASK_MODEL_EXTERNAL=False,
@@ -440,14 +440,11 @@ def test_news_source_registry_semantic_hash_ignores_label_only_changes():
 
 def test_compute_story_candidate_score_caps_preferred_source_bonus():
     story = {
+        "brief_item_id": "brief:a1",
         "summary_status": "ok",
-        "thread_state": "stable",
-        "source_ids": ["kapital", "dnevnik", "reuters"],
-        "source_count": 3,
-        "freshness_score": 0.7,
-        "relevance_score": 0.9,
-        "activity_score": 0.4,
+        "selection_score": 0.9,
         "category_scores": {"bulgaria": 0.9},
+        "source_ref": {"source_id": "kapital"},
     }
     category = {
         "category_id": "bulgaria",
@@ -464,8 +461,8 @@ def test_compute_story_candidate_score_caps_preferred_source_bonus():
 def test_compute_story_candidate_score_blocks_unsummarized_story():
     score = news_lane.compute_story_candidate_score(
         {
+            "brief_item_id": "brief:a1",
             "summary_status": "pending_retry",
-            "thread_state": "stable",
         },
         category={"category_id": "geopolitics", "preferred_source_ids": []},
     )
@@ -474,37 +471,31 @@ def test_compute_story_candidate_score_blocks_unsummarized_story():
     assert score["selection_block_reason"] == "summary_status:pending_retry"
 
 
-def test_compute_story_candidate_score_downweights_unstable_threads():
-    stable = news_lane.compute_story_candidate_score(
+def test_compute_story_candidate_score_uses_selection_score():
+    lower = news_lane.compute_story_candidate_score(
         {
+            "brief_item_id": "brief:a1",
             "summary_status": "ok",
-            "thread_state": "stable",
-            "source_ids": ["reuters"],
-            "source_count": 1,
-            "freshness_score": 0.9,
-            "relevance_score": 0.9,
-            "activity_score": 0.2,
+            "selection_score": 0.4,
             "category_scores": {"geopolitics": 0.9},
+            "source_ref": {"source_id": "reuters"},
         },
         category={"category_id": "geopolitics", "preferred_source_ids": []},
     )
-    unstable = news_lane.compute_story_candidate_score(
+    higher = news_lane.compute_story_candidate_score(
         {
+            "brief_item_id": "brief:a2",
             "summary_status": "ok",
-            "thread_state": "unstable",
-            "source_ids": ["reuters"],
-            "source_count": 1,
-            "freshness_score": 0.9,
-            "relevance_score": 0.9,
-            "activity_score": 0.2,
+            "selection_score": 0.8,
             "category_scores": {"geopolitics": 0.9},
+            "source_ref": {"source_id": "reuters"},
         },
         category={"category_id": "geopolitics", "preferred_source_ids": []},
     )
 
-    assert unstable["selection_eligible"] is True
-    assert unstable["thread_penalty"] == pytest.approx(news_lane.NEWS_THREAD_UNSTABLE_PENALTY)
-    assert unstable["final_score"] < stable["final_score"]
+    assert higher["selection_eligible"] is True
+    assert higher["thread_penalty"] == 0.0
+    assert higher["final_score"] > lower["final_score"]
 
 
 def test_news_model_timeouts_default_to_batch_friendly_values():
@@ -575,7 +566,7 @@ def test_builtin_news_consult_reads_latest_snapshot(news_fixture):
     )
 
     assert payload["snapshot_id"] == "20260410T060000Z"
-    assert payload["matched_stories"][0]["story_candidate_id"] == "story:a1"
+    assert payload["matched_stories"][0]["article_id"] == "a1"
 
 
 def test_news_selector_guidance_prefers_news_lane():
@@ -628,20 +619,14 @@ def test_select_stories_by_categories_records_preferred_source_audit(news_fixtur
     )
 
     assert selected
+    assert len(selected) <= news_fixture["config"].NEWS_BRIEF_TARGET_ITEM_COUNT
     assert "europe" in audit
-    assert (
-        audit["europe"]["selected_stories_with_preferred_source_bonus"]
-        + audit["europe"]["selected_stories_without_preferred_source_bonus"]
-        == audit["europe"]["selected_story_count"]
-    )
+    assert sum(item["selection_score_details"]["preferred_bonus_applied"] for item in selected) >= 0
 
 
-def test_load_latest_briefing_and_thread_view(news_fixture):
+def test_load_latest_briefing(news_fixture):
     briefing = news_lane.load_latest_briefing(news_fixture["config"])
-    thread = news_lane.load_news_thread_view("story:a3", config_or_path=news_fixture["config"])
 
     assert briefing is not None
     assert briefing["snapshot_id"] == "20260410T060000Z"
-    assert thread is not None
-    assert thread["thread"]["state"] == "unstable"
-    assert thread["story_candidates"][0]["story_candidate_id"] == "story:a3"
+    assert briefing["selected_items"][0]["article_id"] == "a1"

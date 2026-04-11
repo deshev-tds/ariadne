@@ -10,7 +10,6 @@
 		getNewsSourceRegistry,
 		getLatestNewsBriefing,
 		getLatestNewsSnapshot,
-		getNewsThread,
 		playLatestNews,
 		runNewsDaily,
 		runNewsHourly,
@@ -56,8 +55,6 @@
 	let categorySemanticHash = '';
 	let latestSnapshot = null;
 	let latestBriefing = null;
-	let selectedThread = null;
-	let selectedThreadId = '';
 	let busy = false;
 	let workerBusy = false;
 
@@ -83,14 +80,6 @@
 		]);
 		latestSnapshot = snapshotRes?.snapshot ?? null;
 		latestBriefing = briefingRes?.briefing ?? null;
-		if (selectedThreadId) {
-			try {
-				const threadRes = await getNewsThread(localStorage.token, selectedThreadId);
-				selectedThread = threadRes ?? null;
-			} catch {
-				selectedThread = null;
-			}
-		}
 	};
 
 	const load = async () => {
@@ -131,6 +120,7 @@
 				NEWS_BRIEF_MODEL: config.NEWS_BRIEF_MODEL,
 				NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS: Number(config.NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS ?? 300),
 				NEWS_BRIEF_MODEL_TIMEOUT_SECONDS: Number(config.NEWS_BRIEF_MODEL_TIMEOUT_SECONDS ?? 300),
+				NEWS_BRIEF_TARGET_ITEM_COUNT: Number(config.NEWS_BRIEF_TARGET_ITEM_COUNT ?? 7),
 				NEWS_TTS_VOICE_ID: config.NEWS_TTS_VOICE_ID,
 				NEWS_WAKE_TIME: config.NEWS_WAKE_TIME,
 				NEWS_PLAYBACK_DEVICE: config.NEWS_PLAYBACK_DEVICE
@@ -170,16 +160,6 @@
 			toast.error(`${$i18n.t('Failed to save news settings')}: ${e}`);
 		} finally {
 			busy = false;
-		}
-	};
-
-	const inspectThread = async (threadId: string) => {
-		selectedThreadId = threadId;
-		try {
-			selectedThread = await getNewsThread(localStorage.token, threadId);
-		} catch (e) {
-			toast.error(`${$i18n.t('Failed to load thread details')}: ${e}`);
-			selectedThread = null;
 		}
 	};
 
@@ -340,6 +320,17 @@
 							/>
 						</label>
 						<label class="flex flex-col gap-1">
+							<span class="text-xs font-medium">{$i18n.t('Target Brief Items')}</span>
+							<input
+								class="form-input rounded-xl bg-transparent"
+								type="number"
+								min="1"
+								max="20"
+								step="1"
+								bind:value={config.NEWS_BRIEF_TARGET_ITEM_COUNT}
+							/>
+						</label>
+						<label class="flex flex-col gap-1">
 							<span class="text-xs font-medium">{$i18n.t('Voice ID')}</span>
 							<input class="form-input rounded-xl bg-transparent" bind:value={config.NEWS_TTS_VOICE_ID} />
 						</label>
@@ -396,11 +387,13 @@
 								<div class="text-xs text-gray-500 dark:text-gray-400">
 									<div>ID: <code>{latestSnapshot.snapshot_id}</code></div>
 									<div>Status: {latestSnapshot.status}</div>
-									<div>Stories: {latestSnapshot.stats?.story_candidate_count ?? 0}</div>
-									<div>Summarized: {latestSnapshot.stats?.summarized_story_count ?? 0}</div>
-									<div>Pending retry: {latestSnapshot.stats?.pending_retry_story_count ?? 0}</div>
-									<div>Unstable: {latestSnapshot.stats?.unstable_thread_story_count ?? 0}</div>
-									<div>Pending split: {latestSnapshot.stats?.pending_split_story_count ?? 0}</div>
+									<div>Articles: {latestSnapshot.stats?.article_count ?? 0}</div>
+									<div>Dedupe groups: {latestSnapshot.stats?.dedupe_group_count ?? 0}</div>
+									<div>Representatives: {latestSnapshot.stats?.representative_article_count ?? 0}</div>
+									<div>Kept: {latestSnapshot.stats?.kept_article_count ?? 0}</div>
+									<div>Brief items: {latestSnapshot.stats?.brief_item_count ?? 0}</div>
+									<div>Summarized: {latestSnapshot.stats?.summarized_brief_item_count ?? 0}</div>
+									<div>Failed: {latestSnapshot.stats?.failed_brief_item_count ?? 0}</div>
 								</div>
 							{:else}
 								<div class="text-xs text-gray-500 dark:text-gray-400">{$i18n.t('No snapshot yet')}</div>
@@ -413,7 +406,8 @@
 								<div class="text-xs text-gray-500 dark:text-gray-400">
 									<div>Date: {latestBriefing.date}</div>
 									<div>Snapshot: <code>{latestBriefing.snapshot_id}</code></div>
-									<div>Selected stories: {latestBriefing.selected_stories?.length ?? 0}</div>
+									<div>Target items: {latestBriefing.target_item_count ?? 0}</div>
+									<div>Selected items: {latestBriefing.selected_items?.length ?? 0}</div>
 									<div>Audio: <code>{latestBriefing.audio_path}</code></div>
 								</div>
 								<div class="text-xs whitespace-pre-wrap rounded-xl bg-gray-50 dark:bg-gray-900 p-3">
@@ -425,42 +419,22 @@
 						</div>
 					</div>
 
-					{#if latestBriefing?.selected_stories?.length}
+					{#if latestBriefing?.selected_items?.length}
 						<div class="mt-3 space-y-2">
-							<div class="text-xs font-medium">{$i18n.t('Selected Stories')}</div>
-							{#each latestBriefing.selected_stories as story}
+							<div class="text-xs font-medium">{$i18n.t('Selected Items')}</div>
+							{#each latestBriefing.selected_items as item}
 								<div class="rounded-2xl border border-gray-100 dark:border-gray-800 p-3 space-y-1">
 									<div class="flex flex-wrap items-center gap-2 justify-between">
-										<div class="text-xs font-medium">{story.title}</div>
-										{#if story.thread_id}
-											<button
-												class="text-xs text-blue-600 dark:text-blue-400"
-												type="button"
-												on:click={() => inspectThread(story.thread_id)}
-											>
-												{story.thread_id}
-											</button>
-										{/if}
+										<div class="text-xs font-medium">{item.headline ?? item.title}</div>
+										<div class="text-xs text-gray-500 dark:text-gray-400">{item.source_ref?.source_id}</div>
 									</div>
-									<div class="text-xs text-gray-500 dark:text-gray-400">
-										{story.thread_state ?? 'stable'} · tension {story.thread_tension_score ?? 0}
+									<div class="text-xs">{item.what_happened}</div>
+									<div class="text-xs text-gray-500 dark:text-gray-400">{item.why_it_matters}</div>
+									<div class="text-xs whitespace-pre-wrap rounded-xl bg-gray-50 dark:bg-gray-900 p-3">
+										{item.paragraph}
 									</div>
-									<div class="text-xs">{story.what_happened}</div>
-									<div class="text-xs text-gray-500 dark:text-gray-400">{story.why_it_matters}</div>
 								</div>
 							{/each}
-						</div>
-					{/if}
-
-					{#if selectedThread?.thread}
-						<div class="mt-3 rounded-2xl border border-gray-100 dark:border-gray-800 p-3 space-y-2">
-							<div class="text-xs font-medium">{$i18n.t('Thread Details')}</div>
-							<div class="text-xs text-gray-500 dark:text-gray-400">
-								<div>ID: <code>{selectedThread.thread.thread_id}</code></div>
-								<div>State: {selectedThread.thread.state ?? 'stable'}</div>
-								<div>Tension: {selectedThread.thread.tension_score ?? 0}</div>
-								<div>Recent stories: {(selectedThread.thread.recent_story_candidate_ids ?? []).join(', ')}</div>
-							</div>
 						</div>
 					{/if}
 				</div>

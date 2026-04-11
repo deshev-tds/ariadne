@@ -28,14 +28,17 @@ DEFAULT_NEWS_CORPUS_ROOT_SETTING = Path("news_corpus")
 DEFAULT_NEWS_BRIEFINGS_ROOT_SETTING = Path("news_briefings")
 NEWS_SOURCE_REGISTRY_VERSION = 1
 NEWS_CATEGORY_CONFIG_VERSION = 1
-NEWS_COMPILER_VERSION = "news-v1.5"
-NEWS_ANALYZER_PROMPT_VERSION = "news-analysis-v1"
-NEWS_BRIEF_PROMPT_VERSION = "news-brief-v1"
+NEWS_COMPILER_VERSION = "news-v3"
+NEWS_ANALYZER_PROMPT_VERSION = "news-analysis-v2"
+NEWS_BRIEF_PROMPT_VERSION = "news-brief-v2"
 NEWS_PREFERRED_SOURCE_BONUS_CAP = 0.08
 DEFAULT_NEWS_MODEL_CONNECT_TIMEOUT_SECONDS = 10
 DEFAULT_NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS = 300
 DEFAULT_NEWS_BRIEF_MODEL_TIMEOUT_SECONDS = 300
-NEWS_STORY_SUMMARY_PROMPT_VERSION = "news-story-summary-v2"
+NEWS_DEDUPE_PROMPT_VERSION = "news-dedupe-v1"
+NEWS_EDITORIAL_PROMPT_VERSION = "news-editorial-v1"
+NEWS_BRIEF_ITEM_PROMPT_VERSION = "news-brief-item-v1"
+DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT = 7
 NEWS_THREAD_LEDGER_VERSION = 1
 NEWS_HOURLY_SUMMARY_MAX_STORIES = 16
 NEWS_DAILY_CATCHUP_MAX_STORIES = 8
@@ -738,6 +741,10 @@ def _story_summaries_path(corpus_root: Path, snapshot_id: str) -> Path:
     return _snapshot_dir(corpus_root, snapshot_id) / "story_summaries.json"
 
 
+def _brief_items_path(corpus_root: Path, snapshot_id: str) -> Path:
+    return _snapshot_dir(corpus_root, snapshot_id) / "brief_items.json"
+
+
 def _article_dir(article_store_root: Path, article_id: str) -> Path:
     return article_store_root / "articles" / article_id
 
@@ -1295,9 +1302,11 @@ def _analyze_article_heuristic(article: dict[str, Any]) -> dict[str, Any]:
             ]
         )
     )
+    article_summary = _heuristic_article_summary(article, spans)
     return {
         "article_id": article["article_id"],
-        "article_summary": _heuristic_article_summary(article, spans),
+        "article_summary": article_summary,
+        "article_summary_short": article_summary[:240],
         "evidence_spans": spans,
         "claim_candidates": _build_claim_candidates(spans),
         "story_hints": _build_story_hints(article, domain_scores),
@@ -1306,6 +1315,16 @@ def _analyze_article_heuristic(article: dict[str, Any]) -> dict[str, Any]:
             "published_day": _normalize_text(article.get("published_at"))[:10],
         },
         "story_merge_hints": _build_story_hints(article, domain_scores),
+        "dedupe_hints": {
+            "headline_terms": _significant_terms(article.get("title"))[:10],
+            "entity_keys": [_normalize_slug(item) for item in entities[:8]],
+            "published_day": _normalize_text(article.get("published_at"))[:10],
+        },
+        "selection_hints": {
+            "freshness_score": _freshness_score(article),
+            "activity_score": _activity_score(article),
+            "source_id": article.get("source_id"),
+        },
         "category_hints": domain_scores,
         "key_facts": [span.get("verbatim_text") for span in spans[:3] if span.get("verbatim_text")],
         "domain_scores": domain_scores,
@@ -1361,6 +1380,19 @@ def _news_model_timeout_seconds(kind: str, *, config_or_path: Any = None) -> int
         ),
         default=DEFAULT_NEWS_ARTICLE_MODEL_TIMEOUT_SECONDS,
     )
+
+
+def _news_brief_target_item_count(config_or_path: Any = None) -> int:
+    value = _config_value(
+        config_or_path,
+        "NEWS_BRIEF_TARGET_ITEM_COUNT",
+        DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT,
+    )
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = DEFAULT_NEWS_BRIEF_TARGET_ITEM_COUNT
+    return max(1, min(20, parsed))
 
 
 def _openai_compatible_chat_completion(
@@ -1423,8 +1455,8 @@ def _merge_remote_analysis(
             ),
             user_prompt=(
                 "Analyze this article and return JSON with keys "
-                "`article_summary`, `key_facts`, `entity_keys`, `timeline_hints`, "
-                "`story_merge_hints`, `category_hints`, `needs_context`, "
+                "`article_summary`, `article_summary_short`, `key_facts`, `entity_keys`, `timeline_hints`, "
+                "`dedupe_hints`, `selection_hints`, `category_hints`, `needs_context`, "
                 "`novelty_score`, `activity_score`.\n\n"
                 f"Title: {article.get('title', '')}\n"
                 f"Source: {article.get('source_id', '')}\n"
@@ -1439,6 +1471,11 @@ def _merge_remote_analysis(
             summary = _normalize_text(remote.get("article_summary"))
             if summary:
                 merged["article_summary"] = summary[:400]
+                merged["article_summary_short"] = summary[:240]
+        if isinstance(remote.get("article_summary_short"), str):
+            summary_short = _normalize_text(remote.get("article_summary_short"))
+            if summary_short:
+                merged["article_summary_short"] = summary_short[:240]
         if isinstance(remote.get("key_facts"), list):
             merged["key_facts"] = [
                 _normalize_text(item)[:240]
@@ -1456,6 +1493,16 @@ def _merge_remote_analysis(
                 str(key): remote["timeline_hints"][key]
                 for key in remote["timeline_hints"]
                 if isinstance(key, str)
+            }
+        if isinstance(remote.get("dedupe_hints"), dict):
+            merged["dedupe_hints"] = {
+                **merged.get("dedupe_hints", {}),
+                **remote["dedupe_hints"],
+            }
+        if isinstance(remote.get("selection_hints"), dict):
+            merged["selection_hints"] = {
+                **merged.get("selection_hints", {}),
+                **remote["selection_hints"],
             }
         if isinstance(remote.get("story_merge_hints"), dict):
             merged["story_merge_hints"] = {
@@ -2166,6 +2213,539 @@ def _story_summary_record(story: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _article_category_scores(
+    article: dict[str, Any],
+    analysis: dict[str, Any],
+    category_config: list[dict[str, Any]],
+    source_registry: list[dict[str, Any]],
+) -> tuple[list[str], dict[str, float]]:
+    source_meta = {item["source_id"]: item for item in source_registry}
+    category_hints = dict(analysis.get("category_hints") or analysis.get("domain_scores") or {})
+    haystack = " ".join(
+        [
+            article.get("title", ""),
+            analysis.get("article_summary_short", ""),
+            " ".join(analysis.get("key_facts") or []),
+            " ".join(analysis.get("entity_keys") or []),
+        ]
+    ).lower()
+    category_scores: dict[str, float] = {}
+    source = source_meta.get(article.get("source_id"), {})
+    for category in category_config:
+        category_id = category["category_id"]
+        score = _safe_float(category_hints.get(category_id), 0.0)
+        if category.get("assignment_terms"):
+            score += min(
+                0.4,
+                sum(0.1 for term in category.get("assignment_terms", []) if term in haystack),
+            )
+        if category_id in set(source.get("topic_tags") or []):
+            score += 0.05
+        if category_id in set(source.get("region_tags") or []):
+            score += 0.05
+        category_scores[category_id] = max(0.0, min(1.0, score))
+    assigned = [
+        category_id
+        for category_id, score in sorted(category_scores.items(), key=lambda item: (-item[1], item[0]))
+        if score > 0
+    ][:2]
+    return assigned, category_scores
+
+
+def _category_priority_score(category_scores: dict[str, float], category_config: list[dict[str, Any]]) -> float:
+    if not category_scores:
+        return 0.0
+    weights = {item["category_id"]: max(0.5, min(1.0, float(item.get("target_slots", 0) or 0) / 2.0)) for item in category_config}
+    return max(
+        _safe_float(score, 0.0) * _safe_float(weights.get(category_id), 0.5)
+        for category_id, score in category_scores.items()
+    )
+
+
+def _article_model_config(config_or_path: Any = None) -> tuple[str, str]:
+    endpoint = _normalize_text(_config_value(config_or_path, "NEWS_ARTICLE_MODEL_ENDPOINT", ""))
+    model = _normalize_text(_config_value(config_or_path, "NEWS_ARTICLE_MODEL", ""))
+    return endpoint, model
+
+
+def _brief_item_model_config(config_or_path: Any = None) -> tuple[str, str]:
+    endpoint = _normalize_text(_config_value(config_or_path, "NEWS_ARTICLE_MODEL_ENDPOINT", ""))
+    model = _normalize_text(_config_value(config_or_path, "NEWS_BRIEF_MODEL", "")) or _normalize_text(
+        _config_value(config_or_path, "NEWS_ARTICLE_MODEL", "")
+    )
+    return endpoint, model
+
+
+def _article_brief_card(article: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "article_id": article["article_id"],
+        "source_id": article.get("source_id"),
+        "title": article.get("title"),
+        "url": article.get("url"),
+        "published_at": article.get("published_at"),
+        "article_summary_short": _normalize_text(analysis.get("article_summary_short") or analysis.get("article_summary")),
+        "entity_keys": list(analysis.get("entity_keys") or []),
+        "category_hints": dict(analysis.get("category_hints") or {}),
+        "key_facts": list(analysis.get("key_facts") or [])[:4],
+    }
+
+
+def _dedupe_similarity(article_a: dict[str, Any], analysis_a: dict[str, Any], article_b: dict[str, Any], analysis_b: dict[str, Any]) -> dict[str, Any]:
+    title_score = _title_similarity(article_a.get("title", ""), article_b.get("title", ""))
+    summary_score = _title_similarity(
+        analysis_a.get("article_summary_short") or analysis_a.get("article_summary", ""),
+        analysis_b.get("article_summary_short") or analysis_b.get("article_summary", ""),
+    )
+    entities_a = set(analysis_a.get("entity_keys") or [])
+    entities_b = set(analysis_b.get("entity_keys") or [])
+    entity_overlap = len(entities_a & entities_b)
+    categories_a = set(
+        category_id
+        for category_id, score in (analysis_a.get("category_hints") or {}).items()
+        if _safe_float(score, 0.0) > 0
+    )
+    categories_b = set(
+        category_id
+        for category_id, score in (analysis_b.get("category_hints") or {}).items()
+        if _safe_float(score, 0.0) > 0
+    )
+    category_overlap = len(categories_a & categories_b)
+    published_a = _parse_datetime(article_a.get("published_at")) or _utc_now()
+    published_b = _parse_datetime(article_b.get("published_at")) or _utc_now()
+    time_gap_hours = abs((published_b - published_a).total_seconds()) / 3600.0
+    return {
+        "title_score": title_score,
+        "summary_score": summary_score,
+        "entity_overlap": entity_overlap,
+        "category_overlap": category_overlap,
+        "time_gap_hours": time_gap_hours,
+    }
+
+
+def _heuristic_same_story(similarity: dict[str, Any], article_a: dict[str, Any], article_b: dict[str, Any]) -> tuple[bool, float, str]:
+    if article_a.get("content_hash") and article_a.get("content_hash") == article_b.get("content_hash"):
+        return True, 1.0, "matching_content_hash"
+    if similarity["time_gap_hours"] > 36:
+        return False, 0.0, "time_gap"
+    if similarity["title_score"] >= 0.75:
+        return True, similarity["title_score"], "high_title_similarity"
+    if similarity["title_score"] >= 0.5 and similarity["entity_overlap"] >= 1:
+        return True, min(1.0, 0.6 + (0.1 * similarity["entity_overlap"])), "title_and_entity_overlap"
+    if similarity["summary_score"] >= 0.55 and similarity["entity_overlap"] >= 1:
+        return True, min(1.0, 0.55 + (0.1 * similarity["entity_overlap"])), "summary_and_entity_overlap"
+    return False, 0.0, "not_near_duplicate"
+
+
+def _dedupe_pair_with_model(
+    article_a: dict[str, Any],
+    analysis_a: dict[str, Any],
+    article_b: dict[str, Any],
+    analysis_b: dict[str, Any],
+    *,
+    config_or_path: Any = None,
+) -> Optional[dict[str, Any]]:
+    endpoint, model = _article_model_config(config_or_path)
+    if not endpoint or not model:
+        return None
+    prompt_payload = {
+        "article_a": _article_brief_card(article_a, analysis_a),
+        "article_b": _article_brief_card(article_b, analysis_b),
+    }
+    try:
+        response_text = _openai_compatible_chat_completion(
+            endpoint=endpoint,
+            model=model,
+            timeout_seconds=_news_model_timeout_seconds("article", config_or_path=config_or_path),
+            system_prompt=(
+                "You decide whether two news articles are near-duplicate coverage of the same update. "
+                "Return compact JSON only. Be conservative."
+            ),
+            user_prompt=(
+                "Return JSON with keys `same_story`, `confidence`, `reason`.\n\n"
+                f"{_canonical_json(prompt_payload)}"
+            ),
+        )
+        payload = _extract_json_object(response_text or "")
+        if not payload:
+            return None
+        return {
+            "same_story": bool(payload.get("same_story")),
+            "confidence": max(0.0, min(1.0, _safe_float(payload.get("confidence"), 0.0))),
+            "reason": _normalize_text(payload.get("reason"))[:160],
+        }
+    except Exception as exc:
+        log.warning(
+            "News dedupe model failed for %s/%s: %s",
+            article_a.get("article_id"),
+            article_b.get("article_id"),
+            exc,
+        )
+        return None
+
+
+def _representative_article_score(article: dict[str, Any], analysis: dict[str, Any]) -> float:
+    length_score = min(1.0, len(_normalize_text(article.get("raw_text_md"))) / 4000.0)
+    freshness_score = _freshness_score(article)
+    activity_score = _activity_score(article)
+    summary_score = 1.0 if _normalize_text(analysis.get("article_summary_short") or analysis.get("article_summary")) else 0.0
+    return (
+        0.35 * length_score
+        + 0.30 * freshness_score
+        + 0.20 * summary_score
+        + 0.15 * activity_score
+    )
+
+
+def _select_group_representative(
+    members: list[dict[str, Any]],
+    analyses_by_article: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    return sorted(
+        members,
+        key=lambda article: (
+            -_representative_article_score(article, analyses_by_article[article["article_id"]]),
+            article.get("published_at", ""),
+            article["article_id"],
+        ),
+    )[0]
+
+
+def _build_dedupe_groups(
+    articles: list[dict[str, Any]],
+    analyses_by_article: dict[str, dict[str, Any]],
+    *,
+    config_or_path: Any = None,
+) -> list[dict[str, Any]]:
+    ordered = sorted(articles, key=lambda item: (item.get("published_at", ""), item["article_id"]))
+    used: set[str] = set()
+    groups: list[dict[str, Any]] = []
+    for article in ordered:
+        if article["article_id"] in used:
+            continue
+        members = [article]
+        used.add(article["article_id"])
+        anchor_analysis = analyses_by_article[article["article_id"]]
+        best_confidence = 1.0
+        reasons: list[str] = []
+        for other in ordered:
+            if other["article_id"] in used:
+                continue
+            other_analysis = analyses_by_article[other["article_id"]]
+            similarity = _dedupe_similarity(article, anchor_analysis, other, other_analysis)
+            heuristic_same_story, heuristic_confidence, heuristic_reason = _heuristic_same_story(
+                similarity,
+                article,
+                other,
+            )
+            if not heuristic_same_story:
+                continue
+            decision = _dedupe_pair_with_model(
+                article,
+                anchor_analysis,
+                other,
+                other_analysis,
+                config_or_path=config_or_path,
+            )
+            if decision is not None:
+                same_story = bool(decision["same_story"])
+                confidence = _safe_float(decision["confidence"], heuristic_confidence)
+                reason = decision["reason"] or heuristic_reason
+            else:
+                same_story = heuristic_same_story
+                confidence = heuristic_confidence
+                reason = heuristic_reason
+            if not same_story:
+                continue
+            members.append(other)
+            used.add(other["article_id"])
+            best_confidence = min(best_confidence, confidence)
+            reasons.append(reason)
+
+        representative = _select_group_representative(members, analyses_by_article)
+        duplicate_ids = [item["article_id"] for item in members if item["article_id"] != representative["article_id"]]
+        group_id = f"dedupe:{representative['article_id']}"
+        groups.append(
+            {
+                "group_id": group_id,
+                "representative_article_id": representative["article_id"],
+                "duplicate_article_ids": duplicate_ids,
+                "all_article_ids": [item["article_id"] for item in members],
+                "dedupe_confidence": round(best_confidence if duplicate_ids else 1.0, 4),
+                "dedupe_reason": reasons[0] if reasons else "single_article",
+            }
+        )
+    return sorted(groups, key=lambda item: item["group_id"])
+
+
+def _editorial_preferred_bonus(
+    source_id: str,
+    category_scores: dict[str, float],
+    categories: list[dict[str, Any]],
+) -> float:
+    for category in categories:
+        if _safe_float(category_scores.get(category["category_id"]), 0.0) <= 0:
+            continue
+        if source_id in set(category.get("preferred_source_ids") or []):
+            return NEWS_PREFERRED_SOURCE_BONUS_CAP
+    return 0.0
+
+
+def _editorial_keep_limit(config_or_path: Any = None) -> int:
+    target_count = _news_brief_target_item_count(config_or_path)
+    return max(target_count * 2, target_count + 4)
+
+
+def _editorial_decision_with_model(
+    article: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    category_scores: dict[str, float],
+    config_or_path: Any = None,
+) -> Optional[dict[str, Any]]:
+    endpoint, model = _article_model_config(config_or_path)
+    if not endpoint or not model:
+        return None
+    payload = {
+        "article": _article_brief_card(article, analysis),
+        "category_scores": category_scores,
+    }
+    try:
+        response_text = _openai_compatible_chat_completion(
+            endpoint=endpoint,
+            model=model,
+            timeout_seconds=_news_model_timeout_seconds("article", config_or_path=config_or_path),
+            system_prompt=(
+                "You are an editor deciding whether a news article should survive into a morning briefing shortlist. "
+                "Return compact JSON only. Prefer significance over novelty bait."
+            ),
+            user_prompt=(
+                "Return JSON with keys `keep`, `selection_score`, `category_scores`, `selection_reason`.\n\n"
+                f"{_canonical_json(payload)}"
+            ),
+        )
+        parsed = _extract_json_object(response_text or "")
+        if not parsed:
+            return None
+        return {
+            "keep": bool(parsed.get("keep")),
+            "selection_score": max(0.0, min(1.0, _safe_float(parsed.get("selection_score"), 0.0))),
+            "selection_reason": _normalize_text(parsed.get("selection_reason"))[:200],
+            "category_scores": {
+                key: max(0.0, min(1.0, float(value)))
+                for key, value in (parsed.get("category_scores") or {}).items()
+                if isinstance(key, str)
+            },
+        }
+    except Exception as exc:
+        log.warning("News editorial selection model failed for %s: %s", article.get("article_id"), exc)
+        return None
+
+
+def _build_representative_articles(
+    groups: list[dict[str, Any]],
+    articles_by_id: dict[str, dict[str, Any]],
+    analyses_by_article: dict[str, dict[str, Any]],
+    *,
+    config_or_path: Any = None,
+) -> list[dict[str, Any]]:
+    categories = load_news_category_config(config_or_path)
+    source_registry = load_news_source_registry(config_or_path)
+    representatives: list[dict[str, Any]] = []
+    keep_limit = _editorial_keep_limit(config_or_path)
+    for group in groups:
+        article = articles_by_id[group["representative_article_id"]]
+        analysis = analyses_by_article[article["article_id"]]
+        category_ids, category_scores = _article_category_scores(
+            article,
+            analysis,
+            categories,
+            source_registry,
+        )
+        heuristic_base = min(
+            1.0,
+            (0.35 * _freshness_score(article))
+            + (0.15 * _activity_score(article))
+            + (0.30 * _category_priority_score(category_scores, categories))
+            + (0.20 * min(1.0, len(_normalize_text(article.get("raw_text_md"))) / 4000.0)),
+        )
+        model_decision = _editorial_decision_with_model(
+            article,
+            analysis,
+            category_scores=category_scores,
+            config_or_path=config_or_path,
+        )
+        merged_category_scores = dict(category_scores)
+        if model_decision and model_decision.get("category_scores"):
+            for key, value in model_decision["category_scores"].items():
+                merged_category_scores[key] = max(_safe_float(merged_category_scores.get(key), 0.0), _safe_float(value, 0.0))
+        assigned_categories = [
+            category_id
+            for category_id, score in sorted(merged_category_scores.items(), key=lambda item: (-item[1], item[0]))
+            if score > 0
+        ][:2]
+        preferred_bonus = _editorial_preferred_bonus(article.get("source_id", ""), merged_category_scores, categories)
+        model_score = _safe_float((model_decision or {}).get("selection_score"), heuristic_base)
+        selection_score = max(0.0, min(1.0, (0.55 * model_score) + (0.45 * heuristic_base) + preferred_bonus))
+        keep = bool((model_decision or {}).get("keep", selection_score >= 0.42))
+        representatives.append(
+            {
+                "article_id": article["article_id"],
+                "dedupe_group_id": group["group_id"],
+                "duplicate_article_ids": list(group.get("duplicate_article_ids") or []),
+                "dedupe_confidence": _safe_float(group.get("dedupe_confidence"), 1.0),
+                "dedupe_reason": group.get("dedupe_reason", ""),
+                "title": article.get("title"),
+                "url": article.get("url"),
+                "source_id": article.get("source_id"),
+                "published_at": article.get("published_at"),
+                "article_summary_short": _normalize_text(analysis.get("article_summary_short") or analysis.get("article_summary")),
+                "entity_keys": list(analysis.get("entity_keys") or []),
+                "category_ids": assigned_categories,
+                "category_scores": merged_category_scores,
+                "selection_score": round(selection_score, 4),
+                "selection_reason": _normalize_text((model_decision or {}).get("selection_reason"))[:200],
+                "editorial_status": "kept" if keep else "dropped",
+                "preferred_source_bonus": preferred_bonus,
+                "freshness_score": _freshness_score(article),
+                "activity_score": _activity_score(article),
+                "selection_model_id": _article_model_config(config_or_path)[1],
+                "selection_prompt_version": NEWS_EDITORIAL_PROMPT_VERSION,
+            }
+        )
+
+    representatives.sort(key=lambda item: (-_safe_float(item.get("selection_score"), 0.0), item["article_id"]))
+    kept = 0
+    for representative in representatives:
+        if representative["editorial_status"] != "kept":
+            continue
+        if kept >= keep_limit:
+            representative["editorial_status"] = "dropped"
+            representative["selection_reason"] = _normalize_text(representative.get("selection_reason")) or "Dropped by keep limit."
+            continue
+        kept += 1
+    return representatives
+
+
+def _summarize_brief_item_with_model(
+    article: dict[str, Any],
+    analysis: dict[str, Any],
+    representative: dict[str, Any],
+    *,
+    config_or_path: Any = None,
+) -> Optional[dict[str, Any]]:
+    endpoint, model = _brief_item_model_config(config_or_path)
+    if not endpoint or not model:
+        return None
+    payload = {
+        "article": {
+            "article_id": article["article_id"],
+            "source_id": article.get("source_id"),
+            "title": article.get("title"),
+            "url": article.get("url"),
+            "published_at": article.get("published_at"),
+            "summary": analysis.get("article_summary_short") or analysis.get("article_summary"),
+            "key_facts": analysis.get("key_facts", [])[:4],
+            "entity_keys": analysis.get("entity_keys", [])[:8],
+            "category_scores": representative.get("category_scores", {}),
+        },
+        "text": article.get("raw_text_md", "")[:12000],
+    }
+    try:
+        response_text = _openai_compatible_chat_completion(
+            endpoint=endpoint,
+            model=model,
+            timeout_seconds=_news_model_timeout_seconds("brief", config_or_path=config_or_path),
+            system_prompt=(
+                "You write one Bulgarian news briefing item from a single source article. "
+                "Return compact JSON only. Stay source-grounded. No hype."
+            ),
+            user_prompt=(
+                "Return JSON with keys `headline`, `what_happened`, `why_it_matters`, `paragraph`, `category_scores`.\n\n"
+                f"{_canonical_json(payload)}"
+            ),
+        )
+        parsed = _extract_json_object(response_text or "")
+        if not parsed:
+            return None
+        headline = _normalize_text(parsed.get("headline") or article.get("title"))[:220]
+        what_happened = _normalize_text(parsed.get("what_happened"))
+        why_it_matters = _normalize_text(parsed.get("why_it_matters"))
+        paragraph = _normalize_text(parsed.get("paragraph"))
+        if not what_happened or not why_it_matters or not paragraph:
+            return None
+        return {
+            "headline": headline or _normalize_text(article.get("title"))[:220],
+            "what_happened": what_happened[:420],
+            "why_it_matters": why_it_matters[:420],
+            "paragraph": paragraph[:1200],
+            "category_scores": {
+                key: max(0.0, min(1.0, float(value)))
+                for key, value in (parsed.get("category_scores") or {}).items()
+                if isinstance(key, str)
+            },
+        }
+    except Exception as exc:
+        log.warning("News brief item model failed for %s: %s", article.get("article_id"), exc)
+        return None
+
+
+def _build_brief_items(
+    representatives: list[dict[str, Any]],
+    articles_by_id: dict[str, dict[str, Any]],
+    analyses_by_article: dict[str, dict[str, Any]],
+    *,
+    config_or_path: Any = None,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for representative in representatives:
+        if representative.get("editorial_status") != "kept":
+            continue
+        article = articles_by_id[representative["article_id"]]
+        analysis = analyses_by_article[representative["article_id"]]
+        payload = _summarize_brief_item_with_model(
+            article,
+            analysis,
+            representative,
+            config_or_path=config_or_path,
+        )
+        merged_category_scores = dict(representative.get("category_scores") or {})
+        if payload and payload.get("category_scores"):
+            for key, value in payload["category_scores"].items():
+                merged_category_scores[key] = max(_safe_float(merged_category_scores.get(key), 0.0), _safe_float(value, 0.0))
+        category_ids = [
+            category_id
+            for category_id, score in sorted(merged_category_scores.items(), key=lambda item: (-item[1], item[0]))
+            if score > 0
+        ][:2]
+        items.append(
+            {
+                "brief_item_id": f"brief:{representative['article_id']}",
+                "article_id": representative["article_id"],
+                "headline": _normalize_text((payload or {}).get("headline") or article.get("title"))[:220],
+                "title": article.get("title"),
+                "what_happened": _normalize_text((payload or {}).get("what_happened"))[:420],
+                "why_it_matters": _normalize_text((payload or {}).get("why_it_matters"))[:420],
+                "paragraph": _normalize_text((payload or {}).get("paragraph"))[:1200],
+                "category_ids": category_ids,
+                "category_scores": merged_category_scores,
+                "selection_score": _safe_float(representative.get("selection_score"), 0.0),
+                "selected_for_brief": False,
+                "summary_status": "ok" if payload else "failed",
+                "summary_model_id": _brief_item_model_config(config_or_path)[1],
+                "summary_prompt_version": NEWS_BRIEF_ITEM_PROMPT_VERSION,
+                "source_ref": {
+                    "article_id": representative["article_id"],
+                    "duplicate_article_ids": list(representative.get("duplicate_article_ids") or []),
+                    "source_id": article.get("source_id"),
+                    "url": article.get("url"),
+                    "published_at": article.get("published_at"),
+                    "dedupe_group_id": representative.get("dedupe_group_id"),
+                },
+            }
+        )
+    return items
+
+
 def compile_story_candidates(
     *,
     config_or_path: Any = None,
@@ -2173,127 +2753,41 @@ def compile_story_candidates(
     prefetched_article_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     roots = resolve_news_roots(config_or_path)
-    category_config = load_news_category_config(config_or_path)
-    source_registry = load_news_source_registry(config_or_path)
     selected_ids = article_ids or _list_article_ids(roots.article_store_root)
-
     articles: list[dict[str, Any]] = []
     analyses_by_article: dict[str, dict[str, Any]] = {}
     for article_id in selected_ids:
-        article = _load_article_record(roots.article_store_root, article_id)
         analysis = _load_analysis_record(roots.article_store_root, article_id)
         if analysis is None:
             continue
+        article = _load_article_record(roots.article_store_root, article_id)
         articles.append(article)
         analyses_by_article[article_id] = analysis
-
-    articles.sort(key=lambda item: (item.get("published_at", ""), item["article_id"]))
-    used: set[str] = set()
-    stories: list[dict[str, Any]] = []
-    article_lookup = {item["article_id"]: item for item in articles}
-
-    for article in articles:
-        if article["article_id"] in used:
-            continue
-        story_members = [article]
-        used.add(article["article_id"])
-        analysis = analyses_by_article[article["article_id"]]
-        anchor_entities = set(analysis.get("entity_keys") or [])
-        anchor_terms = set((analysis.get("story_merge_hints") or {}).get("headline_terms") or [])
-        for other in articles:
-            if other["article_id"] in used:
-                continue
-            published_a = _parse_datetime(article.get("published_at")) or _utc_now()
-            published_b = _parse_datetime(other.get("published_at")) or _utc_now()
-            if abs((published_b - published_a).total_seconds()) > 72 * 3600:
-                continue
-            other_analysis = analyses_by_article[other["article_id"]]
-            other_entities = set(other_analysis.get("entity_keys") or [])
-            other_terms = set((other_analysis.get("story_merge_hints") or {}).get("headline_terms") or [])
-            similarity = _title_similarity(article.get("title", ""), other.get("title", ""))
-            entity_overlap = len(anchor_entities & other_entities)
-            term_overlap = len(anchor_terms & other_terms)
-            if similarity >= 0.35 or entity_overlap >= 1 or term_overlap >= 3:
-                story_members.append(other)
-                used.add(other["article_id"])
-
-        primary = sorted(story_members, key=lambda item: (item.get("published_at", ""), item["article_id"]))[0]
-        story_candidate_id = f"story:{primary['article_id']}"
-        all_spans = []
-        aggregate_domains: dict[str, float] = {}
-        category_hints: dict[str, float] = {}
-        source_ids = sorted({item.get("source_id") for item in story_members if item.get("source_id")})
-        article_summaries = []
-        story_merge_terms: set[str] = set()
-        for member in story_members:
-            member_analysis = analyses_by_article[member["article_id"]]
-            all_spans.extend(member_analysis.get("evidence_spans", []))
-            article_summaries.append(_article_summary_for_story(member, member_analysis))
-            story_merge_terms.update((member_analysis.get("story_merge_hints") or {}).get("headline_terms") or [])
-            story_merge_terms.update(member_analysis.get("entity_keys") or [])
-            for domain, score in (member_analysis.get("domain_scores", {}) or {}).items():
-                aggregate_domains[domain] = max(float(score or 0.0), aggregate_domains.get(domain, 0.0))
-            for category_id, score in (member_analysis.get("category_hints", {}) or {}).items():
-                category_hints[category_id] = max(float(score or 0.0), category_hints.get(category_id, 0.0))
-
-        clusters = _cluster_spans_for_story(all_spans, article_lookup, story_candidate_id)
-        conflicts = _detect_conflict_flags(all_spans, article_lookup)
-        aggregate_entities = _aggregate_story_entities(story_members, analyses_by_article)
-        provisional_story = {
-            "story_candidate_id": story_candidate_id,
-            "primary_article_id": primary["article_id"],
-            "supporting_article_ids": [item["article_id"] for item in story_members if item["article_id"] != primary["article_id"]],
-            "thread_id": None,
-            "category_ids": [],
-            "category_scores": {},
-            "category_hints": category_hints,
-            "source_ids": source_ids,
-            "source_count": len(source_ids),
-            "title": primary.get("title"),
-            "summary": "",
-            "what_happened": "",
-            "why_it_matters": "",
-            "conflict_flags": conflicts,
-            "evidence_clusters": clusters,
-            "cluster_ids": [item["cluster_id"] for item in clusters],
-            "freshness_score": max(_freshness_score(item) for item in story_members),
-            "activity_score": max(_activity_score(item) for item in story_members),
-            "relevance_score": 0.0,
-            "aggregate_domain_scores": aggregate_domains,
-            "aggregate_entities": aggregate_entities,
-            "article_summaries": [summary for summary in article_summaries if summary],
-            "story_merge_terms": sorted(term for term in story_merge_terms if term)[:24],
-            "evidence_bundle": [cluster.get("preview") for cluster in clusters if cluster.get("preview")][:10],
-            "published_at": primary.get("published_at"),
-        }
-        assigned_categories, category_scores = _story_category_scores_from_bundle(
-            provisional_story,
-            category_config,
-            source_registry,
-        )
-        provisional_story["category_ids"] = assigned_categories
-        provisional_story["category_scores"] = category_scores
-        provisional_story["relevance_score"] = max(category_scores.values() or [0.0])
-        provisional_story["pre_summary_priority"] = _story_pre_summary_priority(provisional_story)
-        stories.append(provisional_story)
-
-    ranked = sorted(
-        stories,
-        key=lambda item: (-_safe_float(item.get("pre_summary_priority"), 0.0), item["story_candidate_id"]),
+    articles_by_id = {article["article_id"]: article for article in articles}
+    dedupe_groups = _build_dedupe_groups(
+        articles,
+        analyses_by_article,
+        config_or_path=config_or_path,
     )
-    must_carry_ids = {
-        item["story_candidate_id"]
-        for item in ranked[: min(8, len(ranked))]
-        if _safe_float(item.get("pre_summary_priority"), 0.0) >= 0.45
-    }
-    for story in stories:
-        story["must_carry"] = story["story_candidate_id"] in must_carry_ids
-
+    representatives = _build_representative_articles(
+        dedupe_groups,
+        articles_by_id,
+        analyses_by_article,
+        config_or_path=config_or_path,
+    )
+    brief_items = _build_brief_items(
+        representatives,
+        articles_by_id,
+        analyses_by_article,
+        config_or_path=config_or_path,
+    )
     return {
         "status": "ok",
-        "story_candidates": stories,
         "article_count": len(articles),
         "prefetched_article_ids": sorted(set(prefetched_article_ids or [])),
+        "dedupe_groups": dedupe_groups,
+        "representative_articles": representatives,
+        "brief_items": brief_items,
     }
 
 
@@ -2304,7 +2798,7 @@ def build_snapshot(
     prefetched_article_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     roots = resolve_news_roots(config_or_path)
-    story_bundle = compile_story_candidates(
+    bundle = compile_story_candidates(
         config_or_path=config_or_path,
         article_ids=article_ids,
         prefetched_article_ids=prefetched_article_ids,
@@ -2313,26 +2807,8 @@ def build_snapshot(
     categories = load_news_category_config(config_or_path)
     built_at = _utc_now()
     snapshot_id = built_at.strftime("%Y%m%dT%H%M%SZ")
-    attached, ledger = _attach_story_candidates_to_threads(
-        story_bundle["story_candidates"],
-        corpus_root=roots.corpus_root,
-        snapshot_id=snapshot_id,
-    )
-    tensioned, ledger = _apply_thread_tension(
-        attached,
-        ledger=ledger,
-        snapshot_id=snapshot_id,
-    )
-    summarized, summary_stats = _summarize_story_candidates(
-        tensioned,
-        config_or_path=config_or_path,
-        max_stories=NEWS_HOURLY_SUMMARY_MAX_STORIES,
-    )
-    for story in summarized:
-        story["summary_model_id"] = _story_summary_model_config(config_or_path)[1]
-        story["summary_prompt_version"] = NEWS_STORY_SUMMARY_PROMPT_VERSION
-        story["summary_record"] = _story_summary_record(story)
-        story["summary"] = story.get("what_happened") or ""
+    representative_articles = list(bundle.get("representative_articles") or [])
+    brief_items = list(bundle.get("brief_items") or [])
     snapshot = {
         "snapshot_id": snapshot_id,
         "status": "closed",
@@ -2341,8 +2817,8 @@ def build_snapshot(
         "prefetched_article_ids": sorted(set(prefetched_article_ids or [])),
         "analyzer_model_id": _normalize_text(_config_value(config_or_path, "NEWS_ARTICLE_MODEL", "")),
         "analyzer_prompt_version": NEWS_ANALYZER_PROMPT_VERSION,
-        "story_summary_model_id": _story_summary_model_config(config_or_path)[1],
-        "story_summary_prompt_version": NEWS_STORY_SUMMARY_PROMPT_VERSION,
+        "brief_item_model_id": _brief_item_model_config(config_or_path)[1],
+        "brief_item_prompt_version": NEWS_BRIEF_ITEM_PROMPT_VERSION,
         "compiler_version": NEWS_COMPILER_VERSION,
         "category_config_semantic_hash": news_category_config_semantic_hash(
             categories, source_registry=registry
@@ -2350,20 +2826,32 @@ def build_snapshot(
         "source_registry_semantic_hash": news_source_registry_semantic_hash(registry),
         "resolved_category_config": categories,
         "resolved_source_registry": registry,
-        "story_candidates": summarized,
-        "summary_stats": summary_stats,
+        "dedupe_groups": list(bundle.get("dedupe_groups") or []),
+        "representative_articles": representative_articles,
+        "kept_article_ids": [
+            item["article_id"]
+            for item in representative_articles
+            if item.get("editorial_status") == "kept"
+        ],
+        "dropped_article_ids": [
+            item["article_id"]
+            for item in representative_articles
+            if item.get("editorial_status") != "kept"
+        ],
+        "brief_items": brief_items,
         "stats": {
-            "story_candidate_count": len(summarized),
-            "article_count": story_bundle["article_count"],
-            "summarized_story_count": 0,
-            "pending_retry_story_count": 0,
-            "unstable_thread_story_count": 0,
-            "pending_split_story_count": 0,
+            "article_count": bundle.get("article_count", 0),
+            "dedupe_group_count": len(bundle.get("dedupe_groups") or []),
+            "representative_article_count": len(representative_articles),
+            "kept_article_count": 0,
+            "dropped_article_count": 0,
+            "brief_item_count": len(brief_items),
+            "summarized_brief_item_count": 0,
+            "failed_brief_item_count": 0,
         },
     }
     _refresh_snapshot_stats(snapshot)
     _persist_snapshot_payload(roots, snapshot)
-    _save_thread_ledger(roots.corpus_root, ledger)
     return snapshot
 
 
@@ -2389,28 +2877,28 @@ def _persist_snapshot_payload(
     snapshot_dir = _snapshot_dir(roots.corpus_root, snapshot["snapshot_id"])
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     _write_json(snapshot_dir / "snapshot.json", snapshot)
-    _write_json(_story_summaries_path(roots.corpus_root, snapshot["snapshot_id"]), snapshot.get("story_summaries", []))
+    _write_json(_brief_items_path(roots.corpus_root, snapshot["snapshot_id"]), snapshot.get("brief_items", []))
     _write_json(roots.corpus_root / "latest_snapshot.json", snapshot)
     return snapshot
 
 
 def _refresh_snapshot_stats(snapshot: dict[str, Any]) -> dict[str, Any]:
-    stories = list(snapshot.get("story_candidates", []))
-    snapshot["story_summaries"] = [_story_summary_record(story) for story in stories]
+    representatives = list(snapshot.get("representative_articles", []))
+    brief_items = list(snapshot.get("brief_items", []))
     snapshot["summary_stats"] = {
-        "attempted_story_count": sum(1 for item in stories if item.get("summary_status") not in {"pending", ""}),
-        "summarized_story_count": sum(1 for item in stories if item.get("summary_status") == "ok"),
-        "pending_retry_story_count": sum(1 for item in stories if item.get("summary_status") == "pending_retry"),
-        "failed_story_count": sum(1 for item in stories if item.get("summary_status") == "failed"),
+        "brief_item_count": len(brief_items),
+        "summarized_brief_item_count": sum(1 for item in brief_items if item.get("summary_status") == "ok"),
+        "failed_brief_item_count": sum(1 for item in brief_items if item.get("summary_status") == "failed"),
     }
     stats = dict(snapshot.get("stats") or {})
     stats.update(
         {
-            "story_candidate_count": len(stories),
-            "summarized_story_count": snapshot["summary_stats"]["summarized_story_count"],
-            "pending_retry_story_count": snapshot["summary_stats"]["pending_retry_story_count"],
-            "unstable_thread_story_count": sum(1 for item in stories if item.get("thread_state") == "unstable"),
-            "pending_split_story_count": sum(1 for item in stories if item.get("thread_state") == "pending_split"),
+            "representative_article_count": len(representatives),
+            "kept_article_count": sum(1 for item in representatives if item.get("editorial_status") == "kept"),
+            "dropped_article_count": sum(1 for item in representatives if item.get("editorial_status") != "kept"),
+            "brief_item_count": len(brief_items),
+            "summarized_brief_item_count": snapshot["summary_stats"]["summarized_brief_item_count"],
+            "failed_brief_item_count": snapshot["summary_stats"]["failed_brief_item_count"],
         }
     )
     snapshot["stats"] = stats
@@ -2433,35 +2921,7 @@ def load_news_thread_view(
     *,
     config_or_path: Any = None,
 ) -> Optional[dict[str, Any]]:
-    normalized_thread_id = _normalize_text(thread_id)
-    if not normalized_thread_id:
-        return None
-    roots = resolve_news_roots(config_or_path)
-    ledger = _load_thread_ledger(roots.corpus_root)
-    thread = next(
-        (
-            item
-            for item in list(ledger.get("threads") or [])
-            if isinstance(item, dict) and item.get("thread_id") == normalized_thread_id
-        ),
-        None,
-    )
-    if thread is None:
-        return None
-    snapshot = load_latest_closed_snapshot(config_or_path)
-    member_stories = []
-    if snapshot:
-        member_stories = [
-            story
-            for story in snapshot.get("story_candidates", [])
-            if story.get("thread_id") == normalized_thread_id
-            or story.get("related_thread_id") == normalized_thread_id
-        ]
-    return {
-        "thread": thread,
-        "snapshot_id": (snapshot or {}).get("snapshot_id"),
-        "story_candidates": member_stories,
-    }
+    return None
 
 
 def compute_story_candidate_score(
@@ -2470,8 +2930,6 @@ def compute_story_candidate_score(
     category: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary_status = str(story_candidate.get("summary_status") or "pending")
-    thread_state = str(story_candidate.get("thread_state") or "stable")
-    detached_candidate = bool(story_candidate.get("related_thread_id"))
     if summary_status != "ok":
         return {
             "source_presence": 0.0,
@@ -2488,69 +2946,31 @@ def compute_story_candidate_score(
             "selection_block_reason": f"summary_status:{summary_status}",
             "final_score": 0.0,
         }
-    if thread_state == "pending_split" and not detached_candidate:
-        return {
-            "source_presence": 0.0,
-            "freshness": 0.0,
-            "relevance": 0.0,
-            "activity": 0.0,
-            "coherence": _safe_float(story_candidate.get("coherence"), 0.0),
-            "base_score": 0.0,
-            "preferred_bonus": 0.0,
-            "preferred_bonus_applied": False,
-            "must_carry_bonus": 0.0,
-            "thread_penalty": NEWS_THREAD_PENDING_SPLIT_PENALTY,
-            "selection_eligible": False,
-            "selection_block_reason": "pending_split",
-            "final_score": 0.0,
-        }
-    source_presence = min(1.0, float(story_candidate.get("source_count", 0)) / 3.0)
-    freshness = float(story_candidate.get("freshness_score") or 0.0)
-    relevance = float(story_candidate.get("relevance_score") or 0.0)
+    selection_score = _safe_float(story_candidate.get("selection_score"), 0.0)
+    category_score = 0.0
     if category is not None:
-        relevance = float(
-            (story_candidate.get("category_scores", {}) or {}).get(category["category_id"], relevance)
-        )
-    activity = float(story_candidate.get("activity_score") or 0.0)
-    coherence = _safe_float(story_candidate.get("coherence"), 0.0)
-    base_score = min(
-        1.0,
-        max(
+        category_score = _safe_float(
+            (story_candidate.get("category_scores") or {}).get(category["category_id"]),
             0.0,
-            (0.35 * source_presence)
-            + (0.30 * freshness)
-            + (0.25 * relevance)
-            + (0.10 * activity),
-        ),
-    )
-    preferred_bonus = 0.0
+        )
+    relevance = min(1.0, (0.75 * selection_score) + (0.25 * category_score))
     preferred_bonus_applied = False
-    if category is not None and set(category.get("preferred_source_ids", [])) & set(
-        story_candidate.get("source_ids", [])
-    ):
+    preferred_bonus = 0.0
+    if category is not None and story_candidate.get("source_ref", {}).get("source_id") in set(category.get("preferred_source_ids") or []):
         preferred_bonus = NEWS_PREFERRED_SOURCE_BONUS_CAP
         preferred_bonus_applied = True
-    must_carry_bonus = 0.05 if story_candidate.get("must_carry") else 0.0
-    thread_penalty = 0.0
-    if thread_state == "unstable":
-        thread_penalty = NEWS_THREAD_UNSTABLE_PENALTY
-    elif thread_state == "pending_split":
-        thread_penalty = NEWS_THREAD_PENDING_SPLIT_PENALTY
-    final_score = max(
-        0.0,
-        min(1.0, base_score + preferred_bonus + must_carry_bonus - thread_penalty),
-    )
+    final_score = max(0.0, min(1.0, relevance + preferred_bonus))
     return {
-        "source_presence": source_presence,
-        "freshness": freshness,
+        "source_presence": 1.0,
+        "freshness": selection_score,
         "relevance": relevance,
-        "activity": activity,
-        "coherence": coherence,
-        "base_score": base_score,
-        "preferred_bonus": min(preferred_bonus, NEWS_PREFERRED_SOURCE_BONUS_CAP),
+        "activity": 0.0,
+        "coherence": 1.0,
+        "base_score": relevance,
+        "preferred_bonus": preferred_bonus,
         "preferred_bonus_applied": preferred_bonus_applied,
-        "must_carry_bonus": must_carry_bonus,
-        "thread_penalty": thread_penalty,
+        "must_carry_bonus": 0.0,
+        "thread_penalty": 0.0,
         "selection_eligible": True,
         "selection_block_reason": "",
         "final_score": final_score,
@@ -2563,161 +2983,69 @@ def select_stories_by_categories(
     config_or_path: Any = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     categories = load_news_category_config(config_or_path)
-    stories = list(snapshot.get("story_candidates", []))
-    selected_ids: set[str] = set()
-    selected: list[dict[str, Any]] = []
+    target_count = _news_brief_target_item_count(config_or_path)
+    items = [
+        dict(item)
+        for item in list(snapshot.get("brief_items") or [])
+        if item.get("summary_status") == "ok"
+    ]
+    scored: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+    for item in items:
+        best_category: dict[str, Any] | None = None
+        best_score_details: dict[str, Any] | None = None
+        for category in categories:
+            if not category.get("enabled"):
+                continue
+            score_details = compute_story_candidate_score(item, category=category)
+            if not best_score_details or score_details["final_score"] > best_score_details["final_score"]:
+                best_score_details = score_details
+                best_category = category
+        if best_score_details is None:
+            continue
+        scored.append(
+            (
+                best_score_details["final_score"],
+                {
+                    **item,
+                    "selected_category_id": (best_category or {}).get("category_id"),
+                    "selection_score": best_score_details["final_score"],
+                    "selection_score_details": best_score_details,
+                },
+                best_score_details,
+            )
+        )
+    scored.sort(key=lambda entry: (-entry[0], entry[1]["brief_item_id"]))
+    selected = [entry[1] for entry in scored[:target_count]]
+
     audit: dict[str, Any] = {}
-    enabled_categories = sorted(
-        [item for item in categories if item.get("enabled")],
-        key=lambda item: item["category_id"],
-    )
-
-    for category in enabled_categories:
-        scored: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
-        for story in stories:
-            if story["story_candidate_id"] in selected_ids:
-                continue
-            if float((story.get("category_scores", {}) or {}).get(category["category_id"], 0.0)) <= 0:
-                continue
-            score_details = compute_story_candidate_score(story, category=category)
-            if not score_details.get("selection_eligible") or score_details["final_score"] <= 0:
-                continue
-            scored.append((score_details["final_score"], story, score_details))
-        scored.sort(key=lambda item: (-item[0], item[1]["story_candidate_id"]))
-
-        chosen: list[dict[str, Any]] = []
-        preferred_bonus_count = 0
-        non_preferred_count = 0
-        capped_bonus_applications = 0
-        for _, story, score_details in scored[: int(category.get("target_slots", 0) or 0)]:
-            selected_ids.add(story["story_candidate_id"])
-            selected_story = {
-                **story,
-                "selection_score": score_details["final_score"],
-                "selection_score_details": score_details,
-                "selected_category_id": category["category_id"],
-            }
-            selected.append(selected_story)
-            chosen.append(selected_story)
-            if score_details["preferred_bonus_applied"]:
-                preferred_bonus_count += 1
-                capped_bonus_applications += 1
-            else:
-                non_preferred_count += 1
-
+    for category in categories:
+        if not category.get("enabled"):
+            continue
+        chosen = [item for item in selected if item.get("selected_category_id") == category["category_id"]]
         audit[category["category_id"]] = {
             "selected_story_count": len(chosen),
-            "selected_stories_with_preferred_source_bonus": preferred_bonus_count,
-            "selected_stories_without_preferred_source_bonus": non_preferred_count,
-            "capped_bonus_applications": capped_bonus_applications,
-        }
-
-    total_slots = sum(int(item.get("target_slots", 0) or 0) for item in enabled_categories)
-    fallback_slots = max(0, total_slots - len(selected))
-    if fallback_slots > 0:
-        fallback_candidates: list[tuple[float, dict[str, Any], dict[str, Any], str]] = []
-        for story in stories:
-            if story["story_candidate_id"] in selected_ids:
-                continue
-            best_category_id = ""
-            best_score: dict[str, Any] | None = None
-            for category in enabled_categories:
-                if float((story.get("category_scores", {}) or {}).get(category["category_id"], 0.0)) <= 0:
-                    continue
-                score_details = compute_story_candidate_score(story, category=category)
-                if not score_details.get("selection_eligible"):
-                    continue
-                if best_score is None or score_details["final_score"] > best_score["final_score"]:
-                    best_score = score_details
-                    best_category_id = category["category_id"]
-            if best_score is None:
-                continue
-            fallback_candidates.append(
-                (best_score["final_score"], story, best_score, best_category_id)
-            )
-        fallback_candidates.sort(key=lambda item: (-item[0], item[1]["story_candidate_id"]))
-
-        chosen = []
-        for _, story, score_details, category_id in fallback_candidates[:fallback_slots]:
-            selected_ids.add(story["story_candidate_id"])
-            selected_story = {
-                **story,
-                "selection_score": score_details["final_score"],
-                "selection_score_details": score_details,
-                "selected_category_id": category_id,
-                "selection_origin": "fallback",
-            }
-            selected.append(selected_story)
-            chosen.append(selected_story)
-        audit["__fallback__"] = {
-            "selected_story_count": len(chosen),
             "selected_stories_with_preferred_source_bonus": sum(
-                1 for item in chosen if item["selection_score_details"]["preferred_bonus_applied"]
+                1 for item in chosen if item["selection_score_details"].get("preferred_bonus_applied")
             ),
             "selected_stories_without_preferred_source_bonus": sum(
-                1 for item in chosen if not item["selection_score_details"]["preferred_bonus_applied"]
+                1 for item in chosen if not item["selection_score_details"].get("preferred_bonus_applied")
             ),
             "capped_bonus_applications": sum(
-                1 for item in chosen if item["selection_score_details"]["preferred_bonus_applied"]
+                1 for item in chosen if item["selection_score_details"].get("preferred_bonus_applied")
             ),
         }
-
     return selected, audit
 
 
 def synthesize_briefing_script(selected_stories: list[dict[str, Any]]) -> str:
-    valid_stories = [
-        story for story in selected_stories if _normalize_text(story.get("what_happened")) and _normalize_text(story.get("why_it_matters"))
-    ]
-    if not valid_stories:
-        return "Днес няма селекция, която да си струва да ти я продавам като брифинг."
-
-    parts = ["Сутрешен брифинг."]
-    for story in valid_stories:
-        parts.append(_normalize_text(story.get("what_happened")).rstrip(".") + ".")
-        parts.append(_normalize_text(story.get("why_it_matters")).rstrip(".") + ".")
-    return " ".join(parts)
-
-
-def _synthesize_briefing_with_model(
-    selected_stories: list[dict[str, Any]],
-    *,
-    config_or_path: Any = None,
-) -> Optional[str]:
-    endpoint = _normalize_text(_config_value(config_or_path, "NEWS_ARTICLE_MODEL_ENDPOINT", ""))
-    model = _normalize_text(_config_value(config_or_path, "NEWS_BRIEF_MODEL", ""))
-    if not endpoint or not model or not selected_stories:
-        return None
-
-    compact = [
-        {
-            "title": item.get("title"),
-            "what_happened": item.get("what_happened"),
-            "why_it_matters": item.get("why_it_matters"),
-            "category_ids": item.get("category_ids", []),
-            "source_ids": item.get("source_ids", []),
-            "thread_state": item.get("thread_state", "stable"),
-            "conflict_flags": item.get("conflict_flags", []),
-        }
+    paragraphs = [
+        _normalize_text(item.get("paragraph"))
         for item in selected_stories
+        if _normalize_text(item.get("paragraph"))
     ]
-    try:
-        response_text = _openai_compatible_chat_completion(
-            endpoint=endpoint,
-            model=model,
-            timeout_seconds=_news_model_timeout_seconds("brief", config_or_path=config_or_path),
-            system_prompt=(
-                "You write a Bulgarian morning news briefing. Keep it direct, concise, lightly ironic, "
-                "and under 120 words. Use only the provided story summaries. Return JSON only with key `script`."
-            ),
-            user_prompt=f"Write the briefing from these selected stories:\n{_canonical_json(compact)}",
-        )
-        payload = _extract_json_object(response_text or "")
-        script = _normalize_text((payload or {}).get("script"))
-        return script or None
-    except Exception as exc:
-        log.warning("News brief synthesis model failed: %s", exc)
-        return None
+    if not paragraphs:
+        return "Днес няма селекция, която да си струва да ти я продавам като брифинг."
+    return "\n\n".join(paragraphs)
 
 
 def _write_silent_wav(path: Path, *, seconds: float) -> None:
@@ -2760,19 +3088,11 @@ def build_briefing(
     active_snapshot = snapshot or load_latest_closed_snapshot(config_or_path)
     if not active_snapshot:
         raise FileNotFoundError("No closed news snapshot available")
-    active_snapshot, catchup = _catch_up_pending_story_summaries(
-        active_snapshot,
-        config_or_path=config_or_path,
-        max_stories=NEWS_DAILY_CATCHUP_MAX_STORIES,
-    )
-
-    selected_stories, category_audit = select_stories_by_categories(
+    selected_items, category_audit = select_stories_by_categories(
         active_snapshot,
         config_or_path=config_or_path,
     )
-    script = _synthesize_briefing_with_model(
-        selected_stories, config_or_path=config_or_path
-    ) or synthesize_briefing_script(selected_stories)
+    script = synthesize_briefing_script(selected_items)
     today = (_parse_datetime(active_snapshot.get("built_at")) or _utc_now()).date().isoformat()
     briefing_dir = roots.briefings_root / today
     briefing_dir.mkdir(parents=True, exist_ok=True)
@@ -2785,17 +3105,19 @@ def build_briefing(
     payload = {
         "snapshot_id": active_snapshot["snapshot_id"],
         "date": today,
-        "selected_stories": selected_stories,
+        "target_item_count": _news_brief_target_item_count(config_or_path),
+        "selected_items": [
+            {
+                **item,
+                "selected_for_brief": True,
+            }
+            for item in selected_items
+        ],
         "category_decisions": category_audit,
-        "summary_catchup": catchup,
         "script": script,
         "source_refs": [
-            {
-                "story_candidate_id": story["story_candidate_id"],
-                "article_ids": [story["primary_article_id"], *story.get("supporting_article_ids", [])],
-                "source_ids": story.get("source_ids", []),
-            }
-            for story in selected_stories
+            item.get("source_ref", {})
+            for item in selected_items
         ],
         "audio_path": str(audio_path),
         "tts": tts_result,
@@ -2876,25 +3198,32 @@ def play_latest_briefing(
     return {"status": "ok", "audio_path": str(audio_path), "steps": steps}
 
 
-def _story_documents(snapshot: dict[str, Any], config_or_path: Any = None) -> list[dict[str, Any]]:
-    roots = resolve_news_roots(config_or_path)
+def _brief_documents(snapshot: dict[str, Any], config_or_path: Any = None) -> list[dict[str, Any]]:
     documents: list[dict[str, Any]] = []
-    for story in snapshot.get("story_candidates", []):
-        article_ids = [story["primary_article_id"], *story.get("supporting_article_ids", [])]
+    brief_items_by_article = {
+        item["article_id"]: item
+        for item in snapshot.get("brief_items", [])
+        if isinstance(item, dict) and item.get("article_id")
+    }
+    for representative in snapshot.get("representative_articles", []):
+        article_id = representative.get("article_id")
+        if not article_id:
+            continue
+        brief_item = brief_items_by_article.get(article_id, {})
         summary_lines = [
-            story.get("what_happened", "") or story.get("summary", ""),
-            story.get("why_it_matters", ""),
-            f"Sources: {', '.join(story.get('source_ids', []))}",
+            brief_item.get("what_happened", "") or representative.get("article_summary_short", ""),
+            brief_item.get("why_it_matters", ""),
+            f"Source: {representative.get('source_id', '')}",
         ]
         documents.append(
             {
-                "id": story["story_candidate_id"],
-                "name": story.get("title") or story["story_candidate_id"],
-                "type": "news_story_candidate",
+                "id": article_id,
+                "name": representative.get("title") or article_id,
+                "type": "news_representative_article",
                 "content": "\n".join(line for line in summary_lines if line),
-                "source_path": f"snapshot:{snapshot.get('snapshot_id')}:{story['story_candidate_id']}",
-                "article_ids": article_ids,
-                "category_ids": list(story.get("category_ids") or []),
+                "source_path": f"snapshot:{snapshot.get('snapshot_id')}:{article_id}",
+                "article_ids": [article_id, *list(representative.get("duplicate_article_ids") or [])],
+                "category_ids": list(brief_item.get("category_ids") or representative.get("category_ids") or []),
             }
         )
     return documents
@@ -2914,23 +3243,43 @@ def consult_news_corpus(
         return {"status": "empty", "reason": "no_closed_snapshot"}
 
     query_terms = _significant_terms(" ".join([objective, current_findings, current_hypothesis, named_entity]))
+    brief_items_by_article = {
+        item["article_id"]: item
+        for item in snapshot.get("brief_items", [])
+        if isinstance(item, dict) and item.get("article_id")
+    }
     matches: list[tuple[float, dict[str, Any]]] = []
-    for story in snapshot.get("story_candidates", []):
+    for representative in snapshot.get("representative_articles", []):
+        article_id = representative.get("article_id")
+        brief_item = brief_items_by_article.get(article_id, {})
         haystack = " ".join(
             [
-                story.get("title", ""),
-                story.get("what_happened", ""),
-                story.get("why_it_matters", ""),
-                " ".join(story.get("category_ids", [])),
-                " ".join(story.get("source_ids", [])),
+                representative.get("title", ""),
+                representative.get("article_summary_short", ""),
+                brief_item.get("what_happened", ""),
+                brief_item.get("why_it_matters", ""),
+                " ".join(brief_item.get("category_ids", []) or representative.get("category_ids", [])),
+                representative.get("source_id", ""),
             ]
         ).lower()
         score = sum(1 for term in query_terms if term in haystack)
         if named_entity and named_entity.lower() in haystack:
             score += 2
         if score > 0:
-            matches.append((float(score), story))
-    matches.sort(key=lambda item: (-item[0], item[1]["story_candidate_id"]))
+            matches.append(
+                (
+                    float(score),
+                    {
+                        **representative,
+                        "what_happened": brief_item.get("what_happened", ""),
+                        "why_it_matters": brief_item.get("why_it_matters", ""),
+                        "paragraph": brief_item.get("paragraph", ""),
+                        "summary_status": brief_item.get("summary_status", "pending"),
+                        "category_ids": brief_item.get("category_ids") or representative.get("category_ids", []),
+                    },
+                )
+            )
+    matches.sort(key=lambda item: (-item[0], item[1]["article_id"]))
     matched_stories = [story for _, story in matches[:6]]
     return {
         "status": "ok",
@@ -2938,7 +3287,11 @@ def consult_news_corpus(
         "objective": _normalize_text(objective),
         "snapshot_id": snapshot.get("snapshot_id"),
         "matched_stories": matched_stories,
-        "source_documents": [item for item in _story_documents(snapshot, config_or_path=config_or_path) if item["id"] in {story["story_candidate_id"] for story in matched_stories}],
+        "source_documents": [
+            item
+            for item in _brief_documents(snapshot, config_or_path=config_or_path)
+            if item["id"] in {story["article_id"] for story in matched_stories}
+        ],
     }
 
 
@@ -2955,11 +3308,20 @@ def retrieve_news_articles(
 
     query_terms = _significant_terms(query)
     items: list[tuple[float, dict[str, Any]]] = []
-    for story in snapshot.get("story_candidates", []):
-        if article_ids and story["primary_article_id"] not in set(article_ids) and not set(article_ids) & set(story.get("supporting_article_ids", [])):
+    representative_by_article = {
+        item["article_id"]: item
+        for item in snapshot.get("representative_articles", [])
+        if isinstance(item, dict) and item.get("article_id")
+    }
+    roots = resolve_news_roots(config_or_path)
+    for representative in representative_by_article.values():
+        article_id = representative["article_id"]
+        if article_ids and article_id not in set(article_ids) and not set(article_ids) & set(representative.get("duplicate_article_ids", [])):
             continue
-        for cluster in story.get("evidence_clusters", []):
-            haystack = f"{story.get('title', '')} {cluster.get('preview', '')}".lower()
+        analysis = _load_analysis_record(roots.article_store_root, article_id) or {}
+        for span in analysis.get("evidence_spans", []):
+            preview = _normalize_text(span.get("verbatim_text"))
+            haystack = f"{representative.get('title', '')} {preview}".lower()
             score = sum(1 for term in query_terms if term in haystack)
             if score <= 0:
                 continue
@@ -2967,18 +3329,17 @@ def retrieve_news_articles(
                 (
                     float(score),
                     {
-                        "cluster_id": cluster["cluster_id"],
-                        "story_candidate_id": story["story_candidate_id"],
-                        "title": story.get("title"),
-                        "preview": cluster.get("preview"),
-                        "article_ids": cluster.get("article_ids", []),
-                        "source_ids": story.get("source_ids", []),
-                        "category_ids": story.get("category_ids", []),
-                        "source_count": cluster.get("source_count", 0),
+                        "span_id": span["span_id"],
+                        "article_id": article_id,
+                        "title": representative.get("title"),
+                        "preview": preview,
+                        "article_ids": [article_id, *list(representative.get("duplicate_article_ids") or [])],
+                        "source_ids": [representative.get("source_id")],
+                        "category_ids": representative.get("category_ids", []),
                     },
                 )
             )
-    items.sort(key=lambda item: (-item[0], item[1]["cluster_id"]))
+    items.sort(key=lambda item: (-item[0], item[1]["span_id"]))
     return {
         "status": "ok",
         "snapshot_id": snapshot.get("snapshot_id"),
@@ -3000,10 +3361,15 @@ def retrieve_news_timeline(
 
     query_terms = _significant_terms(query or "")
     items: list[tuple[float, dict[str, Any]]] = []
-    for story in snapshot.get("story_candidates", []):
-        if thread_ids and story.get("thread_id") not in set(thread_ids):
-            continue
-        haystack = f"{story.get('title', '')} {story.get('what_happened', '')} {story.get('why_it_matters', '')}".lower()
+    brief_items = {
+        item["article_id"]: item
+        for item in snapshot.get("brief_items", [])
+        if isinstance(item, dict) and item.get("article_id")
+    }
+    for representative in snapshot.get("representative_articles", []):
+        article_id = representative.get("article_id")
+        brief_item = brief_items.get(article_id, {})
+        haystack = f"{representative.get('title', '')} {brief_item.get('what_happened', '')} {brief_item.get('why_it_matters', '')}".lower()
         score = 1.0 if not query_terms else float(sum(1 for term in query_terms if term in haystack))
         if score <= 0:
             continue
@@ -3011,29 +3377,28 @@ def retrieve_news_timeline(
             (
                 score,
                 {
-                    "thread_id": story.get("thread_id"),
-                    "story_candidate_id": story["story_candidate_id"],
-                    "title": story.get("title"),
-                    "what_happened": story.get("what_happened") or story.get("summary"),
-                    "why_it_matters": story.get("why_it_matters"),
-                    "thread_state": story.get("thread_state", "stable"),
-                    "thread_tension_score": _safe_float(story.get("thread_tension_score"), 0.0),
-                    "article_ids": [story["primary_article_id"], *story.get("supporting_article_ids", [])],
-                    "source_ids": story.get("source_ids", []),
-                    "category_ids": story.get("category_ids", []),
+                    "article_id": article_id,
+                    "title": representative.get("title"),
+                    "what_happened": brief_item.get("what_happened") or representative.get("article_summary_short"),
+                    "why_it_matters": brief_item.get("why_it_matters"),
+                    "published_at": representative.get("published_at"),
+                    "article_ids": [article_id, *list(representative.get("duplicate_article_ids") or [])],
+                    "source_ids": [representative.get("source_id")],
+                    "category_ids": brief_item.get("category_ids") or representative.get("category_ids", []),
+                    "editorial_status": representative.get("editorial_status"),
                 },
             )
         )
-    items.sort(key=lambda item: (-item[0], item[1]["story_candidate_id"]))
+    items.sort(key=lambda item: (-item[0], item[1].get("published_at", ""), item[1]["article_id"]))
     return {
         "status": "ok",
         "snapshot_id": snapshot.get("snapshot_id"),
         "items": [item for _, item in items[: max(1, min(int(top_k or 8), 20))]],
         "source_documents": [
             {
-                "id": item["story_candidate_id"],
-                "name": item.get("title") or item["story_candidate_id"],
-                "type": "news_timeline_entry",
+                "id": item["article_id"],
+                "name": item.get("title") or item["article_id"],
+                "type": "news_article_timeline_entry",
                 "content": "\n".join(
                     [
                         line
@@ -3044,7 +3409,7 @@ def retrieve_news_timeline(
                         if line
                     ]
                 ),
-                "source_path": f"timeline:{snapshot.get('snapshot_id')}:{item['story_candidate_id']}",
+                "source_path": f"timeline:{snapshot.get('snapshot_id')}:{item['article_id']}",
                 "category_ids": item.get("category_ids", []),
             }
             for item in [item for _, item in items[: max(1, min(int(top_k or 8), 20))]]
