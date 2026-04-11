@@ -10,6 +10,7 @@ import subprocess
 import wave
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
@@ -304,7 +305,25 @@ def _parse_datetime(value: Any) -> Optional[datetime]:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
     except Exception:
+        pass
+
+    try:
+        parsed = parsedate_to_datetime(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
         return None
+
+
+def _seed_is_recent_enough(seed: dict[str, Any], *, now: datetime | None = None) -> bool:
+    published_at = _parse_datetime(seed.get("published_at"))
+    if published_at is None:
+        return False
+
+    current_time = now or _utc_now()
+    age = current_time - published_at
+    return timedelta(0) <= age <= timedelta(hours=24)
 
 
 def default_news_source_registry() -> list[dict[str, Any]]:
@@ -1044,6 +1063,7 @@ def discover_and_fetch_news(
     seen_urls: set[str] = set()
     discovered_total = 0
     failed_sources: list[dict[str, str]] = []
+    now = _utc_now()
 
     for source in registry:
         if not source.get("enabled"):
@@ -1061,6 +1081,8 @@ def discover_and_fetch_news(
         for seed in entries:
             url = _normalize_text(seed.get("url"))
             if not url or url in seen_urls:
+                continue
+            if not _seed_is_recent_enough(seed, now=now):
                 continue
             seen_urls.add(url)
             try:
@@ -1083,7 +1105,7 @@ def discover_and_fetch_news(
                 "title": title,
                 "excerpt": _normalize_text(seed.get("excerpt"))[:400],
                 "published_at": _isoformat(published_at) or _isoformat(_utc_now()),
-                "fetched_at": _isoformat(_utc_now()),
+                "fetched_at": _isoformat(now),
                 "content_hash": _article_content_hash(title, body),
                 "raw_text_md": body,
                 "sentence_index": sentence_index,

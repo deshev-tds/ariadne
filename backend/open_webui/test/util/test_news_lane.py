@@ -1352,3 +1352,72 @@ def test_synthetic_allocator_does_not_force_low_quality_category_fill():
 
     assert audit["weird"] == 0
     assert all(item["brief_item_id"] != "brief:weird-weak" for item in selected)
+
+
+def test_parse_datetime_supports_rss_pubdate():
+    parsed = news_lane._parse_datetime("Mon, 06 Apr 2026 12:31:31 GMT")
+
+    assert parsed is not None
+    assert parsed.isoformat() == "2026-04-06T12:31:31+00:00"
+
+
+def test_discover_and_fetch_news_skips_entries_older_than_24_hours(monkeypatch, tmp_path):
+    now = news_lane._parse_datetime("2026-04-11T13:00:00Z")
+    assert now is not None
+
+    config = SimpleNamespace(
+        NEWS_ARTICLE_STORE_ROOT=str(tmp_path / "news_articles"),
+        NEWS_CORPUS_ROOT=str(tmp_path / "news_corpus"),
+        NEWS_BRIEFINGS_ROOT=str(tmp_path / "news_briefings"),
+        NEWS_SOURCE_REGISTRY=[
+            {
+                "source_id": "ars_ai",
+                "label": "Ars AI",
+                "adapter_type": "rss_atom",
+                "enabled": True,
+                "seed_urls": ["https://arstechnica.com/ai/feed/"],
+                "language": "en",
+                "region_tags": ["global"],
+                "topic_tags": ["tech_ai"],
+            }
+        ],
+    )
+
+    monkeypatch.setattr(news_lane, "_utc_now", lambda: now)
+    monkeypatch.setattr(
+        news_lane,
+        "_discover_source_entries",
+        lambda source: [
+            {
+                "title": "Fresh AI item",
+                "url": "https://example.com/fresh",
+                "excerpt": "fresh",
+                "published_at": "Fri, 10 Apr 2026 14:00:00 GMT",
+                "source_id": source["source_id"],
+                "discovery_metadata": {"adapter_type": source["adapter_type"]},
+            },
+            {
+                "title": "Old AI item",
+                "url": "https://example.com/old",
+                "excerpt": "old",
+                "published_at": "Mon, 06 Apr 2026 12:31:31 GMT",
+                "source_id": source["source_id"],
+                "discovery_metadata": {"adapter_type": source["adapter_type"]},
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        news_lane,
+        "_fetch_article_body",
+        lambda seed: (seed["title"], "A" * 200),
+    )
+
+    result = news_lane.discover_and_fetch_news(config_or_path=config)
+
+    assert result["discovered_total"] == 2
+    assert len(result["fetched_article_ids"]) == 1
+
+    article_files = list((tmp_path / "news_articles" / "articles").glob("*/article.json"))
+    assert len(article_files) == 1
+    payload = json.loads(article_files[0].read_text(encoding="utf-8"))
+    assert payload["url"] == "https://example.com/fresh"
