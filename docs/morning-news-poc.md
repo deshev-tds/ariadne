@@ -52,7 +52,7 @@ The target experience is intentionally cinematic:
 - curtains can be synced to sunrise through Home Assistant
 - the news ETL, aggregation, synthesis, and TTS finish before the operator is at the desk
 - a short intro plays
-- a familiar male voice reads the prepared briefing
+- a familiar voice reads the prepared briefing
 
 The result is not "voice mode for news." It is a local-first morning ritual built out of precomputed evidence artifacts and persona packaging.
 
