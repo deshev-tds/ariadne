@@ -3282,6 +3282,59 @@ def select_stories_by_categories(
     return selected, audit
 
 
+def select_full_brief_items(
+    snapshot: dict[str, Any],
+    *,
+    config_or_path: Any = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    categories = load_news_category_config(config_or_path)
+    items = [
+        dict(item)
+        for item in list(snapshot.get("brief_items") or [])
+        if item.get("summary_status") == "ok"
+    ]
+    selected: list[dict[str, Any]] = []
+    for item in items:
+        best_category, best_score_details = _best_category_score_for_brief_item(item, categories)
+        if best_score_details is None:
+            continue
+        selected.append(
+            {
+                **item,
+                "selected_category_id": (best_category or {}).get("category_id"),
+                "selection_score": best_score_details["final_score"],
+                "selection_score_details": best_score_details,
+                "allocator_score": best_score_details["final_score"],
+            }
+        )
+
+    selected.sort(
+        key=lambda item: (
+            -_safe_float(item.get("selection_score"), 0.0),
+            item["brief_item_id"],
+        )
+    )
+
+    audit: dict[str, Any] = {}
+    for category in categories:
+        if not category.get("enabled"):
+            continue
+        chosen = [item for item in selected if item.get("selected_category_id") == category["category_id"]]
+        audit[category["category_id"]] = {
+            "selected_story_count": len(chosen),
+            "selected_stories_with_preferred_source_bonus": sum(
+                1 for item in chosen if item["selection_score_details"].get("preferred_bonus_applied")
+            ),
+            "selected_stories_without_preferred_source_bonus": sum(
+                1 for item in chosen if not item["selection_score_details"].get("preferred_bonus_applied")
+            ),
+            "capped_bonus_applications": sum(
+                1 for item in chosen if item["selection_score_details"].get("preferred_bonus_applied")
+            ),
+        }
+    return selected, audit
+
+
 def synthesize_briefing_script(selected_stories: list[dict[str, Any]]) -> str:
     paragraphs = [
         _normalize_text(item.get("paragraph"))
@@ -3333,7 +3386,7 @@ def build_briefing(
     active_snapshot = snapshot or load_latest_closed_snapshot(config_or_path)
     if not active_snapshot:
         raise FileNotFoundError("No closed news snapshot available")
-    selected_items, category_audit = select_stories_by_categories(
+    selected_items, category_audit = select_full_brief_items(
         active_snapshot,
         config_or_path=config_or_path,
     )
@@ -3350,7 +3403,8 @@ def build_briefing(
     payload = {
         "snapshot_id": active_snapshot["snapshot_id"],
         "date": today,
-        "target_item_count": _news_brief_target_item_count(config_or_path),
+        "target_item_count": len(selected_items),
+        "configured_target_item_count": _news_brief_target_item_count(config_or_path),
         "selected_items": [
             {
                 **item,
@@ -3548,7 +3602,7 @@ def _build_ephemeral_briefing_from_snapshot(
     *,
     config_or_path: Any = None,
 ) -> dict[str, Any]:
-    selected_items, category_audit = select_stories_by_categories(
+    selected_items, category_audit = select_full_brief_items(
         snapshot,
         config_or_path=config_or_path,
     )
@@ -3557,7 +3611,8 @@ def _build_ephemeral_briefing_from_snapshot(
     return {
         "snapshot_id": snapshot.get("snapshot_id"),
         "date": built_at.date().isoformat(),
-        "target_item_count": _news_brief_target_item_count(config_or_path),
+        "target_item_count": len(selected_items),
+        "configured_target_item_count": _news_brief_target_item_count(config_or_path),
         "selected_items": [
             {
                 **item,

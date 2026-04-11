@@ -749,10 +749,11 @@ def test_builtin_news_consult_builds_from_snapshot_when_briefing_missing(news_fi
 
     assert payload["route"] == "build_from_snapshot"
     assert payload["snapshot_id"] == "20260410T060000Z"
-    assert payload["selected_item_count"] >= 1
+    assert payload["selected_item_count"] == 2
     assert payload["latest_briefing"]["ephemeral"] is True
     assert payload["latest_briefing"]["script"]
     assert payload["matched_stories"][0]["article_id"] == "a1"
+    assert {item["article_id"] for item in payload["matched_stories"]} == {"a1", "a3"}
 
 
 def test_news_selector_guidance_prefers_news_lane():
@@ -810,6 +811,19 @@ def test_select_stories_by_categories_records_preferred_source_audit(news_fixtur
     assert sum(item["selection_score_details"]["preferred_bonus_applied"] for item in selected) >= 0
 
 
+def test_select_full_brief_items_returns_all_kept_summary_ready_items(news_fixture):
+    snapshot = news_lane.load_latest_closed_snapshot(news_fixture["config"])
+
+    selected, audit = news_lane.select_full_brief_items(
+        snapshot,
+        config_or_path=news_fixture["config"],
+    )
+
+    assert [item["article_id"] for item in selected] == ["a1", "a3"]
+    assert audit["geopolitics"]["selected_story_count"] >= 1
+    assert audit["tech_ai"]["selected_story_count"] >= 1
+
+
 def test_news_brief_target_item_count_enforces_full_brief_floor():
     config = SimpleNamespace(NEWS_BRIEF_TARGET_ITEM_COUNT=7)
 
@@ -822,6 +836,19 @@ def test_load_latest_briefing(news_fixture):
     assert briefing is not None
     assert briefing["snapshot_id"] == "20260410T060000Z"
     assert briefing["selected_items"][0]["article_id"] == "a1"
+
+
+def test_build_briefing_uses_full_kept_brief_item_set(news_fixture):
+    snapshot = news_lane.load_latest_closed_snapshot(news_fixture["config"])
+
+    briefing = news_lane.build_briefing(
+        config_or_path=news_fixture["config"],
+        snapshot=snapshot,
+    )
+
+    assert briefing["target_item_count"] == 2
+    assert briefing["configured_target_item_count"] == 18
+    assert [item["article_id"] for item in briefing["selected_items"]] == ["a1", "a3"]
 
 
 def test_general_briefing_request_detection():
