@@ -753,6 +753,26 @@ def resolve_news_roots(config_or_path: Any = None) -> NewsRoots:
     )
 
 
+def normalize_and_persist_news_storage_roots(config_or_path: Any = None) -> dict[str, str]:
+    if config_or_path is None:
+        return {}
+
+    roots = resolve_news_roots(config_or_path)
+    normalized = {
+        "NEWS_ARTICLE_STORE_ROOT": str(roots.article_store_root),
+        "NEWS_CORPUS_ROOT": str(roots.corpus_root),
+        "NEWS_BRIEFINGS_ROOT": str(roots.briefings_root),
+    }
+
+    for key, value in normalized.items():
+        current = _config_value(config_or_path, key, "")
+        current_text = str(current or "").strip()
+        if current_text != value:
+            setattr(config_or_path, key, value)
+
+    return normalized
+
+
 def _thread_ledger_path(corpus_root: Path) -> Path:
     return corpus_root / "thread_ledger.json"
 

@@ -775,6 +775,11 @@ async def lifespan(app: FastAPI):
             app.state.config.ENABLE_SIGNUP = False
 
     try:
+        news.normalize_and_persist_news_storage_roots(app.state.config)
+    except Exception as exc:
+        log.warning("Failed to normalize persisted news storage roots: %s", exc)
+
+    try:
         ensure_morning_news_personas_for_admins(app.state.config)
     except Exception as exc:
         log.warning("Failed to seed Morning News persona: %s", exc)

@@ -19,6 +19,7 @@ from open_webui.retrieval.news_lane import (
     news_source_registry_semantic_hash,
     normalize_news_category_config_payload,
     normalize_news_source_registry_payload,
+    normalize_and_persist_news_storage_roots,
     play_latest_briefing,
     prefetch_related_once,
     analyze_articles,
@@ -134,6 +135,7 @@ def run_news_morning_pipeline(config_or_path: Any) -> dict[str, Any]:
 
 def _news_config_payload(request: Request) -> dict[str, Any]:
     config = request.app.state.config
+    normalize_and_persist_news_storage_roots(config)
     registry = load_news_source_registry(config)
     categories = load_news_category_config(config)
     return {
@@ -210,6 +212,7 @@ async def update_news_config(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
+    normalize_and_persist_news_storage_roots(config)
     _refresh_news_scheduler(request)
     return {"status": True, "config": _news_config_payload(request)}
 

@@ -1510,3 +1510,30 @@ def test_run_news_morning_pipeline_chains_snapshot_and_briefing(monkeypatch):
     assert captured["snapshot_config"] is config
     assert captured["briefing_config"] is config
     assert captured["briefing_snapshot"] == {"snapshot_id": "snap-1"}
+
+
+def test_normalize_and_persist_news_storage_roots_absolutizes_relative_config(monkeypatch, tmp_path):
+    roots = news_lane.NewsRoots(
+        article_store_root=tmp_path / "articles",
+        corpus_root=tmp_path / "corpus",
+        briefings_root=tmp_path / "briefings",
+    )
+
+    monkeypatch.setattr(news_lane, "resolve_news_roots", lambda config_or_path=None: roots)
+
+    config = SimpleNamespace(
+        NEWS_ARTICLE_STORE_ROOT="news_articles",
+        NEWS_CORPUS_ROOT="news_corpus",
+        NEWS_BRIEFINGS_ROOT="news_briefings",
+    )
+
+    normalized = news_lane.normalize_and_persist_news_storage_roots(config)
+
+    assert normalized == {
+        "NEWS_ARTICLE_STORE_ROOT": str(roots.article_store_root),
+        "NEWS_CORPUS_ROOT": str(roots.corpus_root),
+        "NEWS_BRIEFINGS_ROOT": str(roots.briefings_root),
+    }
+    assert config.NEWS_ARTICLE_STORE_ROOT == str(roots.article_store_root)
+    assert config.NEWS_CORPUS_ROOT == str(roots.corpus_root)
+    assert config.NEWS_BRIEFINGS_ROOT == str(roots.briefings_root)
