@@ -318,6 +318,43 @@ def _resolve_omnivoice_reference_audio(
     return _resolve_optional_existing_path(voice_config.get("ref_audio"))
 
 
+def _resolve_omnivoice_voice_config(
+    request: Request, payload: dict, params: dict, voice_registry: dict[str, dict]
+) -> tuple[str, dict]:
+    requested_voice_id = str(
+        payload.get("voice")
+        or request.app.state.config.TTS_VOICE
+        or params.get("voice")
+        or "auto"
+    )
+
+    voice_config = voice_registry.get(requested_voice_id)
+    if voice_config is not None:
+        return requested_voice_id, voice_config
+
+    fallback_candidates = [
+        request.app.state.config.TTS_VOICE,
+        params.get("voice"),
+        "auto",
+    ]
+
+    for fallback_voice_id in fallback_candidates:
+        fallback_voice_id = str(fallback_voice_id or "").strip()
+        if not fallback_voice_id or fallback_voice_id == requested_voice_id:
+            continue
+
+        fallback_voice_config = voice_registry.get(fallback_voice_id)
+        if fallback_voice_config is not None:
+            log.warning(
+                "OmniVoice requested unknown voice id '%s'; falling back to '%s'",
+                requested_voice_id,
+                fallback_voice_id,
+            )
+            return fallback_voice_id, fallback_voice_config
+
+    raise HTTPException(status_code=400, detail="Invalid voice id")
+
+
 @lru_cache(maxsize=4)
 def get_kokoro_synthesiser(model_path: str, voices_path: str):
     from kokoro_onnx import Kokoro
@@ -1023,16 +1060,9 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
         params = _coerce_openai_params(request.app.state.config.TTS_OPENAI_PARAMS)
         voice_registry = get_omnivoice_voice_registry(request)
-        voice_id = (
-            payload.get("voice")
-            or request.app.state.config.TTS_VOICE
-            or params.get("voice")
-            or "auto"
+        voice_id, voice_config = _resolve_omnivoice_voice_config(
+            request, payload, params, voice_registry
         )
-
-        voice_config = voice_registry.get(str(voice_id))
-        if voice_config is None:
-            raise HTTPException(status_code=400, detail="Invalid voice id")
 
         model_id = (
             payload.get("model")
