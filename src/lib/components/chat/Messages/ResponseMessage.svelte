@@ -249,6 +249,21 @@
 			return $config?.audio?.tts?.voice;
 		};
 
+		const getReadAloudSplitOn = () => {
+			const configuredSplitOn = $config?.audio?.tts?.split_on ?? 'punctuation';
+
+			// OmniVoice already has long-form generation and internal chunking. Splitting
+			// on punctuation here creates many tiny sequential TTS requests, which causes
+			// queue starvation and audible stalls for cloned voices. Paragraph-sized chunks
+			// keep latency bounded without sending an entire long briefing as a single
+			// request.
+			if ($config?.audio?.tts?.engine === 'omnivoice' && configuredSplitOn === 'punctuation') {
+				return 'paragraphs';
+			}
+
+			return configuredSplitOn;
+		};
+
 		if ($config.audio.tts.engine === '') {
 			let voices = [];
 			const getVoicesLoop = setInterval(() => {
@@ -291,7 +306,7 @@
 			loadingSpeech = true;
 			const messageContentParts: string[] = getMessageContentParts(
 				content,
-				$config?.audio?.tts?.split_on ?? 'punctuation'
+				getReadAloudSplitOn()
 			);
 
 			if (!messageContentParts.length) {
