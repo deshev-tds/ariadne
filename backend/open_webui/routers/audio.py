@@ -7,12 +7,10 @@ import html
 import base64
 import asyncio
 import re
-from collections import OrderedDict
 from functools import lru_cache
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
 from typing import Optional
 from pathlib import Path
 
@@ -41,10 +39,7 @@ from pydantic import BaseModel
 from open_webui.utils.misc import strict_match_mime_type
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
-from open_webui.utils.access_control.files import has_access_to_file
 from open_webui.utils.headers import include_user_info_headers
-from open_webui.models.files import Files
-from open_webui.storage.provider import Storage
 from open_webui.config import (
     WHISPER_MODEL_AUTO_UPDATE,
     WHISPER_COMPUTE_TYPE,
@@ -87,7 +82,6 @@ KOKORO_DEFAULT_LANG = "en-us"
 KOKORO_DEFAULT_SPEED = 1.0
 OMNIVOICE_DEFAULT_MODEL = "k2-fsa/OmniVoice"
 OMNIVOICE_DEFAULT_SAMPLE_RATE = 24000
-OMNIVOICE_CLONE_PROMPT_CACHE_MAXSIZE = 8
 OMNIVOICE_DEFAULT_VOICES = {
     "auto": {"name": "Auto"},
     "female_neutral": {
@@ -115,8 +109,6 @@ OMNIVOICE_DEFAULT_VOICES = {
         "instruct": "male, young adult, moderate pitch, british accent"
     },
 }
-_OMNIVOICE_CLONE_PROMPT_CACHE = OrderedDict()
-_OMNIVOICE_CLONE_PROMPT_CACHE_LOCK = Lock()
 KOKORO_OFFICIAL_RELEASE_VOICES = (
     "af_alloy",
     "af_aoede",
@@ -292,74 +284,6 @@ def _resolve_optional_existing_path(raw_path: Optional[str]) -> Optional[Path]:
     )
 
 
-def _resolve_omnivoice_reference_audio(
-    voice_config: dict, user
-) -> Optional[Path]:
-    ref_audio_file_id = str(voice_config.get("ref_audio_file_id") or "").strip()
-    if ref_audio_file_id:
-        file = Files.get_file_by_id(ref_audio_file_id)
-        if not file:
-            raise FileNotFoundError(
-                f"Unable to locate uploaded reference audio file id: {ref_audio_file_id}"
-            )
-
-        if not (
-            file.user_id == user.id
-            or user.role == "admin"
-            or has_access_to_file(ref_audio_file_id, "read", user)
-        ):
-            raise PermissionError(
-                f"Access denied for uploaded reference audio file id: {ref_audio_file_id}"
-            )
-
-        resolved = Path(Storage.get_file(file.path))
-        if resolved.is_file():
-            return resolved
-
-        raise FileNotFoundError(
-            f"Unable to resolve uploaded reference audio file path for id: {ref_audio_file_id}"
-        )
-
-    return _resolve_optional_existing_path(voice_config.get("ref_audio"))
-
-
-def _resolve_omnivoice_voice_config(
-    request: Request, payload: dict, params: dict, voice_registry: dict[str, dict]
-) -> tuple[str, dict]:
-    requested_voice_id = str(
-        payload.get("voice")
-        or request.app.state.config.TTS_VOICE
-        or params.get("voice")
-        or "auto"
-    )
-
-    voice_config = voice_registry.get(requested_voice_id)
-    if voice_config is not None:
-        return requested_voice_id, voice_config
-
-    fallback_candidates = [
-        request.app.state.config.TTS_VOICE,
-        params.get("voice"),
-        "auto",
-    ]
-
-    for fallback_voice_id in fallback_candidates:
-        fallback_voice_id = str(fallback_voice_id or "").strip()
-        if not fallback_voice_id or fallback_voice_id == requested_voice_id:
-            continue
-
-        fallback_voice_config = voice_registry.get(fallback_voice_id)
-        if fallback_voice_config is not None:
-            log.warning(
-                "OmniVoice requested unknown voice id '%s'; falling back to '%s'",
-                requested_voice_id,
-                fallback_voice_id,
-            )
-            return fallback_voice_id, fallback_voice_config
-
-    raise HTTPException(status_code=400, detail="Invalid voice id")
-
-
 @lru_cache(maxsize=4)
 def get_kokoro_synthesiser(model_path: str, voices_path: str):
     from kokoro_onnx import Kokoro
@@ -394,94 +318,6 @@ def get_omnivoice_model(
         model_kwargs["attn_implementation"] = attn_implementation
 
     return OmniVoice.from_pretrained(model_id, **model_kwargs)
-
-
-def _get_omnivoice_clone_prompt_cache_key(
-    *,
-    model_id: str,
-    device_map: str,
-    dtype_name: str,
-    attn_implementation: str,
-    ref_audio: Path,
-    ref_text: str,
-    preprocess_prompt: bool,
-):
-    stat = ref_audio.stat()
-    ref_text_digest = hashlib.sha256(ref_text.encode("utf-8")).hexdigest()
-    return (
-        model_id,
-        device_map,
-        dtype_name,
-        attn_implementation,
-        str(ref_audio.resolve()),
-        stat.st_size,
-        stat.st_mtime_ns,
-        ref_text_digest,
-        preprocess_prompt,
-    )
-
-
-def _get_cached_omnivoice_clone_prompt(cache_key):
-    with _OMNIVOICE_CLONE_PROMPT_CACHE_LOCK:
-        prompt = _OMNIVOICE_CLONE_PROMPT_CACHE.get(cache_key)
-        if prompt is None:
-            return None
-
-        _OMNIVOICE_CLONE_PROMPT_CACHE.move_to_end(cache_key)
-        return prompt
-
-
-def _set_cached_omnivoice_clone_prompt(cache_key, prompt):
-    with _OMNIVOICE_CLONE_PROMPT_CACHE_LOCK:
-        _OMNIVOICE_CLONE_PROMPT_CACHE[cache_key] = prompt
-        _OMNIVOICE_CLONE_PROMPT_CACHE.move_to_end(cache_key)
-
-        while len(_OMNIVOICE_CLONE_PROMPT_CACHE) > OMNIVOICE_CLONE_PROMPT_CACHE_MAXSIZE:
-            _OMNIVOICE_CLONE_PROMPT_CACHE.popitem(last=False)
-
-
-def _get_omnivoice_voice_clone_prompt(
-    *,
-    model,
-    model_id: str,
-    device_map: str,
-    dtype_name: str,
-    attn_implementation: str,
-    ref_audio: Path,
-    ref_text: str,
-    preprocess_prompt: bool = True,
-):
-    cache_key = _get_omnivoice_clone_prompt_cache_key(
-        model_id=model_id,
-        device_map=device_map,
-        dtype_name=dtype_name,
-        attn_implementation=attn_implementation,
-        ref_audio=ref_audio,
-        ref_text=ref_text,
-        preprocess_prompt=preprocess_prompt,
-    )
-    cached_prompt = _get_cached_omnivoice_clone_prompt(cache_key)
-    if cached_prompt is not None:
-        return cached_prompt
-
-    prompt = model.create_voice_clone_prompt(
-        ref_audio=str(ref_audio),
-        ref_text=ref_text,
-        preprocess_prompt=preprocess_prompt,
-    )
-    _set_cached_omnivoice_clone_prompt(cache_key, prompt)
-    return prompt
-
-
-def _format_omnivoice_runtime_error(exc: Exception) -> str:
-    if isinstance(exc, ImportError):
-        if "torchcodec" in str(exc).lower():
-            return (
-                "OmniVoice reference audio decoding requires `torchcodec` "
-                "in the backend environment."
-            )
-
-    return f"OmniVoice TTS failed: {exc}"
 
 
 def _get_omnivoice_runtime_options(params: dict) -> tuple[str, str, str]:
@@ -536,8 +372,6 @@ def _normalize_omnivoice_voice_entry(voice_id: str, value) -> dict:
                 for key in (
                     "instruct",
                     "ref_audio",
-                    "ref_audio_file_id",
-                    "ref_audio_filename",
                     "ref_text",
                     "speed",
                     "num_step",
@@ -1153,9 +987,16 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
         params = _coerce_openai_params(request.app.state.config.TTS_OPENAI_PARAMS)
         voice_registry = get_omnivoice_voice_registry(request)
-        voice_id, voice_config = _resolve_omnivoice_voice_config(
-            request, payload, params, voice_registry
+        voice_id = (
+            payload.get("voice")
+            or request.app.state.config.TTS_VOICE
+            or params.get("voice")
+            or "auto"
         )
+
+        voice_config = voice_registry.get(str(voice_id))
+        if voice_config is None:
+            raise HTTPException(status_code=400, detail="Invalid voice id")
 
         model_id = (
             payload.get("model")
@@ -1193,16 +1034,6 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             model = get_omnivoice_model(
                 model_id, device_map, dtype_name, attn_implementation
             )
-        except ImportError:
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "OmniVoice is not installed. Install `omnivoice` plus a compatible "
-                    "PyTorch/torchaudio runtime in the backend environment."
-                ),
-            )
-
-        try:
 
             generation_kwargs = {
                 "text": text,
@@ -1213,23 +1044,13 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             if instruct:
                 generation_kwargs["instruct"] = str(instruct)
 
-            ref_audio = _resolve_omnivoice_reference_audio(voice_config, user)
+            ref_audio = _resolve_optional_existing_path(voice_config.get("ref_audio"))
+            if ref_audio is not None:
+                generation_kwargs["ref_audio"] = str(ref_audio)
+
             ref_text = voice_config.get("ref_text")
-            if ref_audio is not None and ref_text:
-                generation_kwargs["voice_clone_prompt"] = _get_omnivoice_voice_clone_prompt(
-                    model=model,
-                    model_id=model_id,
-                    device_map=device_map,
-                    dtype_name=dtype_name,
-                    attn_implementation=attn_implementation,
-                    ref_audio=ref_audio,
-                    ref_text=str(ref_text),
-                )
-            else:
-                if ref_audio is not None:
-                    generation_kwargs["ref_audio"] = str(ref_audio)
-                if ref_text:
-                    generation_kwargs["ref_text"] = str(ref_text)
+            if ref_text:
+                generation_kwargs["ref_text"] = str(ref_text)
 
             if num_step is not None:
                 generation_kwargs["num_step"] = num_step
@@ -1252,22 +1073,22 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                 await f.write(json.dumps(payload))
 
             return FileResponse(file_path, media_type="audio/wav")
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "OmniVoice is not installed. Install `omnivoice` plus a compatible "
+                    "PyTorch/torchaudio runtime in the backend environment."
+                ),
+            )
         except FileNotFoundError as e:
             raise HTTPException(
                 status_code=500,
                 detail=f"OmniVoice reference audio not found: {e}",
             )
-        except PermissionError as e:
-            raise HTTPException(
-                status_code=403,
-                detail=str(e),
-            )
         except Exception as e:
             log.exception(e)
-            raise HTTPException(
-                status_code=500,
-                detail=_format_omnivoice_runtime_error(e),
-            )
+            raise HTTPException(status_code=500, detail=f"OmniVoice TTS failed: {e}")
 
 
 def transcription_handler(request, file_path, metadata, user=None):

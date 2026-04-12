@@ -149,12 +149,6 @@ export const getEffectivePersonaState = ({
 	);
 	const filterIds = sanitizeByExistingIds(requested.filter_ids ?? [], functionIds);
 	const actionIds = sanitizeByExistingIds(requested.action_ids ?? [], functionIds);
-	const effectiveVoiceId =
-		overrides.voice_id !== undefined ? overrides.voice_id : (persona.voice_id ?? requested.voice_id ?? null);
-	const effectiveVoiceSpeed =
-		overrides.voice_speed !== undefined
-			? overrides.voice_speed
-			: (persona.voice_speed ?? requested.voice_speed ?? null);
 
 	const featureIds = (requested.default_feature_ids ?? []).filter((featureId) => {
 		if (featureId === 'web_search') {
@@ -197,8 +191,8 @@ export const getEffectivePersonaState = ({
 			capabilities: {
 				...(requested.capabilities ?? {})
 			},
-			voice_id: effectiveVoiceId,
-			voice_speed: effectiveVoiceSpeed,
+			voice_id: requested.voice_id ?? null,
+			voice_speed: requested.voice_speed ?? null,
 			greeting: requested.greeting ?? null
 		}
 	};
@@ -253,14 +247,8 @@ export const getEffectiveVoicePreference = ({
 		? (chatMeta?.persona_defaults_snapshot ?? buildPersonaDefaultsSnapshot(persona))
 		: null;
 	const overrides = chatMeta?.persona_chat_overrides ?? {};
-	const requestedVoiceId =
-		overrides.voice_id !== undefined
-			? overrides.voice_id
-			: (persona?.voice_id ?? snapshot?.voice_id ?? null);
-	const requestedVoiceSpeed =
-		overrides.voice_speed !== undefined
-			? overrides.voice_speed
-			: (persona?.voice_speed ?? snapshot?.voice_speed ?? null);
+	const requestedVoiceId = overrides.voice_id ?? snapshot?.voice_id ?? null;
+	const requestedVoiceSpeed = overrides.voice_speed ?? snapshot?.voice_speed ?? null;
 
 	const inheritedVoiceId =
 		model?.info?.meta?.tts?.voice ??
