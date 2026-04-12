@@ -11,6 +11,7 @@
 		getVoices as _getVoices,
 		synthesizeOpenAISpeech
 	} from '$lib/apis/audio';
+	import { uploadFile } from '$lib/apis/files';
 	import { config, settings } from '$lib/stores';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -61,6 +62,8 @@
 		name?: string;
 		instruct?: string;
 		ref_audio?: string;
+		ref_audio_file_id?: string;
+		ref_audio_filename?: string;
 		ref_text?: string;
 		speed?: number;
 		num_step?: number;
@@ -93,10 +96,14 @@
 	let omniVoicePresetName = '';
 	let omniVoicePresetInstruct = '';
 	let omniVoicePresetRefAudio = '';
+	let omniVoicePresetRefAudioFileId = '';
+	let omniVoicePresetRefAudioFilename = '';
 	let omniVoicePresetRefText = '';
 	let omniVoicePresetSpeed = '';
 	let omniVoicePresetNumStep = '';
 	let omniVoicePresetDuration = '';
+	let omniVoiceRefAudioUploadLoading = false;
+	let omniVoiceRefAudioInputElement: HTMLInputElement | null = null;
 
 	let omniVoicePreviewText = DEFAULT_OMNIVOICE_PREVIEW_TEXT;
 	let omniVoicePreviewLoading = false;
@@ -146,6 +153,10 @@
 		omniVoicePresetName = typeof preset.name === 'string' ? preset.name : titleCaseId(presetId);
 		omniVoicePresetInstruct = typeof preset.instruct === 'string' ? preset.instruct : '';
 		omniVoicePresetRefAudio = typeof preset.ref_audio === 'string' ? preset.ref_audio : '';
+		omniVoicePresetRefAudioFileId =
+			typeof preset.ref_audio_file_id === 'string' ? preset.ref_audio_file_id : '';
+		omniVoicePresetRefAudioFilename =
+			typeof preset.ref_audio_filename === 'string' ? preset.ref_audio_filename : '';
 		omniVoicePresetRefText = typeof preset.ref_text === 'string' ? preset.ref_text : '';
 		omniVoicePresetSpeed = toInputString(preset.speed);
 		omniVoicePresetNumStep = toInputString(preset.num_step);
@@ -265,6 +276,7 @@
 				omniVoicePresetName.trim() ||
 				omniVoicePresetInstruct.trim() ||
 				omniVoicePresetRefAudio.trim() ||
+				omniVoicePresetRefAudioFileId.trim() ||
 				omniVoicePresetRefText.trim() ||
 				omniVoicePresetSpeed.trim() ||
 				omniVoicePresetNumStep.trim() ||
@@ -287,6 +299,12 @@
 		}
 		if (omniVoicePresetRefAudio.trim()) {
 			preset.ref_audio = omniVoicePresetRefAudio.trim();
+		}
+		if (omniVoicePresetRefAudioFileId.trim()) {
+			preset.ref_audio_file_id = omniVoicePresetRefAudioFileId.trim();
+		}
+		if (omniVoicePresetRefAudioFilename.trim()) {
+			preset.ref_audio_filename = omniVoicePresetRefAudioFilename.trim();
 		}
 		if (omniVoicePresetRefText.trim()) {
 			preset.ref_text = omniVoicePresetRefText.trim();
@@ -325,10 +343,61 @@
 		omniVoicePresetName = '';
 		omniVoicePresetInstruct = '';
 		omniVoicePresetRefAudio = '';
+		omniVoicePresetRefAudioFileId = '';
+		omniVoicePresetRefAudioFilename = '';
 		omniVoicePresetRefText = '';
 		omniVoicePresetSpeed = '';
 		omniVoicePresetNumStep = '';
 		omniVoicePresetDuration = '';
+	};
+
+	const triggerOmniVoiceRefAudioUpload = () => {
+		omniVoiceRefAudioInputElement?.click();
+	};
+
+	const clearOmniVoiceRefAudio = () => {
+		omniVoicePresetRefAudio = '';
+		omniVoicePresetRefAudioFileId = '';
+		omniVoicePresetRefAudioFilename = '';
+		if (omniVoiceRefAudioInputElement) {
+			omniVoiceRefAudioInputElement.value = '';
+		}
+	};
+
+	const uploadOmniVoiceRefAudio = async (file: File | null) => {
+		if (!file) {
+			return;
+		}
+
+		omniVoiceRefAudioUploadLoading = true;
+
+		try {
+			const uploadedFile = await uploadFile(
+				localStorage.token,
+				file,
+				{
+					context: 'omnivoice_reference_audio'
+				},
+				false
+			);
+
+			if (!uploadedFile?.id) {
+				throw new Error($i18n.t('Failed to upload file.'));
+			}
+
+			omniVoicePresetRefAudio = '';
+			omniVoicePresetRefAudioFileId = `${uploadedFile.id}`;
+			omniVoicePresetRefAudioFilename = `${uploadedFile.filename ?? file.name}`;
+			toast.success($i18n.t('Reference audio uploaded'));
+		} catch (error) {
+			console.error(error);
+			toast.error(`${error}`);
+		} finally {
+			omniVoiceRefAudioUploadLoading = false;
+			if (omniVoiceRefAudioInputElement) {
+				omniVoiceRefAudioInputElement.value = '';
+			}
+		}
 	};
 
 	const deleteOmniVoicePreset = () => {
@@ -1359,11 +1428,63 @@
 										bind:value={omniVoicePresetName}
 										placeholder={$i18n.t('Preset name')}
 									/>
-									<input
-										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-										bind:value={omniVoicePresetRefAudio}
-										placeholder={$i18n.t('Reference audio path')}
-									/>
+									<div class="flex gap-2">
+										<input
+											class="flex-1 rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											value={omniVoicePresetRefAudioFileId
+												? omniVoicePresetRefAudioFilename || omniVoicePresetRefAudioFileId
+												: omniVoicePresetRefAudio}
+											placeholder={$i18n.t('Upload reference audio')}
+											on:input={(event) => {
+												const value = (event.currentTarget as HTMLInputElement).value;
+												omniVoicePresetRefAudio = value;
+												omniVoicePresetRefAudioFileId = '';
+												omniVoicePresetRefAudioFilename = '';
+											}}
+										/>
+										<input
+											class="hidden"
+											type="file"
+											accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg,.webm"
+											bind:this={omniVoiceRefAudioInputElement}
+											on:change={async (event) => {
+												const input = event.currentTarget as HTMLInputElement;
+												const file = input.files?.[0] ?? null;
+												await uploadOmniVoiceRefAudio(file);
+											}}
+										/>
+										<button
+											class="px-2.5 bg-gray-50 hover:bg-gray-200 text-gray-800 dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-gray-100 rounded-lg transition disabled:opacity-60"
+											type="button"
+											on:click={triggerOmniVoiceRefAudioUpload}
+											disabled={omniVoiceRefAudioUploadLoading}
+										>
+											{#if omniVoiceRefAudioUploadLoading}
+												{$i18n.t('Uploading')}
+											{:else}
+												{$i18n.t('Upload')}
+											{/if}
+										</button>
+										<button
+											class="px-2.5 bg-gray-50 hover:bg-gray-200 text-gray-800 dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-gray-100 rounded-lg transition disabled:opacity-60"
+											type="button"
+											on:click={clearOmniVoiceRefAudio}
+											disabled={
+												!omniVoicePresetRefAudio &&
+												!omniVoicePresetRefAudioFileId &&
+												!omniVoicePresetRefAudioFilename
+											}
+										>
+											{$i18n.t('Clear')}
+										</button>
+									</div>
+								</div>
+								<div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
+									{#if omniVoicePresetRefAudioFileId}
+										{$i18n.t('Uploaded reference audio will be stored by file ID and reused for this preset.')}
+									{:else}
+										{$i18n.t('You can upload a short sample or paste an existing local path.')}
+									{/if}
 								</div>
 								<div class="mt-2">
 									<Textarea

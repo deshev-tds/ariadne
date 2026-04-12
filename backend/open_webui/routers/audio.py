@@ -39,7 +39,10 @@ from pydantic import BaseModel
 from open_webui.utils.misc import strict_match_mime_type
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
+from open_webui.utils.access_control.files import has_access_to_file
 from open_webui.utils.headers import include_user_info_headers
+from open_webui.models.files import Files
+from open_webui.storage.provider import Storage
 from open_webui.config import (
     WHISPER_MODEL_AUTO_UPDATE,
     WHISPER_COMPUTE_TYPE,
@@ -284,6 +287,37 @@ def _resolve_optional_existing_path(raw_path: Optional[str]) -> Optional[Path]:
     )
 
 
+def _resolve_omnivoice_reference_audio(
+    voice_config: dict, user
+) -> Optional[Path]:
+    ref_audio_file_id = str(voice_config.get("ref_audio_file_id") or "").strip()
+    if ref_audio_file_id:
+        file = Files.get_file_by_id(ref_audio_file_id)
+        if not file:
+            raise FileNotFoundError(
+                f"Unable to locate uploaded reference audio file id: {ref_audio_file_id}"
+            )
+
+        if not (
+            file.user_id == user.id
+            or user.role == "admin"
+            or has_access_to_file(ref_audio_file_id, "read", user)
+        ):
+            raise PermissionError(
+                f"Access denied for uploaded reference audio file id: {ref_audio_file_id}"
+            )
+
+        resolved = Path(Storage.get_file(file.path))
+        if resolved.is_file():
+            return resolved
+
+        raise FileNotFoundError(
+            f"Unable to resolve uploaded reference audio file path for id: {ref_audio_file_id}"
+        )
+
+    return _resolve_optional_existing_path(voice_config.get("ref_audio"))
+
+
 @lru_cache(maxsize=4)
 def get_kokoro_synthesiser(model_path: str, voices_path: str):
     from kokoro_onnx import Kokoro
@@ -372,6 +406,8 @@ def _normalize_omnivoice_voice_entry(voice_id: str, value) -> dict:
                 for key in (
                     "instruct",
                     "ref_audio",
+                    "ref_audio_file_id",
+                    "ref_audio_filename",
                     "ref_text",
                     "speed",
                     "num_step",
@@ -1044,7 +1080,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             if instruct:
                 generation_kwargs["instruct"] = str(instruct)
 
-            ref_audio = _resolve_optional_existing_path(voice_config.get("ref_audio"))
+            ref_audio = _resolve_omnivoice_reference_audio(voice_config, user)
             if ref_audio is not None:
                 generation_kwargs["ref_audio"] = str(ref_audio)
 
@@ -1085,6 +1121,11 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             raise HTTPException(
                 status_code=500,
                 detail=f"OmniVoice reference audio not found: {e}",
+            )
+        except PermissionError as e:
+            raise HTTPException(
+                status_code=403,
+                detail=str(e),
             )
         except Exception as e:
             log.exception(e)
