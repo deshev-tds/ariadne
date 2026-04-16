@@ -259,6 +259,102 @@ export const verifyToolServerConnection = async (token: string, connection: obje
 	return res;
 };
 
+export const detectTerminalServerType = async (
+	url: string,
+	key: string
+): Promise<'orchestrator' | 'terminal' | null> => {
+	const baseUrl = url.replace(/\/$/, '');
+	const headers: Record<string, string> = {};
+	if (key) {
+		headers['Authorization'] = `Bearer ${key}`;
+	}
+
+	try {
+		const res = await fetch(`${baseUrl}/api/v1/policies`, { headers });
+		if (res.ok) return 'orchestrator';
+	} catch {
+		// Ignore and fall back to the plain terminal probe.
+	}
+
+	try {
+		const res = await fetch(`${baseUrl}/api/config`, { headers });
+		if (res.ok) return 'terminal';
+	} catch {
+		// Ignore.
+	}
+
+	return null;
+};
+
+export const putOrchestratorPolicy = async (
+	token: string,
+	url: string,
+	key: string,
+	policyId: string,
+	policyData: object
+): Promise<object | null> => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/configs/terminal_servers/policy`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify({
+			url: url.replace(/\/$/, ''),
+			key,
+			policy_id: policyId,
+			policy_data: policyData
+		})
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			console.error(err);
+			error = err.detail;
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const verifyTerminalServerConnection = async (token: string, connection: object) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/configs/terminal_servers/verify`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify({
+			...connection
+		})
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			console.error(err);
+			error = err.detail;
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
 type RegisterOAuthClientForm = {
 	url: string;
 	client_id: string;

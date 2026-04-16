@@ -19,6 +19,7 @@
 		listFiles,
 		readFile,
 		downloadFileBlob,
+		archiveFromTerminal,
 		uploadToTerminal,
 		createDirectory,
 		deleteEntry,
@@ -39,6 +40,7 @@
 	import FilePreview from './FileNav/FilePreview.svelte';
 	import FileEntryRow from './FileNav/FileEntryRow.svelte';
 	import PortList from './FileNav/PortList.svelte';
+	import PortPreview from './FileNav/PortPreview.svelte';
 	import XTerminal from './XTerminal.svelte';
 
 	const i18n = getContext('i18n');
@@ -137,6 +139,7 @@
 
 	// ── File preview state ───────────────────────────────────────────────
 	let selectedFile: string | null = null;
+	let previewPort: number | null = null;
 	let fileContent: string | null = null;
 	let fileImageUrl: string | null = null;
 	let fileVideoUrl: string | null = null;
@@ -297,6 +300,7 @@
 		loading = true;
 		error = null;
 		selectedFile = null;
+		previewPort = null;
 		clearFilePreview();
 		currentPath = path;
 		savedPath = path;
@@ -394,7 +398,10 @@
 		const terminal = selectedTerminal;
 		if (!terminal) return;
 
-		const result = await downloadFileBlob(terminal.url, terminal.key, path);
+		const isDir = path.endsWith('/');
+		const result = isDir
+			? await archiveFromTerminal(terminal.url, terminal.key, [path.replace(/\/$/, '')])
+			: await downloadFileBlob(terminal.url, terminal.key, path);
 		if (!result) return;
 		const url = URL.createObjectURL(result.blob);
 		const a = document.createElement('a');
@@ -527,6 +534,24 @@
 			toast.error(result.error);
 		} else {
 			toast.success($i18n.t('Moved {{name}}', { name: fileName }));
+		}
+		await loadDir(currentPath);
+	};
+
+	const handleRename = async (oldPath: string, newName: string) => {
+		const terminal = selectedTerminal;
+		if (!terminal || !newName) return;
+
+		const dir = oldPath.substring(0, oldPath.lastIndexOf('/') + 1) || currentPath;
+		const destination = `${dir}${newName}`;
+
+		if (oldPath === destination) return;
+
+		const result = await moveEntry(terminal.url, terminal.key, oldPath, destination);
+		if ('error' in result) {
+			toast.error(result.error);
+		} else {
+			toast.success($i18n.t('Renamed to {{name}}', { name: newName }));
 		}
 		await loadDir(currentPath);
 	};
@@ -698,6 +723,7 @@
 			onNewFolder={startNewFolder}
 			onNewFile={startNewFile}
 			onUploadFiles={handleUploadFiles}
+			onDownloadDir={() => downloadFile(currentPath)}
 			onMove={handleMove}
 		>
 			{#if fileImageUrl !== null || (fileOfficeSlides !== null && fileOfficeSlides.length > 0)}
@@ -934,9 +960,17 @@
 			</Tooltip>
 		</FileNavToolbar>
 
-		<!-- Content -->
 		<div class="flex-1 overflow-y-auto min-h-0 min-w-0">
-			{#if selectedFile !== null}
+			{#if previewPort !== null}
+				<PortPreview
+					baseUrl={selectedTerminal?.url ?? ''}
+					port={previewPort}
+					{overlay}
+					onClose={() => {
+						previewPort = null;
+					}}
+				/>
+			{:else if selectedFile !== null}
 				<FilePreview
 					bind:this={filePreviewRef}
 					bind:editing
@@ -1052,6 +1086,7 @@
 									onDownload={downloadFile}
 									onDelete={requestDelete}
 									onMove={handleMove}
+									onRename={handleRename}
 								/>
 							{/each}
 						</ul>
@@ -1061,9 +1096,17 @@
 		</div>
 
 		<!-- Port detection -->
-		{#if selectedTerminal && !selectedFile}
+		{#if selectedTerminal && !selectedFile && previewPort === null}
 			<div class="shrink-0 border-t border-gray-100 dark:border-gray-800">
-				<PortList baseUrl={selectedTerminal.url} apiKey={selectedTerminal.key} />
+				<PortList
+					baseUrl={selectedTerminal.url}
+					apiKey={selectedTerminal.key}
+					on:previewPort={(e) => {
+						selectedFile = null;
+						clearFilePreview();
+						previewPort = e.detail;
+					}}
+				/>
 			</div>
 		{/if}
 
