@@ -87,6 +87,54 @@
 	let loading = false;
 	let error: string | null = null;
 
+	// ── Navigation history ──────────────────────────────────────────────
+	type NavEntry = { path: string; file: string | null };
+	let navHistory: NavEntry[] = [];
+	let navIndex = -1;
+	let navigatingHistory = false;
+
+	$: canGoBack = navIndex > 0;
+	$: canGoForward = navIndex < navHistory.length - 1;
+
+	const pushNavHistory = (path: string, file: string | null = null) => {
+		if (navigatingHistory) return;
+		// Skip if this is the same as the current entry
+		const current = navHistory[navIndex];
+		if (current && current.path === path && current.file === file) return;
+		// Truncate forward history when navigating to a new location
+		if (navIndex < navHistory.length - 1) {
+			navHistory = navHistory.slice(0, navIndex + 1);
+		}
+		navHistory = [...navHistory, { path, file }];
+		navIndex = navHistory.length - 1;
+	};
+
+	const goBack = async () => {
+		if (!canGoBack) return;
+		navigatingHistory = true;
+		navIndex -= 1;
+		const entry = navHistory[navIndex];
+		await loadDir(entry.path);
+		if (entry.file) {
+			const fileName = entry.file.split('/').pop() ?? '';
+			await openEntry({ name: fileName, type: 'file', size: 0 });
+		}
+		navigatingHistory = false;
+	};
+
+	const goForward = async () => {
+		if (!canGoForward) return;
+		navigatingHistory = true;
+		navIndex += 1;
+		const entry = navHistory[navIndex];
+		await loadDir(entry.path);
+		if (entry.file) {
+			const fileName = entry.file.split('/').pop() ?? '';
+			await openEntry({ name: fileName, type: 'file', size: 0 });
+		}
+		navigatingHistory = false;
+	};
+
 	// ── File preview state ───────────────────────────────────────────────
 	let selectedFile: string | null = null;
 	let fileContent: string | null = null;
@@ -252,6 +300,7 @@
 		clearFilePreview();
 		currentPath = path;
 		savedPath = path;
+		pushNavHistory(path);
 
 		const result = await listFiles(terminal.url, terminal.key, path);
 		loading = false;
@@ -277,10 +326,12 @@
 			return;
 		}
 
+		const filePath = `${currentPath}${entry.name}`;
+		pushNavHistory(currentPath, filePath);
+
 		const terminal = selectedTerminal;
 		if (!terminal) return;
 
-		const filePath = `${currentPath}${entry.name}`;
 		selectedFile = filePath;
 		fileLoading = true;
 		clearFilePreview();
@@ -631,6 +682,10 @@
 			breadcrumbs={buildBreadcrumbs(currentPath)}
 			{selectedFile}
 			{loading}
+			{canGoBack}
+			{canGoForward}
+			onGoBack={goBack}
+			onGoForward={goForward}
 			onNavigate={loadDir}
 			onRefresh={() => {
 				if (selectedFile) {
