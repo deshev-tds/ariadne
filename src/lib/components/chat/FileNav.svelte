@@ -19,6 +19,7 @@
 		listFiles,
 		readFile,
 		downloadFileBlob,
+		archiveFromTerminal,
 		uploadToTerminal,
 		createDirectory,
 		deleteEntry,
@@ -39,6 +40,7 @@
 	import FilePreview from './FileNav/FilePreview.svelte';
 	import FileEntryRow from './FileNav/FileEntryRow.svelte';
 	import PortList from './FileNav/PortList.svelte';
+	import PortPreview from './FileNav/PortPreview.svelte';
 	import XTerminal from './XTerminal.svelte';
 
 	const i18n = getContext('i18n');
@@ -87,8 +89,57 @@
 	let loading = false;
 	let error: string | null = null;
 
+	// ── Navigation history ──────────────────────────────────────────────
+	type NavEntry = { path: string; file: string | null };
+	let navHistory: NavEntry[] = [];
+	let navIndex = -1;
+	let navigatingHistory = false;
+
+	$: canGoBack = navIndex > 0;
+	$: canGoForward = navIndex < navHistory.length - 1;
+
+	const pushNavHistory = (path: string, file: string | null = null) => {
+		if (navigatingHistory) return;
+		// Skip if this is the same as the current entry
+		const current = navHistory[navIndex];
+		if (current && current.path === path && current.file === file) return;
+		// Truncate forward history when navigating to a new location
+		if (navIndex < navHistory.length - 1) {
+			navHistory = navHistory.slice(0, navIndex + 1);
+		}
+		navHistory = [...navHistory, { path, file }];
+		navIndex = navHistory.length - 1;
+	};
+
+	const goBack = async () => {
+		if (!canGoBack) return;
+		navigatingHistory = true;
+		navIndex -= 1;
+		const entry = navHistory[navIndex];
+		await loadDir(entry.path);
+		if (entry.file) {
+			const fileName = entry.file.split('/').pop() ?? '';
+			await openEntry({ name: fileName, type: 'file', size: 0 });
+		}
+		navigatingHistory = false;
+	};
+
+	const goForward = async () => {
+		if (!canGoForward) return;
+		navigatingHistory = true;
+		navIndex += 1;
+		const entry = navHistory[navIndex];
+		await loadDir(entry.path);
+		if (entry.file) {
+			const fileName = entry.file.split('/').pop() ?? '';
+			await openEntry({ name: fileName, type: 'file', size: 0 });
+		}
+		navigatingHistory = false;
+	};
+
 	// ── File preview state ───────────────────────────────────────────────
 	let selectedFile: string | null = null;
+	let previewPort: number | null = null;
 	let fileContent: string | null = null;
 	let fileImageUrl: string | null = null;
 	let fileVideoUrl: string | null = null;
@@ -249,9 +300,11 @@
 		loading = true;
 		error = null;
 		selectedFile = null;
+		previewPort = null;
 		clearFilePreview();
 		currentPath = path;
 		savedPath = path;
+		pushNavHistory(path);
 
 		const result = await listFiles(terminal.url, terminal.key, path);
 		loading = false;
@@ -277,10 +330,12 @@
 			return;
 		}
 
+		const filePath = `${currentPath}${entry.name}`;
+		pushNavHistory(currentPath, filePath);
+
 		const terminal = selectedTerminal;
 		if (!terminal) return;
 
-		const filePath = `${currentPath}${entry.name}`;
 		selectedFile = filePath;
 		fileLoading = true;
 		clearFilePreview();
@@ -343,7 +398,10 @@
 		const terminal = selectedTerminal;
 		if (!terminal) return;
 
-		const result = await downloadFileBlob(terminal.url, terminal.key, path);
+		const isDir = path.endsWith('/');
+		const result = isDir
+			? await archiveFromTerminal(terminal.url, terminal.key, [path.replace(/\/$/, '')])
+			: await downloadFileBlob(terminal.url, terminal.key, path);
 		if (!result) return;
 		const url = URL.createObjectURL(result.blob);
 		const a = document.createElement('a');
@@ -476,6 +534,24 @@
 			toast.error(result.error);
 		} else {
 			toast.success($i18n.t('Moved {{name}}', { name: fileName }));
+		}
+		await loadDir(currentPath);
+	};
+
+	const handleRename = async (oldPath: string, newName: string) => {
+		const terminal = selectedTerminal;
+		if (!terminal || !newName) return;
+
+		const dir = oldPath.substring(0, oldPath.lastIndexOf('/') + 1) || currentPath;
+		const destination = `${dir}${newName}`;
+
+		if (oldPath === destination) return;
+
+		const result = await moveEntry(terminal.url, terminal.key, oldPath, destination);
+		if ('error' in result) {
+			toast.error(result.error);
+		} else {
+			toast.success($i18n.t('Renamed to {{name}}', { name: newName }));
 		}
 		await loadDir(currentPath);
 	};
@@ -631,6 +707,10 @@
 			breadcrumbs={buildBreadcrumbs(currentPath)}
 			{selectedFile}
 			{loading}
+			{canGoBack}
+			{canGoForward}
+			onGoBack={goBack}
+			onGoForward={goForward}
 			onNavigate={loadDir}
 			onRefresh={() => {
 				if (selectedFile) {
@@ -643,6 +723,7 @@
 			onNewFolder={startNewFolder}
 			onNewFile={startNewFile}
 			onUploadFiles={handleUploadFiles}
+			onDownloadDir={() => downloadFile(currentPath)}
 			onMove={handleMove}
 		>
 			{#if fileImageUrl !== null || (fileOfficeSlides !== null && fileOfficeSlides.length > 0)}
@@ -879,9 +960,17 @@
 			</Tooltip>
 		</FileNavToolbar>
 
-		<!-- Content -->
 		<div class="flex-1 overflow-y-auto min-h-0 min-w-0">
-			{#if selectedFile !== null}
+			{#if previewPort !== null}
+				<PortPreview
+					baseUrl={selectedTerminal?.url ?? ''}
+					port={previewPort}
+					{overlay}
+					onClose={() => {
+						previewPort = null;
+					}}
+				/>
+			{:else if selectedFile !== null}
 				<FilePreview
 					bind:this={filePreviewRef}
 					bind:editing
@@ -997,6 +1086,7 @@
 									onDownload={downloadFile}
 									onDelete={requestDelete}
 									onMove={handleMove}
+									onRename={handleRename}
 								/>
 							{/each}
 						</ul>
@@ -1006,9 +1096,17 @@
 		</div>
 
 		<!-- Port detection -->
-		{#if selectedTerminal && !selectedFile}
+		{#if selectedTerminal && !selectedFile && previewPort === null}
 			<div class="shrink-0 border-t border-gray-100 dark:border-gray-800">
-				<PortList baseUrl={selectedTerminal.url} apiKey={selectedTerminal.key} />
+				<PortList
+					baseUrl={selectedTerminal.url}
+					apiKey={selectedTerminal.key}
+					on:previewPort={(e) => {
+						selectedFile = null;
+						clearFilePreview();
+						previewPort = e.detail;
+					}}
+				/>
 			</div>
 		{/if}
 

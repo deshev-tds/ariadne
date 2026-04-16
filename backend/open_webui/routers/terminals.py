@@ -6,6 +6,8 @@ Routes:
 """
 
 import logging
+import posixpath
+from urllib.parse import unquote
 
 import aiohttp
 from fastapi import APIRouter, Depends, Request, Response, WebSocket
@@ -25,6 +27,22 @@ STREAMING_CONTENT_TYPES = ("application/octet-stream", "image/", "application/pd
 STRIPPED_RESPONSE_HEADERS = frozenset(
     ("transfer-encoding", "connection", "content-encoding", "content-length")
 )
+
+
+def _sanitize_proxy_path(path: str) -> str | None:
+    """Sanitize proxy paths to avoid traversal and base URL resets."""
+    decoded = unquote(path)
+    had_trailing_slash = decoded.endswith("/")
+    normalized = posixpath.normpath(decoded)
+    cleaned = normalized.lstrip("/")
+
+    if cleaned.startswith("..") or cleaned == ".":
+        return None
+
+    if had_trailing_slash and cleaned and not cleaned.endswith("/"):
+        cleaned += "/"
+
+    return cleaned
 
 
 @router.get("/")
@@ -74,7 +92,16 @@ async def proxy_terminal(
             {"error": "Terminal server URL not configured"}, status_code=503
         )
 
-    target_url = f"{base_url}/{path}"
+    safe_path = _sanitize_proxy_path(path)
+    if safe_path is None:
+        return JSONResponse({"error": "Invalid path"}, status_code=400)
+
+    target_url = f"{base_url}/{safe_path}"
+
+    policy_id = connection.get("policy_id")
+    if policy_id:
+        target_url = f"{base_url}/p/{policy_id}/{safe_path}"
+
     if request.query_params:
         target_url += f"?{request.query_params}"
 
@@ -236,14 +263,17 @@ async def ws_terminal(
     # Build upstream WebSocket URL (no token in URL)
     ws_base = base_url.replace("https://", "wss://").replace("http://", "ws://")
 
-    auth_type = connection.get("auth_type", "bearer")
+    policy_id = connection.get("policy_id")
     upstream_params = {}
     # For orchestrator-backed servers, pass user_id
     upstream_params["user_id"] = user.id
 
     import urllib.parse
 
-    upstream_url = f"{ws_base}/api/terminals/{session_id}"
+    if policy_id:
+        upstream_url = f"{ws_base}/p/{policy_id}/api/terminals/{session_id}"
+    else:
+        upstream_url = f"{ws_base}/api/terminals/{session_id}"
     if upstream_params:
         upstream_url += f"?{urllib.parse.urlencode(upstream_params)}"
 

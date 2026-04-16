@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext } from 'svelte';
+	import { getContext, tick } from 'svelte';
 	import { DropdownMenu } from 'bits-ui';
 	import { flyAndScale } from '$lib/utils/transitions';
 	import { formatFileSize } from '$lib/utils';
@@ -7,6 +7,7 @@
 	import Folder from '../../icons/Folder.svelte';
 	import EllipsisHorizontal from '../../icons/EllipsisHorizontal.svelte';
 	import GarbageBin from '../../icons/GarbageBin.svelte';
+	import Pencil from '../../icons/Pencil.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -19,8 +20,37 @@
 	export let onDownload: (path: string) => void = () => {};
 	export let onDelete: (path: string, name: string) => void = () => {};
 	export let onMove: (source: string, destFolder: string) => void = () => {};
+	export let onRename: (oldPath: string, newName: string) => void = () => {};
 
 	let dragOverFolder = false;
+	let renaming = false;
+	let renameValue = '';
+	let renameInput: HTMLInputElement;
+
+	const startRename = async () => {
+		renameValue = entry.name;
+		renaming = true;
+		await tick();
+		renameInput?.focus();
+		if (entry.type === 'file') {
+			const dotIdx = entry.name.lastIndexOf('.');
+			renameInput?.setSelectionRange(0, dotIdx > 0 ? dotIdx : entry.name.length);
+		} else {
+			renameInput?.select();
+		}
+	};
+
+	const submitRename = () => {
+		const newName = renameValue.trim();
+		renaming = false;
+		if (!newName || newName === entry.name) return;
+		onRename(`${currentPath}${entry.name}`, newName);
+	};
+
+	const cancelRename = () => {
+		renaming = false;
+		renameValue = '';
+	};
 </script>
 
 <li class="group">
@@ -83,7 +113,12 @@
 					);
 				}
 			}}
-			on:click={() => onOpen(entry)}
+			on:click={() => {
+				if (!renaming) onOpen(entry);
+			}}
+			on:dblclick|preventDefault|stopPropagation={() => {
+				startRename();
+			}}
 		>
 			{#if entry.type === 'directory'}
 				<Folder className="size-4 shrink-0 text-blue-400 dark:text-blue-300" />
@@ -103,10 +138,30 @@
 					/>
 				</svg>
 			{/if}
-			<span class="flex-1 text-xs text-gray-800 dark:text-gray-200 truncate">
-				{entry.name}
-			</span>
-			{#if entry.type === 'file' && entry.size !== undefined}
+			{#if renaming}
+				<input
+					bind:this={renameInput}
+					bind:value={renameValue}
+					class="flex-1 text-xs bg-transparent border border-gray-200 dark:border-gray-700 rounded px-1.5 py-0.5 outline-none focus:border-blue-400 dark:focus:border-blue-500 text-gray-800 dark:text-gray-200 min-w-0"
+					on:keydown={(e) => {
+						if (e.key === 'Enter') {
+							e.preventDefault();
+							submitRename();
+						}
+						if (e.key === 'Escape') {
+							e.preventDefault();
+							cancelRename();
+						}
+					}}
+					on:blur={submitRename}
+					on:click|stopPropagation
+				/>
+			{:else}
+				<span class="flex-1 text-xs text-gray-800 dark:text-gray-200 truncate">
+					{entry.name}
+				</span>
+			{/if}
+			{#if entry.type === 'file' && entry.size !== undefined && !renaming}
 				<span class="text-xs text-gray-400 shrink-0">{formatFileSize(entry.size)}</span>
 			{/if}
 		</button>
@@ -130,31 +185,45 @@
 				align="end"
 				transition={flyAndScale}
 			>
-				{#if entry.type !== 'directory'}
-					<DropdownMenu.Item
-						type="button"
-						class="select-none flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition items-center gap-2 text-sm"
-						on:click={(e) => {
-							e.stopPropagation();
-							onDownload(`${currentPath}${entry.name}`);
-						}}
+				<DropdownMenu.Item
+					type="button"
+					class="select-none flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition items-center gap-2 text-sm"
+					on:click={(e) => {
+						e.stopPropagation();
+						const path =
+							entry.type === 'directory'
+								? `${currentPath}${entry.name}/`
+								: `${currentPath}${entry.name}`;
+						onDownload(path);
+					}}
+				>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						viewBox="0 0 20 20"
+						fill="currentColor"
+						class="size-4"
 					>
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 20 20"
-							fill="currentColor"
-							class="size-4"
-						>
-							<path
-								d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z"
-							/>
-							<path
-								d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z"
-							/>
-						</svg>
-						<div class="flex items-center">{$i18n.t('Download')}</div>
-					</DropdownMenu.Item>
-				{/if}
+						<path
+							d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z"
+						/>
+						<path
+							d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z"
+						/>
+					</svg>
+					<div class="flex items-center">{$i18n.t('Download')}</div>
+				</DropdownMenu.Item>
+
+				<DropdownMenu.Item
+					type="button"
+					class="select-none flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition items-center gap-2 text-sm"
+					on:click={(e) => {
+						e.stopPropagation();
+						startRename();
+					}}
+				>
+					<Pencil className="size-4" strokeWidth="1.5" />
+					<div class="flex items-center">{$i18n.t('Rename')}</div>
+				</DropdownMenu.Item>
 
 				<DropdownMenu.Item
 					type="button"

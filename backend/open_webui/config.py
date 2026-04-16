@@ -392,6 +392,18 @@ GOOGLE_REDIRECT_URI = PersistentConfig(
     os.environ.get("GOOGLE_REDIRECT_URI", ""),
 )
 
+GOOGLE_OAUTH_AUTHORIZE_PARAMS = {}
+_google_oauth_authorize_params = os.environ.get('GOOGLE_OAUTH_AUTHORIZE_PARAMS', '')
+if _google_oauth_authorize_params:
+    try:
+        _parsed = json.loads(_google_oauth_authorize_params)
+        if isinstance(_parsed, dict):
+            GOOGLE_OAUTH_AUTHORIZE_PARAMS = _parsed
+        else:
+            log.warning('GOOGLE_OAUTH_AUTHORIZE_PARAMS must be a JSON object, ignoring')
+    except (json.JSONDecodeError, TypeError):
+        log.warning('GOOGLE_OAUTH_AUTHORIZE_PARAMS is not valid JSON, ignoring')
+
 MICROSOFT_CLIENT_ID = PersistentConfig(
     "MICROSOFT_CLIENT_ID",
     "oauth.microsoft.client_id",
@@ -710,6 +722,9 @@ def load_oauth_providers():
                     ),
                 },
                 redirect_uri=GOOGLE_REDIRECT_URI.value,
+                **({
+                    'authorize_params': GOOGLE_OAUTH_AUTHORIZE_PARAMS
+                } if GOOGLE_OAUTH_AUTHORIZE_PARAMS else {}),
             )
             return client
 

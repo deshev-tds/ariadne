@@ -2447,23 +2447,45 @@ async def search_knowledge_files(
         return json.dumps({"error": str(e)})
 
 
+MAX_VIEW_FILE_CHARS = 100_000
+DEFAULT_VIEW_FILE_MAX_CHARS = 10_000
+
+
 async def view_file(
     file_id: str,
+    offset: int = 0,
+    max_chars: int = DEFAULT_VIEW_FILE_MAX_CHARS,
     __request__: Request = None,
     __user__: dict = None,
     __model_knowledge__: Optional[list[dict]] = None,
 ) -> str:
     """
-    Get the full content of a file by its ID.
+    Get the content of a file by its ID. Supports pagination for large files.
 
     :param file_id: The ID of the file to retrieve
-    :return: JSON with the file's id, filename, and full text content
+    :param offset: Character offset to start reading from
+    :param max_chars: Maximum number of characters to return
+    :return: JSON with file metadata and pagination details when truncated
     """
     if __request__ is None:
         return json.dumps({"error": "Request context not available"})
 
     if not __user__:
         return json.dumps({"error": "User context not available"})
+
+    if isinstance(offset, str):
+        try:
+            offset = int(offset)
+        except ValueError:
+            offset = 0
+    if isinstance(max_chars, str):
+        try:
+            max_chars = int(max_chars)
+        except ValueError:
+            max_chars = DEFAULT_VIEW_FILE_MAX_CHARS
+
+    max_chars = min(max(max_chars, 1), MAX_VIEW_FILE_CHARS)
+    offset = max(offset, 0)
 
     try:
         from open_webui.models.files import Files
@@ -2495,16 +2517,27 @@ async def view_file(
         if file.data:
             content = file.data.get("content", "")
 
-        return json.dumps(
-            {
-                "id": file.id,
-                "filename": file.filename,
-                "content": content,
-                "updated_at": file.updated_at,
-                "created_at": file.created_at,
-            },
-            ensure_ascii=False,
-        )
+        total_chars = len(content)
+        sliced = content[offset : offset + max_chars]
+        is_truncated = (offset + len(sliced)) < total_chars
+
+        result = {
+            "id": file.id,
+            "filename": file.filename,
+            "content": sliced,
+            "updated_at": file.updated_at,
+            "created_at": file.created_at,
+        }
+
+        if is_truncated or offset > 0:
+            result["truncated"] = is_truncated
+            result["total_chars"] = total_chars
+            result["returned_chars"] = len(sliced)
+            result["offset"] = offset
+            if is_truncated:
+                result["next_offset"] = offset + len(sliced)
+
+        return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         log.exception(f"view_file error: {e}")
         return json.dumps({"error": str(e)})
@@ -2512,20 +2545,38 @@ async def view_file(
 
 async def view_knowledge_file(
     file_id: str,
+    offset: int = 0,
+    max_chars: int = DEFAULT_VIEW_FILE_MAX_CHARS,
     __request__: Request = None,
     __user__: dict = None,
 ) -> str:
     """
-    Get the full content of a file from a knowledge base.
+    Get the content of a file from a knowledge base. Supports pagination.
 
     :param file_id: The ID of the file to retrieve
-    :return: JSON with the file's id, filename, and full text content
+    :param offset: Character offset to start reading from
+    :param max_chars: Maximum number of characters to return
+    :return: JSON with file metadata and pagination details when truncated
     """
     if __request__ is None:
         return json.dumps({"error": "Request context not available"})
 
     if not __user__:
         return json.dumps({"error": "User context not available"})
+
+    if isinstance(offset, str):
+        try:
+            offset = int(offset)
+        except ValueError:
+            offset = 0
+    if isinstance(max_chars, str):
+        try:
+            max_chars = int(max_chars)
+        except ValueError:
+            max_chars = DEFAULT_VIEW_FILE_MAX_CHARS
+
+    max_chars = min(max(max_chars, 1), MAX_VIEW_FILE_CHARS)
+    offset = max(offset, 0)
 
     try:
         from open_webui.models.files import Files
@@ -2569,16 +2620,28 @@ async def view_knowledge_file(
         if file.data:
             content = file.data.get("content", "")
 
+        total_chars = len(content)
+        sliced = content[offset : offset + max_chars]
+        is_truncated = (offset + len(sliced)) < total_chars
+
         result = {
             "id": file.id,
             "filename": file.filename,
-            "content": content,
+            "content": sliced,
             "updated_at": file.updated_at,
             "created_at": file.created_at,
         }
         if knowledge_info:
             result["knowledge_id"] = knowledge_info["id"]
             result["knowledge_name"] = knowledge_info["name"]
+
+        if is_truncated or offset > 0:
+            result["truncated"] = is_truncated
+            result["total_chars"] = total_chars
+            result["returned_chars"] = len(sliced)
+            result["offset"] = offset
+            if is_truncated:
+                result["next_offset"] = offset + len(sliced)
 
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
