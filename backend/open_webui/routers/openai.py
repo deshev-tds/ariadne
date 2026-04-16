@@ -1579,6 +1579,17 @@ async def generate_chat_completion(
         else:
             request_url = f"{url}/chat/completions"
 
+    if not is_responses and "messages" in payload:
+        for message in payload["messages"]:
+            if message.get("role") == "tool" and isinstance(
+                message.get("content"), list
+            ):
+                message["content"] = "".join(
+                    part.get("text", "")
+                    for part in message["content"]
+                    if part.get("type") in ("input_text", "text")
+                )
+
     append_prompt_telemetry(
         request,
         metadata,

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { decode } from 'html-entities';
 	import { getContext } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import { quintOut } from 'svelte/easing';
@@ -6,9 +7,11 @@
 	import ChevronUp from '$lib/components/icons/ChevronUp.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
-	import WrenchSolid from '$lib/components/icons/WrenchSolid.svelte';
 	import Sparkles from '$lib/components/icons/Sparkles.svelte';
 	import CheckCircle from '$lib/components/icons/CheckCircle.svelte';
+	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
+
+	import { settings } from '$lib/stores';
 
 	const i18n = getContext('i18n');
 
@@ -20,6 +23,8 @@
 			name?: string;
 			done?: string;
 			duration?: string;
+			embeds?: string;
+			arguments?: string;
 		};
 	}> = [];
 
@@ -27,19 +32,43 @@
 
 	let open = false;
 
+	function parseJSONString(str: string) {
+		try {
+			return parseJSONString(JSON.parse(str));
+		} catch {
+			return str;
+		}
+	}
+
 	$: toolCallCount = tokens.filter((t) => t?.attributes?.type === 'tool_calls').length;
-	$: reasoningCount = tokens.filter((t) => t?.attributes?.type === 'reasoning').length;
-	$: hasPending = tokens.some(
-		(t) => t?.attributes?.done !== undefined && t?.attributes?.done !== 'true'
-	);
+	$: hasPending =
+		!messageDone &&
+		tokens.some((t) => t?.attributes?.done !== undefined && t?.attributes?.done !== 'true');
 
 	$: codeInterpreterCount = tokens.filter((t) => t?.attributes?.type === 'code_interpreter').length;
+
+	$: allEmbeds = (() => {
+		const result: Array<{ embed: string; args: string }> = [];
+		for (const t of tokens) {
+			if (t?.attributes?.type !== 'tool_calls') continue;
+			const raw = decode(t.attributes?.embeds ?? '');
+			const parsed = parseJSONString(raw);
+			if (Array.isArray(parsed) && parsed.length > 0) {
+				for (const embed of parsed) {
+					result.push({
+						embed,
+						args: decode(t.attributes?.arguments ?? '')
+					});
+				}
+			}
+		}
+		return result;
+	})();
 
 	$: summaryText = (() => {
 		const parts = [];
 
 		if (toolCallCount > 0) {
-			// Group by tool name and show counts
 			const nameCounts = {};
 			tokens
 				.filter((t) => t?.attributes?.type === 'tool_calls')
@@ -62,16 +91,29 @@
 			}
 		}
 
-		const prefix = hasPending ? $i18n.t('Exploring') : $i18n.t('Explored');
-		const detail = parts.join(', ');
-		return detail;
+		return parts.join(', ');
 	})();
 
 	$: prefixText = hasPending ? $i18n.t('Exploring') : $i18n.t('Explored');
 </script>
 
 <div {id} class="w-full">
-	<!-- svelte-ignore a11y-no-static-element-interactions -->
+	{#if allEmbeds.length > 0}
+		<!-- Embeds rendered directly above the collapsed group -->
+		{#each allEmbeds as embedItem, idx}
+			<div id={`${id}-embed-${idx}`}>
+				<FullHeightIframe
+					src={embedItem.embed}
+					args={embedItem.args}
+					allowScripts={true}
+					allowForms={$settings?.iframeSandboxAllowForms ?? false}
+					allowSameOrigin={$settings?.iframeSandboxAllowSameOrigin ?? false}
+					allowPopups={true}
+				/>
+			</div>
+		{/each}
+	{/if}
+
 	<button
 		class="w-fit text-left text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition cursor-pointer"
 		aria-label={$i18n.t('Toggle details')}
