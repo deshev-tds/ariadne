@@ -3366,6 +3366,72 @@ def synthesize_briefing_script(selected_stories: list[dict[str, Any]]) -> str:
     return "\n\n".join(paragraphs)
 
 
+def render_briefing_chat_markdown(briefing: dict[str, Any]) -> str:
+    date = _normalize_text(briefing.get("date"))
+    snapshot_id = _normalize_text(briefing.get("snapshot_id"))
+    selected_items = [
+        item
+        for item in (briefing.get("selected_items") or [])
+        if isinstance(item, dict)
+    ]
+
+    lines = [
+        f"# Morning News · {date or 'Undated'}",
+        "",
+        "This chat was materialized from the compiled local news briefing.",
+    ]
+
+    summary_bits = []
+    if snapshot_id:
+        summary_bits.append(f"Snapshot: `{snapshot_id}`")
+    if selected_items:
+        summary_bits.append(f"Stories: `{len(selected_items)}`")
+    if summary_bits:
+        lines.append(" · ".join(summary_bits))
+        lines.append("")
+
+    for index, item in enumerate(selected_items, start=1):
+        headline = _normalize_text(item.get("headline") or item.get("title") or item.get("article_id"))
+        what_happened = _normalize_text(item.get("what_happened"))
+        why_it_matters = _normalize_text(item.get("why_it_matters"))
+        paragraph = _normalize_text(item.get("paragraph"))
+        article_id = _normalize_text(item.get("article_id"))
+        source_ref = dict(item.get("source_ref") or {})
+        source_id = _normalize_text(source_ref.get("source_id"))
+        published_at = _normalize_text(source_ref.get("published_at"))
+        source_url = _normalize_text(source_ref.get("url"))
+
+        lines.append(f"## {index}. {headline or f'Story {index}'}")
+        lines.append("")
+
+        if what_happened:
+            lines.append(f"**What happened:** {what_happened}")
+            lines.append("")
+
+        if why_it_matters:
+            lines.append(f"**Why it matters:** {why_it_matters}")
+            lines.append("")
+
+        if paragraph:
+            lines.append(paragraph)
+            lines.append("")
+
+        footer_bits = []
+        if source_id:
+            footer_bits.append(f"Source: `{source_id}`")
+        if published_at:
+            footer_bits.append(f"Published: `{published_at}`")
+        if article_id:
+            footer_bits.append(f"Article: `{article_id}`")
+        if footer_bits:
+            lines.append(" · ".join(footer_bits))
+        if source_url:
+            lines.append(f"Link: {source_url}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 def _write_silent_wav(path: Path, *, seconds: float) -> None:
     sample_rate = 16000
     frames = int(max(1.0, seconds) * sample_rate)
@@ -3441,6 +3507,7 @@ def build_briefing(
         "audio_path": str(audio_path),
         "tts": tts_result,
     }
+    payload["chat_markdown"] = render_briefing_chat_markdown(payload)
     _write_json(briefing_dir / "briefing.json", payload)
     _write_json(roots.briefings_root / "latest_briefing.json", payload)
     return payload

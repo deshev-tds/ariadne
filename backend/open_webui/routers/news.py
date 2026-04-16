@@ -1,10 +1,16 @@
 import logging
+import time
+from uuid import uuid4
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from open_webui.constants import ERROR_MESSAGES
+from open_webui.models.chat_messages import ChatMessages
+from open_webui.models.chats import ChatForm, Chats
+from open_webui.models.simon_lex_index import enqueue_message
+from open_webui.models.users import Users
 from open_webui.retrieval.news_lane import (
     build_briefing,
     default_news_category_config,
@@ -20,6 +26,7 @@ from open_webui.retrieval.news_lane import (
     normalize_news_category_config_payload,
     normalize_news_source_registry_payload,
     normalize_and_persist_news_storage_roots,
+    render_briefing_chat_markdown,
     play_latest_briefing,
     prefetch_related_once,
     analyze_articles,
@@ -28,6 +35,11 @@ from open_webui.retrieval.news_lane import (
     validate_news_source_registry_payload,
 )
 from open_webui.utils.auth import get_admin_user
+from open_webui.utils.personas import (
+    MORNING_NEWS_PERSONA_NAME,
+    build_persona_defaults_snapshot,
+    ensure_morning_news_persona_for_user,
+)
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +130,10 @@ def run_news_daily_briefing_pipeline(config_or_path: Any) -> dict[str, Any]:
         config_or_path=config_or_path,
         snapshot=snapshot,
     )
+    briefing["materialized_chats"] = materialize_morning_news_chats(
+        config_or_path=config_or_path,
+        briefing=briefing,
+    )
     return {"briefing": briefing}
 
 
@@ -127,10 +143,234 @@ def run_news_morning_pipeline(config_or_path: Any) -> dict[str, Any]:
         config_or_path=config_or_path,
         snapshot=snapshot_result["snapshot"],
     )
+    briefing["materialized_chats"] = materialize_morning_news_chats(
+        config_or_path=config_or_path,
+        briefing=briefing,
+    )
     return {
         **snapshot_result,
         "briefing": briefing,
     }
+
+
+def _materialized_news_chat_title(briefing: dict[str, Any]) -> str:
+    return f"{MORNING_NEWS_PERSONA_NAME} · {briefing.get('date') or 'Undated'}"
+
+
+def _build_materialized_news_chat_message(
+    *,
+    message_id: str,
+    content: str,
+    timestamp: int,
+    model_id: Optional[str],
+) -> dict[str, Any]:
+    message = {
+        "id": message_id,
+        "role": "assistant",
+        "content": content,
+        "timestamp": timestamp,
+        "done": True,
+        "parentId": None,
+        "childrenIds": [],
+    }
+    if model_id:
+        message["model"] = model_id
+    return message
+
+
+def _build_materialized_news_chat_payload(
+    *,
+    title: str,
+    content: str,
+    message_id: str,
+    timestamp: int,
+    model_id: Optional[str],
+) -> dict[str, Any]:
+    message = _build_materialized_news_chat_message(
+        message_id=message_id,
+        content=content,
+        timestamp=timestamp,
+        model_id=model_id,
+    )
+    return {
+        "title": title,
+        "timestamp": timestamp,
+        "models": [model_id] if model_id else [],
+        "history": {
+            "currentId": message_id,
+            "messages": {message_id: message},
+        },
+    }
+
+
+def _build_materialized_news_chat_meta(
+    *,
+    persona,
+    briefing: dict[str, Any],
+    root_message_id: str,
+    timestamp: int,
+) -> dict[str, Any]:
+    return {
+        "persona_defaults_snapshot": build_persona_defaults_snapshot(persona),
+        "persona_chat_overrides": {},
+        "news_materialization": {
+            "kind": "daily_briefing_chat",
+            "date": briefing.get("date"),
+            "snapshot_id": briefing.get("snapshot_id"),
+            "root_message_id": root_message_id,
+            "audio_path": briefing.get("audio_path") or "",
+            "target_item_count": int(briefing.get("target_item_count") or 0),
+            "materialized_at": timestamp,
+        },
+    }
+
+
+def _find_existing_materialized_news_chat(user_id: str, briefing_date: str) -> Optional[Any]:
+    chats = Chats.get_chat_list_by_user_id(
+        user_id,
+        include_archived=True,
+        limit=None,
+    )
+    for chat in chats:
+        materialization = (chat.meta or {}).get("news_materialization") or {}
+        if (
+            materialization.get("kind") == "daily_briefing_chat"
+            and str(materialization.get("date") or "") == str(briefing_date or "")
+        ):
+            return chat
+    return None
+
+
+def _chat_has_materialized_news_activity(existing_chat: Any, root_message_id: str) -> bool:
+    history = dict((existing_chat.chat or {}).get("history") or {})
+    messages = dict(history.get("messages") or {})
+    if len(messages) != 1:
+        return True
+    current_id = history.get("currentId")
+    if current_id and root_message_id and current_id != root_message_id:
+        return True
+    root_message = messages.get(root_message_id) or messages.get(current_id) or {}
+    return bool(root_message.get("childrenIds"))
+
+
+def _sync_materialized_news_root_message(
+    *,
+    chat_id: str,
+    user_id: str,
+    message_id: str,
+    message: dict[str, Any],
+) -> None:
+    try:
+        ChatMessages.upsert_message(
+            message_id=message_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            data=message,
+        )
+        enqueue_message(chat_id, message_id, priority=1)
+    except Exception as exc:
+        log.warning("Failed to sync materialized news root message for chat %s: %s", chat_id, exc)
+
+
+def materialize_morning_news_chats(
+    *,
+    config_or_path: Any,
+    briefing: dict[str, Any],
+) -> list[dict[str, Any]]:
+    briefing_date = str(briefing.get("date") or "").strip()
+    if not briefing_date:
+        return []
+
+    content = str(briefing.get("chat_markdown") or "").strip() or render_briefing_chat_markdown(
+        briefing
+    )
+    title = _materialized_news_chat_title(briefing)
+    admins = Users.get_users(filter={"roles": ["admin"]}).get("users", [])
+    materialized: list[dict[str, Any]] = []
+
+    for admin in admins:
+        persona = ensure_morning_news_persona_for_user(admin.id, config_or_path)
+        if persona is None:
+            continue
+
+        existing_chat = _find_existing_materialized_news_chat(admin.id, briefing_date)
+        existing_materialization = (
+            (existing_chat.meta or {}).get("news_materialization") if existing_chat else {}
+        ) or {}
+        root_message_id = str(
+            existing_materialization.get("root_message_id")
+            or ((existing_chat.chat or {}) if existing_chat else {}).get("history", {}).get("currentId")
+            or uuid4()
+        )
+        timestamp = int(time.time())
+        payload = _build_materialized_news_chat_payload(
+            title=title,
+            content=content,
+            message_id=root_message_id,
+            timestamp=timestamp,
+            model_id=getattr(persona, "bound_model_id", None),
+        )
+        meta = _build_materialized_news_chat_meta(
+            persona=persona,
+            briefing=briefing,
+            root_message_id=root_message_id,
+            timestamp=timestamp,
+        )
+
+        if existing_chat is None:
+            inserted = Chats.insert_new_chat(
+                admin.id,
+                ChatForm(
+                    chat=payload,
+                    meta=meta,
+                    persona_id=persona.id,
+                ),
+            )
+            if inserted is not None:
+                materialized.append(
+                    {
+                        "user_id": admin.id,
+                        "chat_id": inserted.id,
+                        "title": inserted.title,
+                        "status": "created",
+                    }
+                )
+            continue
+
+        if _chat_has_materialized_news_activity(existing_chat, root_message_id):
+            materialized.append(
+                {
+                    "user_id": admin.id,
+                    "chat_id": existing_chat.id,
+                    "title": existing_chat.title,
+                    "status": "skipped_due_to_chat_activity",
+                }
+            )
+            continue
+
+        updated = Chats.update_chat_by_id(
+            existing_chat.id,
+            payload,
+            meta=meta,
+            persona_id=persona.id,
+        )
+        if updated is not None:
+            _sync_materialized_news_root_message(
+                chat_id=updated.id,
+                user_id=admin.id,
+                message_id=root_message_id,
+                message=payload["history"]["messages"][root_message_id],
+            )
+            materialized.append(
+                {
+                    "user_id": admin.id,
+                    "chat_id": updated.id,
+                    "title": updated.title,
+                    "status": "updated",
+                }
+            )
+
+    return materialized
 
 
 def _news_config_payload(request: Request) -> dict[str, Any]:

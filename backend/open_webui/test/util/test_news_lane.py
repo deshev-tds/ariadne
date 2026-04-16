@@ -857,6 +857,9 @@ def test_build_briefing_uses_full_kept_brief_item_set(news_fixture):
     assert briefing["target_item_count"] == 2
     assert briefing["configured_target_item_count"] == 18
     assert [item["article_id"] for item in briefing["selected_items"]] == ["a1", "a3"]
+    assert briefing["chat_markdown"].startswith("# Morning News · 2026-04-10")
+    assert "## 1. ЕС натиска за нови санкции" in briefing["chat_markdown"]
+    assert "## 2. Малък inference stack изплува на HN" in briefing["chat_markdown"]
 
 
 def test_general_briefing_request_detection():
@@ -1499,17 +1502,179 @@ def test_run_news_morning_pipeline_chains_snapshot_and_briefing(monkeypatch):
         captured["briefing_snapshot"] = snapshot
         return {"briefing_id": "brief-1"}
 
+    def fake_materialize(config_or_path, briefing):
+        captured["materialize_config"] = config_or_path
+        captured["materialize_briefing"] = briefing
+        return [{"chat_id": "chat-1", "status": "created"}]
+
     monkeypatch.setattr(news_router, "run_news_snapshot_pipeline", fake_snapshot_pipeline)
     monkeypatch.setattr(news_router, "build_briefing", fake_build_briefing)
+    monkeypatch.setattr(news_router, "materialize_morning_news_chats", fake_materialize)
 
     config = SimpleNamespace(NEWS_ENABLED=True)
     result = news_router.run_news_morning_pipeline(config)
 
     assert result["snapshot"]["snapshot_id"] == "snap-1"
     assert result["briefing"]["briefing_id"] == "brief-1"
+    assert result["briefing"]["materialized_chats"] == [{"chat_id": "chat-1", "status": "created"}]
     assert captured["snapshot_config"] is config
     assert captured["briefing_config"] is config
     assert captured["briefing_snapshot"] == {"snapshot_id": "snap-1"}
+    assert captured["materialize_config"] is config
+    assert captured["materialize_briefing"]["briefing_id"] == "brief-1"
+
+
+def test_materialize_morning_news_chats_creates_new_chat(monkeypatch):
+    captured = {}
+
+    briefing = {
+        "date": "2026-04-16",
+        "snapshot_id": "snap-16",
+        "target_item_count": 2,
+        "audio_path": "/tmp/briefing.wav",
+        "chat_markdown": "# Morning News · 2026-04-16\n\nCompiled briefing body.",
+        "selected_items": [],
+    }
+
+    monkeypatch.setattr(
+        news_router.Users,
+        "get_users",
+        lambda filter=None: {"users": [SimpleNamespace(id="admin-1")]},
+    )
+    monkeypatch.setattr(
+        news_router,
+        "ensure_morning_news_persona_for_user",
+        lambda user_id, config_or_path=None: SimpleNamespace(
+            id=f"persona-{user_id}",
+            bound_model_id="news-model",
+        ),
+    )
+    monkeypatch.setattr(
+        news_router,
+        "build_persona_defaults_snapshot",
+        lambda persona: {"bound_model_id": persona.bound_model_id},
+    )
+    monkeypatch.setattr(
+        news_router.Chats,
+        "get_chat_list_by_user_id",
+        lambda user_id, include_archived=True, limit=None: [],
+    )
+
+    def fake_insert(user_id, form_data):
+        captured["user_id"] = user_id
+        captured["form_data"] = form_data
+        return SimpleNamespace(id="chat-1", title=form_data.chat["title"])
+
+    monkeypatch.setattr(news_router.Chats, "insert_new_chat", fake_insert)
+
+    result = news_router.materialize_morning_news_chats(
+        config_or_path=SimpleNamespace(),
+        briefing=briefing,
+    )
+
+    assert result == [
+        {
+            "user_id": "admin-1",
+            "chat_id": "chat-1",
+            "title": "Morning News · 2026-04-16",
+            "status": "created",
+        }
+    ]
+    assert captured["user_id"] == "admin-1"
+    assert captured["form_data"].persona_id == "persona-admin-1"
+    assert captured["form_data"].chat["title"] == "Morning News · 2026-04-16"
+    message = next(iter(captured["form_data"].chat["history"]["messages"].values()))
+    assert message["role"] == "assistant"
+    assert message["done"] is True
+    assert message["content"] == briefing["chat_markdown"]
+    assert captured["form_data"].meta["news_materialization"]["date"] == "2026-04-16"
+
+
+def test_materialize_morning_news_chats_skips_update_when_chat_has_activity(monkeypatch):
+    monkeypatch.setattr(
+        news_router.Users,
+        "get_users",
+        lambda filter=None: {"users": [SimpleNamespace(id="admin-1")]},
+    )
+    monkeypatch.setattr(
+        news_router,
+        "ensure_morning_news_persona_for_user",
+        lambda user_id, config_or_path=None: SimpleNamespace(
+            id=f"persona-{user_id}",
+            bound_model_id="news-model",
+        ),
+    )
+    monkeypatch.setattr(
+        news_router,
+        "build_persona_defaults_snapshot",
+        lambda persona: {"bound_model_id": persona.bound_model_id},
+    )
+
+    existing = SimpleNamespace(
+        id="chat-existing",
+        title="Morning News · 2026-04-16",
+        persona_id="persona-admin-1",
+        meta={
+            "news_materialization": {
+                "kind": "daily_briefing_chat",
+                "date": "2026-04-16",
+                "root_message_id": "m-root",
+            }
+        },
+        chat={
+            "history": {
+                "currentId": "m-user",
+                "messages": {
+                    "m-root": {
+                        "id": "m-root",
+                        "role": "assistant",
+                        "childrenIds": ["m-user"],
+                    },
+                    "m-user": {
+                        "id": "m-user",
+                        "role": "user",
+                        "parentId": "m-root",
+                        "childrenIds": [],
+                    },
+                },
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        news_router.Chats,
+        "get_chat_list_by_user_id",
+        lambda user_id, include_archived=True, limit=None: [existing],
+    )
+
+    update_calls = []
+    monkeypatch.setattr(
+        news_router.Chats,
+        "update_chat_by_id",
+        lambda *args, **kwargs: update_calls.append((args, kwargs)),
+    )
+
+    result = news_router.materialize_morning_news_chats(
+        config_or_path=SimpleNamespace(),
+        briefing={
+            "date": "2026-04-16",
+            "snapshot_id": "snap-16",
+            "target_item_count": 2,
+            "audio_path": "/tmp/briefing.wav",
+            "chat_markdown": "# Morning News · 2026-04-16\n\nCompiled briefing body.",
+            "selected_items": [],
+        },
+    )
+
+    assert result == [
+        {
+            "user_id": "admin-1",
+            "chat_id": "chat-existing",
+            "title": "Morning News · 2026-04-16",
+            "status": "skipped_due_to_chat_activity",
+        }
+    ]
+    assert update_calls == []
 
 
 def test_normalize_and_persist_news_storage_roots_absolutizes_relative_config(monkeypatch, tmp_path):
