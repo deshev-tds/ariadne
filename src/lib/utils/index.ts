@@ -883,6 +883,9 @@ export const cleanText = (content: string) => {
 	return removeFormattings(removeEmojis(content.trim()));
 };
 
+const HISTORICAL_TOOL_OUTPUT_REMOVAL_MARKER =
+	'[prior tool output omitted from cross-turn replay]\nIf exact earlier tool details matter, make a fresh tool call.';
+
 export const removeDetails = (content, types) => {
 	return replaceOutsideCode(content, (segment) => {
 		for (const type of types) {
@@ -904,21 +907,14 @@ export const removeAllDetails = (content) => {
 export const processDetails = (content) => {
 	content = removeDetails(content, ['reasoning', 'code_interpreter']);
 
-	// This regex matches <details> tags with type="tool_calls" and captures their attributes to convert them to a string
+	// Historical tool-call details can be extremely large and should not be
+	// replayed back into later turns from the browser.
 	const detailsRegex = /<details\s+type="tool_calls"([^>]*)>([\s\S]*?)<\/details>/gis;
-	const matches = content.match(detailsRegex);
-	if (matches) {
-		for (const match of matches) {
-			const attributesRegex = /(\w+)="([^"]*)"/g;
-			const attributes = {};
-			let attributeMatch;
-			while ((attributeMatch = attributesRegex.exec(match)) !== null) {
-				attributes[attributeMatch[1]] = attributeMatch[2];
-			}
-
-			if (attributes.result) {
-				content = content.replace(match, unescapeHtml(attributes.result));
-			}
+	const hadToolCalls = detailsRegex.test(content);
+	if (hadToolCalls) {
+		content = content.replace(detailsRegex, '').replace(/\n{3,}/g, '\n\n').trim();
+		if (!content) {
+			content = HISTORICAL_TOOL_OUTPUT_REMOVAL_MARKER;
 		}
 	}
 

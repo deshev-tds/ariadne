@@ -28,8 +28,8 @@ function parseAttributes(tag: string): { [key: string]: string } {
 
 function detailsTokenizer(src: string) {
 	// Updated regex to capture attributes inside <details>
-	const detailsRegex = /^<details(\s+[^>]*)?>\n/;
-	const summaryRegex = /^<summary>(.*?)<\/summary>\n/;
+	const detailsRegex = /^<details(\s+[^>]*)?>\s*\r?\n/;
+	const summaryRegex = /^<summary>(.*?)<\/summary>\s*\r?\n/;
 
 	const detailsMatch = detailsRegex.exec(src);
 	if (detailsMatch) {
@@ -60,7 +60,8 @@ function detailsTokenizer(src: string) {
 }
 
 function detailsStart(src: string) {
-	return src.match(/^<details>/) ? 0 : -1;
+	const match = /<details(?:\s|>)/i.exec(src);
+	return match?.index ?? -1;
 }
 
 function detailsRenderer(token: any) {

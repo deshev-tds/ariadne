@@ -24,6 +24,10 @@ _HISTORICAL_REASONING_DETAILS_RE = re.compile(
     r'<details\b(?=[^>]*\btype="reasoning")[\s\S]*?</details>',
     re.IGNORECASE,
 )
+_HISTORICAL_TOOL_CALL_DETAILS_RE = re.compile(
+    r'<details\b(?=[^>]*\btype="tool_calls")[\s\S]*?</details>',
+    re.IGNORECASE,
+)
 _HISTORICAL_REASONING_TAG_RES = [
     re.compile(rf"<{tag}>\s*[\s\S]*?\s*</{tag}>", re.IGNORECASE)
     for tag in ("think", "thinking", "reason", "reasoning", "thought")
@@ -322,15 +326,27 @@ def _strip_historical_reasoning_text(text_value: str) -> str:
     return stripped.strip()
 
 
+def _strip_historical_tool_call_details(text_value: str) -> str:
+    if not isinstance(text_value, str):
+        return text_value
+
+    stripped = _HISTORICAL_TOOL_CALL_DETAILS_RE.sub("", text_value)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped).strip()
+    return stripped or _HISTORICAL_TOOL_OUTPUT_REMOVAL_MARKER
+
+
 def _sanitize_historical_message_content(
     content: object,
     *,
     strip_reasoning: bool = False,
+    strip_tool_calls: bool = False,
 ) -> object:
     if isinstance(content, str):
         value = content
         if strip_reasoning:
             value = _strip_historical_reasoning_text(value)
+        if strip_tool_calls:
+            value = _strip_historical_tool_call_details(value)
         return value
 
     if isinstance(content, list):
@@ -342,11 +358,13 @@ def _sanitize_historical_message_content(
                     updated["text"] = _sanitize_historical_message_content(
                         updated.get("text"),
                         strip_reasoning=strip_reasoning,
+                        strip_tool_calls=strip_tool_calls,
                     )
                 elif "content" in updated:
                     updated["content"] = _sanitize_historical_message_content(
                         updated.get("content"),
                         strip_reasoning=strip_reasoning,
+                        strip_tool_calls=strip_tool_calls,
                     )
                 out.append(updated)
             elif isinstance(item, str):
@@ -354,6 +372,7 @@ def _sanitize_historical_message_content(
                     _sanitize_historical_message_content(
                         item,
                         strip_reasoning=strip_reasoning,
+                        strip_tool_calls=strip_tool_calls,
                     )
                 )
             else:
@@ -366,11 +385,13 @@ def _sanitize_historical_message_content(
             updated["text"] = _sanitize_historical_message_content(
                 updated.get("text"),
                 strip_reasoning=strip_reasoning,
+                strip_tool_calls=strip_tool_calls,
             )
         elif "content" in updated:
             updated["content"] = _sanitize_historical_message_content(
                 updated.get("content"),
                 strip_reasoning=strip_reasoning,
+                strip_tool_calls=strip_tool_calls,
             )
         return updated
 
@@ -385,6 +406,12 @@ def sanitize_historical_message_for_llm(message: dict) -> dict:
         sanitized["content"] = _sanitize_historical_message_content(
             sanitized.get("content"),
             strip_reasoning=True,
+            strip_tool_calls=True,
+        )
+    elif role == "assistant":
+        sanitized["content"] = _sanitize_historical_message_content(
+            sanitized.get("content"),
+            strip_tool_calls=True,
         )
     elif role == "tool":
         sanitized["content"] = _HISTORICAL_TOOL_OUTPUT_REMOVAL_MARKER
