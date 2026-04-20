@@ -134,3 +134,36 @@ def test_ensure_science_lane_skills_skips_when_no_admin_exists(tmp_path):
     assert report.created_ids == []
     assert session.query(Skill).count() == 0
     assert session.query(AccessGrant).count() == 0
+
+
+def test_science_lane_skill_content_makes_source_priority_explicit(tmp_path):
+    session = _build_session(tmp_path)
+    _insert_user(session, user_id="admin", role="admin", created_at=10)
+
+    ensure_science_lane_skills(session)
+
+    literature_review = session.query(Skill).filter_by(id="kdense-literature-review").first()
+    paper_lookup = session.query(Skill).filter_by(id="kdense-paper-lookup").first()
+    citation_management = session.query(Skill).filter_by(
+        id="kdense-citation-management"
+    ).first()
+
+    assert literature_review is not None
+    assert "Do not force a biomedical framing onto non-biomedical topics." in literature_review.content
+    assert "PubMed, Europe PMC, DOI, Crossref." in literature_review.content
+    assert "OpenAlex, Crossref, DOI." in literature_review.content
+    assert (
+        "Then source-native paper and metadata lookup for exact records and identifier resolution."
+        in literature_review.content
+    )
+
+    assert paper_lookup is not None
+    assert "Prefer direct scholarly record systems over generic web search" in paper_lookup.content
+    assert "Exact identifiers first: DOI, PMID, PMCID, arXiv id." in paper_lookup.content
+    assert "canonical registries and source-native records" in paper_lookup.content
+
+    assert citation_management is not None
+    assert "Verify against canonical registries first" in citation_management.content
+    assert "DOI resolver and Crossref for DOI-centered records." in citation_management.content
+    assert "OpenAlex for cross-disciplinary metadata cross-checks" in citation_management.content
+    assert "Prefer canonical registry conflicts over generic web conflicts" in citation_management.content

@@ -102,7 +102,14 @@ Use this skill for research overviews, state-of-the-art summaries, gap analyses,
 
 ## Ariadne-specific behavior
 - Start from the local corpus when it plausibly covers the topic.
-- Then broaden to web research for recency, coverage, or primary-source retrieval.
+- Do not force a biomedical framing onto non-biomedical topics. Use PICO only when it genuinely fits; otherwise prefer topic / method / benchmark / timeframe or theory / method / result framing.
+- If Ariadne exposes source-native scholarly lookup paths, prefer them before general web search.
+  Priority order:
+  - Biomedical and life sciences: PubMed, Europe PMC, DOI, Crossref.
+  - Cross-disciplinary work: OpenAlex, Crossref, DOI.
+  - Field-specific exact identifiers such as DOI, PMID, PMCID, or arXiv id should beat generic keyword search.
+- Use general web research only as a fallback for discovery gaps, recency, inaccessible full text, or sources not covered by the source-native paths.
+- If the local corpus is clearly off-domain after a light compatibility probe, move on quickly instead of forcing a corpus-heavy answer.
 - If a terminal is available, use it for reproducible notes, CSV/Markdown tables, citation lists, or screening ledgers. Do not assume dedicated K-Dense helper scripts are present unless the mounted path is confirmed.
 
 ## Planning workflow
@@ -114,8 +121,8 @@ Use this skill for research overviews, state-of-the-art summaries, gap analyses,
    Main concepts, synonyms, abbreviations, competing terminology, and likely high-signal sources.
 4. Search in layers.
    - Local corpus first.
-   - Web search for academic and primary sources.
-   - Direct paper/source lookup for missing anchors.
+   - Then source-native paper and metadata lookup for exact records and identifier resolution.
+   - Then web search for academic and primary sources only where source-native lookup is missing, weak, or too narrow.
 5. Screen aggressively.
    Remove duplicates, tangential hits, outdated anchors, and low-signal commentary.
 6. Synthesize by theme, not one-paper-at-a-time.
@@ -249,6 +256,15 @@ Ariadne adaptation of the K-Dense paper-lookup skill.
 
 Use this skill when the user needs specific papers, DOIs, author disambiguation, a shortlist of cornerstone sources, or a clean source ledger before larger synthesis.
 
+## Ariadne-specific behavior
+- Prefer direct scholarly record systems over generic web search whenever Ariadne exposes them.
+  Priority order:
+  - Exact identifiers first: DOI, PMID, PMCID, arXiv id.
+  - Biomedical and life sciences: PubMed, Europe PMC, DOI, Crossref.
+  - Cross-disciplinary work: OpenAlex, Crossref, DOI.
+- Use general web search only when exact-record systems fail to resolve the anchor or when you need discovery beyond the current identifier set.
+- Do not force biomedical assumptions onto non-biomedical domains. In physics, mathematics, CS, or engineering, title / author / venue / arXiv / DOI anchors are usually stronger than medical-style framing.
+
 ## Workflow
 1. Extract anchors.
    Keywords, authors, year, title fragments, DOI, PMID, arXiv id, journal, benchmark, method name.
@@ -273,6 +289,7 @@ For each shortlisted item, include when possible:
 - Distinguish exact match from likely match.
 - If a citation is incomplete or ambiguous, say that explicitly.
 - Prefer authoritative source records over citation-site mirrors.
+- Prefer canonical registries and source-native records over generic search-engine snippets.
 - If the user is really asking for synthesis rather than lookup, hand off into literature-review mode after the shortlist is stable.
 """,
         tags=("science", "kdense", "paper-lookup", "citations"),
@@ -289,6 +306,16 @@ For each shortlisted item, include when possible:
 Ariadne adaptation of the K-Dense citation-management skill.
 
 Use this skill when the user needs bibliography cleanup, DOI verification, reference normalization, missing-metadata repair, or citation-style conversion.
+
+## Ariadne-specific behavior
+- Verify against canonical registries first when Ariadne exposes them.
+  Priority order:
+  - DOI resolver and Crossref for DOI-centered records.
+  - PubMed and Europe PMC for biomedical records.
+  - OpenAlex for cross-disciplinary metadata cross-checks and citation graph context.
+- Use publisher pages or general web search only as a fallback when the canonical record is missing, contradictory, or incomplete.
+- Do not invent metadata from citation mirrors, blogs, or scraped reference lists when a canonical source cannot confirm it.
+- Do not assume PMID-centered workflows outside biomedicine; for other disciplines, DOI, arXiv id, title, venue, and author matching are often the primary anchors.
 
 ## Workflow
 1. Extract the citation units.
@@ -312,6 +339,7 @@ Use this skill when the user needs bibliography cleanup, DOI verification, refer
 - If a citation cannot be verified, keep it marked as provisional.
 - Distinguish a missing DOI from a record that likely has no DOI.
 - Prefer a short warning over false precision.
+- Prefer canonical registry conflicts over generic web conflicts when two records disagree.
 """,
         tags=("science", "kdense", "citation-management", "references"),
     ),
