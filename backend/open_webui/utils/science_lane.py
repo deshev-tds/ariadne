@@ -3,6 +3,15 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
+DEFAULT_SCIENCE_LANE_SKILL_IDS = [
+    "kdense-scientific-critical-thinking",
+    "kdense-literature-review",
+    "kdense-peer-review",
+    "kdense-scientific-writing",
+    "kdense-paper-lookup",
+    "kdense-citation-management",
+]
+
 
 def normalize_configured_skill_ids(value: Any) -> list[str]:
     if value is None:
@@ -47,7 +56,11 @@ def resolve_science_lane_default_skill_ids(
     if normalized_working_mode != "science":
         return set()
 
-    return set(normalize_configured_skill_ids(configured_skill_ids))
+    normalized_configured_skill_ids = normalize_configured_skill_ids(configured_skill_ids)
+    if normalized_configured_skill_ids:
+        return set(normalized_configured_skill_ids)
+
+    return set(DEFAULT_SCIENCE_LANE_SKILL_IDS)
 
 
 def build_science_lane_skill_sets(

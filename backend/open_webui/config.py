@@ -3671,12 +3671,6 @@ OFFSEC_CORPUS_ROOT = PersistentConfig(
     os.getenv("OFFSEC_CORPUS_ROOT", "offsec_corpus"),
 )
 
-SCIENCE_LANE_DEFAULT_SKILL_IDS = PersistentConfig(
-    "SCIENCE_LANE_DEFAULT_SKILL_IDS",
-    "rag.science.default_skill_ids",
-    os.getenv("SCIENCE_LANE_DEFAULT_SKILL_IDS", ""),
-)
-
 NEWS_ENABLED = PersistentConfig(
     "NEWS_ENABLED",
     "rag.news.enable",

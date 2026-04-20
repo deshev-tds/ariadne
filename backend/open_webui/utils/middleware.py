@@ -5906,9 +5906,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         all_skill_ids,
     ) = build_science_lane_skill_sets(
         working_mode=working_mode,
-        configured_skill_ids=getattr(
-            request.app.state.config, "SCIENCE_LANE_DEFAULT_SKILL_IDS", None
-        ),
+        configured_skill_ids=None,
         user_skill_ids=user_skill_ids,
         model_skill_ids=model_skill_ids,
     )
