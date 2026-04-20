@@ -78,6 +78,7 @@ from open_webui.routers import (
     maps,
     ollama,
     openai,
+    scholarly,
     retrieval,
     pipelines,
     tasks,
@@ -321,6 +322,7 @@ from open_webui.config import (
     YOUTUBE_LOADER_PROXY_URL,
     # Retrieval (Web Search)
     ENABLE_WEB_SEARCH,
+    SCHOLARLY_API_SOURCES,
     ENABLE_GOOGLE_MAPS,
     WEB_SEARCH_ENGINE,
     BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL,
@@ -1263,6 +1265,7 @@ app.state.config.YOUTUBE_LOADER_PROXY_URL = YOUTUBE_LOADER_PROXY_URL
 
 
 app.state.config.ENABLE_WEB_SEARCH = ENABLE_WEB_SEARCH
+app.state.config.SCHOLARLY_API_SOURCES = SCHOLARLY_API_SOURCES
 app.state.config.ENABLE_GOOGLE_MAPS = ENABLE_GOOGLE_MAPS
 app.state.config.WEB_SEARCH_ENGINE = WEB_SEARCH_ENGINE
 app.state.config.WEB_SEARCH_DOMAIN_FILTER_LIST = WEB_SEARCH_DOMAIN_FILTER_LIST
@@ -1877,6 +1880,7 @@ app.include_router(images.router, prefix="/api/v1/images", tags=["images"])
 app.include_router(audio.router, prefix="/api/v1/audio", tags=["audio"])
 app.include_router(news.router, prefix="/api/v1/news", tags=["news"])
 app.include_router(retrieval.router, prefix="/api/v1/retrieval", tags=["retrieval"])
+app.include_router(scholarly.router, prefix="/api/v1/scholarly", tags=["scholarly"])
 app.include_router(maps.router, prefix="/api/v1/maps", tags=["maps"])
 
 app.include_router(configs.router, prefix="/api/v1/configs", tags=["configs"])

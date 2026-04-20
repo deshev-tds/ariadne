@@ -1,5 +1,5 @@
 {
-  "version": "2026-02-registry-v1",
+  "version": "2026-04-registry-v1",
   "notes": "Machine-oriented source registry for planner routing. Rich schema with deterministic hints.",
   "schema": {
     "domain": "string",
@@ -249,6 +249,32 @@
           }
         },
         {
+          "domain": "europepmc.org",
+          "topic_tags": [
+            "science_academic"
+          ],
+          "source_type": "primary_index",
+          "trust_tier": "A",
+          "access": "open",
+          "freshness_profile": "medium",
+          "use_for": [
+            "biomedical literature",
+            "references",
+            "pmcid lookups",
+            "open-access full text links"
+          ],
+          "avoid_for": [
+            "breaking news without corroboration"
+          ],
+          "planner_hints": {
+            "default_priority": 7,
+            "allow_site_constraint": true,
+            "prefer_for_time_sensitive": false,
+            "prefer_for_exact_facts": true,
+            "prefer_for_community_signals": false
+          }
+        },
+        {
           "domain": "semanticscholar.org",
           "topic_tags": [
             "science_academic"
@@ -267,7 +293,7 @@
             "breaking news without corroboration"
           ],
           "planner_hints": {
-            "default_priority": 7,
+            "default_priority": 8,
             "allow_site_constraint": true,
             "prefer_for_time_sensitive": false,
             "prefer_for_exact_facts": true,
@@ -663,6 +689,32 @@
             "default_priority": 7,
             "allow_site_constraint": true,
             "prefer_for_time_sensitive": true,
+            "prefer_for_exact_facts": true,
+            "prefer_for_community_signals": false
+          }
+        },
+        {
+          "domain": "europepmc.org",
+          "topic_tags": [
+            "medicine_health"
+          ],
+          "source_type": "primary_index",
+          "trust_tier": "A",
+          "access": "open",
+          "freshness_profile": "medium",
+          "use_for": [
+            "clinical literature",
+            "references",
+            "pmcid lookups",
+            "open-access full text links"
+          ],
+          "avoid_for": [
+            "unverified anecdotes as medical truth"
+          ],
+          "planner_hints": {
+            "default_priority": 8,
+            "allow_site_constraint": true,
+            "prefer_for_time_sensitive": false,
             "prefer_for_exact_facts": true,
             "prefer_for_community_signals": false
           }

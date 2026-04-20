@@ -38,6 +38,7 @@ from open_webui.env import (
     log,
 )
 from open_webui.internal.db_backup import create_pre_migration_backup
+from open_webui.utils.scholarly_sources import default_scholarly_source_settings
 from open_webui.internal.db import Base, get_db
 from open_webui.retrieval.news_lane import (
     default_news_category_config,
@@ -3414,6 +3415,12 @@ ENABLE_WEB_SEARCH = PersistentConfig(
     "ENABLE_WEB_SEARCH",
     "rag.web.search.enable",
     os.getenv("ENABLE_WEB_SEARCH", "False").lower() == "true",
+)
+
+SCHOLARLY_API_SOURCES = PersistentConfig(
+    "SCHOLARLY_API_SOURCES",
+    "rag.scholarly.sources",
+    default_scholarly_source_settings(),
 )
 
 ENABLE_GOOGLE_MAPS = PersistentConfig(

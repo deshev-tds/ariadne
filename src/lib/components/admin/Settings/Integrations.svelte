@@ -1,24 +1,29 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { createEventDispatcher, onMount, getContext, tick } from 'svelte';
+	import { onMount, getContext } from 'svelte';
 	import { v4 as uuidv4 } from 'uuid';
-	import { getModels as _getModels } from '$lib/apis';
+	import {
+		getScholarlyConfig,
+		testScholarlySource,
+		updateScholarlyConfig,
+		type ScholarlySourcePayload,
+		type ScholarlyTestResponse
+	} from '$lib/apis/scholarly';
 
-	const dispatch = createEventDispatcher();
 	const i18n = getContext('i18n');
 
-	import { models, settings, user, terminalServers } from '$lib/stores';
+	import { terminalServers } from '$lib/stores';
 	import { getTerminalServers } from '$lib/apis/terminal';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	import Switch from '$lib/components/common/Switch.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
 	import Cog6 from '$lib/components/icons/Cog6.svelte';
 	import Cloud from '$lib/components/icons/Cloud.svelte';
 	import Connection from '$lib/components/chat/Settings/Tools/Connection.svelte';
-	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 
 	import AddToolServerModal from '$lib/components/AddToolServerModal.svelte';
 	import AddTerminalServerModal from '$lib/components/AddTerminalServerModal.svelte';
@@ -31,8 +36,6 @@
 		setTerminalServerConnections
 	} from '$lib/apis/configs';
 
-	export let saveSettings: Function;
-
 	let servers = null;
 	let showConnectionModal = false;
 
@@ -42,29 +45,46 @@
 	let editTerminalIdx: number | null = null;
 	let showDeleteTerminalConfirm = false;
 	let deleteTerminalIdx: number | null = null;
+	let scholarlySources: ScholarlySourcePayload[] = [];
+	let scholarlySourcesBusy = false;
+	let scholarlySourcesSaveBusy = false;
+	let scholarlyTestBusy: Record<string, boolean> = {};
+	let scholarlyTestResults: Record<string, ScholarlyTestResponse | string | null> = {};
+
+	const getPrettyJson = (value) => {
+		if (value == null) {
+			return '';
+		}
+		if (typeof value === 'string') {
+			return value;
+		}
+		return JSON.stringify(value, null, 2);
+	};
 
 	const addConnectionHandler = async (server) => {
 		servers = [...servers, server];
 		await updateHandler();
 	};
 
-	const updateHandler = async () => {
+	const updateHandler = async ({ showToast = true } = {}) => {
 		const res = await setToolServerConnections(localStorage.token, {
 			TOOL_SERVER_CONNECTIONS: servers
-		}).catch((err) => {
+		}).catch(() => {
 			toast.error($i18n.t('Failed to save connections'));
 			return null;
 		});
 
-		if (res) {
+		if (res && showToast) {
 			toast.success($i18n.t('Connections saved successfully'));
 		}
+
+		return Boolean(res);
 	};
 
 	const saveTerminalServers = async () => {
 		const res = await setTerminalServerConnections(localStorage.token, {
 			TERMINAL_SERVER_CONNECTIONS: terminalConnections
-		}).catch((err) => {
+		}).catch(() => {
 			toast.error($i18n.t('Failed to save terminal servers'));
 			return null;
 		});
@@ -103,19 +123,104 @@
 		saveTerminalServers();
 	};
 
+	const patchScholarlySource = (
+		sourceId: string,
+		patch: Partial<ScholarlySourcePayload['settings']>
+	) => {
+		scholarlySources = scholarlySources.map((source) =>
+			source.id === sourceId
+				? {
+						...source,
+						settings: {
+							...source.settings,
+							...patch
+						}
+					}
+				: source
+		);
+	};
+
+	const loadScholarlySources = async () => {
+		scholarlySourcesBusy = true;
+		try {
+			const res = await getScholarlyConfig(localStorage.token);
+			scholarlySources = res?.scholarly?.sources ?? [];
+		} catch {
+			scholarlySources = [];
+			toast.error($i18n.t('Failed to load scholarly source settings'));
+		} finally {
+			scholarlySourcesBusy = false;
+		}
+	};
+
+	const saveScholarlySources = async ({ showToast = true } = {}) => {
+		scholarlySourcesSaveBusy = true;
+		try {
+			const payload = Object.fromEntries(
+				scholarlySources.map((source) => [
+					source.id,
+					{
+						enabled: source.settings.enabled,
+						api_key: source.settings.api_key ?? ''
+					}
+				])
+			);
+			const res = await updateScholarlyConfig(localStorage.token, {
+				scholarly: { sources: payload }
+			});
+			scholarlySources = res?.scholarly?.sources ?? scholarlySources;
+			if (showToast) {
+				toast.success($i18n.t('Scholarly API settings saved'));
+			}
+			return true;
+		} catch (e) {
+			toast.error(`${$i18n.t('Failed to save scholarly source settings')}: ${e}`);
+			return false;
+		} finally {
+			scholarlySourcesSaveBusy = false;
+		}
+	};
+
+	const runScholarlyTest = async (source: ScholarlySourcePayload) => {
+		scholarlyTestBusy = { ...scholarlyTestBusy, [source.id]: true };
+		scholarlyTestResults = { ...scholarlyTestResults, [source.id]: null };
+
+		try {
+			const res = await testScholarlySource(localStorage.token, {
+				source_id: source.id,
+				settings_override: {
+					enabled: source.settings.enabled,
+					api_key: source.settings.api_key ?? ''
+				}
+			});
+			scholarlyTestResults = { ...scholarlyTestResults, [source.id]: res };
+		} catch (e) {
+			scholarlyTestResults = {
+				...scholarlyTestResults,
+				[source.id]: typeof e === 'string' ? e : JSON.stringify(e, null, 2)
+			};
+		} finally {
+			scholarlyTestBusy = { ...scholarlyTestBusy, [source.id]: false };
+		}
+	};
+
 	onMount(async () => {
 		const res = await getToolServerConnections(localStorage.token);
 		servers = res.TOOL_SERVER_CONNECTIONS;
 
-		// Load terminal server connections
-		try {
-			const terminalRes = await getTerminalServerConnections(localStorage.token);
-			if (terminalRes?.TERMINAL_SERVER_CONNECTIONS) {
-				terminalConnections = terminalRes.TERMINAL_SERVER_CONNECTIONS;
-			}
-		} catch {
-			// Not configured yet
-		}
+		await Promise.all([
+			(async () => {
+				try {
+					const terminalRes = await getTerminalServerConnections(localStorage.token);
+					if (terminalRes?.TERMINAL_SERVER_CONNECTIONS) {
+						terminalConnections = terminalRes.TERMINAL_SERVER_CONNECTIONS;
+					}
+				} catch {
+					// Not configured yet
+				}
+			})(),
+			loadScholarlySources()
+		]);
 	});
 </script>
 
@@ -154,8 +259,14 @@
 
 <form
 	class="flex flex-col h-full justify-between text-sm"
-	on:submit|preventDefault={() => {
-		updateHandler();
+	on:submit|preventDefault={async () => {
+		const [toolServersSaved, scholarlySaved] = await Promise.all([
+			updateHandler({ showToast: false }),
+			saveScholarlySources({ showToast: false })
+		]);
+		if (toolServersSaved || scholarlySaved) {
+			toast.success($i18n.t('Settings saved successfully!'));
+		}
 	}}
 >
 	<div class=" overflow-y-scroll scrollbar-hidden h-full">
@@ -312,6 +423,164 @@
 									target="_blank">{$i18n.t('Learn more about Open Terminal')} ↗</a
 								>
 							</div>
+						</div>
+					</div>
+
+					<hr class=" border-gray-100/30 dark:border-gray-850/30 my-4" />
+
+					<div class="mb-2.5 flex flex-col w-full">
+						<div class="flex justify-between items-center mb-1">
+							<div class="flex items-center gap-2">
+								<div class="font-medium">{$i18n.t('Scholarly APIs')}</div>
+								<span
+									class="text-[0.65rem] font-medium uppercase px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"
+									>{$i18n.t('Planned')}</span
+								>
+							</div>
+							{#if scholarlySourcesBusy || scholarlySourcesSaveBusy}
+								<Spinner className="size-4" />
+							{/if}
+						</div>
+
+						<div class="text-xs text-gray-500">
+							{$i18n.t(
+								'API-first academic sources that Science lane should target natively. Each source can be enabled independently and tested without hiding the upstream response.'
+							)}
+						</div>
+						<div class="text-xs text-gray-500 mt-1">
+							{$i18n.t(
+								'Planner fallback coverage is derived from the Web Search source registry, while direct API integrations remain the next implementation step.'
+							)}
+						</div>
+
+						<div
+							class="mt-3 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden"
+						>
+							{#each scholarlySources as source, idx}
+								<div
+									class="px-3 py-3 {idx > 0
+										? 'border-t border-gray-100 dark:border-gray-850/60'
+										: ''}"
+								>
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<div class="font-medium">{source.label}</div>
+											<div class="text-xs text-gray-500 mt-1">{source.purpose}</div>
+											<div class="text-xs text-gray-500 mt-1">
+												{$i18n.t('Planner fallback domains')}:
+												{source.planner_fallback_domains.join(', ')}
+											</div>
+										</div>
+										<div class="flex items-center gap-2 shrink-0">
+											<Tooltip
+												content={source.settings.enabled ? $i18n.t('Enabled') : $i18n.t('Disabled')}
+											>
+												<Switch
+													state={source.settings.enabled}
+													on:change={() => {
+														patchScholarlySource(source.id, {
+															enabled: !source.settings.enabled
+														});
+													}}
+												/>
+											</Tooltip>
+											<button
+												class="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700 transition rounded-full disabled:opacity-70"
+												type="button"
+												disabled={scholarlyTestBusy[source.id]}
+												on:click={() => runScholarlyTest(source)}
+											>
+												{#if scholarlyTestBusy[source.id]}
+													{$i18n.t('Testing...')}
+												{:else}
+													{$i18n.t('Test')}
+												{/if}
+											</button>
+										</div>
+									</div>
+
+									<div class="mt-3 grid grid-cols-1 xl:grid-cols-[1.15fr_1fr_1fr] gap-3">
+										<div>
+											<div class="text-xs font-medium mb-1">{$i18n.t('Auth')}</div>
+											<div class="text-sm text-gray-700 dark:text-gray-300">
+												{#if source.auth_mode === 'required'}
+													{$i18n.t('API key required')}
+												{:else if source.auth_mode === 'optional'}
+													{$i18n.t('API key optional')}
+												{:else}
+													{$i18n.t('No API key')}
+												{/if}
+											</div>
+											<div class="text-xs text-gray-500 mt-1">{source.auth_detail}</div>
+										</div>
+
+										<div>
+											<div class="text-xs font-medium mb-1">{$i18n.t('Status')}</div>
+											<div class="text-sm">{source.ariadne_status}</div>
+											<div
+												class="text-xs mt-1 {source.planner_fallback_configured
+													? 'text-emerald-600 dark:text-emerald-400'
+													: 'text-gray-500'}"
+											>
+												{$i18n.t('Planner fallback')}:
+												{source.planner_fallback_configured
+													? $i18n.t('Configured')
+													: $i18n.t('Pending')}
+												{#if source.covered_domains.length > 0}
+													<span class="text-gray-500 dark:text-gray-400">
+														({source.covered_domains.join(', ')})
+													</span>
+												{/if}
+											</div>
+										</div>
+
+										<div>
+											<div class="text-xs font-medium mb-1">{$i18n.t('Notes')}</div>
+											<div class="text-xs text-gray-500 space-y-1">
+												{#each source.notes as note}
+													<div>{note}</div>
+												{/each}
+												{#if source.uses_contact_email}
+													<div>
+														{$i18n.t('Contact email')}:
+														{source.effective_contact_email || $i18n.t('Will be captured on save')}
+													</div>
+												{/if}
+											</div>
+										</div>
+									</div>
+
+									{#if source.api_key_label}
+										<div class="mt-3">
+											<div class="text-xs font-medium mb-1">{source.api_key_label}</div>
+											<div
+												class="rounded-lg px-4 py-2 bg-gray-50 dark:bg-gray-850 flex items-center"
+											>
+												<SensitiveInput
+													placeholder={source.api_key_placeholder ?? ''}
+													bind:value={source.settings.api_key}
+													outerClassName="flex flex-1 bg-transparent"
+													inputClassName="w-full rounded-lg text-sm bg-transparent outline-hidden"
+													showButtonClassName="pl-2 transition bg-transparent"
+													screenReader={false}
+													required={false}
+												/>
+											</div>
+										</div>
+									{/if}
+
+									{#if scholarlyTestResults[source.id]}
+										<div class="mt-3">
+											<div class="text-xs font-medium mb-1">{$i18n.t('Test Result')}</div>
+											<div
+												class="w-full rounded-lg py-3 px-4 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 overflow-x-auto whitespace-pre-wrap break-words font-mono"
+											>
+												{getPrettyJson(scholarlyTestResults[source.id])}
+											</div>
+										</div>
+									{/if}
+								</div>
+							{/each}
 						</div>
 					</div>
 				</div>
