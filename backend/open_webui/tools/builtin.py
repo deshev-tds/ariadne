@@ -33,6 +33,7 @@ from open_webui.retrieval.local_corpus_reasoning import (
     collect_local_corpus_axis_evidence,
     assess_local_corpus_evidence,
 )
+from open_webui.retrieval.medical_lane import assess_medical_corpus_sufficiency
 from open_webui.retrieval.offsec_corpus import (
     consult_offsec_corpus,
     retrieve_offsec_evidence,
@@ -67,6 +68,11 @@ from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.utils.google_maps import GoogleMapsError, resolve_place_with_google_maps
 from open_webui.utils.sanitize import sanitize_code
 from open_webui.utils.weather import WeatherError, get_weather_forecast
+from open_webui.utils.scholarly_sources import (
+    execute_scholarly_runtime_query,
+    get_scholarly_source_settings,
+)
+from open_webui.utils.runtime_telemetry import runtime_telemetry
 
 log = logging.getLogger(__name__)
 
@@ -453,6 +459,173 @@ async def get_trip_weather_forecast(
 # =============================================================================
 
 
+async def scholarly_search_pubmed(
+    query: str,
+    max_results: int = 5,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Search PubMed with Ariadne's normalized scholarly evidence envelope.
+    Use this for biomedical literature discovery or abstract-grounded lookup.
+    Metadata-only and abstract-grounded results are labeled explicitly and must
+    not be treated as full-text-grounded evidence.
+
+    :param query: Biomedical query string
+    :param max_results: Maximum number of records to return, capped by backend policy
+    :return: JSON containing normalized items with grounding_level, reasoning_scope, study_signal, and anchor_fields
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"}, ensure_ascii=False)
+
+    try:
+        settings = get_scholarly_source_settings(__request__.app.state.config)["sources"].get(
+            "pubmed", {}
+        )
+        payload = await execute_scholarly_runtime_query(
+            "pubmed",
+            query=query,
+            max_results=max_results,
+            settings=settings,
+            fallback_contact_email=settings.get("contact_email"),
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"scholarly_search_pubmed error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def scholarly_search_openalex(
+    query: str,
+    max_results: int = 5,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Search OpenAlex with Ariadne's normalized scholarly evidence envelope.
+    Use this for cross-disciplinary paper discovery, author or venue anchored lookup,
+    and abstract-grounded triage across non-biomedical fields.
+
+    :param query: Cross-disciplinary scholarly query
+    :param max_results: Maximum number of records to return, capped by backend policy
+    :return: JSON containing normalized items with grounding_level, reasoning_scope, study_signal, and anchor_fields
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"}, ensure_ascii=False)
+
+    try:
+        settings = get_scholarly_source_settings(__request__.app.state.config)["sources"].get(
+            "openalex", {}
+        )
+        payload = await execute_scholarly_runtime_query(
+            "openalex",
+            query=query,
+            max_results=max_results,
+            settings=settings,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"scholarly_search_openalex error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def scholarly_search_crossref(
+    query: str,
+    max_results: int = 5,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Search Crossref with Ariadne's normalized scholarly evidence envelope.
+    Use this for DOI-oriented metadata discovery, citation normalization, and canonical record checks.
+
+    :param query: Scholarly metadata query
+    :param max_results: Maximum number of records to return, capped by backend policy
+    :return: JSON containing normalized items with grounding_level, reasoning_scope, study_signal, and anchor_fields
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"}, ensure_ascii=False)
+
+    try:
+        settings = get_scholarly_source_settings(__request__.app.state.config)["sources"].get(
+            "crossref", {}
+        )
+        payload = await execute_scholarly_runtime_query(
+            "crossref",
+            query=query,
+            max_results=max_results,
+            settings=settings,
+            fallback_contact_email=settings.get("contact_email"),
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"scholarly_search_crossref error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def scholarly_search_europe_pmc(
+    query: str,
+    max_results: int = 5,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Search Europe PMC with Ariadne's normalized scholarly evidence envelope.
+    Use this for life-sciences discovery, abstract-grounded review work, and OA full-text opportunities.
+
+    :param query: Life-sciences query
+    :param max_results: Maximum number of records to return, capped by backend policy
+    :return: JSON containing normalized items with grounding_level, reasoning_scope, study_signal, and anchor_fields
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"}, ensure_ascii=False)
+
+    try:
+        settings = get_scholarly_source_settings(__request__.app.state.config)["sources"].get(
+            "europe-pmc", {}
+        )
+        payload = await execute_scholarly_runtime_query(
+            "europe-pmc",
+            query=query,
+            max_results=max_results,
+            settings=settings,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"scholarly_search_europe_pmc error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def scholarly_resolve_doi(
+    doi: str,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Resolve an exact DOI through the DOI registry with Ariadne's normalized scholarly evidence envelope.
+    Use this only for exact DOI anchors. DOI resolution is bibliographic discovery, not full-text grounding.
+
+    :param doi: Exact DOI string
+    :return: JSON containing normalized registry-backed metadata and anchor fields
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"}, ensure_ascii=False)
+
+    try:
+        settings = get_scholarly_source_settings(__request__.app.state.config)["sources"].get(
+            "doi", {}
+        )
+        payload = await execute_scholarly_runtime_query(
+            "doi",
+            doi=doi,
+            settings=settings,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"scholarly_resolve_doi error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 async def local_corpus_list_domains(
     __request__: Request = None,
     __user__: dict = None,
@@ -471,6 +644,34 @@ async def local_corpus_list_domains(
         return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         log.exception(f"local_corpus_list_domains error: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def medical_corpus_sufficiency(
+    query: str,
+    __request__: Request = None,
+    __user__: dict = None,
+) -> str:
+    """
+    Decide deterministically whether Medical mode should answer from the local medical corpus only,
+    enrich it with web search, or skip the corpus entirely.
+    Use this at the start of medical questions before you commit to corpus-first reasoning.
+
+    :param query: The user question to assess against the medical corpus
+    :return: JSON decision object with corpus_compatible, relevance_score, freshness_score, topical_fit, usable_anchor_count, contradiction_flag, decision, and fallback_reason
+    """
+    if __request__ is None:
+        return json.dumps({"error": "Request context not available"}, ensure_ascii=False)
+
+    try:
+        payload = await asyncio.to_thread(
+            assess_medical_corpus_sufficiency,
+            query=query,
+            config_or_path=__request__.app.state.config,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        log.exception(f"medical_corpus_sufficiency error: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -2945,6 +3146,7 @@ async def view_skill(
     name: str,
     __request__: Request = None,
     __user__: dict = None,
+    __metadata__: dict = None,
 ) -> str:
     """
     Load the full instructions of a skill by its name from the available skills manifest.
@@ -2985,6 +3187,22 @@ async def view_skill(
                 user_group_ids=set(user_group_ids),
             ):
                 return json.dumps({"error": "Access denied"})
+
+        if runtime_telemetry.is_enabled() and isinstance(__metadata__, dict):
+            runtime_telemetry.record(
+                kind="skill_usage",
+                payload={
+                    "operation": "view_skill",
+                    "working_mode": ((__metadata__.get("params", {}) or {}).get("working_mode")),
+                    "science_research_mode": ((__metadata__.get("params", {}) or {}).get("science_research_mode")),
+                    "skill_id": skill.id,
+                    "skill_name": skill.name,
+                },
+                chat_id=__metadata__.get("chat_id"),
+                message_id=__metadata__.get("message_id"),
+                user_id=(__user__ or {}).get("id"),
+                model_id=__metadata__.get("model_id"),
+            )
 
         return json.dumps(
             {

@@ -125,6 +125,10 @@ from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 from open_webui.retrieval.working_mode import normalize_working_mode
+from open_webui.utils.lane_runtime import (
+    normalize_science_attached_corpora,
+    normalize_science_research_mode,
+)
 from open_webui.utils.personas import (
     build_persona_defaults_snapshot,
     ensure_morning_news_personas_for_admins,
@@ -2228,6 +2232,12 @@ async def chat_completion(
         local_corpus_mode = normalize_local_corpus_mode(
             form_data.get("params", {}).get("local_corpus_mode")
         )
+        science_research_mode = normalize_science_research_mode(
+            form_data.get("params", {}).get("science_research_mode")
+        )
+        science_attached_corpora = normalize_science_attached_corpora(
+            form_data.get("params", {}).get("science_attached_corpora")
+        )
         persona_preferred_working_mode = get_persona_preferred_working_mode(
             (persona_state or {}).get("effective")
         )
@@ -2270,6 +2280,8 @@ async def chat_completion(
                 "ledger_mode": ledger_mode,
                 "working_mode": working_mode,
                 "local_corpus_mode": local_corpus_mode,
+                "science_research_mode": science_research_mode,
+                "science_attached_corpora": science_attached_corpora,
                 "debug_memory_telemetry": bool(
                     form_data.get("params", {}).get("debug_memory_telemetry")
                 ),
@@ -2661,7 +2673,9 @@ async def chat_completion(
                 request, form_data, user, metadata, model
             )
 
-            response = metadata.pop("travel_orchestration_response", None)
+            response = metadata.pop("science_orchestration_response", None)
+            if response is None:
+                response = metadata.pop("travel_orchestration_response", None)
             if response is None:
                 response = await chat_completion_handler(request, form_data, user)
                 fallback_retry_success = False

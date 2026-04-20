@@ -1,3 +1,5 @@
+import asyncio
+
 from open_webui.utils.scholarly_sources import (
     SCHOLARLY_SOURCE_DEFINITION_MAP,
     assess_scholarly_probe_protocol,
@@ -5,6 +7,7 @@ from open_webui.utils.scholarly_sources import (
     build_scholarly_source_runtime_coverage,
     build_scholarly_source_rows,
     default_scholarly_source_settings,
+    execute_scholarly_runtime_query,
     merge_scholarly_source_settings,
     normalize_scholarly_source_settings,
 )
@@ -54,10 +57,10 @@ def test_build_scholarly_source_rows_reports_planner_coverage():
     assert row_map["europe-pmc"]["planner_fallback_configured"] is True
     assert row_map["openalex"]["planner_fallback_configured"] is False
     assert row_map["pubmed"]["admin_probe_ready"] is True
-    assert row_map["pubmed"]["native_tool_adapter_ready"] is False
+    assert row_map["pubmed"]["native_tool_adapter_ready"] is True
 
 
-def test_runtime_coverage_reflects_probe_ready_but_tool_gap():
+def test_runtime_coverage_reflects_probe_ready_and_available_native_tooling():
     coverage = build_scholarly_source_runtime_coverage(
         "crossref",
         planner_registry={
@@ -73,8 +76,8 @@ def test_runtime_coverage_reflects_probe_ready_but_tool_gap():
 
     assert coverage["admin_probe_ready"] is True
     assert coverage["planner_fallback_configured"] is True
-    assert coverage["native_tool_adapter_ready"] is False
-    assert coverage["skill_support_status"] == "Guidance only"
+    assert coverage["native_tool_adapter_ready"] is True
+    assert coverage["skill_support_status"] == "Guidance + runtime tools"
     assert "kdense-citation-management" in coverage["seeded_skill_ids"]
 
 
@@ -153,7 +156,7 @@ def test_openalex_protocol_fails_when_required_key_is_missing():
     )
 
 
-def test_crossref_protocol_warns_when_probe_passes_but_runtime_tooling_is_partial():
+def test_crossref_protocol_passes_when_probe_and_runtime_tooling_are_ready():
     protocol = assess_scholarly_probe_protocol(
         "crossref",
         {
@@ -182,14 +185,119 @@ def test_crossref_protocol_warns_when_probe_passes_but_runtime_tooling_is_partia
         },
     )
 
-    assert protocol["status"] == "warn"
+    assert protocol["status"] == "pass"
     assert protocol["coverage"]["planner_fallback_configured"] is True
-    assert protocol["coverage"]["native_tool_adapter_ready"] is False
+    assert protocol["coverage"]["native_tool_adapter_ready"] is True
     assert any(
         check["id"] == "payload-shape" and check["ok"] is True
         for check in protocol["checks"]
     )
     assert any(
-        check["id"] == "native-tool-adapter" and check["ok"] is False
+        check["id"] == "native-tool-adapter" and check["ok"] is True
         for check in protocol["checks"]
     )
+
+
+def test_execute_scholarly_runtime_query_normalizes_crossref_metadata_only_records(
+    monkeypatch,
+):
+    async def _fake_request_json(_request_spec):
+        return (
+            200,
+            "OK",
+            "https://api.crossref.org/works",
+            {},
+            {
+                "message": {
+                    "items": [
+                        {
+                            "title": ["CRISPR editing in context"],
+                            "author": [
+                                {"given": "Ada", "family": "Lovelace"},
+                                {"given": "Grace", "family": "Hopper"},
+                            ],
+                            "published-print": {"date-parts": [[2024, 5, 1]]},
+                            "container-title": ["Nature Medicine"],
+                            "DOI": "10.1000/example",
+                            "URL": "https://doi.org/10.1000/example",
+                            "type": "journal-article",
+                        }
+                    ]
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        "open_webui.utils.scholarly_sources._request_json",
+        _fake_request_json,
+    )
+
+    result = asyncio.run(
+        execute_scholarly_runtime_query(
+            "crossref",
+            query="CRISPR editing",
+            settings={"enabled": True, "contact_email": "deshev.tds@gmail.com"},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["source_id"] == "crossref"
+    assert result["evidence_profile"]["grounding_levels"]["metadata"] == 1
+    assert len(result["items"]) == 1
+    item = result["items"][0]
+    assert item["grounding_level"] == "metadata"
+    assert item["reasoning_scope"] == "bibliographic_discovery"
+    assert item["study_signal"] == "unknown"
+    assert item["anchor_fields"]["doi"] == "10.1000/example"
+
+
+def test_execute_scholarly_runtime_query_normalizes_openalex_abstract_grounding(
+    monkeypatch,
+):
+    async def _fake_request_json(_request_spec):
+        return (
+            200,
+            "OK",
+            "https://api.openalex.org/works",
+            {},
+            {
+                "results": [
+                    {
+                        "title": "Quantum sensing overview",
+                        "publication_year": 2025,
+                        "type": "article",
+                        "type_crossref": "journal-article",
+                        "authorships": [
+                            {"author": {"display_name": "Alice Example"}},
+                        ],
+                        "host_venue": {"display_name": "Physical Review Letters"},
+                        "open_access": {"is_oa": True},
+                        "has_fulltext": False,
+                        "primary_location": {
+                            "landing_page_url": "https://example.org/paper",
+                        },
+                        "abstract_inverted_index": {"Quantum": [0], "sensing": [1]},
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "open_webui.utils.scholarly_sources._request_json",
+        _fake_request_json,
+    )
+
+    result = asyncio.run(
+        execute_scholarly_runtime_query(
+            "openalex",
+            query="quantum sensing",
+            settings={"enabled": True, "api_key": "key"},
+        )
+    )
+
+    assert result["status"] == "ok"
+    item = result["items"][0]
+    assert item["grounding_level"] == "abstract"
+    assert item["reasoning_scope"] == "abstract_grounded"
+    assert item["abstract_available"] is True
+    assert item["study_signal"] == "unknown"

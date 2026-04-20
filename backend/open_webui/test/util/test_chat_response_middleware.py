@@ -386,35 +386,42 @@ def test_build_default_selector_guidance_adds_local_corpus_auto_shelf_check_rule
     assert "prefer local corpus tools first" not in guidance
 
 
-def test_build_forced_default_selector_tool_call_returns_local_domain_probe_for_auto():
+def test_build_forced_default_selector_tool_call_returns_medical_gate_for_medical_mode():
     metadata = {
-        "params": {"function_calling": "default", "local_corpus_mode": "auto"},
+        "params": {"function_calling": "default", "working_mode": "medical"},
     }
     tools = {
-        "local_corpus_list_domains": {},
-        "web_research_strong": {},
+        "medical_corpus_sufficiency": {},
     }
 
-    forced = middleware._build_forced_default_selector_tool_call(metadata, tools)
+    forced = middleware._build_forced_default_selector_tool_call(
+        metadata,
+        tools,
+        [{"role": "user", "content": "How do I use xylometazoline?"}],
+    )
 
-    assert forced == {"name": "local_corpus_list_domains", "parameters": {}}
+    assert forced == {
+        "name": "medical_corpus_sufficiency",
+        "parameters": {"query": "How do I use xylometazoline?"},
+    }
 
 
-def test_build_forced_default_selector_tool_call_skips_non_auto_or_missing_tool():
+def test_build_forced_default_selector_tool_call_skips_non_medical_or_missing_tool():
     metadata = {
-        "params": {"function_calling": "default", "local_corpus_mode": "prefer"},
+        "params": {"function_calling": "default", "working_mode": "general"},
     }
 
     assert (
         middleware._build_forced_default_selector_tool_call(
-            metadata, {"local_corpus_list_domains": {}}
+            metadata, {"medical_corpus_sufficiency": {}}
         )
         is None
     )
     assert (
         middleware._build_forced_default_selector_tool_call(
-            {"params": {"function_calling": "default", "local_corpus_mode": "auto"}},
+            {"params": {"function_calling": "default", "working_mode": "medical"}},
             {"web_research_strong": {}},
+            [{"role": "user", "content": "test"}],
         )
         is None
     )

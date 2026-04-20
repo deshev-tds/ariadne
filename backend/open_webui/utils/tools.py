@@ -74,6 +74,12 @@ from open_webui.tools.builtin import (
     local_corpus_retrieve_evidence,
     local_corpus_view_table,
     local_corpus_view_figure_metadata,
+    medical_corpus_sufficiency,
+    scholarly_search_pubmed,
+    scholarly_search_openalex,
+    scholarly_search_crossref,
+    scholarly_search_europe_pmc,
+    scholarly_resolve_doi,
     fetch_url,
     generate_image,
     edit_image,
@@ -105,6 +111,7 @@ from open_webui.tools.builtin import (
     view_skill,
 )
 from open_webui.retrieval.corpus_runtime import resolve_corpus_runtime
+from open_webui.utils.scholarly_sources import list_enabled_scholarly_runtime_sources
 
 import copy
 
@@ -522,23 +529,70 @@ def get_builtin_tools(
         request.app.state.config,
         ((extra_params.get("__metadata__", {}) or {}).get("params", {}) or {}),
     )
+    working_mode = corpus_runtime.working_mode
+    medical_gate = (
+        ((extra_params.get("__metadata__", {}) or {}).get("medical_corpus_sufficiency"))
+        or {}
+    )
+    medical_gate_decision = str(medical_gate.get("decision") or "").strip().lower()
 
-    if is_builtin_tool_enabled("local_corpus") and corpus_runtime.science_enabled:
-        builtin_functions.extend(
-            [
-                local_corpus_list_domains,
-                local_corpus_list_disciplines,
-                local_corpus_frame_problem,
-                local_corpus_plan_axes,
-                local_corpus_collect_axis_evidence,
-                local_corpus_assess_evidence,
-                local_corpus_shortlist_books,
-                local_corpus_view_book_cards,
-                local_corpus_retrieve_evidence,
-                local_corpus_view_table,
-                local_corpus_view_figure_metadata,
-            ]
+    if (
+        is_builtin_tool_enabled("local_corpus")
+        and working_mode == "medical"
+        and corpus_runtime.medical_enabled
+    ):
+        builtin_functions.append(medical_corpus_sufficiency)
+        if medical_gate_decision != "skip_corpus":
+            builtin_functions.extend(
+                [
+                    local_corpus_list_domains,
+                    local_corpus_list_disciplines,
+                    local_corpus_frame_problem,
+                    local_corpus_plan_axes,
+                    local_corpus_collect_axis_evidence,
+                    local_corpus_assess_evidence,
+                    local_corpus_shortlist_books,
+                    local_corpus_view_book_cards,
+                    local_corpus_retrieve_evidence,
+                    local_corpus_view_table,
+                    local_corpus_view_figure_metadata,
+                ]
+            )
+
+    if is_builtin_tool_enabled("local_corpus") and working_mode == "general_science":
+        attached_corpora = set(corpus_runtime.attached_corpora)
+        if "medicine" in attached_corpora and corpus_runtime.has_attached_corpus("medicine"):
+            builtin_functions.extend(
+                [
+                    local_corpus_list_domains,
+                    local_corpus_list_disciplines,
+                    local_corpus_frame_problem,
+                    local_corpus_plan_axes,
+                    local_corpus_collect_axis_evidence,
+                    local_corpus_assess_evidence,
+                    local_corpus_shortlist_books,
+                    local_corpus_view_book_cards,
+                    local_corpus_retrieve_evidence,
+                    local_corpus_view_table,
+                    local_corpus_view_figure_metadata,
+                ]
+            )
+
+    if is_builtin_tool_enabled("web_search") and working_mode == "general_science":
+        enabled_scholarly_sources = list_enabled_scholarly_runtime_sources(
+            request.app.state.config
         )
+        scholarly_tool_map = {
+            "pubmed": scholarly_search_pubmed,
+            "openalex": scholarly_search_openalex,
+            "crossref": scholarly_search_crossref,
+            "europe-pmc": scholarly_search_europe_pmc,
+            "doi": scholarly_resolve_doi,
+        }
+        for source_id in enabled_scholarly_sources:
+            tool_func = scholarly_tool_map.get(source_id)
+            if tool_func is not None:
+                builtin_functions.append(tool_func)
 
     if is_builtin_tool_enabled("local_corpus") and corpus_runtime.offsec_enabled:
         builtin_functions.extend(

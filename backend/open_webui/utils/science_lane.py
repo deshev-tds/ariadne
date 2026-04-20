@@ -46,7 +46,7 @@ def resolve_science_lane_default_skill_ids(
     working_mode: Any, configured_skill_ids: Any
 ) -> set[str]:
     normalized_working_mode = str(working_mode or "").strip().lower()
-    if normalized_working_mode != "science":
+    if normalized_working_mode != "general_science":
         return set()
 
     normalized_configured_skill_ids = normalize_configured_skill_ids(configured_skill_ids)

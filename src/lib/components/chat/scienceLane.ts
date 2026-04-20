@@ -2,9 +2,35 @@ export type ScienceLaneSystemTerminal = {
 	id?: string | null;
 };
 
+export type ScienceResearchMode = 'light' | 'deep';
+
 export type ScienceLaneDirectTerminal = {
 	url?: string | null;
 	enabled?: boolean | null;
+};
+
+export const normalizeScienceResearchMode = (value: unknown): ScienceResearchMode =>
+	value === 'deep' ? 'deep' : 'light';
+
+export const normalizeScienceAttachedCorpora = (value: unknown): string[] => {
+	const items = Array.isArray(value)
+		? value
+		: typeof value === 'string'
+			? value
+					.split(',')
+					.map((item) => item.trim())
+					.filter(Boolean)
+			: [];
+
+	const normalized = items
+		.map((item) =>
+			String(item ?? '')
+				.trim()
+				.toLowerCase()
+		)
+		.filter((item) => item === 'medicine');
+
+	return [...new Set(normalized)];
 };
 
 export const resolveScienceLaneTerminalId = ({

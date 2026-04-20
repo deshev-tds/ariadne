@@ -115,7 +115,12 @@
 		buildTokenBranchPayload,
 		type TokenBranchRequest
 	} from './tokenExplorer';
-	import { resolveScienceLaneTerminalId } from './scienceLane';
+	import {
+		normalizeScienceAttachedCorpora,
+		normalizeScienceResearchMode,
+		resolveScienceLaneTerminalId,
+		type ScienceResearchMode
+	} from './scienceLane';
 	import { getBanners } from '$lib/apis/configs';
 	import type { Persona } from '$lib/apis/personas';
 	import {
@@ -322,10 +327,18 @@
 	let chatThinkingEnabled = false;
 	let chatLedgerAgenticEnabled = false;
 	let chatFocusedSearchEnabled = false;
-	type WorkingMode = 'general' | 'science' | 'offsec' | 'news';
-	const CHAT_WORKING_MODES: WorkingMode[] = ['general', 'science', 'offsec', 'news'];
+	type WorkingMode = 'general' | 'medical' | 'general_science' | 'offsec' | 'news';
+	const CHAT_WORKING_MODES: WorkingMode[] = [
+		'general',
+		'medical',
+		'general_science',
+		'offsec',
+		'news'
+	];
 	let chatWorkingMode: WorkingMode = 'general';
 	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
+	let chatScienceResearchMode: ScienceResearchMode = 'light';
+	let chatScienceAttachedCorpora: string[] = [];
 
 	const cloneChatParams = (value: Record<string, unknown> | null | undefined) => {
 		if (!value || typeof value !== 'object') {
@@ -358,12 +371,14 @@
 	$: chatWorkingMode = CHAT_WORKING_MODES.includes(params?.working_mode ?? '')
 		? params.working_mode
 		: ['auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
-			? 'science'
+			? 'medical'
 			: 'general';
 	$: chatLocalCorpusMode = ['off', 'auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
 		? params.local_corpus_mode
 		: 'auto';
-	$: if (chatWorkingMode === 'science' && !$selectedTerminalId) {
+	$: chatScienceResearchMode = normalizeScienceResearchMode(params?.science_research_mode);
+	$: chatScienceAttachedCorpora = normalizeScienceAttachedCorpora(params?.science_attached_corpora);
+	$: if (chatWorkingMode === 'general_science' && !$selectedTerminalId) {
 		const scienceLaneTerminalId = resolveScienceLaneTerminalId({
 			selectedTerminalId: $selectedTerminalId,
 			systemTerminals: ($terminalServers ?? []).filter((terminal) => terminal?.id),
@@ -433,12 +448,27 @@
 	const setChatWorkingMode = (mode: WorkingMode) => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
 		nextParams.working_mode = mode;
+		if (mode === 'medical' || mode === 'general_science') {
+			nextParams.local_corpus_mode = 'auto';
+		}
 		params = nextParams;
 	};
 
 	const setChatLocalCorpusMode = (mode: 'off' | 'auto' | 'prefer') => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
 		nextParams.local_corpus_mode = mode;
+		params = nextParams;
+	};
+
+	const setChatScienceResearchMode = (mode: ScienceResearchMode) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		nextParams.science_research_mode = mode;
+		params = nextParams;
+	};
+
+	const setChatScienceAttachedCorpora = (corpora: string[]) => {
+		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
+		nextParams.science_attached_corpora = normalizeScienceAttachedCorpora(corpora);
 		params = nextParams;
 	};
 
@@ -741,6 +771,12 @@
 								? input.localCorpusMode
 								: 'auto';
 						}
+						nextParams.science_research_mode = normalizeScienceResearchMode(
+							input.scienceResearchMode
+						);
+						nextParams.science_attached_corpora = normalizeScienceAttachedCorpora(
+							input.scienceAttachedCorpora
+						);
 						initializeChatParams(nextParams);
 					}
 				} catch (e) {}
@@ -1411,6 +1447,12 @@
 								? input.localCorpusMode
 								: 'auto';
 						}
+						nextParams.science_research_mode = normalizeScienceResearchMode(
+							input.scienceResearchMode
+						);
+						nextParams.science_attached_corpora = normalizeScienceAttachedCorpora(
+							input.scienceAttachedCorpora
+						);
 						initializeChatParams(nextParams);
 					}
 				} catch (e) {}
@@ -3685,6 +3727,10 @@
 									{setChatWorkingMode}
 									localCorpusMode={chatLocalCorpusMode}
 									{setChatLocalCorpusMode}
+									scienceResearchMode={chatScienceResearchMode}
+									{setChatScienceResearchMode}
+									scienceAttachedCorpora={chatScienceAttachedCorpora}
+									{setChatScienceAttachedCorpora}
 									bind:files
 									bind:prompt
 									bind:autoScroll
@@ -3765,6 +3811,10 @@
 									{setChatWorkingMode}
 									localCorpusMode={chatLocalCorpusMode}
 									{setChatLocalCorpusMode}
+									scienceResearchMode={chatScienceResearchMode}
+									{setChatScienceResearchMode}
+									scienceAttachedCorpora={chatScienceAttachedCorpora}
+									{setChatScienceAttachedCorpora}
 									bind:messageInput
 									bind:files
 									bind:prompt

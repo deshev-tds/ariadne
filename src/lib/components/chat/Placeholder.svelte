@@ -50,10 +50,16 @@
 	export let setChatLedgerAgenticEnabled: (enabled: boolean) => void = () => {};
 	export let focusedSearchEnabled = false;
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
-	export let workingMode: 'general' | 'science' | 'offsec' | 'news' = 'general';
-	export let setChatWorkingMode: (mode: 'general' | 'science' | 'offsec' | 'news') => void = () => {};
+	export let workingMode: 'general' | 'medical' | 'general_science' | 'offsec' | 'news' = 'general';
+	export let setChatWorkingMode: (
+		mode: 'general' | 'medical' | 'general_science' | 'offsec' | 'news'
+	) => void = () => {};
 	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
+	export let scienceResearchMode: 'light' | 'deep' = 'light';
+	export let setChatScienceResearchMode: (mode: 'light' | 'deep') => void = () => {};
+	export let scienceAttachedCorpora: string[] = [];
+	export let setChatScienceAttachedCorpora: (corpora: string[]) => void = () => {};
 
 	export let selectedToolIds = [];
 	export let selectedFilterIds = [];
@@ -224,6 +230,10 @@
 					{setChatWorkingMode}
 					{localCorpusMode}
 					{setChatLocalCorpusMode}
+					{scienceResearchMode}
+					{setChatScienceResearchMode}
+					{scienceAttachedCorpora}
+					{setChatScienceAttachedCorpora}
 					bind:files
 					bind:prompt
 					bind:autoScroll

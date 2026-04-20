@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveScienceLaneTerminalId } from './scienceLane';
+import {
+	normalizeScienceAttachedCorpora,
+	normalizeScienceResearchMode,
+	resolveScienceLaneTerminalId
+} from './scienceLane';
 
 describe('science lane helpers', () => {
 	it('preserves an explicitly selected terminal', () => {
@@ -44,5 +48,17 @@ describe('science lane helpers', () => {
 				directTerminals: [{ url: 'https://disabled.example', enabled: false }]
 			})
 		).toBeNull();
+	});
+
+	it('normalizes science research mode to light by default', () => {
+		expect(normalizeScienceResearchMode('deep')).toBe('deep');
+		expect(normalizeScienceResearchMode('other')).toBe('light');
+	});
+
+	it('normalizes attached corpora to the supported set', () => {
+		expect(normalizeScienceAttachedCorpora(['medicine', 'MEDICINE', 'physics'])).toEqual([
+			'medicine'
+		]);
+		expect(normalizeScienceAttachedCorpora('medicine, physics')).toEqual(['medicine']);
 	});
 });

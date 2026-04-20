@@ -106,7 +106,8 @@
 
 	const i18n = getContext('i18n');
 
-	type WorkingMode = 'general' | 'science' | 'offsec' | 'news';
+	type WorkingMode = 'general' | 'medical' | 'general_science' | 'offsec' | 'news';
+	type ScienceResearchMode = 'light' | 'deep';
 	const WORKING_MODE_OPTIONS: {
 		value: WorkingMode;
 		label: string;
@@ -118,9 +119,15 @@
 			description: 'Default chat behavior without a specialized harness.'
 		},
 		{
-			value: 'science',
-			label: 'Science',
-			description: 'Evidence-first retrieval for medicine and other science corpora.'
+			value: 'medical',
+			label: 'Medical',
+			description: 'Fast medical answers with medical corpus grounding and web fallback.'
+		},
+		{
+			value: 'general_science',
+			label: 'General Science',
+			description:
+				'Research workflow with scholarly sources, optional corpora, and deeper orchestration.'
 		},
 		{
 			value: 'offsec',
@@ -130,7 +137,8 @@
 		{
 			value: 'news',
 			label: 'News',
-			description: 'Local news corpus for selective briefings, timelines and article-grounded retrieval.'
+			description:
+				'Local news corpus for selective briefings, timelines and article-grounded retrieval.'
 		}
 	];
 
@@ -156,6 +164,10 @@
 	export let setChatWorkingMode: (mode: WorkingMode) => void = () => {};
 	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
 	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
+	export let scienceResearchMode: ScienceResearchMode = 'light';
+	export let setChatScienceResearchMode: (mode: ScienceResearchMode) => void = () => {};
+	export let scienceAttachedCorpora: string[] = [];
+	export let setChatScienceAttachedCorpora: (corpora: string[]) => void = () => {};
 
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
@@ -214,17 +226,37 @@
 		webSearchEnabled,
 		codeInterpreterEnabled,
 		workingMode,
-		localCorpusMode
+		localCorpusMode,
+		scienceResearchMode,
+		scienceAttachedCorpora
 	});
 
 	const getWorkingModeLabel = (mode: WorkingMode): string =>
 		WORKING_MODE_OPTIONS.find((option) => option.value === mode)?.label ?? 'General';
 
 	const getWorkingModeCompactLabel = (mode: WorkingMode): string =>
-		mode === 'science' ? 'S' : mode === 'offsec' ? 'O' : mode === 'news' ? 'N' : 'G';
+		mode === 'medical'
+			? 'M'
+			: mode === 'general_science'
+				? 'GS'
+				: mode === 'offsec'
+					? 'O'
+					: mode === 'news'
+						? 'N'
+						: 'G';
 
 	const getWorkingModeStatusText = (mode: WorkingMode): string =>
 		`${getWorkingModeLabel(mode)} mode is active for this chat`;
+
+	const toggleScienceCorpusAttachment = (corpusId: string) => {
+		const next = new Set(scienceAttachedCorpora);
+		if (next.has(corpusId)) {
+			next.delete(corpusId);
+		} else {
+			next.add(corpusId);
+		}
+		setChatScienceAttachedCorpora(Array.from(next));
+	};
 
 	const restoreChatInputFocus = async () => {
 		await tick();
@@ -1584,8 +1616,13 @@
 								</div>
 							</div>
 
-							<div class=" flex items-center justify-between mt-0.5 mb-2.5 mx-0.5 max-w-full" dir="ltr">
-								<div class="ml-1 self-end flex min-w-0 flex-1 items-center overflow-x-auto scrollbar-hidden">
+							<div
+								class=" flex items-center justify-between mt-0.5 mb-2.5 mx-0.5 max-w-full"
+								dir="ltr"
+							>
+								<div
+									class="ml-1 self-end flex min-w-0 flex-1 items-center overflow-x-auto scrollbar-hidden"
+								>
 									<InputMenu
 										bind:files
 										selectedModels={atSelectedModel ? [atSelectedModel.id] : selectedModels}
@@ -1739,10 +1776,12 @@
 														? 'text-orange-700 bg-orange-100/80 hover:bg-orange-200/80 dark:text-orange-200 dark:bg-orange-700/20 dark:hover:bg-orange-700/30'
 														: workingMode === 'news'
 															? 'text-sky-700 bg-sky-100/80 hover:bg-sky-200/80 dark:text-sky-200 dark:bg-sky-700/20 dark:hover:bg-sky-700/30'
-														: workingMode === 'science'
-															? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
-															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'} {$mobile
-														? 'size-8 text-[0.65rem]'
+															: workingMode === 'general_science'
+																? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
+																: workingMode === 'medical'
+																	? 'text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200/80 dark:text-emerald-200 dark:bg-emerald-700/20 dark:hover:bg-emerald-700/30'
+																	: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'} {$mobile
+														? 'size-8 text-[0.55rem]'
 														: 'h-8 min-w-[4.5rem] px-2.5 text-[11px]'}"
 												>
 													{$mobile
@@ -1764,8 +1803,10 @@
 															class="flex flex-col gap-0.5 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
 															on:click={async () => {
 																setChatWorkingMode(option.value);
-																showWorkingModeMenu = false;
-																await restoreChatInputFocus();
+																if (option.value !== 'general_science') {
+																	showWorkingModeMenu = false;
+																	await restoreChatInputFocus();
+																}
 															}}
 														>
 															<div class="flex items-center gap-2 text-sm font-medium">
@@ -1783,10 +1824,81 @@
 															</div>
 														</DropdownMenu.Item>
 													{/each}
+													{#if workingMode === 'general_science'}
+														<div class="mx-2 my-1 h-px bg-gray-100 dark:bg-gray-800"></div>
+														<div class="px-3 pt-1 pb-3 space-y-3">
+															<div class="space-y-1">
+																<div
+																	class="text-[10px] font-semibold uppercase tracking-[0.08em] text-gray-500 dark:text-gray-400"
+																>
+																	Research Depth
+																</div>
+																<div class="grid grid-cols-2 gap-1">
+																	<button
+																		type="button"
+																		class="rounded-xl px-2.5 py-2 text-xs font-medium transition-colors {scienceResearchMode ===
+																		'light'
+																			? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-500/20 dark:text-indigo-100'
+																			: 'bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'}"
+																		on:click={() => {
+																			setChatScienceResearchMode('light');
+																		}}
+																	>
+																		Light
+																	</button>
+																	<button
+																		type="button"
+																		class="rounded-xl px-2.5 py-2 text-xs font-medium transition-colors {scienceResearchMode ===
+																		'deep'
+																			? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-500/20 dark:text-indigo-100'
+																			: 'bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'}"
+																		on:click={() => {
+																			setChatScienceResearchMode('deep');
+																		}}
+																	>
+																		Deep
+																	</button>
+																</div>
+															</div>
+
+															<div class="space-y-1">
+																<div
+																	class="text-[10px] font-semibold uppercase tracking-[0.08em] text-gray-500 dark:text-gray-400"
+																>
+																	Attached Corpora
+																</div>
+																<button
+																	type="button"
+																	class="w-full rounded-xl border px-3 py-2 text-left text-xs transition-colors {scienceAttachedCorpora.includes(
+																		'medicine'
+																	)
+																		? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100'
+																		: 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'}"
+																	on:click={() => {
+																		toggleScienceCorpusAttachment('medicine');
+																	}}
+																>
+																	<div class="flex items-center justify-between gap-2">
+																		<span class="font-medium">Medicine</span>
+																		<span
+																			class="text-[10px] uppercase tracking-[0.08em] text-current/70"
+																		>
+																			{scienceAttachedCorpora.includes('medicine')
+																				? 'Attached'
+																				: 'Detached'}
+																		</span>
+																	</div>
+																	<div class="mt-1 text-[11px] text-current/75">
+																		Use the local medical corpus as an optional evidence source.
+																	</div>
+																</button>
+															</div>
+														</div>
+													{/if}
 												</DropdownMenu.Content>
 											</div>
 										</Dropdown>
-										{#if workingMode !== 'news'}
+										{#if !['medical', 'general_science', 'news'].includes(workingMode)}
 											<Tooltip
 												content={localCorpusMode === 'prefer'
 													? $i18n.t('Prefer local corpus mode is enabled for this chat')

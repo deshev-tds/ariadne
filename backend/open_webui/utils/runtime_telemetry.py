@@ -122,6 +122,46 @@ def _normalize_runtime_event(kind: str, payload: Any) -> dict[str, Any]:
             "entries": entries[-4:],
         }
 
+    if kind == "science_orchestration":
+        data = payload if isinstance(payload, dict) else {}
+        return {
+            "active": bool(data.get("active", False)),
+            "classification": ((data.get("classification") or {}).get("classification")),
+            "science_research_mode": data.get("science_research_mode"),
+            "attached_corpora": list(data.get("attached_corpora") or []),
+            "fallback_reason": data.get("fallback_reason"),
+            "evidence_basis": data.get("evidence_basis"),
+            "grounding_summary": copy.deepcopy(data.get("grounding_summary") or {}),
+            "phase_timings_ms": copy.deepcopy(data.get("phase_timings_ms") or {}),
+        }
+
+    if kind == "medical_lane":
+        data = payload if isinstance(payload, dict) else {}
+        return {
+            "decision": data.get("decision"),
+            "fallback_reason": data.get("fallback_reason"),
+            "corpus_compatible": data.get("corpus_compatible"),
+            "relevance_score": data.get("relevance_score"),
+            "freshness_score": data.get("freshness_score"),
+            "topical_fit": data.get("topical_fit"),
+            "usable_anchor_count": data.get("usable_anchor_count"),
+            "contradiction_flag": data.get("contradiction_flag"),
+        }
+
+    if kind == "skill_usage":
+        data = payload if isinstance(payload, dict) else {}
+        return {
+            "operation": data.get("operation"),
+            "working_mode": data.get("working_mode"),
+            "science_research_mode": data.get("science_research_mode"),
+            "lane_default_skill_ids": list(data.get("lane_default_skill_ids") or []),
+            "explicit_skill_ids": list(data.get("explicit_skill_ids") or []),
+            "model_skill_ids": list(data.get("model_skill_ids") or []),
+            "available_skill_ids": list(data.get("available_skill_ids") or []),
+            "skill_id": data.get("skill_id"),
+            "skill_name": data.get("skill_name"),
+        }
+
     return {"preview": _truncate_text(payload)}
 
 
@@ -268,6 +308,8 @@ class RuntimeTelemetryTap:
                 "operations": [],
                 "memory": None,
                 "prompt_entry_count": 0,
+                "skill_event_count": 0,
+                "skill_ids": [],
             }
             self._message_summaries[key] = summary
             self._message_order.append(key)
@@ -311,6 +353,17 @@ class RuntimeTelemetryTap:
 
         elif event.get("kind") == "prompt":
             summary["prompt_entry_count"] = int(payload.get("entry_count", 0) or 0)
+
+        elif event.get("kind") == "skill_usage":
+            summary["skill_event_count"] += 1
+            for skill_id in (
+                list(payload.get("lane_default_skill_ids") or [])
+                + list(payload.get("explicit_skill_ids") or [])
+                + list(payload.get("available_skill_ids") or [])
+                + ([payload.get("skill_id")] if payload.get("skill_id") else [])
+            ):
+                if skill_id and skill_id not in summary["skill_ids"]:
+                    summary["skill_ids"].append(skill_id)
 
 
 runtime_telemetry = RuntimeTelemetryTap()

@@ -6,17 +6,19 @@
 	export let statusHistory = [];
 	export let expand = false;
 
-	const mergeTravelStatuses = (statuses) => {
+	const ORCHESTRATION_ACTIONS = new Set(['travel_orchestration', 'science_orchestration']);
+
+	const mergeOrchestrationStatuses = (statuses) => {
 		const merged = [];
 		const phaseIndex = new Map();
 
 		for (const item of statuses ?? []) {
-			if (item?.action !== 'travel_orchestration') {
+			if (!ORCHESTRATION_ACTIONS.has(item?.action)) {
 				merged.push(item);
 				continue;
 			}
 
-			const phaseKey = item?.phase || item?.description;
+			const phaseKey = `${item?.action}:${item?.phase || item?.description}`;
 			if (!phaseIndex.has(phaseKey)) {
 				phaseIndex.set(phaseKey, merged.length);
 				merged.push(item);
@@ -57,7 +59,7 @@
 		const nextSignature = JSON.stringify(statusHistory ?? []);
 		if (nextSignature !== rawHistorySignature) {
 			rawHistorySignature = nextSignature;
-			history = mergeTravelStatuses(statusHistory);
+			history = mergeOrchestrationStatuses(statusHistory);
 		}
 	}
 </script>

@@ -154,9 +154,14 @@ from open_webui.utils.travel_orchestration import (
     maybe_run_travel_orchestration,
     should_activate_travel_orchestration,
 )
+from open_webui.utils.science_orchestration import maybe_run_science_orchestration
 from open_webui.retrieval.corpus_runtime import resolve_corpus_runtime
+from open_webui.retrieval.medical_lane import assess_medical_corpus_sufficiency
 from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 from open_webui.retrieval.working_mode import normalize_working_mode
+from open_webui.utils.lane_runtime import (
+    normalize_science_research_mode,
+)
 from open_webui.utils.science_lane import build_science_lane_skill_sets
 
 
@@ -181,6 +186,19 @@ LOCAL_CORPUS_PREFER_SYSTEM_PROMPT = (
     "about' or similar filler. A light touch of warmth or humor is allowed only when the topic is "
     "low-stakes and the user's tone clearly invites it. If local corpus evidence is weak or unavailable, "
     "say so plainly."
+)
+MEDICAL_CONSULT_SYSTEM_PROMPT = (
+    "This chat is in Medical mode. Start with medical_corpus_sufficiency before committing to a local-corpus-only answer. "
+    "Treat its decision object as the routing contract for this turn: use_corpus_only means stay local; use_corpus_plus_web "
+    "means use the local corpus as anchors and then enrich with web evidence; skip_corpus means do not force the local medical "
+    "corpus. Do not invent certainty beyond the decision object's evidence basis, and say plainly when the local corpus is stale, "
+    "thin, or only partially on-topic."
+)
+GENERAL_SCIENCE_SYSTEM_PROMPT = (
+    "This chat is in General Science mode. Prefer attached local corpora first when they are explicitly attached and compatible. "
+    "Then prefer source-native scholarly tools over generic web search. Treat bibliographic discovery, abstract-grounded reasoning, "
+    "and full-text-grounded reasoning as distinct evidence modes. Do not treat metadata-only records as substantive proof. Use "
+    "generic web search only as a fallback for discovery gaps, inaccessible records, or recency checks."
 )
 OFFSEC_CONSULT_SYSTEM_PROMPT = (
     "This chat is in Offsec mode. Use the Offsec corpus as a sparing consult layer for methodology, "
@@ -231,6 +249,7 @@ TOOL_NARRATION_TOOL_PHASES = {
     "news_view_articles": "evidence_gathering",
     "offsec_consult": "orientation",
     "offsec_retrieve_evidence": "evidence_gathering",
+    "medical_corpus_sufficiency": "orientation",
     "local_corpus_list_domains": "orientation",
     "local_corpus_list_disciplines": "orientation",
     "local_corpus_frame_problem": "orientation",
@@ -247,6 +266,11 @@ TOOL_NARRATION_TOOL_PHASES = {
     "query_web_evidence": "evidence_gathering",
     "fetch_url": "evidence_gathering",
     "search_web": "evidence_gathering",
+    "scholarly_search_pubmed": "evidence_gathering",
+    "scholarly_search_openalex": "evidence_gathering",
+    "scholarly_search_crossref": "evidence_gathering",
+    "scholarly_search_europe_pmc": "evidence_gathering",
+    "scholarly_resolve_doi": "evidence_gathering",
 }
 TOOL_NARRATION_PHASE_PROMPTS = {
     "planning": (
@@ -286,6 +310,15 @@ DEFAULT_SELECTOR_LOCAL_CORPUS_AUTO_GUIDANCE = (
     "usable domains show a plausible thematic fit. Do not drill down further just to "
     "confirm an empty, weak, or merely nominal shelf."
 )
+DEFAULT_SELECTOR_MEDICAL_GUIDANCE = (
+    "In Medical mode, start with medical_corpus_sufficiency before deciding whether the local corpus is enough. "
+    "Treat use_corpus_only, use_corpus_plus_web, and skip_corpus as a routing contract, not a soft suggestion."
+)
+DEFAULT_SELECTOR_GENERAL_SCIENCE_GUIDANCE = (
+    "In General Science mode, prefer attached local corpora only when they are explicitly attached and compatible. "
+    "Then prefer source-native scholarly tools. Use generic web search only as a fallback for discovery gaps, recency, "
+    "or inaccessible records."
+)
 DEFAULT_SELECTOR_OFFSEC_GUIDANCE = (
     "In Offsec mode, when methodology, tool choice, or target framing is unclear, "
     "start with offsec_consult. Re-consult sparingly when the target picture materially "
@@ -318,12 +351,18 @@ DEFAULT_SELECTOR_RETRIEVAL_TOOL_NAMES = {
     "news_retrieve_timeline",
     "offsec_consult",
     "offsec_retrieve_evidence",
+    "medical_corpus_sufficiency",
     "local_corpus_frame_problem",
     "local_corpus_plan_axes",
     "local_corpus_collect_axis_evidence",
     "local_corpus_assess_evidence",
     "local_corpus_shortlist_books",
     "local_corpus_retrieve_evidence",
+    "scholarly_search_pubmed",
+    "scholarly_search_openalex",
+    "scholarly_search_crossref",
+    "scholarly_search_europe_pmc",
+    "scholarly_resolve_doi",
     "search_web",
     "web_research_strong",
     "search_strong_sources",
@@ -348,6 +387,29 @@ DEFAULT_SELECTOR_NEWS_TOOL_NAMES = {
     "news_retrieve_articles",
     "news_retrieve_timeline",
     "news_view_articles",
+}
+
+DEFAULT_SELECTOR_MEDICAL_TOOL_NAMES = {
+    "medical_corpus_sufficiency",
+    "local_corpus_list_domains",
+    "local_corpus_list_disciplines",
+    "local_corpus_frame_problem",
+    "local_corpus_plan_axes",
+    "local_corpus_collect_axis_evidence",
+    "local_corpus_assess_evidence",
+    "local_corpus_shortlist_books",
+    "local_corpus_view_book_cards",
+    "local_corpus_retrieve_evidence",
+    "local_corpus_view_table",
+    "local_corpus_view_figure_metadata",
+}
+
+DEFAULT_SELECTOR_SCHOLARLY_TOOL_NAMES = {
+    "scholarly_search_pubmed",
+    "scholarly_search_openalex",
+    "scholarly_search_crossref",
+    "scholarly_search_europe_pmc",
+    "scholarly_resolve_doi",
 }
 
 DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES = {
@@ -513,17 +575,17 @@ def _build_default_selector_guidance(
         clauses.append(DEFAULT_SELECTOR_TERM_PRESERVATION_GUIDANCE)
 
     if (
-        working_mode == "science"
-        and local_corpus_mode == "prefer"
-        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES)
+        working_mode == "medical"
+        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_MEDICAL_TOOL_NAMES)
     ):
-        clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE)
+        clauses.append(DEFAULT_SELECTOR_MEDICAL_GUIDANCE)
     elif (
-        working_mode == "science"
-        and local_corpus_mode == "auto"
-        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES)
+        working_mode == "general_science"
+        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_SCHOLARLY_TOOL_NAMES)
     ):
-        clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_AUTO_GUIDANCE)
+        clauses.append(DEFAULT_SELECTOR_GENERAL_SCIENCE_GUIDANCE)
+        if _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES):
+            clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE)
     elif (
         working_mode == "offsec"
         and local_corpus_mode != "off"
@@ -559,22 +621,21 @@ def _build_default_selector_guidance(
 
 
 def _build_forced_default_selector_tool_call(
-    metadata: dict, tools: dict[str, Any]
+    metadata: dict, tools: dict[str, Any], messages: list[dict[str, Any]] | None = None
 ) -> dict[str, Any] | None:
     params = metadata.get("params", {}) or {}
     if params.get("function_calling") != "default":
         return None
 
-    if _normalized_working_mode(params) != "science":
-        return None
+    if _normalized_working_mode(params) == "medical":
+        if "medical_corpus_sufficiency" not in _tool_names_from_selector_tools(tools):
+            return None
+        return {
+            "name": "medical_corpus_sufficiency",
+            "parameters": {"query": get_last_user_message(messages or []) or ""},
+        }
 
-    if normalize_local_corpus_mode(params.get("local_corpus_mode")) != "auto":
-        return None
-
-    if "local_corpus_list_domains" not in _tool_names_from_selector_tools(tools):
-        return None
-
-    return {"name": "local_corpus_list_domains", "parameters": {}}
+    return None
 from open_webui.env import (
     AGENTIC_ARTIFACTS_DIR,
     GLOBAL_LOG_LEVEL,
@@ -622,10 +683,13 @@ def _should_enable_shared_tool_narration(
     local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
     working_mode = _normalized_working_mode(params)
     corpus_runtime = resolve_corpus_runtime(request.app.state.config, params)
-    local_corpus_enabled = (
-        working_mode == "science"
-        and local_corpus_mode == "prefer"
-        and corpus_runtime.science_enabled
+    medical_enabled = working_mode == "medical" and corpus_runtime.medical_enabled
+    general_science_enabled = (
+        working_mode == "general_science"
+        and (
+            corpus_runtime.general_science_enabled
+            or bool((params.get("science_attached_corpora") or []))
+        )
     )
     offsec_enabled = (
         working_mode == "offsec"
@@ -634,36 +698,40 @@ def _should_enable_shared_tool_narration(
     )
     news_enabled = working_mode == "news" and corpus_runtime.news_enabled
     focused_search_enabled = bool(features.get("focused_search"))
-    return bool(local_corpus_enabled or offsec_enabled or news_enabled or focused_search_enabled)
+    return bool(
+        medical_enabled
+        or general_science_enabled
+        or offsec_enabled
+        or news_enabled
+        or focused_search_enabled
+    )
 
 
 def _initialize_tool_narration_state(
     request: Request, metadata: dict, features: dict
 ) -> dict[str, Any]:
     params = metadata.get("params", {}) or {}
-    local_corpus_mode = normalize_local_corpus_mode(params.get("local_corpus_mode"))
     working_mode = _normalized_working_mode(params)
     corpus_runtime = resolve_corpus_runtime(request.app.state.config, params)
-    local_corpus_prefer = (
-        working_mode == "science"
-        and local_corpus_mode == "prefer"
-        and corpus_runtime.science_enabled
-    )
+    medical_mode = working_mode == "medical" and corpus_runtime.medical_enabled
+    general_science_mode = working_mode == "general_science"
     offsec_mode = (
         working_mode == "offsec"
-        and local_corpus_mode != "off"
+        and normalize_local_corpus_mode(params.get("local_corpus_mode")) != "off"
         and corpus_runtime.offsec_enabled
     )
     news_mode = working_mode == "news" and corpus_runtime.news_enabled
     focused_search_enabled = bool(features.get("focused_search"))
     return {
         "enabled": _should_enable_shared_tool_narration(request, metadata, features),
-        "last_narrated_phase": "orientation" if (local_corpus_prefer or offsec_mode or news_mode) else None,
+        "last_narrated_phase": (
+            "orientation" if (medical_mode or general_science_mode or offsec_mode or news_mode) else None
+        ),
         "current_major_phase": None,
-        "narration_count": 1 if (local_corpus_prefer or offsec_mode or news_mode) else 0,
+        "narration_count": 1 if (medical_mode or general_science_mode or offsec_mode or news_mode) else 0,
         "max_beats": TOOL_NARRATION_MAX_BEATS,
         "initial_preamble_expected": bool(
-            local_corpus_prefer or offsec_mode or news_mode or focused_search_enabled
+            medical_mode or general_science_mode or offsec_mode or news_mode or focused_search_enabled
         ),
     }
 
@@ -2205,6 +2273,34 @@ def _append_tool_journey_event(
     return debug_event
 
 
+def _record_skill_usage_telemetry(metadata: dict[str, Any], payload: dict[str, Any]) -> None:
+    if not runtime_telemetry.is_enabled():
+        return
+
+    runtime_telemetry.record(
+        kind="skill_usage",
+        payload=payload,
+        chat_id=metadata.get("chat_id"),
+        message_id=metadata.get("message_id"),
+        user_id=metadata.get("user_id"),
+        model_id=metadata.get("model_id"),
+    )
+
+
+def _record_medical_lane_telemetry(metadata: dict[str, Any], payload: dict[str, Any]) -> None:
+    if not runtime_telemetry.is_enabled():
+        return
+
+    runtime_telemetry.record(
+        kind="medical_lane",
+        payload=payload,
+        chat_id=metadata.get("chat_id"),
+        message_id=metadata.get("message_id"),
+        user_id=metadata.get("user_id"),
+        model_id=metadata.get("model_id"),
+    )
+
+
 def _is_empty_search_notes_result(tool_result: Any) -> bool:
     parsed: Any = tool_result
     if isinstance(tool_result, str):
@@ -3405,7 +3501,7 @@ async def chat_completion_tools_handler(
     skip_files = False
     sources = []
     forced_tool_call = _build_forced_default_selector_tool_call(
-        metadata, tools
+        metadata, tools, body.get("messages")
     )
 
     async def tool_call_handler(tool_call):
@@ -5209,6 +5305,8 @@ def apply_params_to_form_data(form_data, model):
         "working_mode": str,
         "focused_search_mode": bool,
         "local_corpus_mode": str,
+        "science_research_mode": str,
+        "science_attached_corpora": list,
         "system": str,
     }
 
@@ -5831,17 +5929,28 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     working_mode = _normalized_working_mode(params)
     corpus_runtime = resolve_corpus_runtime(request.app.state.config, params)
     if (
-        working_mode == "science"
-        and
-        local_corpus_mode == "prefer"
+        working_mode == "medical"
         and metadata.get("params", {}).get("function_calling") == "native"
-        and corpus_runtime.science_enabled
+        and corpus_runtime.medical_enabled
     ):
         current_system = get_system_message(form_data.get("messages", []))
         current_content = current_system.get("content", "") if current_system else ""
-        if LOCAL_CORPUS_PREFER_SYSTEM_PROMPT not in str(current_content):
+        if MEDICAL_CONSULT_SYSTEM_PROMPT not in str(current_content):
             form_data["messages"] = add_or_update_system_message(
-                LOCAL_CORPUS_PREFER_SYSTEM_PROMPT,
+                MEDICAL_CONSULT_SYSTEM_PROMPT,
+                form_data["messages"],
+                append=True,
+            )
+
+    if (
+        working_mode == "general_science"
+        and metadata.get("params", {}).get("function_calling") == "native"
+    ):
+        current_system = get_system_message(form_data.get("messages", []))
+        current_content = current_system.get("content", "") if current_system else ""
+        if GENERAL_SCIENCE_SYSTEM_PROMPT not in str(current_content):
+            form_data["messages"] = add_or_update_system_message(
+                GENERAL_SCIENCE_SYSTEM_PROMPT,
                 form_data["messages"],
                 append=True,
             )
@@ -5946,6 +6055,53 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             )
 
     prompt = get_last_user_message(form_data["messages"])
+    if (
+        working_mode == "medical"
+        and prompt
+        and corpus_runtime.medical_enabled
+        and metadata.get("medical_corpus_sufficiency") is None
+    ):
+        try:
+            medical_gate = await asyncio.to_thread(
+                assess_medical_corpus_sufficiency,
+                query=prompt,
+                config_or_path=request.app.state.config,
+            )
+            if isinstance(medical_gate, dict) and medical_gate.get("status") == "ok":
+                metadata["medical_corpus_sufficiency"] = medical_gate
+                _record_medical_lane_telemetry(metadata, medical_gate)
+
+                if metadata.get("params", {}).get("function_calling") == "native":
+                    current_system = get_system_message(form_data.get("messages", []))
+                    current_content = (
+                        current_system.get("content", "") if current_system else ""
+                    )
+                    if "<medical_corpus_gate>" not in str(current_content):
+                        form_data["messages"] = add_or_update_system_message(
+                            "<medical_corpus_gate>\n"
+                            + json.dumps(
+                                {
+                                    "decision": medical_gate.get("decision"),
+                                    "fallback_reason": medical_gate.get("fallback_reason"),
+                                    "relevance_score": medical_gate.get("relevance_score"),
+                                    "freshness_score": medical_gate.get("freshness_score"),
+                                    "topical_fit": medical_gate.get("topical_fit"),
+                                    "usable_anchor_count": medical_gate.get(
+                                        "usable_anchor_count"
+                                    ),
+                                    "contradiction_flag": medical_gate.get(
+                                        "contradiction_flag"
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n</medical_corpus_gate>",
+                            form_data["messages"],
+                            append=True,
+                        )
+        except Exception as exc:
+            log.warning("Medical corpus sufficiency precheck failed: %s", exc)
+
     # TODO: re-enable URL extraction from prompt
     # urls = []
     # if prompt and len(prompt or "") < 500 and (not files or len(files) == 0):
@@ -5976,7 +6132,46 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         "files": files,
         "science_lane_default_skill_ids": sorted(science_lane_default_skill_ids),
     }
+    extra_params["__metadata__"] = metadata
     form_data["metadata"] = metadata
+
+    _record_skill_usage_telemetry(
+        metadata,
+        {
+            "operation": "inject",
+            "working_mode": working_mode,
+            "science_research_mode": normalize_science_research_mode(
+                (metadata.get("params", {}) or {}).get("science_research_mode")
+            ),
+            "lane_default_skill_ids": sorted(science_lane_default_skill_ids),
+            "explicit_skill_ids": sorted(explicit_skill_ids),
+            "model_skill_ids": sorted(model_skill_ids),
+            "available_skill_ids": [skill.id for skill in available_skills],
+        },
+    )
+
+    science_orchestration_result = await maybe_run_science_orchestration(
+        request=request,
+        form_data=form_data,
+        user=user,
+        metadata=metadata,
+        model=model,
+        task_model=models.get(task_model_id),
+        features=features,
+        event_emitter=event_emitter,
+    )
+    if science_orchestration_result:
+        system_message = get_system_message(form_data.get("messages", []))
+        metadata["system_prompt"] = (
+            get_content_from_message(system_message) if system_message else None
+        )
+        metadata["user_prompt"] = get_last_user_message(form_data.get("messages", []))
+        metadata["sources"] = []
+        metadata["science_orchestration_response"] = science_orchestration_result.get(
+            "response"
+        )
+        events.extend(science_orchestration_result.get("events") or [])
+        return form_data, metadata, events
 
     travel_orchestration_result = await maybe_run_travel_orchestration(
         request=request,

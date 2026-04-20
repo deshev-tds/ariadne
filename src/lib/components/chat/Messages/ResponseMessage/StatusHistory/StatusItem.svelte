@@ -23,7 +23,7 @@
 						<!-- $i18n.t('Searched {{count}} sites') -->
 						{#if (status?.description || '').includes('{{count}}')}
 							{$i18n.t(status?.description || '', {
-								count: ((status?.urls || status?.items) || []).length
+								count: (status?.urls || status?.items || []).length
 							})}
 						{:else if status?.description === 'No search query generated'}
 							{$i18n.t('No search query generated')}
@@ -159,7 +159,7 @@
 						{status?.description}
 					{/if}
 				</div>
-				{#if status?.action === 'travel_orchestration' && status?.detail}
+				{#if ['travel_orchestration', 'science_orchestration'].includes(status?.action) && status?.detail}
 					<div class="text-xs text-gray-400 dark:text-gray-500 text-wrap mt-1">
 						{status.detail}
 					</div>
