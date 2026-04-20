@@ -19,6 +19,12 @@ export type ScholarlySourcePayload = {
 	planner_fallback_configured: boolean;
 	covered_domains: string[];
 	ariadne_status: string;
+	admin_probe_ready: boolean;
+	native_tool_adapter_ready: boolean;
+	native_tool_adapter_status: string;
+	skill_support_status: string;
+	seeded_skill_ids: string[];
+	inventory_scope_note: string;
 	notes: string[];
 	uses_contact_email: boolean;
 	effective_contact_email: string;
@@ -63,6 +69,28 @@ export type ScholarlyTestResponse = {
 		body_json: object | null;
 	};
 	error?: string;
+	protocol?: {
+		status: 'pass' | 'warn' | 'fail';
+		summary: string;
+		checks: Array<{
+			id: string;
+			label: string;
+			ok: boolean;
+			level: 'required' | 'advisory';
+			detail: string;
+		}>;
+		coverage: {
+			admin_probe_ready: boolean;
+			planner_fallback_configured: boolean;
+			covered_domains: string[];
+			native_tool_adapter_ready: boolean;
+			native_tool_adapter_status: string;
+			skill_support_status: string;
+			seeded_skill_ids: string[];
+			inventory_scope_note: string;
+			ariadne_status: string;
+		};
+	};
 };
 
 export const getScholarlyConfig = async (token: string): Promise<ScholarlyConfigResponse> => {

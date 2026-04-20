@@ -1,6 +1,8 @@
 from open_webui.utils.scholarly_sources import (
     SCHOLARLY_SOURCE_DEFINITION_MAP,
+    assess_scholarly_probe_protocol,
     build_scholarly_probe_request,
+    build_scholarly_source_runtime_coverage,
     build_scholarly_source_rows,
     default_scholarly_source_settings,
     merge_scholarly_source_settings,
@@ -51,6 +53,29 @@ def test_build_scholarly_source_rows_reports_planner_coverage():
     assert row_map["pubmed"]["planner_fallback_configured"] is True
     assert row_map["europe-pmc"]["planner_fallback_configured"] is True
     assert row_map["openalex"]["planner_fallback_configured"] is False
+    assert row_map["pubmed"]["admin_probe_ready"] is True
+    assert row_map["pubmed"]["native_tool_adapter_ready"] is False
+
+
+def test_runtime_coverage_reflects_probe_ready_but_tool_gap():
+    coverage = build_scholarly_source_runtime_coverage(
+        "crossref",
+        planner_registry={
+            "topics": {
+                "science_academic": {
+                    "primary": [
+                        {"domain": "crossref.org"},
+                    ]
+                }
+            }
+        },
+    )
+
+    assert coverage["admin_probe_ready"] is True
+    assert coverage["planner_fallback_configured"] is True
+    assert coverage["native_tool_adapter_ready"] is False
+    assert coverage["skill_support_status"] == "Guidance only"
+    assert "kdense-citation-management" in coverage["seeded_skill_ids"]
 
 
 def test_pubmed_probe_request_includes_tool_email_and_optional_api_key():
@@ -90,4 +115,81 @@ def test_doi_probe_request_uses_content_negotiation_header():
     assert request_spec["url"] == "https://doi.org/10.1126/science.169.3946.635"
     assert (
         request_spec["headers"]["Accept"] == "application/vnd.citationstyles.csl+json"
+    )
+
+
+def test_openalex_protocol_fails_when_required_key_is_missing():
+    protocol = assess_scholarly_probe_protocol(
+        "openalex",
+        {
+            "status": True,
+            "source_id": "openalex",
+            "request": {
+                "method": "GET",
+                "url": "https://api.openalex.org/works?search=CRISPR&per-page=1",
+                "headers": {},
+            },
+            "response": {
+                "status": 401,
+                "reason": "Unauthorized",
+                "url": "https://api.openalex.org/works?search=CRISPR&per-page=1",
+                "history": [],
+                "headers": {},
+                "body_text": '{"error":"unauthorized"}',
+                "body_json": {"error": "unauthorized"},
+            },
+        },
+        {"enabled": True, "api_key": ""},
+    )
+
+    assert protocol["status"] == "fail"
+    assert any(
+        check["id"] == "auth-configured" and check["ok"] is False
+        for check in protocol["checks"]
+    )
+    assert any(
+        check["id"] == "upstream-status" and check["ok"] is False
+        for check in protocol["checks"]
+    )
+
+
+def test_crossref_protocol_warns_when_probe_passes_but_runtime_tooling_is_partial():
+    protocol = assess_scholarly_probe_protocol(
+        "crossref",
+        {
+            "status": True,
+            "source_id": "crossref",
+            "request": {
+                "method": "GET",
+                "url": "https://api.crossref.org/works?query.title=CRISPR&rows=1&mailto=deshev.tds%40gmail.com",
+                "headers": {},
+            },
+            "response": {
+                "status": 200,
+                "reason": "OK",
+                "url": "https://api.crossref.org/works?query.title=CRISPR&rows=1&mailto=deshev.tds%40gmail.com",
+                "history": [],
+                "headers": {},
+                "body_text": '{"message":{"items":[]}}',
+                "body_json": {"message": {"items": []}},
+            },
+        },
+        {"enabled": True, "contact_email": "deshev.tds@gmail.com"},
+        planner_registry={
+            "topics": {
+                "science_academic": {"primary": [{"domain": "crossref.org"}]}
+            }
+        },
+    )
+
+    assert protocol["status"] == "warn"
+    assert protocol["coverage"]["planner_fallback_configured"] is True
+    assert protocol["coverage"]["native_tool_adapter_ready"] is False
+    assert any(
+        check["id"] == "payload-shape" and check["ok"] is True
+        for check in protocol["checks"]
+    )
+    assert any(
+        check["id"] == "native-tool-adapter" and check["ok"] is False
+        for check in protocol["checks"]
     )

@@ -61,6 +61,32 @@
 		return JSON.stringify(value, null, 2);
 	};
 
+	const getScholarlyProtocol = (
+		value: ScholarlyTestResponse | string | null
+	): ScholarlyTestResponse['protocol'] | null => {
+		if (!value || typeof value === 'string' || !('protocol' in value)) {
+			return null;
+		}
+		return value.protocol ?? null;
+	};
+
+	const getScholarlyProtocolStatus = (
+		value: ScholarlyTestResponse | string | null
+	): 'pass' | 'warn' | 'fail' | null => getScholarlyProtocol(value)?.status ?? null;
+
+	const getScholarlyProtocolSummary = (value: ScholarlyTestResponse | string | null): string =>
+		getScholarlyProtocol(value)?.summary ?? '';
+
+	const getScholarlyProtocolBadgeClass = (status: 'pass' | 'warn' | 'fail') => {
+		if (status === 'pass') {
+			return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300';
+		}
+		if (status === 'fail') {
+			return 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300';
+		}
+		return 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300';
+	};
+
 	const addConnectionHandler = async (server) => {
 		servers = [...servers, server];
 		await updateHandler();
@@ -518,6 +544,14 @@
 											<div class="text-xs font-medium mb-1">{$i18n.t('Status')}</div>
 											<div class="text-sm">{source.ariadne_status}</div>
 											<div
+												class="text-xs mt-1 {source.admin_probe_ready
+													? 'text-emerald-600 dark:text-emerald-400'
+													: 'text-gray-500'}"
+											>
+												{$i18n.t('Admin probe')}:
+												{source.admin_probe_ready ? $i18n.t('Ready') : $i18n.t('Missing')}
+											</div>
+											<div
 												class="text-xs mt-1 {source.planner_fallback_configured
 													? 'text-emerald-600 dark:text-emerald-400'
 													: 'text-gray-500'}"
@@ -532,6 +566,18 @@
 													</span>
 												{/if}
 											</div>
+											<div class="text-xs mt-1 text-gray-500">
+												{$i18n.t('Native tool adapter')}: {source.native_tool_adapter_status}
+											</div>
+											<div class="text-xs mt-1 text-gray-500">
+												{$i18n.t('Skill support')}: {source.skill_support_status}
+											</div>
+											{#if source.seeded_skill_ids.length > 0}
+												<div class="text-xs mt-1 text-gray-500">
+													{$i18n.t('Code-backed skills')}:
+													{source.seeded_skill_ids.join(', ')}
+												</div>
+											{/if}
 										</div>
 
 										<div>
@@ -546,6 +592,7 @@
 														{source.effective_contact_email || $i18n.t('Will be captured on save')}
 													</div>
 												{/if}
+												<div>{source.inventory_scope_note}</div>
 											</div>
 										</div>
 									</div>
@@ -572,6 +619,25 @@
 									{#if scholarlyTestResults[source.id]}
 										<div class="mt-3">
 											<div class="text-xs font-medium mb-1">{$i18n.t('Test Result')}</div>
+											{#if getScholarlyProtocol(scholarlyTestResults[source.id])}
+												<div
+													class="mb-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs dark:border-gray-800 dark:bg-gray-900"
+												>
+													<div class="flex items-center gap-2">
+														<span
+															class="rounded-full px-2 py-0.5 font-medium uppercase {getScholarlyProtocolBadgeClass(
+																getScholarlyProtocolStatus(scholarlyTestResults[source.id]) ??
+																	'warn'
+															)}"
+														>
+															{getScholarlyProtocolStatus(scholarlyTestResults[source.id])}
+														</span>
+														<span class="text-gray-600 dark:text-gray-300">
+															{getScholarlyProtocolSummary(scholarlyTestResults[source.id])}
+														</span>
+													</div>
+												</div>
+											{/if}
 											<div
 												class="w-full rounded-lg py-3 px-4 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 overflow-x-auto whitespace-pre-wrap break-words font-mono"
 											>

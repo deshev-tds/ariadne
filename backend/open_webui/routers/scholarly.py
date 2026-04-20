@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.utils.auth import get_admin_user
 from open_webui.utils.scholarly_sources import (
+    assess_scholarly_probe_protocol,
     build_scholarly_source_rows,
     merge_scholarly_source_settings,
     normalize_scholarly_source_settings,
@@ -106,11 +107,18 @@ async def test_scholarly_source(
         elif getattr(user, "email", None):
             effective_settings["contact_email"] = str(user.email).strip().lower()
 
-        return await probe_scholarly_source(
+        probe_result = await probe_scholarly_source(
             form_data.source_id,
             effective_settings,
             fallback_contact_email=getattr(user, "email", None),
         )
+        probe_result["protocol"] = assess_scholarly_probe_protocol(
+            form_data.source_id,
+            probe_result,
+            effective_settings,
+            fallback_contact_email=getattr(user, "email", None),
+        )
+        return probe_result
     except HTTPException:
         raise
     except Exception as e:
