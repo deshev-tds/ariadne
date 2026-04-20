@@ -115,6 +115,7 @@
 		buildTokenBranchPayload,
 		type TokenBranchRequest
 	} from './tokenExplorer';
+	import { resolveScienceLaneTerminalId } from './scienceLane';
 	import { getBanners } from '$lib/apis/configs';
 	import type { Persona } from '$lib/apis/personas';
 	import {
@@ -362,6 +363,17 @@
 	$: chatLocalCorpusMode = ['off', 'auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
 		? params.local_corpus_mode
 		: 'auto';
+	$: if (chatWorkingMode === 'science' && !$selectedTerminalId) {
+		const scienceLaneTerminalId = resolveScienceLaneTerminalId({
+			selectedTerminalId: $selectedTerminalId,
+			systemTerminals: ($terminalServers ?? []).filter((terminal) => terminal?.id),
+			directTerminals: ($settings?.terminalServers ?? []).filter((terminal) => terminal?.url)
+		});
+
+		if (scienceLaneTerminalId) {
+			selectedTerminalId.set(scienceLaneTerminalId);
+		}
+	}
 
 	const setChatThinkingEnabled = (enabled: boolean) => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
