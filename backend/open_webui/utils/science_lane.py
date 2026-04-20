@@ -3,14 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
-DEFAULT_SCIENCE_LANE_SKILL_IDS = [
-    "kdense-scientific-critical-thinking",
-    "kdense-literature-review",
-    "kdense-peer-review",
-    "kdense-scientific-writing",
-    "kdense-paper-lookup",
-    "kdense-citation-management",
-]
+from open_webui.utils.science_lane_skills import DEFAULT_SCIENCE_LANE_SKILL_IDS
 
 
 def normalize_configured_skill_ids(value: Any) -> list[str]:

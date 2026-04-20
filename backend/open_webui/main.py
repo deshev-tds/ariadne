@@ -130,6 +130,7 @@ from open_webui.utils.personas import (
     get_persona_preferred_working_mode,
     resolve_effective_persona_state,
 )
+from open_webui.utils.science_lane_skills import ensure_science_lane_skills
 
 from open_webui.config import (
     # Ollama
@@ -784,6 +785,19 @@ async def lifespan(app: FastAPI):
         ensure_morning_news_personas_for_admins(app.state.config)
     except Exception as exc:
         log.warning("Failed to seed Morning News persona: %s", exc)
+
+    try:
+        report = ensure_science_lane_skills()
+        if report.owner_user_id is not None:
+            log.info(
+                "Ensured Science lane skills (created=%d, updated=%d, grants_fixed=%d, skipped=%d)",
+                len(report.created_ids),
+                len(report.updated_ids),
+                len(report.grant_fixed_ids),
+                len(report.skipped_ids),
+            )
+    except Exception as exc:
+        log.warning("Failed to seed Science lane skills: %s", exc)
 
     # This should be blocking (sync) so functions are not deactivated on first /get_models calls
     # when the first user lands on the / route.
