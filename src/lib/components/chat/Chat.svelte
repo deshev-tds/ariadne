@@ -7,7 +7,7 @@
 	import { fade } from 'svelte/transition';
 	const i18n: Writable<i18nType> = getContext('i18n');
 
-	import { goto } from '$app/navigation';
+	import { beforeNavigate, goto } from '$app/navigation';
 	import { page } from '$app/stores';
 
 	import { get, type Unsubscriber, type Writable } from 'svelte/store';
@@ -3462,30 +3462,67 @@
 
 	const MAX_DRAFT_LENGTH = 5000;
 	let saveDraftTimeout: ReturnType<typeof setTimeout> | null = null;
+	let latestDraft: Record<string, unknown> | null = null;
+	let latestDraftChatId: string | null = null;
+
+	const getDraftStorageKey = (chatId: string | null = null) =>
+		`chat-input${chatId ? `-${chatId}` : ''}`;
+
+	const isDraftPersistable = (draft: Record<string, unknown> | null | undefined) =>
+		typeof draft?.prompt === 'string' && draft.prompt.length < MAX_DRAFT_LENGTH;
+
+	const persistDraftNow = (draft: Record<string, unknown>, chatId: string | null = null) => {
+		sessionStorage.setItem(getDraftStorageKey(chatId), JSON.stringify(draft));
+	};
+
+	const flushPendingDraft = () => {
+		if (saveDraftTimeout) {
+			clearTimeout(saveDraftTimeout);
+			saveDraftTimeout = null;
+		}
+
+		if (latestDraft && isDraftPersistable(latestDraft)) {
+			persistDraftNow(latestDraft, latestDraftChatId);
+		}
+	};
 
 	const saveDraft = async (draft, chatId = null) => {
+		latestDraft = draft;
+		latestDraftChatId = chatId;
+
 		if (saveDraftTimeout) {
 			clearTimeout(saveDraftTimeout);
 		}
 
-		if (draft.prompt !== null && draft.prompt.length < MAX_DRAFT_LENGTH) {
+		if (isDraftPersistable(draft)) {
 			saveDraftTimeout = setTimeout(async () => {
-				await sessionStorage.setItem(
-					`chat-input${chatId ? `-${chatId}` : ''}`,
-					JSON.stringify(draft)
-				);
+				persistDraftNow(draft, chatId);
+				saveDraftTimeout = null;
 			}, 500);
 		} else {
-			sessionStorage.removeItem(`chat-input${chatId ? `-${chatId}` : ''}`);
+			latestDraft = null;
+			latestDraftChatId = null;
+			sessionStorage.removeItem(getDraftStorageKey(chatId));
 		}
 	};
 
 	const clearDraft = async (chatId = null) => {
 		if (saveDraftTimeout) {
 			clearTimeout(saveDraftTimeout);
+			saveDraftTimeout = null;
 		}
-		await sessionStorage.removeItem(`chat-input${chatId ? `-${chatId}` : ''}`);
+		latestDraft = null;
+		latestDraftChatId = null;
+		await sessionStorage.removeItem(getDraftStorageKey(chatId));
 	};
+
+	beforeNavigate(() => {
+		flushPendingDraft();
+	});
+
+	onDestroy(() => {
+		flushPendingDraft();
+	});
 
 	const moveChatHandler = async (chatId, folderId) => {
 		if (chatId && folderId) {
