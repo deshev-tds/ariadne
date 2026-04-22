@@ -851,7 +851,9 @@ def remove_file_from_knowledge_by_id(
         log.debug(e)
         pass
 
-    if delete_file:
+    # Collaborators with KB write access may unlink a file from the knowledge
+    # base, but only the file owner or an admin may permanently delete it.
+    if delete_file and (file.user_id == user.id or user.role == "admin"):
         try:
             # Remove the file's collection from vector database
             file_collection = f"file-{form_data.file_id}"

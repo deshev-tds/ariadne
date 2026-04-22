@@ -400,6 +400,25 @@ def get_current_user_by_api_key(request, api_key: str):
             status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.API_KEY_NOT_ALLOWED
         )
 
+    if request.app.state.config.ENABLE_API_KEYS_ENDPOINT_RESTRICTIONS:
+        allowed_paths = [
+            path.strip()
+            for path in str(request.app.state.config.API_KEYS_ALLOWED_ENDPOINTS).split(
+                ","
+            )
+            if path.strip()
+        ]
+        request_path = request.url.path
+        is_allowed = any(
+            request_path == allowed or request_path.startswith(allowed + "/")
+            for allowed in allowed_paths
+        )
+        if not is_allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+            )
+
     # Add user info to current span
     current_span = trace.get_current_span()
     if current_span:

@@ -12,7 +12,7 @@ import requests
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
-from fastapi import Depends, HTTPException, Request, APIRouter
+from fastapi import Depends, HTTPException, Request, APIRouter, status
 from fastapi.responses import (
     FileResponse,
     StreamingResponse,
@@ -28,6 +28,7 @@ from open_webui.internal.db import get_session
 from open_webui.models.models import Models
 from open_webui.models.access_grants import AccessGrants
 from open_webui.models.groups import Groups
+from open_webui.utils.access_control import check_model_access
 from open_webui.config import (
     CACHE_DIR,
 )
@@ -39,6 +40,7 @@ from open_webui.env import (
     ENABLE_FORWARD_USER_INFO_HEADERS,
     FORWARD_SESSION_INFO_HEADER_CHAT_ID,
     BYPASS_MODEL_ACCESS_CONTROL,
+    ENABLE_OPENAI_API_PASSTHROUGH,
 )
 from open_webui.models.users import UserModel
 
@@ -1773,10 +1775,16 @@ async def responses(
     Routes to the correct upstream backend based on the model field.
     """
     payload = form_data.model_dump(exclude_none=True)
+    model_id = form_data.model
+    check_model_access(
+        user,
+        Models.get_model_by_id(model_id),
+        BYPASS_MODEL_ACCESS_CONTROL,
+    )
+
     body = json.dumps(payload)
 
     idx = 0
-    model_id = form_data.model
     if model_id:
         models = request.app.state.OPENAI_MODELS
         if not models or model_id not in models:
@@ -1868,8 +1876,18 @@ async def responses(
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
     """
-    Deprecated: proxy all requests to OpenAI API
+    Deprecated: proxy all requests to OpenAI API.
+    Disabled by default. Set ENABLE_OPENAI_API_PASSTHROUGH=True to enable.
     """
+
+    if not ENABLE_OPENAI_API_PASSTHROUGH:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Direct API passthrough is disabled. Set "
+                "ENABLE_OPENAI_API_PASSTHROUGH=True to enable."
+            ),
+        )
 
     body = await request.body()
 
