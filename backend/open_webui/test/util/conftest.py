@@ -45,7 +45,11 @@ _import_or_stub(
 _import_or_stub(
     "open_webui.routers.retrieval",
     process_web_search=_noop_async,
+    process_file=_noop_async,
+    process_files_batch=_noop_async,
     SearchForm=_EmptyForm,
+    ProcessFileForm=_EmptyForm,
+    BatchProcessFilesForm=_EmptyForm,
     search_web=_noop_async,
 )
 
