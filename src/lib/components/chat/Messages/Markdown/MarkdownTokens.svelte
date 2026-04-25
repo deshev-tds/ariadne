@@ -58,6 +58,10 @@
 		event: MouseEvent
 	) => void = () => {};
 	export let onTokenExplorerTokenLeave: (range: TokenExplorerRange) => void = () => {};
+	export let onTokenExplorerTokenClick: (
+		range: TokenExplorerRange,
+		event: MouseEvent
+	) => void = () => {};
 
 	const headerComponent = (depth: number) => {
 		return 'h' + depth;
@@ -125,6 +129,7 @@
 				{onTokenExplorerTokenEnter}
 				{onTokenExplorerTokenMove}
 				{onTokenExplorerTokenLeave}
+				{onTokenExplorerTokenClick}
 			/>
 		</svelte:element>
 	{:else if token.type === 'code'}
@@ -183,6 +188,7 @@
 												{onTokenExplorerTokenEnter}
 												{onTokenExplorerTokenMove}
 												{onTokenExplorerTokenLeave}
+												{onTokenExplorerTokenClick}
 											/>
 										</div>
 									</div>
@@ -214,6 +220,7 @@
 												{onTokenExplorerTokenEnter}
 												{onTokenExplorerTokenMove}
 												{onTokenExplorerTokenLeave}
+												{onTokenExplorerTokenClick}
 											/>
 										</div>
 									</td>
@@ -269,6 +276,7 @@
 					{onTokenExplorerTokenEnter}
 					{onTokenExplorerTokenMove}
 					{onTokenExplorerTokenLeave}
+					{onTokenExplorerTokenClick}
 				/>
 			</blockquote>
 		{/if}
@@ -309,6 +317,7 @@
 							{onTokenExplorerTokenEnter}
 							{onTokenExplorerTokenMove}
 							{onTokenExplorerTokenLeave}
+							{onTokenExplorerTokenClick}
 						/>
 					</li>
 				{/each}
@@ -349,6 +358,7 @@
 									{onTokenExplorerTokenEnter}
 									{onTokenExplorerTokenMove}
 									{onTokenExplorerTokenLeave}
+									{onTokenExplorerTokenClick}
 								/>
 							</div>
 						{:else}
@@ -366,6 +376,7 @@
 								{onTokenExplorerTokenEnter}
 								{onTokenExplorerTokenMove}
 								{onTokenExplorerTokenLeave}
+								{onTokenExplorerTokenClick}
 							/>
 						{/if}
 					</li>
@@ -406,6 +417,7 @@
 						{onTokenExplorerTokenEnter}
 						{onTokenExplorerTokenMove}
 						{onTokenExplorerTokenLeave}
+						{onTokenExplorerTokenClick}
 					/>
 				</div>
 			</Collapsible>
@@ -448,6 +460,7 @@
 					{onTokenExplorerTokenEnter}
 					{onTokenExplorerTokenMove}
 					{onTokenExplorerTokenLeave}
+					{onTokenExplorerTokenClick}
 				/>
 			</span>
 		{:else}
@@ -463,6 +476,7 @@
 					{onTokenExplorerTokenEnter}
 					{onTokenExplorerTokenMove}
 					{onTokenExplorerTokenLeave}
+					{onTokenExplorerTokenClick}
 				/>
 			</p>
 		{/if}
@@ -481,6 +495,7 @@
 						{onTokenExplorerTokenEnter}
 						{onTokenExplorerTokenMove}
 						{onTokenExplorerTokenLeave}
+						{onTokenExplorerTokenClick}
 					/>
 				{:else}
 					{unescapeHtml(token.text)}
@@ -498,6 +513,7 @@
 				{onTokenExplorerTokenEnter}
 				{onTokenExplorerTokenMove}
 				{onTokenExplorerTokenLeave}
+				{onTokenExplorerTokenClick}
 			/>
 		{:else}
 			{unescapeHtml(token.text)}

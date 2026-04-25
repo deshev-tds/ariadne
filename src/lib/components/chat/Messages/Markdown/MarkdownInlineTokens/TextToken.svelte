@@ -15,6 +15,10 @@
 		event: MouseEvent
 	) => void = () => {};
 	export let onTokenExplorerTokenLeave: (range: TokenExplorerRange) => void = () => {};
+	export let onTokenExplorerTokenClick: (
+		range: TokenExplorerRange,
+		event: MouseEvent
+	) => void = () => {};
 
 	let texts: string[] = [];
 	let tokenExplorerParts: TokenExplorerTextPart[] = [];
@@ -39,12 +43,21 @@
 			onTokenExplorerTokenLeave(range);
 		}
 	};
+
+	const handleTokenClick = (range: TokenExplorerRange | undefined, event: MouseEvent) => {
+		if (range) {
+			event.preventDefault();
+			event.stopPropagation();
+			onTokenExplorerTokenClick(range, event);
+		}
+	};
 </script>
 
 {#if done}
 	{#if hasTokenExplorerParts}
 		{#each tokenExplorerParts as part, partIdx}
 			{#if part?.range}
+				<!-- svelte-ignore a11y-click-events-have-key-events -->
 				<!-- svelte-ignore a11y-no-static-element-interactions -->
 				<span
 					class="token-explorer-inline-token {activeTokenExplorerRange === part.range
@@ -53,6 +66,7 @@
 					on:mouseenter={(event) => handleTokenEnter(part.range, event)}
 					on:mousemove={(event) => handleTokenMove(part.range, event)}
 					on:mouseleave={() => handleTokenLeave(part.range)}
+					on:click={(event) => handleTokenClick(part.range, event)}
 				>
 					{part.text}
 				</span>

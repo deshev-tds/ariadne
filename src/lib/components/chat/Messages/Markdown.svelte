@@ -1,5 +1,5 @@
 <script>
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { marked } from 'marked';
 	import { replaceTokens, processResponseContent } from '$lib/utils';
 	import { user } from '$lib/stores';
@@ -59,12 +59,21 @@
 	let lastTokenTelemetry = null;
 
 	/** @type {any} */
+	let hoverTokenExplorerRange = null;
+	/** @type {any} */
+	let pinnedTokenExplorerRange = null;
+	/** @type {any} */
 	let activeTokenExplorerRange = null;
+	/** @type {any} */
+	let displayedTokenExplorerRange = null;
 	let tokenExplorerClientX = 0;
 	let tokenExplorerClientY = 0;
+	let hoverTokenExplorerClientX = 0;
+	let hoverTokenExplorerClientY = 0;
+	let pinnedTokenExplorerClientX = 0;
+	let pinnedTokenExplorerClientY = 0;
 	let selectedAltRank = 0;
 	let tokenHoverActive = false;
-	let hovercardHoverActive = false;
 	/** @type {ReturnType<typeof setTimeout> | null} */
 	let hovercardCloseTimeout = null;
 
@@ -88,9 +97,9 @@
 	});
 
 	const clearTokenExplorerHovercard = () => {
-		activeTokenExplorerRange = null;
+		hoverTokenExplorerRange = null;
+		pinnedTokenExplorerRange = null;
 		tokenHoverActive = false;
-		hovercardHoverActive = false;
 	};
 
 	const cancelHovercardClose = () => {
@@ -103,10 +112,10 @@
 	const scheduleHovercardClose = () => {
 		cancelHovercardClose();
 		hovercardCloseTimeout = setTimeout(() => {
-			if (!tokenHoverActive && !hovercardHoverActive) {
-				clearTokenExplorerHovercard();
+			if (!tokenHoverActive && !pinnedTokenExplorerRange) {
+				hoverTokenExplorerRange = null;
 			}
-		}, 120);
+		}, 180);
 	};
 
 	/**
@@ -130,19 +139,34 @@
 	};
 
 	/**
+	 * @param {MouseEvent} event
+	 */
+	const tokenAnchorCoordinates = (event) => {
+		const target = /** @type {HTMLElement | null} */ (event.currentTarget);
+		const rect = target?.getBoundingClientRect?.();
+		if (rect) {
+			return {
+				x: rect.left + rect.width / 2,
+				y: rect.bottom
+			};
+		}
+		return eventCoordinates(event);
+	};
+
+	/**
 	 * @param {any} range
 	 * @param {MouseEvent} event
 	 */
 	const showTokenExplorerHovercard = (range, event) => {
-		if (!tokenExplorerEnabled || !range) {
+		if (!tokenExplorerEnabled || !range || pinnedTokenExplorerRange) {
 			return;
 		}
 
 		cancelHovercardClose();
 		const coords = eventCoordinates(event);
-		activeTokenExplorerRange = range;
-		tokenExplorerClientX = coords.x;
-		tokenExplorerClientY = coords.y;
+		hoverTokenExplorerRange = range;
+		hoverTokenExplorerClientX = coords.x;
+		hoverTokenExplorerClientY = coords.y;
 		selectedAltRank = range.token?.alternatives?.[0]?.rank ?? 0;
 		tokenHoverActive = true;
 	};
@@ -152,18 +176,41 @@
 	 * @param {MouseEvent} event
 	 */
 	const moveTokenExplorerHovercard = (range, event) => {
-		if (!activeTokenExplorerRange || activeTokenExplorerRange !== range) {
+		if (pinnedTokenExplorerRange || !hoverTokenExplorerRange || hoverTokenExplorerRange !== range) {
 			return;
 		}
 
 		const coords = eventCoordinates(event);
-		tokenExplorerClientX = coords.x;
-		tokenExplorerClientY = coords.y;
+		hoverTokenExplorerClientX = coords.x;
+		hoverTokenExplorerClientY = coords.y;
 	};
 
 	const leaveTokenExplorerToken = () => {
 		tokenHoverActive = false;
 		scheduleHovercardClose();
+	};
+
+	/**
+	 * @param {any} range
+	 * @param {MouseEvent} event
+	 */
+	const pinTokenExplorerHovercard = (range, event) => {
+		if (!tokenExplorerEnabled || !range) {
+			return;
+		}
+
+		cancelHovercardClose();
+		const coords = tokenAnchorCoordinates(event);
+		pinnedTokenExplorerRange = range;
+		pinnedTokenExplorerClientX = coords.x;
+		pinnedTokenExplorerClientY = coords.y;
+		hoverTokenExplorerRange = null;
+		tokenHoverActive = false;
+		selectedAltRank = range.token?.alternatives?.[0]?.rank ?? 0;
+	};
+
+	const clearPinnedTokenExplorerHovercard = () => {
+		pinnedTokenExplorerRange = null;
 	};
 
 	const parseTokens = () => {
@@ -214,6 +261,50 @@
 	};
 
 	$: updateHandler(content, tokenExplorerEnabled, tokenTelemetry);
+	$: displayedTokenExplorerRange = pinnedTokenExplorerRange ?? hoverTokenExplorerRange;
+	$: activeTokenExplorerRange = displayedTokenExplorerRange;
+	$: tokenExplorerClientX = pinnedTokenExplorerRange
+		? pinnedTokenExplorerClientX
+		: hoverTokenExplorerClientX;
+	$: tokenExplorerClientY = pinnedTokenExplorerRange
+		? pinnedTokenExplorerClientY
+		: hoverTokenExplorerClientY;
+
+	onMount(() => {
+		const handleDocumentPointerDown = (event) => {
+			if (!pinnedTokenExplorerRange) {
+				return;
+			}
+
+			const target = event.target;
+			if (!(target instanceof Element)) {
+				return;
+			}
+
+			if (
+				target.closest('.token-explorer-hovercard') ||
+				target.closest('.token-explorer-inline-token')
+			) {
+				return;
+			}
+
+			clearPinnedTokenExplorerHovercard();
+		};
+
+		const handleDocumentKeydown = (event) => {
+			if (event.key === 'Escape') {
+				clearPinnedTokenExplorerHovercard();
+			}
+		};
+
+		document.addEventListener('pointerdown', handleDocumentPointerDown);
+		document.addEventListener('keydown', handleDocumentKeydown);
+
+		return () => {
+			document.removeEventListener('pointerdown', handleDocumentPointerDown);
+			document.removeEventListener('keydown', handleDocumentKeydown);
+		};
+	});
 
 	// Throttle parsing to once per animation frame while streaming
 	onDestroy(() => {
@@ -245,13 +336,15 @@
 		onTokenExplorerTokenEnter={showTokenExplorerHovercard}
 		onTokenExplorerTokenMove={moveTokenExplorerHovercard}
 		onTokenExplorerTokenLeave={leaveTokenExplorerToken}
+		onTokenExplorerTokenClick={pinTokenExplorerHovercard}
 	/>
 {/key}
 
 <TokenExplorerHovercard
-	range={activeTokenExplorerRange}
+	range={displayedTokenExplorerRange}
 	clientX={tokenExplorerClientX}
 	clientY={tokenExplorerClientY}
+	mode={pinnedTokenExplorerRange ? 'pinned' : 'hover'}
 	{selectedAltRank}
 	onSelectAlternative={(rank) => {
 		selectedAltRank = rank;
@@ -260,12 +353,5 @@
 		onCreateTokenBranch(payload);
 		clearTokenExplorerHovercard();
 	}}
-	onHovercardEnter={() => {
-		cancelHovercardClose();
-		hovercardHoverActive = true;
-	}}
-	onHovercardLeave={() => {
-		hovercardHoverActive = false;
-		scheduleHovercardClose();
-	}}
+	onClose={clearPinnedTokenExplorerHovercard}
 />

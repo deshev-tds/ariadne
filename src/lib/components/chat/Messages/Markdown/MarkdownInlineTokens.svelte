@@ -38,6 +38,10 @@
 		event: MouseEvent
 	) => void = () => {};
 	export let onTokenExplorerTokenLeave: (range: TokenExplorerRange) => void = () => {};
+	export let onTokenExplorerTokenClick: (
+		range: TokenExplorerRange,
+		event: MouseEvent
+	) => void = () => {};
 
 	/**
 	 * Check if a URL is a same-origin note link and return the note ID if so.
@@ -106,6 +110,7 @@
 					{onTokenExplorerTokenEnter}
 					{onTokenExplorerTokenMove}
 					{onTokenExplorerTokenLeave}
+					{onTokenExplorerTokenClick}
 				/>
 			</a>
 		{:else}
@@ -130,6 +135,7 @@
 				{onTokenExplorerTokenEnter}
 				{onTokenExplorerTokenMove}
 				{onTokenExplorerTokenLeave}
+				{onTokenExplorerTokenClick}
 			/></strong
 		>
 	{:else if token.type === 'em'}
@@ -143,6 +149,7 @@
 				{onTokenExplorerTokenEnter}
 				{onTokenExplorerTokenMove}
 				{onTokenExplorerTokenLeave}
+				{onTokenExplorerTokenClick}
 			/></em
 		>
 	{:else if token.type === 'codespan'}
@@ -160,6 +167,7 @@
 				{onTokenExplorerTokenEnter}
 				{onTokenExplorerTokenMove}
 				{onTokenExplorerTokenLeave}
+				{onTokenExplorerTokenClick}
 			/></del
 		>
 	{:else if token.type === 'inlineKatex'}
@@ -200,6 +208,7 @@
 			{onTokenExplorerTokenEnter}
 			{onTokenExplorerTokenMove}
 			{onTokenExplorerTokenLeave}
+			{onTokenExplorerTokenClick}
 		/>
 	{/if}
 {/each}
