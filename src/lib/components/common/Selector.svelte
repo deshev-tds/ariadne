@@ -28,23 +28,28 @@
 	$: filteredItems = searchValue
 		? items.filter((item) => item.value.toLowerCase().includes(searchValue.toLowerCase()))
 		: items;
+
+	$: selectedLabel = items.find((item) => item.value === value)?.label ?? placeholder;
 </script>
 
 <Select.Root
+	type="single"
 	{items}
+	bind:value
 	onOpenChange={() => {
 		searchValue = '';
 	}}
-	selected={items.find((item) => item.value === value)}
-	onSelectedChange={(selectedItem) => {
-		value = selectedItem.value;
+	onValueChange={(selectedValue) => {
+		value = selectedValue;
+		dispatch('change', selectedValue);
 	}}
 >
 	<Select.Trigger class="relative w-full" aria-label={placeholder}>
-		<Select.Value
+		<span
 			class="inline-flex h-input px-0.5 w-full outline-hidden bg-transparent truncate text-lg font-semibold placeholder-gray-400  focus:outline-hidden"
-			{placeholder}
-		/>
+		>
+			{selectedLabel}
+		</span>
 		<ChevronDown className="absolute end-2 top-1/2 -translate-y-[45%] size-3.5" strokeWidth="2.5" />
 	</Select.Trigger>
 	<Select.Content

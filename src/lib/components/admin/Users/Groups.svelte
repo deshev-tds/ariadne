@@ -176,20 +176,22 @@
 			</div>
 
 			<Select.Root
-				selected={sortItems.find((item) => item.value === sortBy)}
+				type="single"
 				items={sortItems}
-				onSelectedChange={(selectedItem) => {
-					sortBy = selectedItem.value;
+				bind:value={sortBy}
+				onValueChange={(selectedValue) => {
+					sortBy = selectedValue;
 				}}
 			>
 				<Select.Trigger
 					class="relative flex items-center gap-0.5 px-2.5 py-1.5 text-sm bg-gray-50 dark:bg-gray-850 rounded-xl shrink-0"
 					aria-label={$i18n.t('Sort by')}
 				>
-					<Select.Value
+					<span
 						class="inline-flex h-input px-0.5 outline-hidden bg-transparent truncate placeholder-gray-400 focus:outline-hidden"
-						placeholder={$i18n.t('Sort by')}
-					/>
+					>
+						{sortItems.find((item) => item.value === sortBy)?.label ?? $i18n.t('Sort by')}
+					</span>
 					<ChevronDown className="size-3.5" strokeWidth="2.5" />
 				</Select.Trigger>
 

@@ -16,10 +16,11 @@
 </script>
 
 <Select.Root
-	selected={value ? items.find((item) => item.value === value) : null}
+	type="single"
 	{items}
-	onSelectedChange={(selectedItem) => {
-		value = selectedItem.value;
+	bind:value
+	onValueChange={(selectedValue) => {
+		value = selectedValue;
 		onChange(value);
 	}}
 >
