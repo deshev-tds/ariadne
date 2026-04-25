@@ -319,3 +319,4 @@ cypress/videos
 cypress/screenshots
 .vscode/settings.json
 tmp/chat-analysis/chat_headers.txt
+tmp/chat-analysis/*.json
