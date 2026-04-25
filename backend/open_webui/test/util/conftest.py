@@ -1,4 +1,6 @@
+import asyncio
 import importlib
+import inspect
 import sys
 import types
 from dataclasses import dataclass
@@ -183,3 +185,27 @@ _import_or_stub(
     "open_webui.storage.provider",
     Storage=_Storage,
 )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "asyncio: run async test functions via the local asyncio fallback when pytest-asyncio is unavailable",
+    )
+
+
+def pytest_pyfunc_call(pyfuncitem):
+    if pyfuncitem.config.pluginmanager.hasplugin("asyncio"):
+        return None
+
+    test_function = pyfuncitem.obj
+    if not inspect.iscoroutinefunction(test_function):
+        return None
+
+    kwargs = {
+        name: pyfuncitem.funcargs[name]
+        for name in pyfuncitem._fixtureinfo.argnames
+        if name in pyfuncitem.funcargs
+    }
+    asyncio.run(test_function(**kwargs))
+    return True

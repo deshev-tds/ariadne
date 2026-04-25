@@ -1636,6 +1636,7 @@ def get_citation_source_from_tool_result(
         "news_view_articles",
         "search_strong_sources",
         "web_research_strong",
+        "query_web_evidence",
         "offsec_consult",
         "offsec_retrieve_evidence",
         "local_corpus_list_domains",
@@ -1725,6 +1726,43 @@ def get_citation_source_from_tool_result(
                     "source": {
                         "name": "web_research_strong",
                         "id": "web_research_strong",
+                    },
+                    "document": documents,
+                    "metadata": metadata,
+                }
+            ]
+
+        elif tool_name == "query_web_evidence":
+            payload = tool_result if isinstance(tool_result, dict) else {}
+            snippets = payload.get("snippets", []) if isinstance(payload, dict) else []
+            documents = []
+            metadata = []
+
+            for snippet in snippets:
+                if not isinstance(snippet, dict):
+                    continue
+                title = snippet.get("title", "") or snippet.get("url", "") or "web evidence"
+                url = snippet.get("url", "")
+                text = snippet.get("text", "")
+                documents.append(f"{title}\n{text}".strip())
+                metadata.append(
+                    {
+                        "source": url or "query_web_evidence",
+                        "name": title,
+                        "url": url,
+                        "artifact_id": snippet.get("artifact_id", ""),
+                        "domain": snippet.get("domain", ""),
+                        "start": snippet.get("start"),
+                        "end": snippet.get("end"),
+                        "score": snippet.get("score"),
+                    }
+                )
+
+            return [
+                {
+                    "source": {
+                        "name": "query_web_evidence",
+                        "id": "query_web_evidence",
                     },
                     "document": documents,
                     "metadata": metadata,
@@ -2079,6 +2117,7 @@ NOTES_LOOKUP_TOOL_NAMES = {"notes_lookup", "search_notes"}
 TOOL_NAME_ALIASES = {
     "search_strong_sources": "web_research_strong",
     "search_notes": "notes_lookup",
+    "notes_research_strong": "web_research_strong",
 }
 
 
@@ -2304,6 +2343,32 @@ def _append_tool_journey_event(
     return debug_event
 
 
+def _build_agent_loop_termination_cause(
+    *,
+    kind: str,
+    phase: str,
+    exc: Exception | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "kind": str(kind or ""),
+        "phase": str(phase or ""),
+    }
+    if exc is None:
+        return payload
+
+    payload["exception_type"] = type(exc).__name__
+    if isinstance(exc, HTTPException):
+        payload["status_code"] = exc.status_code
+        detail = exc.detail
+        if isinstance(detail, dict):
+            payload["error"] = detail.get("message") or str(detail)
+        else:
+            payload["error"] = str(detail)
+    else:
+        payload["error"] = str(exc)
+    return payload
+
+
 def _record_skill_usage_telemetry(metadata: dict[str, Any], payload: dict[str, Any]) -> None:
     if not runtime_telemetry.is_enabled():
         return
@@ -2362,7 +2427,10 @@ def _is_empty_search_notes_result(tool_result: Any) -> bool:
 
 
 def _build_search_notes_loop_breaker_result(
-    streak: int, blocked: bool = False, tool_name: str = "notes_lookup"
+    streak: int,
+    blocked: bool = False,
+    tool_name: str = "notes_lookup",
+    next_tool: str | None = "web_research_strong",
 ) -> str:
     payload = {
         "status": "loop_breaker_active" if blocked else "loop_breaker_triggered",
@@ -2376,8 +2444,14 @@ def _build_search_notes_loop_breaker_result(
             "Stop using notes tools for web discovery. "
             "Use web_research_strong for focused web evidence."
         ),
-        "next_tool": "web_research_strong",
+        "next_tool": next_tool,
     }
+    if next_tool is None:
+        payload["next_action"] = "enable_internet_access"
+        payload["hint"] = (
+            "Internet tools are not available right now. Enable internet access "
+            "before retrying web discovery."
+        )
     return json.dumps(payload, ensure_ascii=False)
 
 

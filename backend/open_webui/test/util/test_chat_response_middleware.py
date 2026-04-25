@@ -615,7 +615,7 @@ def test_should_enable_shared_tool_narration_for_local_corpus_prefer():
 def test_should_enable_shared_tool_narration_for_offsec_mode():
     request = _build_request(
         enable_local_corpus=True,
-        offsec_corpus_root="/tmp/offsec-corpus",
+        offsec_corpus_root="/tmp",
     )
     metadata = {
         "params": {
