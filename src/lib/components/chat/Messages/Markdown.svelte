@@ -15,6 +15,7 @@
 	import footnoteExtension from '$lib/utils/marked/footnote-extension';
 	import citationExtension from '$lib/utils/marked/citation-extension';
 	import {
+		annotateMarkdownTokensForTokenBranchPrefix,
 		annotateMarkdownTokensForTokenExplorer,
 		buildTokenExplorerRanges
 	} from '../tokenExplorer';
@@ -46,6 +47,7 @@
 	export let tokenExplorerEnabled = false;
 	/** @type {any} */
 	export let tokenTelemetry = null;
+	export let tokenBranchDisplayPrefixLength = 0;
 	/** @type {(payload: { forkIndex: number, altRank: number }) => void} */
 	export let onCreateTokenBranch = () => {};
 
@@ -55,6 +57,7 @@
 	let pendingUpdate = null;
 	let lastParsedContent = '';
 	let lastTokenExplorerEnabled = false;
+	let lastTokenBranchDisplayPrefixLength = 0;
 	/** @type {any} */
 	let lastTokenTelemetry = null;
 
@@ -218,20 +221,30 @@
 		if (
 			processed === lastParsedContent &&
 			tokenExplorerEnabled === lastTokenExplorerEnabled &&
+			tokenBranchDisplayPrefixLength === lastTokenBranchDisplayPrefixLength &&
 			tokenTelemetry === lastTokenTelemetry
 		) {
 			return;
 		}
 		lastParsedContent = processed;
 		lastTokenExplorerEnabled = tokenExplorerEnabled;
+		lastTokenBranchDisplayPrefixLength = tokenBranchDisplayPrefixLength;
 		lastTokenTelemetry = tokenTelemetry;
 
 		const nextTokens = marked.lexer(processed);
 		const ranges = tokenExplorerEnabled ? buildTokenExplorerRanges(processed, tokenTelemetry) : [];
-		tokens =
+		const annotatedTokens =
 			tokenExplorerEnabled && ranges.length > 0
 				? annotateMarkdownTokensForTokenExplorer(nextTokens, processed, ranges)
 				: nextTokens;
+		tokens =
+			tokenBranchDisplayPrefixLength > 0
+				? annotateMarkdownTokensForTokenBranchPrefix(
+						annotatedTokens,
+						processed,
+						tokenBranchDisplayPrefixLength
+					)
+				: annotatedTokens;
 
 		if (!tokenExplorerEnabled) {
 			clearTokenExplorerHovercard();
@@ -242,8 +255,14 @@
 	 * @param {string} content
 	 * @param {boolean} tokenExplorerEnabled
 	 * @param {any} tokenTelemetry
+	 * @param {number} tokenBranchDisplayPrefixLength
 	 */
-	const updateHandler = (content, tokenExplorerEnabled, tokenTelemetry) => {
+	const updateHandler = (
+		content,
+		tokenExplorerEnabled,
+		tokenTelemetry,
+		tokenBranchDisplayPrefixLength
+	) => {
 		if (content) {
 			if (done) {
 				if (pendingUpdate !== null) {
@@ -260,7 +279,12 @@
 		}
 	};
 
-	$: updateHandler(content, tokenExplorerEnabled, tokenTelemetry);
+	$: updateHandler(
+		content,
+		tokenExplorerEnabled,
+		tokenTelemetry,
+		tokenBranchDisplayPrefixLength
+	);
 	$: displayedTokenExplorerRange = pinnedTokenExplorerRange ?? hoverTokenExplorerRange;
 	$: activeTokenExplorerRange = displayedTokenExplorerRange;
 	$: tokenExplorerClientX = pinnedTokenExplorerRange

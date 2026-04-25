@@ -35,6 +35,7 @@
 	export let topPadding = false;
 	export let tokenExplorerEnabled = false;
 	export let tokenTelemetry = null;
+	export let tokenBranchDisplayPrefixLength = 0;
 
 	export let onSave = (e) => {};
 	export let onSourceClick = (e) => {};
@@ -172,6 +173,7 @@
 		{topPadding}
 		{tokenExplorerEnabled}
 		{tokenTelemetry}
+		{tokenBranchDisplayPrefixLength}
 		{sourceIds}
 		{onSourceClick}
 		{onTaskClick}

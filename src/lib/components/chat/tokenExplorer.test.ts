@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
 	applyCompletionTokenData,
 	applyTokenExplorerDefaults,
+	annotateMarkdownTokensForTokenBranchPrefix,
 	annotateMarkdownTokensForTokenExplorer,
 	buildTokenBranchDisplayPrefix,
 	buildTokenBranchPayload,
 	buildTokenExplorerRanges,
+	joinTokenBranchDisplayPrefix,
 	splitTextByTokenRanges
 } from './tokenExplorer';
 
@@ -69,6 +71,15 @@ describe('tokenExplorer helpers', () => {
 				4
 			)
 		).toBe('');
+	});
+
+	it('smart-joins branch display prefix and continuation', () => {
+		expect(joinTokenBranchDisplayPrefix('During', 'the crisis')).toBe('During the crisis');
+		expect(joinTokenBranchDisplayPrefix('Bitcoin', "'s first transaction")).toBe(
+			"Bitcoin's first transaction"
+		);
+		expect(joinTokenBranchDisplayPrefix('Given ', 'walk')).toBe('Given walk');
+		expect(joinTokenBranchDisplayPrefix('word', ', next')).toBe('word, next');
 	});
 
 	it('applies completion token data to a message', () => {
@@ -172,5 +183,22 @@ describe('tokenExplorer helpers', () => {
 		expect(markdownTokens[0].tokens[0].tokenExplorerParts[0].range.tokenIndex).toBe(0);
 		expect(markdownTokens[1].tokenExplorerParts).toBeUndefined();
 		expect(markdownTokens[2].tokens[0].tokenExplorerParts[0].range.tokenIndex).toBe(2);
+	});
+
+	it('marks the rehydrated branch prefix in markdown prose', () => {
+		const markdownTokens: any[] = [
+			{
+				type: 'paragraph',
+				raw: 'During the crisis',
+				tokens: [{ type: 'text', raw: 'During the crisis', text: 'During the crisis' }]
+			}
+		];
+
+		annotateMarkdownTokensForTokenBranchPrefix(markdownTokens, 'During the crisis', 'During'.length);
+
+		expect(markdownTokens[0].tokens[0].tokenExplorerParts).toEqual([
+			{ text: 'During', branchPrefix: true },
+			{ text: ' the crisis', branchPrefix: false }
+		]);
 	});
 });

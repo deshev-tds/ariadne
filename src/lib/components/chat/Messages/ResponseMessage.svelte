@@ -840,6 +840,9 @@
 									{model}
 									tokenExplorerEnabled={showTokenExplorer && tokenExplorerAvailable}
 									tokenTelemetry={message.tokenTelemetry}
+									tokenBranchDisplayPrefixLength={message?.tokenBranchDisplayPrefix?.length ??
+										message?.tokenBranch?.displayPrefix?.length ??
+										0}
 									onCreateTokenBranch={({ forkIndex, altRank }) => {
 										createTokenBranch(message, forkIndex, altRank);
 									}}

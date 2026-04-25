@@ -118,6 +118,7 @@
 		applyTokenExplorerDefaults,
 		buildTokenBranchDisplayPrefix,
 		buildTokenBranchPayload,
+		joinTokenBranchDisplayPrefix,
 		type TokenBranchRequest
 	} from './tokenExplorer';
 	import {
@@ -2380,23 +2381,9 @@
 		return typeof prefix === 'string' && prefix.length > 0 ? prefix : '';
 	};
 
-	const ensureTokenBranchDisplayPrefix = (message: Record<string, any>) => {
-		const prefix = getTokenBranchDisplayPrefix(message);
-		if (!prefix || typeof message?.content !== 'string' || message.content.startsWith(prefix)) {
-			return;
-		}
-
-		message.content = `${prefix}${message.content}`;
-	};
-
 	const withTokenBranchDisplayPrefix = (message: Record<string, any>, content: unknown) => {
-		const text = typeof content === 'string' ? content : '';
 		const prefix = getTokenBranchDisplayPrefix(message);
-		if (!prefix || text.startsWith(prefix)) {
-			return text;
-		}
-
-		return `${prefix}${text}`;
+		return prefix ? joinTokenBranchDisplayPrefix(prefix, content) : String(content ?? '');
 	};
 
 	const chatCompletionEventHandler = async (data, message, chatId) => {
@@ -2439,16 +2426,24 @@
 		if (choices) {
 			if (choices[0]?.message?.content) {
 				// Non-stream response
-				ensureTokenBranchDisplayPrefix(message);
-				message.content += choices[0]?.message?.content;
+				const value = choices[0]?.message?.content;
+				message.content =
+					message.content === ''
+						? withTokenBranchDisplayPrefix(message, value)
+						: message.content + value;
 			} else {
 				// Stream response
 				let value = choices[0]?.delta?.content ?? '';
-				ensureTokenBranchDisplayPrefix(message);
-				if (message.content == '' && value == '\n') {
+				if (value === '') {
+					// Ignore metadata-only stream chunks so branch prefix spacing can be decided
+					// against the first visible continuation token.
+				} else if (message.content == '' && value == '\n') {
 					console.log('Empty response');
 				} else {
-					message.content += value;
+					message.content =
+						message.content === ''
+							? withTokenBranchDisplayPrefix(message, value)
+							: message.content + value;
 
 					if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
 						navigator.vibrate(5);

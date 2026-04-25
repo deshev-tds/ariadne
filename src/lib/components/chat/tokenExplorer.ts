@@ -31,6 +31,7 @@ export type TokenExplorerRange = {
 export type TokenExplorerTextPart = {
 	text: string;
 	range?: TokenExplorerRange;
+	branchPrefix?: boolean;
 };
 
 type MarkdownTokenLike = Record<string, any>;
@@ -87,6 +88,28 @@ export const buildTokenBranchDisplayPrefix = (
 		.join('');
 
 	return `${prefix}${coerceTokenText(alternatives[altRank]?.text)}`;
+};
+
+const needsTokenBranchDisplaySpacer = (prefix: string, continuation: string) => {
+	if (!prefix || !continuation) {
+		return false;
+	}
+	if (/\s$/u.test(prefix) || /^\s/u.test(continuation)) {
+		return false;
+	}
+
+	return /[\p{L}\p{N}]$/u.test(prefix) && /^[\p{L}\p{N}]/u.test(continuation);
+};
+
+export const joinTokenBranchDisplayPrefix = (prefix: unknown, continuation: unknown) => {
+	const prefixText = coerceTokenText(prefix);
+	const continuationText = coerceTokenText(continuation);
+	if (!prefixText || continuationText.startsWith(prefixText)) {
+		return continuationText;
+	}
+
+	const spacer = needsTokenBranchDisplaySpacer(prefixText, continuationText) ? ' ' : '';
+	return `${prefixText}${spacer}${continuationText}`;
 };
 
 export const applyCompletionTokenData = (
@@ -229,6 +252,55 @@ export const splitTextByTokenRanges = (
 	}
 
 	return parts.length > 0 ? parts : [{ text }];
+};
+
+const markTextPartsForBranchPrefix = (
+	parts: TokenExplorerTextPart[],
+	absoluteStart: number,
+	prefixLength: number
+): TokenExplorerTextPart[] => {
+	if (!Array.isArray(parts) || parts.length === 0 || prefixLength <= absoluteStart) {
+		return parts;
+	}
+
+	const markedParts: TokenExplorerTextPart[] = [];
+	let cursor = absoluteStart;
+
+	for (const part of parts) {
+		const text = coerceTokenText(part?.text);
+		const partStart = cursor;
+		const partEnd = partStart + text.length;
+		cursor = partEnd;
+
+		if (!text) {
+			markedParts.push(part);
+			continue;
+		}
+
+		if (partStart >= prefixLength) {
+			markedParts.push(part);
+			continue;
+		}
+
+		if (partEnd <= prefixLength) {
+			markedParts.push({ ...part, branchPrefix: true });
+			continue;
+		}
+
+		const splitAt = prefixLength - partStart;
+		markedParts.push({
+			...part,
+			text: text.slice(0, splitAt),
+			branchPrefix: true
+		});
+		markedParts.push({
+			...part,
+			text: text.slice(splitAt),
+			branchPrefix: false
+		});
+	}
+
+	return markedParts;
 };
 
 export const formatTokenExplorerProbability = (probability: unknown) => {
@@ -393,5 +465,122 @@ export const annotateMarkdownTokensForTokenExplorer = (
 	}
 
 	annotateTokenArray(tokens, content, ranges, { cursor: 0 });
+	return tokens;
+};
+
+const annotateTokenArrayForBranchPrefix = (
+	tokens: MarkdownTokenLike[],
+	content: string,
+	prefixLength: number,
+	state: { cursor: number }
+) => {
+	for (const token of tokens ?? []) {
+		annotateTokenForBranchPrefix(token, content, prefixLength, state);
+	}
+};
+
+const annotateTableCellsForBranchPrefix = (
+	cells: MarkdownTokenLike[],
+	content: string,
+	prefixLength: number,
+	state: { cursor: number }
+) => {
+	for (const cell of cells ?? []) {
+		if (Array.isArray(cell?.tokens)) {
+			annotateTokenArrayForBranchPrefix(cell.tokens, content, prefixLength, state);
+		}
+	}
+};
+
+const annotateTokenChildrenForBranchPrefix = (
+	token: MarkdownTokenLike,
+	content: string,
+	prefixLength: number,
+	state: { cursor: number }
+) => {
+	if (Array.isArray(token.tokens)) {
+		annotateTokenArrayForBranchPrefix(token.tokens, content, prefixLength, state);
+	}
+
+	if (Array.isArray(token.items)) {
+		for (const item of token.items) {
+			if (Array.isArray(item?.tokens)) {
+				annotateTokenArrayForBranchPrefix(item.tokens, content, prefixLength, state);
+			}
+		}
+	}
+
+	if (Array.isArray(token.header)) {
+		annotateTableCellsForBranchPrefix(token.header, content, prefixLength, state);
+	}
+
+	if (Array.isArray(token.rows)) {
+		for (const row of token.rows) {
+			annotateTableCellsForBranchPrefix(row, content, prefixLength, state);
+		}
+	}
+};
+
+const annotateTokenForBranchPrefix = (
+	token: MarkdownTokenLike,
+	content: string,
+	prefixLength: number,
+	state: { cursor: number }
+) => {
+	if (!token || typeof token !== 'object' || state.cursor >= prefixLength) {
+		return;
+	}
+
+	const rawBounds = findSegmentBounds(content, token.raw, state.cursor);
+	if (rawBounds) {
+		state.cursor = rawBounds.start;
+	}
+
+	if (TOKEN_EXPLORER_NON_PROSE_TOKEN_TYPES.has(token.type)) {
+		advancePastTokenSource(token, content, state);
+		if (rawBounds) {
+			state.cursor = Math.max(state.cursor, rawBounds.end);
+		}
+		return;
+	}
+
+	if (token.type === 'text' && typeof token.raw === 'string') {
+		const bounds = findSegmentBounds(content, token.raw, state.cursor);
+		if (bounds) {
+			const parts = Array.isArray(token.tokenExplorerParts)
+				? token.tokenExplorerParts
+				: [{ text: token.raw }];
+			token.tokenExplorerParts = markTextPartsForBranchPrefix(
+				parts,
+				bounds.start,
+				prefixLength
+			);
+			state.cursor = bounds.end;
+		}
+		if (rawBounds) {
+			state.cursor = Math.max(state.cursor, rawBounds.end);
+		}
+		return;
+	}
+
+	annotateTokenChildrenForBranchPrefix(token, content, prefixLength, state);
+
+	if (rawBounds) {
+		state.cursor = Math.max(state.cursor, rawBounds.end);
+	}
+};
+
+export const annotateMarkdownTokensForTokenBranchPrefix = (
+	tokens: MarkdownTokenLike[],
+	content: string,
+	prefixLength: number
+) => {
+	if (!Array.isArray(tokens) || !content || !Number.isFinite(prefixLength) || prefixLength <= 0) {
+		return tokens;
+	}
+
+	annotateTokenArrayForBranchPrefix(tokens, content, Math.min(prefixLength, content.length), {
+		cursor: 0
+	});
 	return tokens;
 };

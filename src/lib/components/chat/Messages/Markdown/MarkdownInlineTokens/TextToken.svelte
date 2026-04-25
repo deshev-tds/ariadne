@@ -24,7 +24,9 @@
 	let tokenExplorerParts: TokenExplorerTextPart[] = [];
 	$: texts = (token?.raw ?? '').split(' ');
 	$: tokenExplorerParts = Array.isArray(token?.tokenExplorerParts) ? token.tokenExplorerParts : [];
-	$: hasTokenExplorerParts = tokenExplorerEnabled && tokenExplorerParts.some((part) => part?.range);
+	$: hasAnnotatedParts = tokenExplorerParts.some(
+		(part) => (tokenExplorerEnabled && part?.range) || part?.branchPrefix
+	);
 
 	const handleTokenEnter = (range: TokenExplorerRange | undefined, event: MouseEvent) => {
 		if (range) {
@@ -54,7 +56,7 @@
 </script>
 
 {#if done}
-	{#if hasTokenExplorerParts}
+	{#if hasAnnotatedParts}
 		{#each tokenExplorerParts as part, partIdx}
 			{#if part?.range}
 				<!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -62,12 +64,16 @@
 				<span
 					class="token-explorer-inline-token {activeTokenExplorerRange === part.range
 						? 'token-explorer-inline-token-active'
-						: ''}"
+						: ''} {part.branchPrefix ? 'token-branch-prefix' : ''}"
 					on:mouseenter={(event) => handleTokenEnter(part.range, event)}
 					on:mousemove={(event) => handleTokenMove(part.range, event)}
 					on:mouseleave={() => handleTokenLeave(part.range)}
 					on:click={(event) => handleTokenClick(part.range, event)}
 				>
+					{part.text}
+				</span>
+			{:else if part?.branchPrefix}
+				<span class="token-branch-prefix">
 					{part.text}
 				</span>
 			{:else}
@@ -86,6 +92,14 @@
 {/if}
 
 <style>
+	.token-branch-prefix {
+		border-radius: 4px;
+		padding: 0 1px;
+		background: rgba(17, 24, 39, 0.055);
+		-webkit-box-decoration-break: clone;
+		box-decoration-break: clone;
+	}
+
 	.token-explorer-inline-token {
 		border-radius: 4px;
 		padding: 0 1px;
@@ -93,6 +107,10 @@
 			background-color 120ms ease,
 			box-shadow 120ms ease,
 			color 120ms ease;
+	}
+
+	:global(.dark) .token-branch-prefix {
+		background: rgba(255, 255, 255, 0.08);
 	}
 
 	.token-explorer-inline-token:hover,
