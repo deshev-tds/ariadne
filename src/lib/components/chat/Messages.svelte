@@ -15,6 +15,7 @@
 	import { toast } from 'svelte-sonner';
 	import { getChatList, updateChatById } from '$lib/apis/chats';
 	import { copyToClipboard, extractCurlyBraceWords } from '$lib/utils';
+	import { normalizeModelSelection } from '$lib/utils/model-selection';
 
 	import Message from './Messages/Message.svelte';
 	import Loader from '../common/Loader.svelte';
@@ -320,7 +321,7 @@
 					role: 'user',
 					content: userPrompt,
 					...(files && { files: files }),
-					models: selectedModels,
+					models: normalizeModelSelection(selectedModels),
 					timestamp: Math.floor(Date.now() / 1000) // Unix epoch
 				};
 

@@ -7,6 +7,10 @@
 
 	import { settings, chatId, WEBUI_NAME, models, config } from '$lib/stores';
 	import { convertMessagesToHistory, createMessagesList } from '$lib/utils';
+	import {
+		normalizeHistoryModelSelections,
+		normalizeModelSelection
+	} from '$lib/utils/model-selection';
 
 	import { getChatByShareId, cloneSharedChatById } from '$lib/apis/chats';
 
@@ -102,14 +106,16 @@
 			if (chatContent) {
 				console.log(chatContent);
 
-				selectedModels =
+				selectedModels = normalizeModelSelection(
 					(chatContent?.models ?? undefined) !== undefined
 						? chatContent.models
-						: [chatContent.models ?? ''];
-				history =
+						: [chatContent.models ?? '']
+				);
+				history = normalizeHistoryModelSelections(
 					(chatContent?.history ?? undefined) !== undefined
 						? chatContent.history
-						: convertMessagesToHistory(chatContent.messages);
+						: convertMessagesToHistory(chatContent.messages)
+				);
 				title = chatContent.title;
 
 				autoScroll = true;

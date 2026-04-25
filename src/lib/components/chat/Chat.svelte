@@ -63,6 +63,10 @@
 		isYoutubeUrl,
 		displayFileHandler
 	} from '$lib/utils';
+	import {
+		normalizeHistoryModelSelections,
+		normalizeModelSelection
+	} from '$lib/utils/model-selection';
 	import { AudioQueue } from '$lib/utils/audio';
 
 	import {
@@ -555,7 +559,7 @@
 			localStorage.token,
 			chat.id,
 			{
-				models: selectedModels,
+				models: normalizeModelSelection(selectedModels),
 				history: history,
 				messages: createMessagesList(history, history.currentId),
 				params: params,
@@ -1307,11 +1311,12 @@
 		if (
 			$selectedFolder &&
 			selectedModels.filter((modelId) => modelId !== '').length > 0 &&
-			JSON.stringify($selectedFolder?.data?.model_ids) !== JSON.stringify(selectedModels)
+			JSON.stringify($selectedFolder?.data?.model_ids) !==
+				JSON.stringify(normalizeModelSelection(selectedModels))
 		) {
 			const res = await updateFolderById(localStorage.token, $selectedFolder.id, {
 				data: {
-					model_ids: selectedModels
+					model_ids: normalizeModelSelection(selectedModels)
 				}
 			});
 		}
@@ -1391,9 +1396,10 @@
 			await tick();
 			if (
 				folder?.data?.model_ids &&
-				JSON.stringify(selectedModels) !== JSON.stringify(folder.data.model_ids)
+				JSON.stringify(selectedModels) !==
+					JSON.stringify(normalizeModelSelection(folder.data.model_ids))
 			) {
-				selectedModels = folder.data.model_ids;
+				selectedModels = normalizeModelSelection(folder.data.model_ids);
 
 				console.log('Set selectedModels from folder data:', selectedModels);
 			}
@@ -1755,9 +1761,13 @@
 			.map((m) => m.id);
 		const availablePersonas = ($personas ?? []).filter((persona) => persona.is_active);
 		const requestedDirectModels =
-			nextChatDirectModels && nextChatDirectModels.length > 0 ? [...nextChatDirectModels] : null;
+			nextChatDirectModels && nextChatDirectModels.length > 0
+				? normalizeModelSelection(nextChatDirectModels)
+				: null;
 
-		const defaultModels = $config?.default_models ? $config?.default_models.split(',') : [];
+		const defaultModels = $config?.default_models
+			? normalizeModelSelection($config?.default_models.split(','))
+			: [];
 		const urlPersonaId = $page.url.searchParams.get('persona');
 		const defaultPersonaId =
 			nextChatPersonaId !== undefined
@@ -1781,7 +1791,7 @@
 		}
 
 		if (!selectedPersonaId && requestedDirectModels) {
-			selectedModels = requestedDirectModels;
+			selectedModels = normalizeModelSelection(requestedDirectModels);
 		} else if (
 			!selectedPersonaId &&
 			($page.url.searchParams.get('models') || $page.url.searchParams.get('model'))
@@ -1791,9 +1801,10 @@
 				$page.url.searchParams.get('model') ||
 				''
 			)?.split(',');
+			const normalizedUrlModels = normalizeModelSelection(urlModels);
 
-			if (urlModels.length === 1) {
-				if (!$models.find((m) => m.id === urlModels[0])) {
+			if (normalizedUrlModels.length === 1) {
+				if (!$models.find((m) => m.id === normalizedUrlModels[0])) {
 					// Model not found; open model selector and prefill
 					const modelSelectorButton = document.getElementById('model-selector-0-button');
 					if (modelSelectorButton) {
@@ -1803,36 +1814,36 @@
 						const modelSelectorInput = document.getElementById('model-search-input');
 						if (modelSelectorInput) {
 							modelSelectorInput.focus();
-							modelSelectorInput.value = urlModels[0];
+							modelSelectorInput.value = normalizedUrlModels[0];
 							modelSelectorInput.dispatchEvent(new Event('input'));
 						}
 					}
 				} else {
 					// Model found; set it as selected
-					selectedModels = urlModels;
+					selectedModels = normalizedUrlModels;
 				}
 			} else {
 				// Multiple models; set as selected
-				selectedModels = urlModels;
+				selectedModels = normalizedUrlModels;
 			}
 
 			// Unavailable models filtering
-			selectedModels = selectedModels.filter((modelId) =>
-				$models.map((m) => m.id).includes(modelId)
+			selectedModels = normalizeModelSelection(
+				selectedModels.filter((modelId) => $models.map((m) => m.id).includes(modelId))
 			);
 		} else if (!selectedPersonaId) {
 			if ($selectedFolder?.data?.model_ids) {
 				// Set from folder model IDs
-				selectedModels = $selectedFolder?.data?.model_ids;
+				selectedModels = normalizeModelSelection($selectedFolder?.data?.model_ids);
 			} else {
 				if (sessionStorage.selectedModels) {
 					// Set from session storage (temporary selection)
-					selectedModels = JSON.parse(sessionStorage.selectedModels);
+					selectedModels = normalizeModelSelection(JSON.parse(sessionStorage.selectedModels));
 					sessionStorage.removeItem('selectedModels');
 				} else {
 					if ($settings?.models) {
 						// Set from user settings
-						selectedModels = $settings?.models;
+						selectedModels = normalizeModelSelection($settings?.models);
 					} else if (defaultModels && defaultModels.length > 0) {
 						// Set from default models
 						selectedModels = defaultModels;
@@ -1841,7 +1852,9 @@
 			}
 
 			// Unavailable & hidden models filtering
-			selectedModels = selectedModels.filter((modelId) => availableModels.includes(modelId));
+			selectedModels = normalizeModelSelection(
+				selectedModels.filter((modelId) => availableModels.includes(modelId))
+			);
 		}
 		nextChatDirectModels = null;
 
@@ -1952,8 +1965,9 @@
 			}
 		}
 
-		selectedModels = selectedModels.map((modelId) =>
-			$models.map((m) => m.id).includes(modelId) ? modelId : ''
+		selectedModels = normalizeModelSelection(
+			selectedModels.map((modelId) => ($models.map((m) => m.id).includes(modelId) ? modelId : '')),
+			{ preserveEmpty: true }
 		);
 
 		const chatInput = document.getElementById('chat-input');
@@ -1992,15 +2006,17 @@
 				const personaBoundModelId =
 					persistedPersonaSnapshot?.bound_model_id ?? persistedPersona?.bound_model_id ?? null;
 
-				selectedModels = selectedPersonaId
-					? personaBoundModelId
-						? [personaBoundModelId]
+				selectedModels = normalizeModelSelection(
+					selectedPersonaId
+						? personaBoundModelId
+							? [personaBoundModelId]
+							: (chatContent?.models ?? undefined) !== undefined
+								? chatContent.models
+								: [chatContent.models ?? '']
 						: (chatContent?.models ?? undefined) !== undefined
 							? chatContent.models
 							: [chatContent.models ?? '']
-					: (chatContent?.models ?? undefined) !== undefined
-						? chatContent.models
-						: [chatContent.models ?? ''];
+				);
 
 				if (!($user?.role === 'admin' || ($user?.permissions?.chat?.multiple_models ?? true))) {
 					selectedModels = selectedModels.length > 0 ? [selectedModels[0]] : [''];
@@ -2012,10 +2028,11 @@
 
 				oldSelectedModelIds = structuredClone(selectedModels);
 
-				history =
+				history = normalizeHistoryModelSelections(
 					(chatContent?.history ?? undefined) !== undefined
 						? chatContent.history
-						: convertMessagesToHistory(chatContent.messages);
+						: convertMessagesToHistory(chatContent.messages)
+				);
 
 				chatTitle.set(chatContent.title);
 
@@ -2124,7 +2141,7 @@
 					localStorage.token,
 					_chatId,
 					{
-						models: selectedModels,
+						models: normalizeModelSelection(selectedModels),
 						messages: messages,
 						history: history,
 						params: params,
@@ -2203,7 +2220,7 @@
 					localStorage.token,
 					_chatId,
 					{
-						models: selectedModels,
+						models: normalizeModelSelection(selectedModels),
 						messages: messages,
 						history: history,
 						params: params,
@@ -2659,7 +2676,7 @@
 			content: userPrompt,
 			files: _files.length > 0 ? _files : undefined,
 			timestamp: Math.floor(Date.now() / 1000), // Unix epoch
-			models: selectedModels
+			models: normalizeModelSelection(selectedModels)
 		};
 
 		// Add message to history and Set currentId to messageId
@@ -3233,7 +3250,7 @@
 			childrenIds: [],
 			role: 'user',
 			content: userPrompt,
-			models: selectedModels,
+			models: normalizeModelSelection(selectedModels),
 			timestamp: Math.floor(Date.now() / 1000) // Unix epoch
 		};
 
@@ -3401,7 +3418,7 @@
 				{
 					id: _chatId,
 					title: $i18n.t('New Chat'),
-					models: selectedModels,
+					models: normalizeModelSelection(selectedModels),
 					system: $settings.system ?? undefined,
 					params: params,
 					history: history,
@@ -3441,7 +3458,7 @@
 					localStorage.token,
 					_chatId,
 					{
-						models: selectedModels,
+						models: normalizeModelSelection(selectedModels),
 						history: history,
 						messages: createMessagesList(history, history.currentId),
 						params: params,
@@ -3639,7 +3656,7 @@
 							meta: getPersonaMetaForPersistence(),
 							chat: {
 								title: $chatTitle,
-								models: selectedModels,
+								models: normalizeModelSelection(selectedModels),
 								system: $settings.system ?? undefined,
 								params: params,
 								history: history,
@@ -3678,7 +3695,7 @@
 									{
 										id: uuidv4(),
 										title: title.length > 50 ? `${title.slice(0, 50)}...` : title,
-										models: selectedModels,
+										models: normalizeModelSelection(selectedModels),
 										params: params,
 										history: history,
 										messages: messages,

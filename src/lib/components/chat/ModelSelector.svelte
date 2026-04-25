@@ -4,6 +4,7 @@
 	import { toast } from 'svelte-sonner';
 	import Selector from './ModelSelector/Selector.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
+	import { normalizeModelSelection } from '$lib/utils/model-selection';
 
 	import { updateUserSettings } from '$lib/apis/users';
 	const i18n = getContext('i18n');
@@ -19,7 +20,7 @@
 			toast.error($i18n.t('Choose a model before saving...'));
 			return;
 		}
-		settings.set({ ...$settings, models: selectedModels });
+		settings.set({ ...$settings, models: normalizeModelSelection(selectedModels) });
 		await updateUserSettings(localStorage.token, { ui: $settings });
 
 		toast.success($i18n.t('Default model updated'));
@@ -39,8 +40,9 @@
 	};
 
 	$: if (selectedModels.length > 0 && $models.length > 0) {
-		const _selectedModels = selectedModels.map((model) =>
-			$models.map((m) => m.id).includes(model) ? model : ''
+		const _selectedModels = normalizeModelSelection(
+			selectedModels.map((model) => ($models.map((m) => m.id).includes(model) ? model : '')),
+			{ preserveEmpty: true }
 		);
 
 		if (JSON.stringify(_selectedModels) !== JSON.stringify(selectedModels)) {
