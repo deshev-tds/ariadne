@@ -196,6 +196,53 @@ def test_prepare_branch_prefill_valid(monkeypatch):
     assert branch["forcingStrategy"] == "assistant_prefix_fallback"
 
 
+def test_prepare_branch_prefill_extends_existing_branch_prefix(monkeypatch):
+    source_message = {
+        "id": "branched-assistant-msg-id",
+        "role": "assistant",
+        "parentId": "parent-user-id",
+        "tokenBranchDisplayPrefix": "During",
+        "tokenTelemetry": {
+            "tokens": [
+                {
+                    "index": 0,
+                    "text": "the",
+                    "alternatives": [{"rank": 0, "text": "the"}],
+                },
+                {
+                    "index": 1,
+                    "text": " crisis",
+                    "alternatives": [
+                        {"rank": 0, "text": " crisis"},
+                        {"rank": 1, "text": " market"},
+                    ],
+                },
+            ]
+        },
+    }
+
+    monkeypatch.setattr(
+        middleware.Chats,
+        "get_message_by_id_and_message_id",
+        lambda chat_id, message_id: source_message,
+    )
+
+    prefix, branch = middleware._prepare_branch_prefill(
+        {
+            "chat_id": "chat-id",
+            "parent_message_id": "parent-user-id",
+            "branch": {
+                "source_message_id": "branched-assistant-msg-id",
+                "fork_index": 1,
+                "alt_rank": 1,
+            },
+        }
+    )
+
+    assert prefix == "During the market"
+    assert branch["displayPrefix"] == "During the market"
+
+
 @pytest.mark.parametrize(
     "metadata,expected_detail",
     [

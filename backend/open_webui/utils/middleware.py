@@ -1471,6 +1471,50 @@ def _extract_non_streaming_token_telemetry(response_data: dict) -> Optional[dict
     return _build_token_telemetry_payload(telemetry_state)
 
 
+def _coerce_token_branch_text(value) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _needs_token_branch_display_spacer(prefix: str, continuation: str) -> bool:
+    if not prefix or not continuation:
+        return False
+    if prefix[-1].isspace() or continuation[0].isspace():
+        return False
+    return prefix[-1].isalnum() and continuation[0].isalnum()
+
+
+def _join_token_branch_display_prefix(prefix, continuation) -> str:
+    prefix_text = _coerce_token_branch_text(prefix)
+    continuation_text = _coerce_token_branch_text(continuation)
+    if not prefix_text or continuation_text.startswith(prefix_text):
+        return continuation_text
+
+    spacer = (
+        " "
+        if _needs_token_branch_display_spacer(prefix_text, continuation_text)
+        else ""
+    )
+    return f"{prefix_text}{spacer}{continuation_text}"
+
+
+def _get_token_branch_display_prefix(source_message: dict) -> str:
+    prefix = source_message.get("tokenBranchDisplayPrefix")
+    if isinstance(prefix, str):
+        return prefix
+
+    token_branch = source_message.get("tokenBranch")
+    if isinstance(token_branch, dict):
+        prefix = token_branch.get("displayPrefix")
+        if isinstance(prefix, str):
+            return prefix
+
+    return ""
+
+
 def _prepare_branch_prefill(metadata: dict) -> tuple[str, dict]:
     branch = metadata.get("branch")
     if not isinstance(branch, dict):
@@ -1536,7 +1580,7 @@ def _prepare_branch_prefill(metadata: dict) -> tuple[str, dict]:
     if not isinstance(chosen_token_text, str):
         chosen_token_text = str(chosen_token_text)
 
-    forced_prefix = "".join(
+    forced_suffix = "".join(
         (
             token.get("text", "")
             if isinstance(token.get("text", ""), str)
@@ -1544,7 +1588,11 @@ def _prepare_branch_prefill(metadata: dict) -> tuple[str, dict]:
         )
         for token in tokens[:fork_index]
     )
-    forced_prefix = f"{forced_prefix}{chosen_token_text}"
+    forced_suffix = f"{forced_suffix}{chosen_token_text}"
+    forced_prefix = _join_token_branch_display_prefix(
+        _get_token_branch_display_prefix(source_message),
+        forced_suffix,
+    )
 
     token_branch = {
         "version": TOKEN_BRANCH_VERSION,
@@ -1554,6 +1602,7 @@ def _prepare_branch_prefill(metadata: dict) -> tuple[str, dict]:
         "chosenTokenText": chosen_token_text,
         "chosenTokenId": _safe_int(chosen_alt.get("tokenId", chosen_alt.get("token_id"))),
         "forcingStrategy": TOKEN_BRANCH_FORCING_STRATEGY,
+        "displayPrefix": forced_prefix,
         "createdAt": int(time.time()),
     }
 

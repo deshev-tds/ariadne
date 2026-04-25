@@ -68,7 +68,8 @@ export const buildTokenBranchPayload = (
 export const buildTokenBranchDisplayPrefix = (
 	telemetry: Record<string, any> | null | undefined,
 	forkIndex: number,
-	altRank: number
+	altRank: number,
+	basePrefix: unknown = ''
 ) => {
 	const tokens = Array.isArray(telemetry?.tokens) ? telemetry.tokens : [];
 	if (forkIndex < 0 || forkIndex >= tokens.length) {
@@ -87,7 +88,10 @@ export const buildTokenBranchDisplayPrefix = (
 		.map((token) => coerceTokenText(token?.text))
 		.join('');
 
-	return `${prefix}${coerceTokenText(alternatives[altRank]?.text)}`;
+	return joinTokenBranchDisplayPrefix(
+		basePrefix,
+		`${prefix}${coerceTokenText(alternatives[altRank]?.text)}`
+	);
 };
 
 const needsTokenBranchDisplaySpacer = (prefix: string, continuation: string) => {

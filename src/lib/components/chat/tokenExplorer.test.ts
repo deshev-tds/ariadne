@@ -62,6 +62,28 @@ describe('tokenExplorer helpers', () => {
 		).toBe('Bitcoin went');
 	});
 
+	it('builds branch display prefix on top of an existing branch prefix', () => {
+		expect(
+			buildTokenBranchDisplayPrefix(
+				{
+					tokens: [
+						{ text: 'the' },
+						{
+							text: ' crisis',
+							alternatives: [
+								{ rank: 0, text: ' crisis' },
+								{ rank: 1, text: ' market' }
+							]
+						}
+					]
+				},
+				1,
+				1,
+				'During'
+			)
+		).toBe('During the market');
+	});
+
 	it('returns an empty branch display prefix for invalid branch ranges', () => {
 		expect(buildTokenBranchDisplayPrefix({ tokens: [{ text: 'A' }] }, 4, 0)).toBe('');
 		expect(

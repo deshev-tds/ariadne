@@ -3375,7 +3375,8 @@
 		const branchDisplayPrefix = buildTokenBranchDisplayPrefix(
 			sourceMessage.tokenTelemetry,
 			forkIndex,
-			altRank
+			altRank,
+			getTokenBranchDisplayPrefix(sourceMessage)
 		);
 
 		await sendMessage(history, sourceMessage.parentId, {
