@@ -14,6 +14,7 @@
 		terminalServers
 	} from '$lib/stores';
 
+	import { updateUserSettings } from '$lib/apis/users';
 	import { getOAuthClientAuthorizationUrl } from '$lib/apis/configs';
 	import { getTools } from '$lib/apis/tools';
 
@@ -97,6 +98,12 @@
 		}
 
 		selectedToolIds = selectedToolIds.filter((id) => Object.keys(tools).includes(id));
+	};
+
+	const setChatRecallEnabled = async (enabled: boolean) => {
+		const nextSettings = { ...$settings, chatRecallEnabled: enabled };
+		settings.set(nextSettings);
+		await updateUserSettings(localStorage.token, { ui: nextSettings });
 	};
 </script>
 
@@ -250,6 +257,43 @@
 								</div>
 							</button>
 						</Tooltip>
+
+						{#if $config?.features?.enable_chat_recall}
+							<Tooltip
+								content={$i18n.t(
+									'Search earlier turns in this chat only when the live context is missing evidence'
+								)}
+								placement="top-start"
+							>
+								<button
+									class="ml-6 flex w-[calc(100%-1.5rem)] justify-between gap-2 items-center px-3 py-1.5 text-sm cursor-pointer rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50"
+									on:click={async () => {
+										await setChatRecallEnabled(!($settings?.chatRecallEnabled ?? false));
+									}}
+								>
+									<div class="flex-1 truncate">
+										<div class="flex flex-1 gap-2 items-center">
+											<div class="shrink-0 text-gray-500 dark:text-gray-400">
+												<Sparkles className="size-4" strokeWidth="1.75" />
+											</div>
+
+											<div class="truncate text-gray-700 dark:text-gray-300">
+												{$i18n.t('Chat Recall')}
+											</div>
+										</div>
+									</div>
+
+									<div class="shrink-0">
+										<Switch
+											state={$settings?.chatRecallEnabled ?? false}
+											on:change={async () => {
+												await tick();
+											}}
+										/>
+									</div>
+								</button>
+							</Tooltip>
+						{/if}
 					{/if}
 
 					{#if showImageGenerationButton}

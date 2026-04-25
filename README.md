@@ -45,8 +45,9 @@ The important divergences are not cosmetic.
 - Server-side context maintenance was added so long chats do not simply degrade or fail once the prompt gets too large.
 - Summary generation was changed from a loose recap into a structured state snapshot.
 - Exact recall was added so older raw facts can be recovered when they fall out of the live prompt window.
+- That recall path is now gated behind a secondary UI flag under the Web Search integrations menu and defaults to off, after real-chat testing showed that broader automatic triggering could add random latency and status noise in otherwise normal conversation.
 - The live prompt budget is now derived from the active `llama.cpp` runtime instead of being treated as a static design assumption.
-- Recall is now explicitly layered as `FTS preferred, raw fallback guaranteed` for cases where lexical retrieval is not ready or not good enough.
+- When recall is enabled, it is explicitly layered as `FTS preferred, raw fallback guaranteed` for cases where lexical retrieval is not ready or not good enough.
 - Request-scoped memory telemetry can be turned on per turn for debugging without leaving noisy long-lived logging enabled in production.
 - Ledger continuity now uses explicit chat-scoped mode selection: `vibe` by default, `agentic` only when enabled in the UI toggle.
 - Web retrieval was pushed toward planned, bounded evidence gathering instead of naive query-and-dump behavior.
@@ -333,6 +334,12 @@ Working memory still looks like this:
 But if that live state does not provide enough evidence, the server can now recover older raw facts from earlier turns and inject them back into the prompt as evidence.
 
 This recall layer is intentionally bounded and conservative. It is not an always-on retrieval ritual before every response.
+
+That statement became more strict after real usage, not less. The first cut of automatic recall triggering was defensible in theory, but too eager in practice: normal chat phrasing could light up "Checking earlier conversation...", pay latency, and sometimes still return no usable evidence. The right response was not to defend the heuristic set because it sounded clever. The right response was to tighten the product contract.
+
+Recall therefore still exists as a first-class capability, but it now sits behind a user-controlled UI flag and defaults to off. The toggle lives as a secondary option under the Web Search integrations menu rather than as a primary chat setting, because it belongs to the bounded slow-path retrieval family, not to the default fast path. Existing saved opt-ins were also intentionally not grandfathered: the effective UI key changed so stale aggressive behavior does not silently survive just because it was once enabled.
+
+That rationale matters. This fork is not trying to look ideologically consistent with its first draft. If a differentiating feature starts creating more false positives than useful recoveries in normal use, the feature should be re-scoped until it earns its cost again.
 
 It currently has two modes:
 
@@ -970,7 +977,7 @@ The most important differences in this fork are the ones above, but the operatin
 
 - working memory is managed server-side instead of being left to overflow
 - recap is structured state, not a loose narrative
-- recall is bounded, evidence-first, and not always-on
+- recall is bounded, evidence-first, and now explicit opt-in instead of a silent background habit
 - hot context is treated as a first-class runtime layer instead of an accidental byproduct of reserve math
 - lexical recall is preferred, but raw evidence fallback is now part of the contract
 - memory telemetry can be enabled on demand for a single turn when debugging continuity vs exactness failures

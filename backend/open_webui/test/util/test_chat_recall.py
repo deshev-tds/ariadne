@@ -31,11 +31,25 @@ def _message(role: str, content: str, message_id: str | None = None) -> dict:
     return message
 
 
-def test_resolve_chat_recall_enabled_prefers_user_setting():
-    request = _make_request(ENABLE_CHAT_RECALL=False)
-    user = SimpleNamespace(settings=SimpleNamespace(ui={"chatRecall": True}))
+def test_resolve_chat_recall_enabled_requires_feature_flag_and_user_opt_in():
+    request = _make_request(ENABLE_CHAT_RECALL=True)
+    user = SimpleNamespace(settings=SimpleNamespace(ui={"chatRecallEnabled": True}))
 
     assert resolve_chat_recall_enabled(request, user) is True
+
+
+def test_resolve_chat_recall_enabled_defaults_to_off_without_user_opt_in():
+    request = _make_request(ENABLE_CHAT_RECALL=True)
+    user = SimpleNamespace(settings=SimpleNamespace(ui={}))
+
+    assert resolve_chat_recall_enabled(request, user) is False
+
+
+def test_resolve_chat_recall_enabled_stays_off_when_feature_is_disabled():
+    request = _make_request(ENABLE_CHAT_RECALL=False)
+    user = SimpleNamespace(settings=SimpleNamespace(ui={"chatRecallEnabled": True}))
+
+    assert resolve_chat_recall_enabled(request, user) is False
 
 
 def test_detect_recall_need_on_explicit_reference():
@@ -53,11 +67,43 @@ def test_detect_recall_need_on_explicit_reference():
     assert result["depth"] == 2
 
 
+def test_detect_recall_need_on_bulgarian_explicit_reference():
+    result = detect_recall_need(
+        [
+            _message("assistant", "Обсъдихме rollout-а."),
+            _message("user", "Какво решихме по-рано за rollout-а?"),
+        ]
+    )
+
+    assert result["trigger"] is True
+    assert result["reason"] == "explicit_reference"
+    assert result["mode"] == "fts"
+    assert result["depth"] == 2
+
+
+def test_detect_recall_need_skips_temporal_before_phrase_in_bulgarian():
+    result = detect_recall_need(
+        [
+            _message("assistant", "Имаме нови наблюдения по случая."),
+            _message(
+                "user",
+                "Пациентът вече избягва да държи храната в гърлото си преди да я преглътне.",
+            ),
+        ]
+    )
+
+    assert result["trigger"] is False
+    assert result["reason"] == "live_context_sufficient"
+    assert result["mode"] == "none"
+
+
 def test_detect_recall_need_on_entity_lookup_gap():
     result = detect_recall_need(
         [
             _message("assistant", "Let's revisit deployment details."),
-            _message("user", "Use `/srv/app/config.yaml` and set `DEPLOY_ENV` correctly."),
+            _message(
+                "user", "Use `/srv/app/config.yaml` and set `DEPLOY_ENV` correctly."
+            ),
         ]
     )
 
@@ -67,6 +113,19 @@ def test_detect_recall_need_on_entity_lookup_gap():
     assert result["mode"] == "fts"
     assert result["depth"] == 1
     assert "/srv/app/config.yaml" in result["query_text"]
+
+
+def test_detect_recall_need_skips_generic_uppercase_acronym_gap():
+    result = detect_recall_need(
+        [
+            _message("assistant", "Добре, слушам."),
+            _message("user", "Аз съм разработчикът на ETL слоя за тези данни."),
+        ]
+    )
+
+    assert result["trigger"] is False
+    assert result["reason"] == "live_context_sufficient"
+    assert result["mode"] == "none"
 
 
 def test_detect_recall_need_on_constraint_continuation_gap():
@@ -143,7 +202,9 @@ def test_detect_recall_need_skips_single_vague_token():
 def test_detect_recall_need_skips_ambiguous_referential_when_locally_resolved():
     result = detect_recall_need(
         [
-            _message("assistant", "We should keep using the old config for nginx.", "m1"),
+            _message(
+                "assistant", "We should keep using the old config for nginx.", "m1"
+            ),
             _message("user", "Use the old config.", "m2"),
         ]
     )
@@ -187,7 +248,9 @@ def test_maybe_apply_chat_recall_injects_evidence(monkeypatch):
     async def _emitter(_event):
         return None
 
-    monkeypatch.setattr("open_webui.utils.chat_recall.is_supported_database", lambda: True)
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.is_supported_database", lambda: True
+    )
     monkeypatch.setattr(
         "open_webui.utils.chat_recall.recursive_search",
         lambda *args, **kwargs: [
@@ -206,7 +269,11 @@ def test_maybe_apply_chat_recall_injects_evidence(monkeypatch):
             branch_message_ids=["m1", "m2", "m9", "m10"],
             history_messages=[
                 _message("assistant", "Earlier summary state", "m1"),
-                _message("assistant", "We decided ffuf is the primary directory fuzzing tool.", "m2"),
+                _message(
+                    "assistant",
+                    "We decided ffuf is the primary directory fuzzing tool.",
+                    "m2",
+                ),
                 _message("assistant", "Recent summary state", "m9"),
                 _message("user", "What did we decide earlier about ffuf?", "m10"),
             ],
@@ -256,7 +323,9 @@ def test_maybe_apply_chat_recall_branch_recent_skips_fts(monkeypatch):
     request = _make_request(ENABLE_CHAT_RECALL=True)
     messages = [
         _message("assistant", "We first tried nmap.", "m1"),
-        _message("assistant", "Then we switched to ffuf because it worked better.", "m2"),
+        _message(
+            "assistant", "Then we switched to ffuf because it worked better.", "m2"
+        ),
         _message("user", "Какво стана с оня другия тул?", "m3"),
     ]
 
@@ -264,9 +333,13 @@ def test_maybe_apply_chat_recall_branch_recent_skips_fts(monkeypatch):
         return None
 
     def _boom(*args, **kwargs):
-        raise AssertionError("recursive_search should not be called for branch_recent mode")
+        raise AssertionError(
+            "recursive_search should not be called for branch_recent mode"
+        )
 
-    monkeypatch.setattr("open_webui.utils.chat_recall.is_supported_database", lambda: True)
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.is_supported_database", lambda: True
+    )
     monkeypatch.setattr("open_webui.utils.chat_recall.recursive_search", _boom)
 
     updated, result = asyncio.run(
@@ -308,7 +381,9 @@ def test_maybe_apply_chat_recall_times_out_and_falls_back(monkeypatch):
         time.sleep(0.05)
         return []
 
-    monkeypatch.setattr("open_webui.utils.chat_recall.is_supported_database", lambda: True)
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.is_supported_database", lambda: True
+    )
     monkeypatch.setattr("open_webui.utils.chat_recall.recursive_search", _slow_search)
 
     updated, result = asyncio.run(
@@ -327,7 +402,9 @@ def test_maybe_apply_chat_recall_times_out_and_falls_back(monkeypatch):
     assert result["evidence_injected"] is False
 
 
-def test_maybe_apply_chat_recall_falls_back_to_raw_branch_scan_when_fts_misses(monkeypatch):
+def test_maybe_apply_chat_recall_falls_back_to_raw_branch_scan_when_fts_misses(
+    monkeypatch,
+):
     request = _make_request(ENABLE_CHAT_RECALL=True)
     compact_messages = [
         _message("assistant", "Recent summary state", "m9"),
@@ -335,7 +412,9 @@ def test_maybe_apply_chat_recall_falls_back_to_raw_branch_scan_when_fts_misses(m
     ]
     history_messages = [
         _message("user", "Initial setup", "m1"),
-        _message("assistant", "We decided ffuf is the primary directory fuzzing tool.", "m2"),
+        _message(
+            "assistant", "We decided ffuf is the primary directory fuzzing tool.", "m2"
+        ),
         _message("assistant", "Recent summary state", "m9"),
         _message("user", "What did we decide earlier about ffuf?", "m10"),
     ]
@@ -343,12 +422,16 @@ def test_maybe_apply_chat_recall_falls_back_to_raw_branch_scan_when_fts_misses(m
     async def _emitter(_event):
         return None
 
-    monkeypatch.setattr("open_webui.utils.chat_recall.is_supported_database", lambda: True)
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.is_supported_database", lambda: True
+    )
     monkeypatch.setattr(
         "open_webui.utils.chat_recall.get_indexed_message_ids",
         lambda *args, **kwargs: {"m1", "m2", "m9", "m10"},
     )
-    monkeypatch.setattr("open_webui.utils.chat_recall.recursive_search", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.recursive_search", lambda *args, **kwargs: []
+    )
 
     updated, result = asyncio.run(
         maybe_apply_chat_recall(
@@ -382,13 +465,19 @@ def test_maybe_apply_chat_recall_reports_index_coverage(monkeypatch):
     async def _emitter(_event):
         return None
 
-    monkeypatch.setattr("open_webui.utils.chat_recall.is_supported_database", lambda: True)
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.is_supported_database", lambda: True
+    )
 
     def _fake_indexed(_chat_id, _message_ids, include_queue=True):
         return {"m1"} if not include_queue else {"m1", "m2"}
 
-    monkeypatch.setattr("open_webui.utils.chat_recall.get_indexed_message_ids", _fake_indexed)
-    monkeypatch.setattr("open_webui.utils.chat_recall.recursive_search", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.get_indexed_message_ids", _fake_indexed
+    )
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.recursive_search", lambda *args, **kwargs: []
+    )
 
     updated, result = asyncio.run(
         maybe_apply_chat_recall(
@@ -396,7 +485,11 @@ def test_maybe_apply_chat_recall_reports_index_coverage(monkeypatch):
             chat_id="chat-1",
             branch_message_ids=["m1", "m2", "m3"],
             history_messages=[
-                _message("assistant", "We decided ffuf is the primary directory fuzzing tool.", "m1"),
+                _message(
+                    "assistant",
+                    "We decided ffuf is the primary directory fuzzing tool.",
+                    "m1",
+                ),
                 _message("assistant", "Old detail", "m2"),
                 _message("user", "What did we decide earlier about ffuf?", "m3"),
             ],
@@ -409,3 +502,38 @@ def test_maybe_apply_chat_recall_reports_index_coverage(monkeypatch):
     assert result["indexed_message_count"] == 1
     assert result["queued_message_count"] == 1
     assert result["missing_message_count"] == 1
+
+
+def test_maybe_apply_chat_recall_skips_when_no_prior_history(monkeypatch):
+    request = _make_request(ENABLE_CHAT_RECALL=True)
+    messages = [
+        _message(
+            "user",
+            "Преди да я преглътне, пациентът задържа храната в гърлото си.",
+            "m1",
+        ),
+    ]
+    emitted = []
+
+    async def _emitter(event):
+        emitted.append(event)
+
+    monkeypatch.setattr(
+        "open_webui.utils.chat_recall.is_supported_database", lambda: True
+    )
+
+    updated, result = asyncio.run(
+        maybe_apply_chat_recall(
+            request=request,
+            chat_id="chat-1",
+            branch_message_ids=["m1"],
+            history_messages=messages,
+            messages=messages,
+            event_emitter=_emitter,
+        )
+    )
+
+    assert updated == messages
+    assert result["triggered"] is False
+    assert result["reason"] == "no_prior_history"
+    assert emitted == []

@@ -26,7 +26,6 @@
 	// Addons
 	let titleAutoGenerate = true;
 	let contextMaintenance = true;
-	let chatRecall = false;
 	let autoTags = true;
 
 	let responseAutoCopy = false;
@@ -203,7 +202,6 @@
 		autoTags = $settings?.autoTags ?? true;
 		contextMaintenance =
 			$settings?.contextMaintenance ?? $config?.features?.enable_context_maintenance ?? true;
-		chatRecall = $settings?.chatRecall ?? $config?.features?.enable_chat_recall ?? false;
 
 		highContrastMode = $settings?.highContrastMode ?? false;
 
@@ -241,10 +239,10 @@
 
 		landingPageMode = $settings?.landingPageMode ?? '';
 		chatBubble = $settings?.chatBubble ?? true;
-			widescreenMode = $settings?.widescreenMode ?? false;
-			splitLargeChunks = $settings?.splitLargeChunks ?? false;
-			scrollOnBranchChange = $settings?.scrollOnBranchChange ?? true;
-			tokenExplorerEnabled = $settings?.tokenExplorerEnabled ?? false;
+		widescreenMode = $settings?.widescreenMode ?? false;
+		splitLargeChunks = $settings?.splitLargeChunks ?? false;
+		scrollOnBranchChange = $settings?.scrollOnBranchChange ?? true;
+		tokenExplorerEnabled = $settings?.tokenExplorerEnabled ?? false;
 
 		temporaryChatByDefault = $settings?.temporaryChatByDefault ?? false;
 		chatDirection = $settings?.chatDirection ?? 'auto';
@@ -821,25 +819,6 @@
 
 			<div>
 				<div class=" py-0.5 flex w-full justify-between">
-					<div class=" self-center text-xs" id="chat-recall-label">
-						{$i18n.t('Chat Recall')}
-					</div>
-
-					<div class="flex items-center gap-2 p-1">
-						<Switch
-							ariaLabelledbyId="chat-recall-label"
-							tooltip={true}
-							bind:state={chatRecall}
-							on:change={() => {
-								saveSettings({ chatRecall });
-							}}
-						/>
-					</div>
-				</div>
-			</div>
-
-			<div>
-				<div class=" py-0.5 flex w-full justify-between">
 					<div id="chat-tags-label" class=" self-center text-xs">
 						{$i18n.t('Chat Tags Auto-Generation')}
 					</div>
@@ -1028,11 +1007,11 @@
 				</div>
 			</div>
 
-				<div>
-					<div class=" py-0.5 flex w-full justify-between">
-						<div id="scroll-on-branch-change-label" class=" self-center text-xs">
-							{$i18n.t('Scroll On Branch Change')}
-						</div>
+			<div>
+				<div class=" py-0.5 flex w-full justify-between">
+					<div id="scroll-on-branch-change-label" class=" self-center text-xs">
+						{$i18n.t('Scroll On Branch Change')}
+					</div>
 
 					<div class="flex items-center gap-2 p-1">
 						<Switch
@@ -1044,31 +1023,31 @@
 							}}
 						/>
 					</div>
+				</div>
+			</div>
+
+			<div>
+				<div class=" py-0.5 flex w-full justify-between">
+					<div id="token-explorer-label" class=" self-center text-xs">
+						{$i18n.t('Token Explorer')}
+					</div>
+
+					<div class="flex items-center gap-2 p-1">
+						<Switch
+							ariaLabelledbyId="token-explorer-label"
+							tooltip={true}
+							bind:state={tokenExplorerEnabled}
+							on:change={() => {
+								saveSettings({ tokenExplorerEnabled });
+							}}
+						/>
 					</div>
 				</div>
+			</div>
 
-				<div>
-					<div class=" py-0.5 flex w-full justify-between">
-						<div id="token-explorer-label" class=" self-center text-xs">
-							{$i18n.t('Token Explorer')}
-						</div>
-
-						<div class="flex items-center gap-2 p-1">
-							<Switch
-								ariaLabelledbyId="token-explorer-label"
-								tooltip={true}
-								bind:state={tokenExplorerEnabled}
-								on:change={() => {
-									saveSettings({ tokenExplorerEnabled });
-								}}
-							/>
-						</div>
-					</div>
-				</div>
-
-				<div>
-					<div class=" py-0.5 flex w-full justify-between">
-						<div id="stylized-pdf-export-label" class=" self-center text-xs">
+			<div>
+				<div class=" py-0.5 flex w-full justify-between">
+					<div id="stylized-pdf-export-label" class=" self-center text-xs">
 						{$i18n.t('Stylized PDF Export')}
 					</div>
 
@@ -1201,8 +1180,7 @@
 						</div>
 					</div>
 				</div>
-
-				{/if}
+			{/if}
 
 			{#if richTextInput}
 				<div>

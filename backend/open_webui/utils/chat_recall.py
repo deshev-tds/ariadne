@@ -34,7 +34,8 @@ _EXPLICIT_REFERENCE_PATTERNS = [
     for pattern in [
         r"\b(earlier|previously|last time)\b",
         r"\b(we decided|we agreed|you said|i said|what was)\b",
-        r"\b(по-рано|преди|решихме|уговорихме|ти каза|какво беше)\b",
+        r"\b(по-рано|решихме|уговорихме|ти каза|какво беше)\b",
+        r"\bпреди\s+(?:това|последния път)\b",
     ]
 ]
 
@@ -62,11 +63,17 @@ _AMBIGUOUS_REFERENTIAL_PATTERNS = [
     ]
 ]
 
-_PATH_RE = re.compile(r"(?<!\w)(?:/[\w./:-]+|[\w.-]+\.(?:py|ts|tsx|js|json|yaml|yml|toml|md|txt|env|ini))(?!\w)")
-_ENV_RE = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
+_PATH_RE = re.compile(
+    r"(?<!\w)(?:/[\w./:-]+|[\w.-]+\.(?:py|ts|tsx|js|json|yaml|yml|toml|md|txt|env|ini))(?!\w)"
+)
+# Restrict plain uppercase extraction to underscore-style config/env names.
+# Bare acronyms like "ETL" or "AFib" create noisy false-positive recall triggers.
+_ENV_RE = re.compile(r"\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b")
 _DOTTED_RE = re.compile(r"\b[a-zA-Z_][\w-]*(?:\.[a-zA-Z_][\w-]*)+\b")
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
-_ENDPOINT_RE = re.compile(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s+/[\w./:-]*\b", re.IGNORECASE)
+_ENDPOINT_RE = re.compile(
+    r"\b(?:GET|POST|PUT|PATCH|DELETE)\s+/[\w./:-]*\b", re.IGNORECASE
+)
 _CONTINUATION_FILLER_TOKENS = {
     "continue",
     "same",
@@ -94,6 +101,12 @@ _CONTINUATION_FILLER_TOKENS = {
 
 
 def resolve_chat_recall_enabled(request, user) -> bool:
+    feature_enabled = bool(
+        getattr(request.app.state.config, "ENABLE_CHAT_RECALL", False)
+    )
+    if not feature_enabled:
+        return False
+
     settings = getattr(user, "settings", None)
     if settings is None and isinstance(user, dict):
         settings = user.get("settings")
@@ -104,10 +117,7 @@ def resolve_chat_recall_enabled(request, user) -> bool:
     elif isinstance(settings, dict):
         ui_settings = dict(settings.get("ui") or {})
 
-    if "chatRecall" in ui_settings:
-        return bool(ui_settings["chatRecall"])
-
-    return bool(getattr(request.app.state.config, "ENABLE_CHAT_RECALL", False))
+    return bool(ui_settings.get("chatRecallEnabled", False))
 
 
 def resolve_recall_settings(request) -> dict[str, int]:
@@ -141,7 +151,9 @@ def resolve_recall_settings(request) -> dict[str, int]:
     }
 
 
-def extract_branch_message_ids(history_messages: list[dict[str, Any]] | None) -> list[str]:
+def extract_branch_message_ids(
+    history_messages: list[dict[str, Any]] | None,
+) -> list[str]:
     out: list[str] = []
     for message in history_messages or []:
         message_id = str(message.get("id") or "").strip()
@@ -150,7 +162,9 @@ def extract_branch_message_ids(history_messages: list[dict[str, Any]] | None) ->
     return out
 
 
-def _history_lookup(history_messages: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+def _history_lookup(
+    history_messages: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
     lookup: dict[str, dict[str, Any]] = {}
     for message in history_messages or []:
         message_id = str(message.get("id") or "").strip()
@@ -159,7 +173,9 @@ def _history_lookup(history_messages: list[dict[str, Any]] | None) -> dict[str, 
     return lookup
 
 
-def enqueue_branch_backfill(chat_id: str, history_messages: list[dict[str, Any]] | None) -> int:
+def enqueue_branch_backfill(
+    chat_id: str, history_messages: list[dict[str, Any]] | None
+) -> int:
     if not is_supported_database() or not chat_id or chat_id.startswith("local:"):
         return 0
 
@@ -197,6 +213,15 @@ def _query_tokens(text_value: str) -> list[str]:
         seen.add(token)
         out.append(token)
     return out
+
+
+def _has_prior_history(messages: list[dict[str, Any]]) -> bool:
+    for message in messages or []:
+        if message.get("role") not in {"user", "assistant", "tool"}:
+            continue
+        if _message_text(message).strip():
+            return True
+    return False
 
 
 def _continuation_query_tokens(text_value: str) -> list[str]:
@@ -266,7 +291,9 @@ def _is_ambiguous_referential(
     if entities:
         return False
 
-    if not any(pattern.search(user_text) for pattern in _AMBIGUOUS_REFERENTIAL_PATTERNS):
+    if not any(
+        pattern.search(user_text) for pattern in _AMBIGUOUS_REFERENTIAL_PATTERNS
+    ):
         return False
 
     if _has_local_resolution(
@@ -291,7 +318,11 @@ def detect_recall_need(messages: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     latest_user_index = next(
-        (idx for idx in range(len(messages) - 1, -1, -1) if messages[idx].get("role") == "user"),
+        (
+            idx
+            for idx in range(len(messages) - 1, -1, -1)
+            if messages[idx].get("role") == "user"
+        ),
         None,
     )
     if latest_user_index is None:
@@ -416,7 +447,12 @@ def _build_branch_recent_hits(
     if not candidate_ids:
         return []
 
-    recent_window = candidate_ids[-max(_BRANCH_RECENT_MIN_MESSAGES, min(_BRANCH_RECENT_MAX_MESSAGES, len(candidate_ids))):]
+    recent_window = candidate_ids[
+        -max(
+            _BRANCH_RECENT_MIN_MESSAGES,
+            min(_BRANCH_RECENT_MAX_MESSAGES, len(candidate_ids)),
+        ) :
+    ]
     hits: list[dict[str, Any]] = []
     for message_id in reversed(recent_window):
         message = message_lookup.get(message_id)
@@ -655,7 +691,9 @@ def inject_evidence_into_messages(
     return [merged_system, *messages]
 
 
-async def emit_chat_recall_status(event_emitter, description: str, *, done: bool) -> None:
+async def emit_chat_recall_status(
+    event_emitter, description: str, *, done: bool
+) -> None:
     if not event_emitter:
         return
     try:
@@ -703,6 +741,11 @@ async def maybe_apply_chat_recall(
         or str(chat_id).startswith("local:")
         or not messages
     ):
+        return messages, result
+
+    history_source = history_messages or messages
+    if not _has_prior_history(history_source[:-1]):
+        result["reason"] = "no_prior_history"
         return messages, result
 
     trigger = detect_recall_need(messages)
@@ -775,11 +818,18 @@ async def maybe_apply_chat_recall(
         snippet_token_budget=settings["snippet_token_budget"],
     )
     result["hit_count"] = len(hits or [])
-    result["usable_hit_count"] = min(len(hits or []), settings["max_hits"]) if evidence_message else 0
-    if not evidence_message and trigger.get("mode") == "fts" and trigger.get("reason") in {
-        "explicit_reference",
-        "entity_lookup_gap",
-    }:
+    result["usable_hit_count"] = (
+        min(len(hits or []), settings["max_hits"]) if evidence_message else 0
+    )
+    if (
+        not evidence_message
+        and trigger.get("mode") == "fts"
+        and trigger.get("reason")
+        in {
+            "explicit_reference",
+            "entity_lookup_gap",
+        }
+    ):
         fallback_hits = _build_raw_query_hits(
             branch_message_ids=branch_message_ids,
             history_messages=history_messages,
@@ -796,7 +846,9 @@ async def maybe_apply_chat_recall(
         )
         result["hit_count"] = len(fallback_hits or [])
         result["usable_hit_count"] = (
-            min(len(fallback_hits or []), settings["max_hits"]) if evidence_message else 0
+            min(len(fallback_hits or []), settings["max_hits"])
+            if evidence_message
+            else 0
         )
 
     if not evidence_message:
