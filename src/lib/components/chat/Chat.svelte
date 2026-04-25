@@ -116,6 +116,7 @@
 	import {
 		applyCompletionTokenData,
 		applyTokenExplorerDefaults,
+		buildTokenBranchDisplayPrefix,
 		buildTokenBranchPayload,
 		type TokenBranchRequest
 	} from './tokenExplorer';
@@ -2374,6 +2375,30 @@
 		}
 	};
 
+	const getTokenBranchDisplayPrefix = (message: Record<string, any> | null | undefined) => {
+		const prefix = message?.tokenBranchDisplayPrefix ?? message?.tokenBranch?.displayPrefix;
+		return typeof prefix === 'string' && prefix.length > 0 ? prefix : '';
+	};
+
+	const ensureTokenBranchDisplayPrefix = (message: Record<string, any>) => {
+		const prefix = getTokenBranchDisplayPrefix(message);
+		if (!prefix || typeof message?.content !== 'string' || message.content.startsWith(prefix)) {
+			return;
+		}
+
+		message.content = `${prefix}${message.content}`;
+	};
+
+	const withTokenBranchDisplayPrefix = (message: Record<string, any>, content: unknown) => {
+		const text = typeof content === 'string' ? content : '';
+		const prefix = getTokenBranchDisplayPrefix(message);
+		if (!prefix || text.startsWith(prefix)) {
+			return text;
+		}
+
+		return `${prefix}${text}`;
+	};
+
 	const chatCompletionEventHandler = async (data, message, chatId) => {
 		const {
 			id,
@@ -2414,10 +2439,12 @@
 		if (choices) {
 			if (choices[0]?.message?.content) {
 				// Non-stream response
+				ensureTokenBranchDisplayPrefix(message);
 				message.content += choices[0]?.message?.content;
 			} else {
 				// Stream response
 				let value = choices[0]?.delta?.content ?? '';
+				ensureTokenBranchDisplayPrefix(message);
 				if (message.content == '' && value == '\n') {
 					console.log('Empty response');
 				} else {
@@ -2457,7 +2484,7 @@
 
 		if (content) {
 			// REALTIME_CHAT_SAVE is disabled
-			message.content = content;
+			message.content = withTokenBranchDisplayPrefix(message, content);
 
 			if (navigator.vibrate && ($settings?.hapticFeedback ?? false)) {
 				navigator.vibrate(5);
@@ -2705,13 +2732,15 @@
 			modelId = null,
 			modelIdx = null,
 			newChat = false,
-			branch = null
+			branch = null,
+			branchDisplayPrefix = null
 		}: {
 			messages?: any[] | null;
 			modelId?: string | null;
 			modelIdx?: number | null;
 			newChat?: boolean;
 			branch?: TokenBranchRequest | null;
+			branchDisplayPrefix?: string | null;
 		} = {}
 	) => {
 		if (autoScroll) {
@@ -2744,7 +2773,8 @@
 					model: model.id,
 					modelName: model.name ?? model.id,
 					modelIdx: modelIdx ? modelIdx : _modelIdx,
-					timestamp: Math.floor(Date.now() / 1000) // Unix epoch
+					timestamp: Math.floor(Date.now() / 1000), // Unix epoch
+					...(branchDisplayPrefix ? { tokenBranchDisplayPrefix: branchDisplayPrefix } : {})
 				};
 
 				// Add message to history and Set currentId to messageId
@@ -3347,10 +3377,17 @@
 			return;
 		}
 
+		const branchDisplayPrefix = buildTokenBranchDisplayPrefix(
+			sourceMessage.tokenTelemetry,
+			forkIndex,
+			altRank
+		);
+
 		await sendMessage(history, sourceMessage.parentId, {
 			modelId: sourceMessage.model,
 			modelIdx: sourceMessage.modelIdx,
-			branch: buildTokenBranchPayload(sourceMessage.id, forkIndex, altRank)
+			branch: buildTokenBranchPayload(sourceMessage.id, forkIndex, altRank),
+			branchDisplayPrefix
 		});
 	};
 

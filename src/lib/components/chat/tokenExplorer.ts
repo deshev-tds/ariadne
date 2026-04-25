@@ -64,6 +64,31 @@ export const buildTokenBranchPayload = (
 	alt_rank: altRank
 });
 
+export const buildTokenBranchDisplayPrefix = (
+	telemetry: Record<string, any> | null | undefined,
+	forkIndex: number,
+	altRank: number
+) => {
+	const tokens = Array.isArray(telemetry?.tokens) ? telemetry.tokens : [];
+	if (forkIndex < 0 || forkIndex >= tokens.length) {
+		return '';
+	}
+
+	const alternatives = Array.isArray(tokens[forkIndex]?.alternatives)
+		? tokens[forkIndex].alternatives
+		: [];
+	if (altRank < 0 || altRank >= alternatives.length) {
+		return '';
+	}
+
+	const prefix = tokens
+		.slice(0, forkIndex)
+		.map((token) => coerceTokenText(token?.text))
+		.join('');
+
+	return `${prefix}${coerceTokenText(alternatives[altRank]?.text)}`;
+};
+
 export const applyCompletionTokenData = (
 	message: Record<string, any>,
 	data: Record<string, any>

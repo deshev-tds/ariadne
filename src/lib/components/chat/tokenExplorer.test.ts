@@ -4,6 +4,7 @@ import {
 	applyCompletionTokenData,
 	applyTokenExplorerDefaults,
 	annotateMarkdownTokensForTokenExplorer,
+	buildTokenBranchDisplayPrefix,
 	buildTokenBranchPayload,
 	buildTokenExplorerRanges,
 	splitTextByTokenRanges
@@ -35,6 +36,39 @@ describe('tokenExplorer helpers', () => {
 			fork_index: 42,
 			alt_rank: 1
 		});
+	});
+
+	it('builds branch display prefix from prior tokens and selected alternative', () => {
+		expect(
+			buildTokenBranchDisplayPrefix(
+				{
+					tokens: [
+						{ text: 'Bitcoin' },
+						{
+							text: "'s",
+							alternatives: [
+								{ rank: 0, text: "'s" },
+								{ rank: 1, text: ' went' }
+							]
+						},
+						{ text: ' first' }
+					]
+				},
+				1,
+				1
+			)
+		).toBe('Bitcoin went');
+	});
+
+	it('returns an empty branch display prefix for invalid branch ranges', () => {
+		expect(buildTokenBranchDisplayPrefix({ tokens: [{ text: 'A' }] }, 4, 0)).toBe('');
+		expect(
+			buildTokenBranchDisplayPrefix(
+				{ tokens: [{ text: 'A', alternatives: [{ rank: 0, text: 'B' }] }] },
+				0,
+				4
+			)
+		).toBe('');
 	});
 
 	it('applies completion token data to a message', () => {
