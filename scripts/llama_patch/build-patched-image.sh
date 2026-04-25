@@ -135,6 +135,7 @@ trap on_error ERR
 
 build_args=(
   build
+  --format docker
   --file "$SCRIPT_DIR/Containerfile.patched-llama"
   --build-arg "BASE_IMAGE=$BASE_IMAGE"
   --build-arg "BACKEND=$BACKEND"

@@ -30,7 +30,7 @@ RUN if [[ -z "${BACKEND}" ]]; then \
     fi; \
     common_pkgs=( \
         bash ca-certificates git-core patch cmake ninja-build make \
-        gcc gcc-c++ clang clang-devel lld compiler-rt libcurl-devel \
+        gcc gcc-c++ binutils clang clang-devel lld compiler-rt libcurl-devel \
         procps-ng findutils diffutils \
     ); \
     case "${BACKEND}" in \
