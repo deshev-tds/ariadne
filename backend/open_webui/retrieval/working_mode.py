@@ -1,7 +1,5 @@
 from typing import Any
 
-from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
-
 WORKING_MODES = {"general", "medical", "general_science", "offsec", "news"}
 LEGACY_WORKING_MODE_ALIASES = {"science": "medical"}
 
@@ -12,10 +10,7 @@ def normalize_working_mode(value: Any, *, local_corpus_mode: Any = None) -> str:
     if normalized in WORKING_MODES:
         return normalized
 
-    # Backward compatibility: older chats only carry local_corpus_mode.
-    # If local corpus retrieval is enabled, map them onto the current
-    # evidence-first family, exposed product-wise as Medical Mode.
-    if normalize_local_corpus_mode(local_corpus_mode) != "off":
-        return "medical"
-
+    # Missing or unknown working modes now fall back to General. Local corpus
+    # routing remains an independent setting and must not implicitly flip the
+    # chat into Medical mode.
     return "general"

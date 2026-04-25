@@ -530,6 +530,7 @@ def get_builtin_tools(
         ((extra_params.get("__metadata__", {}) or {}).get("params", {}) or {}),
     )
     working_mode = corpus_runtime.working_mode
+    local_corpus_mode = corpus_runtime.local_corpus_mode
     medical_gate = (
         ((extra_params.get("__metadata__", {}) or {}).get("medical_corpus_sufficiency"))
         or {}
@@ -538,11 +539,13 @@ def get_builtin_tools(
 
     if (
         is_builtin_tool_enabled("local_corpus")
-        and working_mode == "medical"
+        and working_mode in {"medical", "general"}
+        and local_corpus_mode != "off"
         and corpus_runtime.medical_enabled
     ):
-        builtin_functions.append(medical_corpus_sufficiency)
-        if medical_gate_decision != "skip_corpus":
+        if working_mode == "medical":
+            builtin_functions.append(medical_corpus_sufficiency)
+        if working_mode != "medical" or medical_gate_decision != "skip_corpus":
             builtin_functions.extend(
                 [
                     local_corpus_list_domains,

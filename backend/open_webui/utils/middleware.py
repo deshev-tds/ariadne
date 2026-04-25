@@ -303,13 +303,6 @@ DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE = (
     "obviously noisy, escalate cleanly. Do not stay loyal to the local lane out of inertia."
 )
 
-DEFAULT_SELECTOR_LOCAL_CORPUS_AUTO_GUIDANCE = (
-    "When local corpus tools are available in auto mode, first inspect the available "
-    "local domains with a single local_corpus_list_domains call before going to web "
-    "search or model-only answering. Continue in the local lane only if the returned "
-    "usable domains show a plausible thematic fit. Do not drill down further just to "
-    "confirm an empty, weak, or merely nominal shelf."
-)
 DEFAULT_SELECTOR_MEDICAL_GUIDANCE = (
     "In Medical mode, start with medical_corpus_sufficiency before deciding whether the local corpus is enough. "
     "Treat use_corpus_only, use_corpus_plus_web, and skip_corpus as a routing contract, not a soft suggestion."
@@ -575,6 +568,12 @@ def _build_default_selector_guidance(
         clauses.append(DEFAULT_SELECTOR_TERM_PRESERVATION_GUIDANCE)
 
     if (
+        local_corpus_mode == "prefer"
+        and _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES)
+    ):
+        clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE)
+
+    if (
         working_mode == "medical"
         and _selector_has_any_tool(tools, DEFAULT_SELECTOR_MEDICAL_TOOL_NAMES)
     ):
@@ -584,8 +583,6 @@ def _build_default_selector_guidance(
         and _selector_has_any_tool(tools, DEFAULT_SELECTOR_SCHOLARLY_TOOL_NAMES)
     ):
         clauses.append(DEFAULT_SELECTOR_GENERAL_SCIENCE_GUIDANCE)
-        if _selector_has_any_tool(tools, DEFAULT_SELECTOR_LOCAL_CORPUS_TOOL_NAMES):
-            clauses.append(DEFAULT_SELECTOR_LOCAL_CORPUS_PREFER_GUIDANCE)
     elif (
         working_mode == "offsec"
         and local_corpus_mode != "off"
@@ -684,6 +681,11 @@ def _should_enable_shared_tool_narration(
     working_mode = _normalized_working_mode(params)
     corpus_runtime = resolve_corpus_runtime(request.app.state.config, params)
     medical_enabled = working_mode == "medical" and corpus_runtime.medical_enabled
+    general_local_corpus_enabled = (
+        working_mode == "general"
+        and local_corpus_mode == "prefer"
+        and corpus_runtime.medical_enabled
+    )
     general_science_enabled = (
         working_mode == "general_science"
         and (
@@ -700,6 +702,7 @@ def _should_enable_shared_tool_narration(
     focused_search_enabled = bool(features.get("focused_search"))
     return bool(
         medical_enabled
+        or general_local_corpus_enabled
         or general_science_enabled
         or offsec_enabled
         or news_enabled
@@ -714,6 +717,11 @@ def _initialize_tool_narration_state(
     working_mode = _normalized_working_mode(params)
     corpus_runtime = resolve_corpus_runtime(request.app.state.config, params)
     medical_mode = working_mode == "medical" and corpus_runtime.medical_enabled
+    general_local_corpus_mode = (
+        working_mode == "general"
+        and normalize_local_corpus_mode(params.get("local_corpus_mode")) == "prefer"
+        and corpus_runtime.medical_enabled
+    )
     general_science_mode = working_mode == "general_science"
     offsec_mode = (
         working_mode == "offsec"
@@ -725,13 +733,36 @@ def _initialize_tool_narration_state(
     return {
         "enabled": _should_enable_shared_tool_narration(request, metadata, features),
         "last_narrated_phase": (
-            "orientation" if (medical_mode or general_science_mode or offsec_mode or news_mode) else None
+            "orientation"
+            if (
+                medical_mode
+                or general_local_corpus_mode
+                or general_science_mode
+                or offsec_mode
+                or news_mode
+            )
+            else None
         ),
         "current_major_phase": None,
-        "narration_count": 1 if (medical_mode or general_science_mode or offsec_mode or news_mode) else 0,
+        "narration_count": (
+            1
+            if (
+                medical_mode
+                or general_local_corpus_mode
+                or general_science_mode
+                or offsec_mode
+                or news_mode
+            )
+            else 0
+        ),
         "max_beats": TOOL_NARRATION_MAX_BEATS,
         "initial_preamble_expected": bool(
-            medical_mode or general_science_mode or offsec_mode or news_mode or focused_search_enabled
+            medical_mode
+            or general_local_corpus_mode
+            or general_science_mode
+            or offsec_mode
+            or news_mode
+            or focused_search_enabled
         ),
     }
 
@@ -5948,6 +5979,21 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if MEDICAL_CONSULT_SYSTEM_PROMPT not in str(current_content):
             form_data["messages"] = add_or_update_system_message(
                 MEDICAL_CONSULT_SYSTEM_PROMPT,
+                form_data["messages"],
+                append=True,
+            )
+
+    if (
+        working_mode == "general"
+        and local_corpus_mode == "prefer"
+        and metadata.get("params", {}).get("function_calling") == "native"
+        and corpus_runtime.medical_enabled
+    ):
+        current_system = get_system_message(form_data.get("messages", []))
+        current_content = current_system.get("content", "") if current_system else ""
+        if LOCAL_CORPUS_PREFER_SYSTEM_PROMPT not in str(current_content):
+            form_data["messages"] = add_or_update_system_message(
+                LOCAL_CORPUS_PREFER_SYSTEM_PROMPT,
                 form_data["messages"],
                 append=True,
             )

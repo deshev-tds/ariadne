@@ -4,19 +4,32 @@ from types import SimpleNamespace
 import pytest
 
 from open_webui.retrieval.corpus_runtime import resolve_corpus_runtime
+from open_webui.retrieval.local_corpus_reasoning import normalize_local_corpus_mode
 from open_webui.retrieval.medical_lane import assess_medical_corpus_sufficiency
 from open_webui.retrieval.working_mode import normalize_working_mode
 from open_webui.utils.science_orchestration import should_activate_science_orchestration
 
 
-def test_normalize_working_mode_maps_legacy_science_to_medical():
+def test_normalize_working_mode_keeps_legacy_science_alias_but_defaults_missing_modes_to_general():
     assert normalize_working_mode("science") == "medical"
-    assert normalize_working_mode(None, local_corpus_mode="auto") == "medical"
+    assert normalize_working_mode(None, local_corpus_mode="auto") == "general"
+    assert normalize_working_mode(None, local_corpus_mode=None) == "general"
     assert normalize_working_mode("general_science") == "general_science"
     assert normalize_working_mode("unknown", local_corpus_mode="off") == "general"
+    assert normalize_working_mode("unknown", local_corpus_mode="prefer") == "general"
 
 
-def test_resolve_corpus_runtime_separates_medical_from_general_science(monkeypatch):
+def test_normalize_local_corpus_mode_removes_auto_and_defaults_to_off():
+    assert normalize_local_corpus_mode("prefer") == "prefer"
+    assert normalize_local_corpus_mode("off") == "off"
+    assert normalize_local_corpus_mode("auto") == "off"
+    assert normalize_local_corpus_mode(None) == "off"
+    assert normalize_local_corpus_mode("unknown") == "off"
+
+
+def test_resolve_corpus_runtime_separates_general_prefer_from_medical_and_general_science(
+    monkeypatch,
+):
     monkeypatch.setattr(
         "open_webui.retrieval.corpus_runtime.resolve_local_corpus_root",
         lambda _config: Path("/tmp/medical-corpus"),
@@ -26,17 +39,25 @@ def test_resolve_corpus_runtime_separates_medical_from_general_science(monkeypat
 
     medical_runtime = resolve_corpus_runtime(
         config,
-        {"working_mode": "medical", "local_corpus_mode": "auto"},
+        {"working_mode": "medical", "local_corpus_mode": "prefer"},
     )
     assert medical_runtime.medical_enabled is True
     assert medical_runtime.medical_root == Path("/tmp/medical-corpus")
     assert medical_runtime.attached_roots == {}
 
+    general_runtime = resolve_corpus_runtime(
+        config,
+        {"working_mode": "general", "local_corpus_mode": "prefer"},
+    )
+    assert general_runtime.medical_enabled is True
+    assert general_runtime.medical_root == Path("/tmp/medical-corpus")
+    assert general_runtime.attached_roots == {}
+
     science_runtime = resolve_corpus_runtime(
         config,
         {
             "working_mode": "general_science",
-            "local_corpus_mode": "auto",
+            "local_corpus_mode": "prefer",
             "science_attached_corpora": ["medicine"],
         },
     )
@@ -48,7 +69,7 @@ def test_resolve_corpus_runtime_separates_medical_from_general_science(monkeypat
         config,
         {
             "working_mode": "general_science",
-            "local_corpus_mode": "auto",
+            "local_corpus_mode": "prefer",
             "science_attached_corpora": [],
         },
     )

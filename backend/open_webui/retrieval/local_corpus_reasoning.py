@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 LOCAL_CORPUS_PACKS_DIR = Path(__file__).resolve().parent / "local_corpus_packs"
 LOCAL_CORPUS_REASONING_SCHEMA_VERSION = 1
 LOCAL_CORPUS_REASONING_HARD_MAX_AXES = 6
-LOCAL_CORPUS_MODES = {"off", "auto", "prefer"}
+LOCAL_CORPUS_MODES = {"off", "prefer"}
 MATURITY_LABELS = {1: "tier_1", 2: "tier_2", 3: "tier_3"}
 
 _GENERIC_ORIENTATION_TERMS = {
@@ -247,9 +247,13 @@ def clear_local_corpus_reasoning_caches() -> None:
 
 def normalize_local_corpus_mode(value: Any) -> str:
     normalized = str(value or "").strip().lower()
+    if normalized == "auto":
+        # Legacy compatibility: older clients/chats may still persist "auto".
+        # Product semantics now treat local corpus as opt-in only.
+        return "off"
     if normalized in LOCAL_CORPUS_MODES:
         return normalized
-    return "auto"
+    return "off"
 
 
 def _pack_path(domain: str) -> Path:

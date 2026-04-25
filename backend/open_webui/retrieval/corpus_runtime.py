@@ -128,6 +128,10 @@ def resolve_corpus_runtime(
 
     if working_mode == "medical":
         medical_root = resolve_local_corpus_root(config_or_path)
+    elif working_mode == "general":
+        # "prefer" keeps the generic chat in General mode while still exposing
+        # the shared local corpus as an optional evidence lane.
+        medical_root = resolve_local_corpus_root(config_or_path)
     elif working_mode == "general_science":
         if "medicine" in attached_corpora:
             medicine_root = resolve_local_corpus_root(config_or_path)

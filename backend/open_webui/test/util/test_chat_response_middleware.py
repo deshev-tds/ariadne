@@ -366,7 +366,7 @@ def test_build_default_selector_guidance_adds_local_corpus_prefer_and_term_rules
     assert "prior-work sources" not in guidance
 
 
-def test_build_default_selector_guidance_adds_local_corpus_auto_shelf_check_rule():
+def test_build_default_selector_guidance_treats_legacy_auto_local_corpus_mode_as_off():
     metadata = {
         "params": {"function_calling": "default", "local_corpus_mode": "auto"},
         "features": {"focused_search": True},
@@ -380,10 +380,8 @@ def test_build_default_selector_guidance_adds_local_corpus_auto_shelf_check_rule
     guidance = middleware._build_default_selector_guidance(metadata, tools, [])
 
     assert "preserve the user's substantive topic terms" in guidance
-    assert "single local_corpus_list_domains call" in guidance
-    assert "before going to web search or model-only answering" in guidance
-    assert "Do not drill down further just to confirm an empty, weak, or merely nominal shelf" in guidance
     assert "prefer local corpus tools first" not in guidance
+    assert "single local_corpus_list_domains call" not in guidance
 
 
 def test_build_forced_default_selector_tool_call_returns_medical_gate_for_medical_mode():
@@ -425,68 +423,13 @@ def test_build_forced_default_selector_tool_call_skips_non_medical_or_missing_to
         )
         is None
     )
-
-
-@pytest.mark.asyncio
-async def test_chat_completion_tools_handler_forces_local_domain_probe_before_selector(
-    monkeypatch,
-):
-    request = _build_request(enable_local_corpus=True, local_corpus_root="/tmp/local-corpus")
-    user = SimpleNamespace(id="user-1")
-    body = {
-        "model": "demo-model",
-        "messages": [{"role": "user", "content": "What can the local corpus help with?"}],
-    }
-    extra_params = {
-        "__event_call__": None,
-        "__event_emitter__": None,
-        "__metadata__": {
-            "params": {"function_calling": "default", "local_corpus_mode": "auto"},
-        },
-    }
-    models = {"demo-model": {"id": "demo-model"}}
-    called = {"selector": False, "tool": False}
-
-    async def _should_not_run_selector(*_args, **_kwargs):
-        called["selector"] = True
-        raise AssertionError("selector model should not run before local shelf check")
-
-    async def _fake_local_domains(**_kwargs):
-        called["tool"] = True
-        return json.dumps({"status": "ok", "domains": [{"domain": "medicine"}]})
-
-    monkeypatch.setattr(
-        "open_webui.utils.middleware.generate_chat_completion",
-        _should_not_run_selector,
-    )
-    monkeypatch.setattr(
-        "open_webui.utils.middleware.get_task_model_id",
-        lambda *_args, **_kwargs: "demo-model",
-    )
-
-    tools = {
-        "local_corpus_list_domains": {
-            "tool_id": "builtin:local_corpus_list_domains",
-            "callable": _fake_local_domains,
-            "spec": {"parameters": {"properties": {}}},
-            "type": "builtin",
-        },
-        "web_research_strong": {
-            "tool_id": "builtin:web_research_strong",
-            "callable": _fake_local_domains,
-            "spec": {"parameters": {"properties": {}}},
-            "type": "builtin",
-        },
-    }
-
-    _body, payload = await middleware.chat_completion_tools_handler(
-        request, body, extra_params, user, models, tools
-    )
-
-    assert called["tool"] is True
-    assert called["selector"] is False
-    assert payload["sources"][0]["source"]["name"] == (
-        "builtin:local_corpus_list_domains/local_corpus_list_domains"
+    assert (
+        middleware._build_forced_default_selector_tool_call(
+            {"params": {"function_calling": "default", "local_corpus_mode": "auto"}},
+            {"medical_corpus_sufficiency": {}},
+            [{"role": "user", "content": "test"}],
+        )
+        is None
     )
 
 
@@ -660,9 +603,7 @@ def test_build_default_selector_guidance_adds_offsec_consult_rules():
 
 
 def test_should_enable_shared_tool_narration_for_local_corpus_prefer():
-    request = _build_request(
-        enable_local_corpus=True, local_corpus_root="/tmp/local-corpus"
-    )
+    request = _build_request(enable_local_corpus=True, local_corpus_root="/tmp")
     metadata = {"params": {"function_calling": "native", "local_corpus_mode": "prefer"}}
 
     assert (
@@ -703,9 +644,7 @@ def test_should_enable_shared_tool_narration_for_focused_search():
 
 
 def test_initialize_tool_narration_state_reserves_local_corpus_orientation():
-    request = _build_request(
-        enable_local_corpus=True, local_corpus_root="/tmp/local-corpus"
-    )
+    request = _build_request(enable_local_corpus=True, local_corpus_root="/tmp")
     metadata = {"params": {"function_calling": "native", "local_corpus_mode": "prefer"}}
 
     state = middleware._initialize_tool_narration_state(request, metadata, {})

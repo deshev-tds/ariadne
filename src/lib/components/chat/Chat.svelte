@@ -336,7 +336,7 @@
 		'news'
 	];
 	let chatWorkingMode: WorkingMode = 'general';
-	let chatLocalCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
+	let chatLocalCorpusMode: 'off' | 'prefer' = 'off';
 	let chatScienceResearchMode: ScienceResearchMode = 'light';
 	let chatScienceAttachedCorpora: string[] = [];
 
@@ -370,12 +370,10 @@
 	$: chatFocusedSearchEnabled = (params?.focused_search_mode ?? false) === true;
 	$: chatWorkingMode = CHAT_WORKING_MODES.includes(params?.working_mode ?? '')
 		? params.working_mode
-		: ['auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
-			? 'medical'
-			: 'general';
-	$: chatLocalCorpusMode = ['off', 'auto', 'prefer'].includes(params?.local_corpus_mode ?? '')
+		: 'general';
+	$: chatLocalCorpusMode = ['off', 'prefer'].includes(params?.local_corpus_mode ?? '')
 		? params.local_corpus_mode
-		: 'auto';
+		: 'off';
 	$: chatScienceResearchMode = normalizeScienceResearchMode(params?.science_research_mode);
 	$: chatScienceAttachedCorpora = normalizeScienceAttachedCorpora(params?.science_attached_corpora);
 	$: if (chatWorkingMode === 'general_science' && !$selectedTerminalId) {
@@ -448,13 +446,15 @@
 	const setChatWorkingMode = (mode: WorkingMode) => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
 		nextParams.working_mode = mode;
-		if (mode === 'medical' || mode === 'general_science') {
-			nextParams.local_corpus_mode = 'auto';
+		if (mode === 'medical' || mode === 'general_science' || mode === 'offsec') {
+			nextParams.local_corpus_mode = 'prefer';
+		} else {
+			nextParams.local_corpus_mode = 'off';
 		}
 		params = nextParams;
 	};
 
-	const setChatLocalCorpusMode = (mode: 'off' | 'auto' | 'prefer') => {
+	const setChatLocalCorpusMode = (mode: 'off' | 'prefer') => {
 		const nextParams = JSON.parse(JSON.stringify(params ?? {}));
 		nextParams.local_corpus_mode = mode;
 		params = nextParams;
@@ -765,11 +765,9 @@
 							nextParams.working_mode = input.workingMode;
 						}
 						if (typeof input.localCorpusMode === 'string') {
-							nextParams.local_corpus_mode = ['off', 'auto', 'prefer'].includes(
-								input.localCorpusMode
-							)
+							nextParams.local_corpus_mode = ['off', 'prefer'].includes(input.localCorpusMode)
 								? input.localCorpusMode
-								: 'auto';
+								: 'off';
 						}
 						nextParams.science_research_mode = normalizeScienceResearchMode(
 							input.scienceResearchMode
@@ -1441,11 +1439,9 @@
 							nextParams.working_mode = input.workingMode;
 						}
 						if (typeof input.localCorpusMode === 'string') {
-							nextParams.local_corpus_mode = ['off', 'auto', 'prefer'].includes(
-								input.localCorpusMode
-							)
+							nextParams.local_corpus_mode = ['off', 'prefer'].includes(input.localCorpusMode)
 								? input.localCorpusMode
-								: 'auto';
+								: 'off';
 						}
 						nextParams.science_research_mode = normalizeScienceResearchMode(
 							input.scienceResearchMode

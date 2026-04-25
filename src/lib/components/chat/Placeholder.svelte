@@ -54,8 +54,8 @@
 	export let setChatWorkingMode: (
 		mode: 'general' | 'medical' | 'general_science' | 'offsec' | 'news'
 	) => void = () => {};
-	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
-	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
+	export let localCorpusMode: 'off' | 'prefer' = 'off';
+	export let setChatLocalCorpusMode: (mode: 'off' | 'prefer') => void = () => {};
 	export let scienceResearchMode: 'light' | 'deep' = 'light';
 	export let setChatScienceResearchMode: (mode: 'light' | 'deep') => void = () => {};
 	export let scienceAttachedCorpora: string[] = [];

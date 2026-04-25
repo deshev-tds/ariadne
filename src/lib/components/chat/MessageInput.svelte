@@ -162,8 +162,8 @@
 	export let setChatFocusedSearchEnabled: (enabled: boolean) => void = () => {};
 	export let workingMode: WorkingMode = 'general';
 	export let setChatWorkingMode: (mode: WorkingMode) => void = () => {};
-	export let localCorpusMode: 'off' | 'auto' | 'prefer' = 'auto';
-	export let setChatLocalCorpusMode: (mode: 'off' | 'auto' | 'prefer') => void = () => {};
+	export let localCorpusMode: 'off' | 'prefer' = 'off';
+	export let setChatLocalCorpusMode: (mode: 'off' | 'prefer') => void = () => {};
 	export let scienceResearchMode: ScienceResearchMode = 'light';
 	export let setChatScienceResearchMode: (mode: ScienceResearchMode) => void = () => {};
 	export let scienceAttachedCorpora: string[] = [];
@@ -1902,9 +1902,7 @@
 											<Tooltip
 												content={localCorpusMode === 'prefer'
 													? $i18n.t('Prefer local corpus mode is enabled for this chat')
-													: localCorpusMode === 'off'
-														? $i18n.t('Local corpus mode is off for this chat')
-														: $i18n.t('Local corpus mode is automatic for this chat')}
+													: $i18n.t('Local corpus mode is off for this chat')}
 												placement="top"
 											>
 												<button
@@ -1915,16 +1913,9 @@
 													class="rounded-full size-8 flex shrink-0 justify-center items-center outline-hidden focus:outline-hidden leading-none transition-colors {localCorpusMode ===
 													'prefer'
 														? 'text-indigo-700 bg-indigo-100/80 hover:bg-indigo-200/80 dark:text-indigo-200 dark:bg-indigo-700/20 dark:hover:bg-indigo-700/30'
-														: localCorpusMode === 'auto'
-															? 'text-sky-700 bg-sky-100/80 hover:bg-sky-200/80 dark:text-sky-200 dark:bg-sky-700/20 dark:hover:bg-sky-700/30'
-															: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
+														: 'bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800'}"
 													on:click={async () => {
-														const nextMode =
-															localCorpusMode === 'off'
-																? 'auto'
-																: localCorpusMode === 'auto'
-																	? 'prefer'
-																	: 'off';
+														const nextMode = localCorpusMode === 'off' ? 'prefer' : 'off';
 														setChatLocalCorpusMode(nextMode);
 														await restoreChatInputFocus();
 													}}
