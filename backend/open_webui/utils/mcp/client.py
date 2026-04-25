@@ -1,27 +1,23 @@
 import asyncio
-from typing import Optional
 from contextlib import AsyncExitStack
+import logging
+from typing import Optional
 
 import anyio
 
 from mcp import ClientSession
-from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.streamable_http import streamablehttp_client
-from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 import httpx
+
 from open_webui.env import AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL
 
+log = logging.getLogger(__name__)
 
-def create_insecure_httpx_client(headers=None, timeout=None, auth=None):
-    """Create an httpx AsyncClient with SSL verification disabled.
 
-    Note: verify=False must be passed at construction time because httpx
-    configures the SSL context during __init__. Setting client.verify = False
-    after construction does not affect the underlying transport's SSL context.
-    """
+def _build_httpx_client(headers=None, timeout=None, auth=None, verify=True):
     kwargs = {
         "follow_redirects": True,
-        "verify": False,
+        "verify": verify,
     }
     if timeout is not None:
         kwargs["timeout"] = timeout
@@ -32,22 +28,44 @@ def create_insecure_httpx_client(headers=None, timeout=None, auth=None):
     return httpx.AsyncClient(**kwargs)
 
 
+def create_httpx_client(headers=None, timeout=None, auth=None):
+    return _build_httpx_client(
+        headers=headers,
+        timeout=timeout,
+        auth=auth,
+        verify=True,
+    )
+
+
+def create_insecure_httpx_client(headers=None, timeout=None, auth=None):
+    return _build_httpx_client(
+        headers=headers,
+        timeout=timeout,
+        auth=auth,
+        verify=False,
+    )
+
+
 class MCPClient:
     def __init__(self):
         self.session: Optional[ClientSession] = None
-        self.exit_stack = None
+        self.exit_stack: Optional[AsyncExitStack] = None
+        self._streams_context = None
+        self._session_context = None
 
     async def connect(self, url: str, headers: Optional[dict] = None):
         async with AsyncExitStack() as exit_stack:
             try:
-                if AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL:
-                    self._streams_context = streamablehttp_client(url, headers=headers)
-                else:
-                    self._streams_context = streamablehttp_client(
-                        url,
-                        headers=headers,
-                        httpx_client_factory=create_insecure_httpx_client,
-                    )
+                httpx_client_factory = (
+                    create_httpx_client
+                    if AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL
+                    else create_insecure_httpx_client
+                )
+                self._streams_context = streamablehttp_client(
+                    url,
+                    headers=headers,
+                    httpx_client_factory=httpx_client_factory,
+                )
 
                 transport = await exit_stack.enter_async_context(self._streams_context)
                 read_stream, write_stream, _ = transport
@@ -62,9 +80,9 @@ class MCPClient:
                 with anyio.fail_after(10):
                     await self.session.initialize()
                 self.exit_stack = exit_stack.pop_all()
-            except Exception as e:
+            except Exception:
                 await asyncio.shield(self.disconnect())
-                raise e
+                raise
 
     async def list_tool_specs(self) -> Optional[dict]:
         if not self.session:
@@ -132,13 +150,28 @@ class MCPClient:
         return result_dict
 
     async def disconnect(self):
-        # Clean up and close the session
-        await self.exit_stack.aclose()
+        exit_stack, self.exit_stack = self.exit_stack, None
+        self.session = None
+        self._session_context = None
+        self._streams_context = None
+
+        if exit_stack is None:
+            return
+
+        try:
+            await exit_stack.aclose()
+        except TimeoutError:
+            log.warning("Timed out while closing MCP client resources.")
+        except RuntimeError as exc:
+            if "generator didn't stop after athrow()" in str(exc):
+                log.warning("Suppressed MCP shutdown race: %s", exc)
+            else:
+                raise
+        except Exception:
+            log.exception("Error while disconnecting MCP client.")
 
     async def __aenter__(self):
-        await self.exit_stack.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.exit_stack.__aexit__(exc_type, exc_value, traceback)
         await self.disconnect()

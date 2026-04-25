@@ -3187,6 +3187,7 @@ def process_tool_result(
     tool_result_embeds = []
     EXTERNAL_TOOL_TYPES = ("external", "action", "terminal")
     result_context = None
+    metadata = metadata or {}
 
     if (
         isinstance(tool_result, tuple)
@@ -3333,6 +3334,15 @@ def process_tool_result(
                                 "url": file_url,
                             }
                         )
+                    elif item.get("type") == "resource":
+                        resource = item.get("resource") or {}
+                        text = resource.get("text", "")
+                        if isinstance(text, str) and text:
+                            try:
+                                text = json.loads(text)
+                            except json.JSONDecodeError:
+                                pass
+                            tool_response.append(text)
             tool_result = tool_response[0] if len(tool_response) == 1 else tool_response
         else:  # OpenAPI
             for item in tool_result:
@@ -9084,18 +9094,42 @@ async def streaming_chat_response_handler(response, ctx):
                 await background_tasks_handler(ctx)
             except asyncio.CancelledError:
                 log.warning("Task was cancelled!")
-                await event_emitter({"type": "chat:tasks:cancel"})
+                body_iterator = getattr(response, "body_iterator", None)
+                aclose = getattr(body_iterator, "aclose", None)
+                if callable(aclose):
+                    try:
+                        await asyncio.shield(aclose())
+                    except Exception as e:
+                        log.debug("Failed to close cancelled stream body iterator: %s", e)
 
-                if not ENABLE_REALTIME_CHAT_SAVE:
-                    # Save message in the database
+                async def save_cancelled_state():
+                    if event_emitter:
+                        await event_emitter({"type": "chat:tasks:cancel"})
+
+                    if not metadata.get("chat_id") or not metadata.get("message_id"):
+                        return
+
+                    update_payload = {"done": True}
+                    if not ENABLE_REALTIME_CHAT_SAVE:
+                        update_payload.update(
+                            {
+                                "content": serialize_output(output),
+                                "output": output,
+                            }
+                        )
+
                     Chats.upsert_message_to_chat_by_id_and_message_id(
                         metadata["chat_id"],
                         metadata["message_id"],
-                        {
-                            "content": serialize_output(output),
-                            "output": output,
-                        },
+                        update_payload,
                     )
+
+                try:
+                    await asyncio.shield(save_cancelled_state())
+                except Exception as e:
+                    log.debug("Failed to persist cancelled chat state: %s", e)
+
+                raise
 
             if response.background is not None:
                 await response.background()

@@ -566,6 +566,8 @@ WEBUI_AUTH_TRUSTED_GROUPS_HEADER = os.environ.get(
     "WEBUI_AUTH_TRUSTED_GROUPS_HEADER", None
 )
 
+CUSTOM_API_KEY_HEADER = os.environ.get("CUSTOM_API_KEY_HEADER", "x-api-key")
+
 
 ENABLE_PASSWORD_VALIDATION = (
     os.environ.get("ENABLE_PASSWORD_VALIDATION", "False").lower() == "true"

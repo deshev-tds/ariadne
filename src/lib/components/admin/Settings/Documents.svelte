@@ -65,6 +65,8 @@
 	};
 
 	let RAGConfig = null;
+	const getContextPlaceholderCount = (template) =>
+		(template?.match(/\[context\]|\{\{CONTEXT\}\}/g) ?? []).length;
 
 	const embeddingModelUpdateHandler = async () => {
 		if (RAG_EMBEDDING_ENGINE === '' && RAG_EMBEDDING_MODEL.split('/').length - 1 > 1) {
@@ -1367,6 +1369,13 @@
 									/>
 								</Tooltip>
 							</div>
+							{#if getContextPlaceholderCount(RAGConfig?.RAG_TEMPLATE) > 1}
+								<div class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+									{$i18n.t(
+										'This template contains multiple context placeholders ([context] or {{CONTEXT}}). Context will be injected at each occurrence.'
+									)}
+								</div>
+							{/if}
 						</div>
 					</div>
 				{/if}

@@ -73,6 +73,9 @@ from open_webui.constants import ERROR_MESSAGES
 from open_webui.utils.prompt_telemetry import append_prompt_telemetry
 
 log = logging.getLogger(__name__)
+_STRIP_PROXY_HEADERS = frozenset(
+    {"Content-Encoding", "Content-Length", "Transfer-Encoding"}
+)
 
 
 ##########################################
@@ -80,6 +83,14 @@ log = logging.getLogger(__name__)
 # Utility functions
 #
 ##########################################
+
+
+def _clean_proxy_headers(raw_headers) -> dict:
+    return {
+        key: value
+        for key, value in raw_headers.items()
+        if key not in _STRIP_PROXY_HEADERS
+    }
 
 
 async def send_get_request(url, key=None, user: UserModel = None):
@@ -157,7 +168,7 @@ async def send_post_request(
 
         r.raise_for_status()  # Raises an error for bad responses (4xx, 5xx)
         if stream:
-            response_headers = dict(r.headers)
+            response_headers = _clean_proxy_headers(r.headers)
 
             if content_type:
                 response_headers["Content-Type"] = content_type

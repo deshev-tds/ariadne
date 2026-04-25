@@ -29,6 +29,7 @@ from langchain_core.documents import Document
 
 from open_webui.retrieval.loaders.tavily import TavilyLoader
 from open_webui.retrieval.loaders.external_web import ExternalWebLoader
+from open_webui.retrieval.web.firecrawl import scrape_firecrawl_url
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.config import (
     ENABLE_RAG_LOCAL_WEB_FETCH,
@@ -233,90 +234,40 @@ class SafeFireCrawlLoader(BaseLoader, RateLimitMixin, URLProcessingMixin):
         self.trust_env = trust_env
         self.continue_on_failure = continue_on_failure
         self.api_key = api_key
-        self.api_url = api_url
+        self.api_url = (api_url or "https://api.firecrawl.dev").rstrip("/")
         self.timeout = timeout
         self.mode = mode
         self.params = params or {}
 
     def lazy_load(self) -> Iterator[Document]:
-        """Load documents using FireCrawl batch_scrape."""
-        log.debug(
-            "Starting FireCrawl batch scrape for %d URLs, mode: %s, params: %s",
-            len(self.web_paths),
-            self.mode,
-            self.params,
-        )
         try:
-            from firecrawl import FirecrawlApp
-
-            firecrawl = FirecrawlApp(api_key=self.api_key, api_url=self.api_url)
-            result = firecrawl.batch_scrape(
-                self.web_paths,
-                formats=["markdown"],
-                skip_tls_verification=not self.verify_ssl,
-                ignore_invalid_urls=True,
-                remove_base64_images=True,
-                max_age=300000,  # 5 minutes https://docs.firecrawl.dev/features/fast-scraping#common-maxage-values
-                wait_timeout=self.timeout if self.timeout else len(self.web_paths) * 3,
-                **self.params,
-            )
-
-            if result.status != "completed":
-                raise RuntimeError(
-                    f"FireCrawl batch scrape did not complete successfully. result: {result}"
+            for url in self.web_paths:
+                doc = scrape_firecrawl_url(
+                    self.api_url,
+                    self.api_key,
+                    url,
+                    verify_ssl=self.verify_ssl,
+                    timeout=self.timeout,
+                    params=self.params,
                 )
-
-            for data in result.data:
-                metadata = data.metadata or {}
-                yield Document(
-                    page_content=data.markdown or "",
-                    metadata={"source": metadata.url or metadata.source_url or ""},
-                )
+                if doc is not None:
+                    yield doc
 
         except Exception as e:
             if self.continue_on_failure:
-                log.exception(f"Error extracting content from URLs: {e}")
+                log.warning(f"Error extracting content from URLs with Firecrawl: {e}")
             else:
                 raise e
 
     async def alazy_load(self):
-        """Async version of lazy_load."""
-        log.debug(
-            "Starting FireCrawl batch scrape for %d URLs, mode: %s, params: %s",
-            len(self.web_paths),
-            self.mode,
-            self.params,
-        )
         try:
-            from firecrawl import FirecrawlApp
-
-            firecrawl = FirecrawlApp(api_key=self.api_key, api_url=self.api_url)
-            result = firecrawl.batch_scrape(
-                self.web_paths,
-                formats=["markdown"],
-                skip_tls_verification=not self.verify_ssl,
-                ignore_invalid_urls=True,
-                remove_base64_images=True,
-                max_age=300000,  # 5 minutes https://docs.firecrawl.dev/features/fast-scraping#common-maxage-values
-                wait_timeout=self.timeout if self.timeout else len(self.web_paths) * 3,
-                **self.params,
-            )
-
-            if result.status != "completed":
-                raise RuntimeError(
-                    f"FireCrawl batch scrape did not complete successfully. result: {result}"
-                )
-
-            for data in result.data:
-                metadata = data.metadata or {}
-                yield Document(
-                    page_content=data.markdown or "",
-                    metadata={"source": metadata.url or metadata.source_url or ""},
-                )
+            docs = await run_in_threadpool(lambda: list(self.lazy_load()))
+            for doc in docs:
+                yield doc
 
         except Exception as e:
             if self.continue_on_failure:
-                log.exception(f"Error extracting content from URLs: {e}")
+                log.warning(f"Error extracting content from URLs with Firecrawl: {e}")
             else:
                 raise e
 

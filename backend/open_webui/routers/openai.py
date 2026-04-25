@@ -72,6 +72,9 @@ MOE_EXPERTS_TIMEOUT_CAP_MS = 3000
 MOE_EXPERTS_CACHE_TTL_SECONDS = 30
 _MOE_EXPERTS_PROBE_CACHE: dict[tuple[int, str], tuple[float, dict]] = {}
 _MOE_EXPERTS_PROBE_CACHE_LOCK = asyncio.Lock()
+_STRIP_PROXY_HEADERS = frozenset(
+    {"Content-Encoding", "Content-Length", "Transfer-Encoding"}
+)
 
 
 ##########################################
@@ -79,6 +82,34 @@ _MOE_EXPERTS_PROBE_CACHE_LOCK = asyncio.Lock()
 # Utility functions
 #
 ##########################################
+
+
+def _clean_proxy_headers(raw_headers) -> dict:
+    return {
+        key: value
+        for key, value in raw_headers.items()
+        if key not in _STRIP_PROXY_HEADERS
+    }
+
+
+async def _maybe_build_sse_error_response(r: aiohttp.ClientResponse):
+    if "text/event-stream" not in r.headers.get("Content-Type", "") or r.status < 400:
+        return None
+
+    error_body = await r.text()
+    log.warning("OpenAI-compatible upstream returned SSE error %s: %s", r.status, error_body)
+
+    try:
+        error_json = json.loads(error_body)
+    except json.JSONDecodeError:
+        error_json = {
+            "error": {
+                "message": error_body or f"Upstream server returned HTTP {r.status}",
+                "code": r.status,
+            }
+        }
+
+    return JSONResponse(status_code=r.status, content=error_json)
 
 
 async def send_get_request(url, key=None, user: UserModel = None):
@@ -1622,12 +1653,16 @@ async def generate_chat_completion(
         )
 
         # Check if response is SSE
+        error_response = await _maybe_build_sse_error_response(r)
+        if error_response is not None:
+            return error_response
+
         if "text/event-stream" in r.headers.get("Content-Type", ""):
             streaming = True
             return StreamingResponse(
                 stream_wrapper(r, session, stream_chunks_handler),
                 status_code=r.status,
-                headers=dict(r.headers),
+                headers=_clean_proxy_headers(r.headers),
             )
         else:
             try:
@@ -1711,12 +1746,16 @@ async def embeddings(request: Request, form_data: dict, user):
             cookies=cookies,
         )
 
+        error_response = await _maybe_build_sse_error_response(r)
+        if error_response is not None:
+            return error_response
+
         if "text/event-stream" in r.headers.get("Content-Type", ""):
             streaming = True
             return StreamingResponse(
                 stream_wrapper(r, session),
                 status_code=r.status,
-                headers=dict(r.headers),
+                headers=_clean_proxy_headers(r.headers),
             )
         else:
             try:
@@ -1806,7 +1845,12 @@ async def responses(
 
     try:
         headers, cookies = await get_headers_and_cookies(
-            request, url, key, api_config, user=user
+            request,
+            url,
+            key,
+            api_config,
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+            user=user,
         )
 
         if api_config.get("azure", False):
@@ -1839,12 +1883,16 @@ async def responses(
         )
 
         # Check if response is SSE
+        error_response = await _maybe_build_sse_error_response(r)
+        if error_response is not None:
+            return error_response
+
         if "text/event-stream" in r.headers.get("Content-Type", ""):
             streaming = True
             return StreamingResponse(
                 stream_wrapper(r, session),
                 status_code=r.status,
-                headers=dict(r.headers),
+                headers=_clean_proxy_headers(r.headers),
             )
         else:
             try:
@@ -1924,7 +1972,12 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
 
     try:
         headers, cookies = await get_headers_and_cookies(
-            request, url, key, api_config, user=user
+            request,
+            url,
+            key,
+            api_config,
+            metadata=payload.get("metadata") if isinstance(payload, dict) and isinstance(payload.get("metadata"), dict) else None,
+            user=user,
         )
 
         if api_config.get("azure", False):
@@ -1959,12 +2012,16 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
         )
 
         # Check if response is SSE
+        error_response = await _maybe_build_sse_error_response(r)
+        if error_response is not None:
+            return error_response
+
         if "text/event-stream" in r.headers.get("Content-Type", ""):
             streaming = True
             return StreamingResponse(
                 stream_wrapper(r, session),
                 status_code=r.status,
-                headers=dict(r.headers),
+                headers=_clean_proxy_headers(r.headers),
             )
         else:
             try:

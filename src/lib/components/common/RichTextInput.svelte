@@ -726,7 +726,15 @@
 					// re-add it below without its Mod-Shift-s shortcut (which conflicts
 					// with the Toggle Sidebar shortcut). When rich text is on, the user
 					// can undo strikethrough via the toolbar, so the shortcut is fine.
-					...(richText ? {} : { strike: false })
+					...(richText
+						? {
+								codeBlock: false,
+								bulletList: false,
+								orderedList: false,
+								listItem: false,
+								listKeymap: false
+							}
+						: { strike: false })
 				}),
 				FixedCode,
 				...(dragHandle ? [ListItemDragHandle] : []),

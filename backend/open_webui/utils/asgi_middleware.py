@@ -19,6 +19,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from open_webui.env import CUSTOM_API_KEY_HEADER
 from open_webui.internal.db import ScopedSession
 from open_webui.utils.auth import get_http_authorization_cred
 
@@ -86,7 +87,7 @@ class AuthTokenMiddleware:
                     scheme="Bearer", credentials=cookie_token
                 )
         if token is None:
-            api_key = request.headers.get("x-api-key")
+            api_key = request.headers.get(CUSTOM_API_KEY_HEADER)
             if api_key:
                 token = HTTPAuthorizationCredentials(
                     scheme="Bearer", credentials=api_key

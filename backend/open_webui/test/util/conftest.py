@@ -47,6 +47,7 @@ _import_or_stub(
     process_web_search=_noop_async,
     process_file=_noop_async,
     process_files_batch=_noop_async,
+    execute_strong_source_search=_noop_async,
     SearchForm=_EmptyForm,
     ProcessFileForm=_EmptyForm,
     BatchProcessFilesForm=_EmptyForm,
@@ -80,7 +81,11 @@ _import_or_stub(
 _import_or_stub(
     "open_webui.routers.memories",
     query_memory=_noop_async,
+    add_memory=_noop_async,
+    update_memory_by_id=_noop_async,
     QueryMemoryForm=_EmptyForm,
+    AddMemoryForm=_EmptyForm,
+    MemoryUpdateModel=_EmptyForm,
 )
 
 _import_or_stub(
@@ -91,6 +96,7 @@ _import_or_stub(
 _import_or_stub(
     "open_webui.retrieval.utils",
     get_sources_from_items=lambda *args, **kwargs: [],
+    get_content_from_url=lambda *args, **kwargs: ("", {}),
 )
 
 _import_or_stub(
