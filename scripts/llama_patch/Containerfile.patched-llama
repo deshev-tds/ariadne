@@ -58,7 +58,18 @@ RUN if [[ -z "${BACKEND}" ]]; then \
     esac; \
     $install "${common_pkgs[@]}" "${backend_pkgs[@]}"; \
     $clean; \
-    rm -rf /var/cache/dnf/*
+    rm -rf /var/cache/dnf/*; \
+    if ! command -v ld >/dev/null 2>&1; then \
+        if command -v ld.bfd >/dev/null 2>&1; then \
+            ln -sf "$(command -v ld.bfd)" /usr/bin/ld; \
+        elif command -v ld.lld >/dev/null 2>&1; then \
+            ln -sf "$(command -v ld.lld)" /usr/bin/ld; \
+        else \
+            echo "No usable linker found after dependency installation" >&2; exit 2; \
+        fi; \
+    fi; \
+    command -v ld; \
+    ld --version | head -n 1
 
 RUN if [[ "${BACKEND}" == "rocm7-nightlies" ]]; then \
         if [[ ! -d /opt/rocm-7.0/include || ! -d /opt/rocm-7.0/llvm/include ]]; then \
