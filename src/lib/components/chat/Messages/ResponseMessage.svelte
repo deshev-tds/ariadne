@@ -54,7 +54,6 @@
 	import Citations from './Citations.svelte';
 	import CodeExecutions from './CodeExecutions.svelte';
 	import ContentRenderer from './ContentRenderer.svelte';
-	import TokenExplorerView from './TokenExplorerView.svelte';
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import FollowUps from './ResponseMessage/FollowUps.svelte';
@@ -176,9 +175,10 @@
 	$: model = $models.find((m) => m.id === message.model);
 
 	$: statusEntries = message?.statusHistory ?? [...(message?.status ? [message?.status] : [])];
-	$: hasVisibleStatus = (model?.info?.meta?.capabilities?.status_updates ?? true)
-		&& statusEntries.length > 0
-		&& !(statusEntries.at(-1)?.hidden ?? false);
+	$: hasVisibleStatus =
+		(model?.info?.meta?.capabilities?.status_updates ?? true) &&
+		statusEntries.length > 0 &&
+		!(statusEntries.at(-1)?.hidden ?? false);
 
 	let edit = false;
 	let editedContent = '';
@@ -820,54 +820,50 @@
 							{:else if message.content && message.error !== true}
 								<!-- always show message contents even if there's an error -->
 								<!-- unless message.error === true which is legacy error handling, where the error message is stored in message.content -->
-								{#if showTokenExplorer && tokenExplorerAvailable}
-									<TokenExplorerView
-										telemetry={message.tokenTelemetry}
-										onCreateBranch={({ forkIndex, altRank }) => {
-											createTokenBranch(message, forkIndex, altRank);
-										}}
-									/>
-								{:else}
-									<ContentRenderer
-										id={`${chatId}-${message.id}`}
-										messageId={message.id}
-										{history}
-										{selectedModels}
-										content={message.content}
-										sources={message.sources}
-										floatingButtons={message?.done &&
-											!readOnly &&
-											($settings?.showFloatingActionButtons ?? true)}
-										save={!readOnly}
-										preview={!readOnly}
-										{editCodeBlock}
-										{topPadding}
-										done={($settings?.chatFadeStreamingText ?? true)
-											? (message?.done ?? false)
-											: true}
-										{model}
-										onTaskClick={async (e) => {
-											console.log(e);
-										}}
-										onSourceClick={async (id) => {
-											console.log(id);
+								<ContentRenderer
+									id={`${chatId}-${message.id}`}
+									messageId={message.id}
+									{history}
+									{selectedModels}
+									content={message.content}
+									sources={message.sources}
+									floatingButtons={message?.done &&
+										!readOnly &&
+										($settings?.showFloatingActionButtons ?? true)}
+									save={!readOnly}
+									preview={!readOnly}
+									{editCodeBlock}
+									{topPadding}
+									done={($settings?.chatFadeStreamingText ?? true)
+										? (message?.done ?? false)
+										: true}
+									{model}
+									tokenExplorerEnabled={showTokenExplorer && tokenExplorerAvailable}
+									tokenTelemetry={message.tokenTelemetry}
+									onCreateTokenBranch={({ forkIndex, altRank }) => {
+										createTokenBranch(message, forkIndex, altRank);
+									}}
+									onTaskClick={async (e) => {
+										console.log(e);
+									}}
+									onSourceClick={async (id) => {
+										console.log(id);
 
-											if (citationsElement) {
-												citationsElement?.showSourceModal(id);
-											}
-										}}
-										onAddMessages={({ modelId, parentId, messages }) => {
-											addMessages({ modelId, parentId, messages });
-										}}
-										onSave={({ raw, oldContent, newContent }) => {
-											history.messages[message.id].content = history.messages[
-												message.id
-											].content.replace(raw, raw.replace(oldContent, newContent));
+										if (citationsElement) {
+											citationsElement?.showSourceModal(id);
+										}
+									}}
+									onAddMessages={({ modelId, parentId, messages }) => {
+										addMessages({ modelId, parentId, messages });
+									}}
+									onSave={({ raw, oldContent, newContent }) => {
+										history.messages[message.id].content = history.messages[
+											message.id
+										].content.replace(raw, raw.replace(oldContent, newContent));
 
-											updateChat();
-										}}
-									/>
-								{/if}
+										updateChat();
+									}}
+								/>
 							{/if}
 
 							{#if message?.error}
@@ -1069,12 +1065,15 @@
 										placement="bottom"
 									>
 										<button
+											aria-pressed={showTokenExplorer}
 											aria-label={showTokenExplorer
 												? $i18n.t('Hide Token Explorer')
 												: $i18n.t('Show Token Explorer')}
 											class="{isLastMessage || ($settings?.highContrastMode ?? false)
 												? 'visible'
-												: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition"
+												: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition {showTokenExplorer
+												? 'bg-gray-100 text-black dark:bg-gray-800 dark:text-white'
+												: ''}"
 											on:click={() => {
 												showTokenExplorer = !showTokenExplorer;
 											}}

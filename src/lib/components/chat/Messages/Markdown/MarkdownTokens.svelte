@@ -7,6 +7,7 @@
 	const { saveAs } = fileSaver;
 
 	import { marked, type Token } from 'marked';
+	import type { TokenExplorerRange } from '../../tokenExplorer';
 	import { copyToClipboard, unescapeHtml } from '$lib/utils';
 
 	import { WEBUI_BASE_URL } from '$lib/constants';
@@ -46,6 +47,17 @@
 
 	export let onTaskClick: Function = () => {};
 	export let onSourceClick: Function = () => {};
+	export let tokenExplorerEnabled = false;
+	export let activeTokenExplorerRange: TokenExplorerRange | null = null;
+	export let onTokenExplorerTokenEnter: (
+		range: TokenExplorerRange,
+		event: MouseEvent
+	) => void = () => {};
+	export let onTokenExplorerTokenMove: (
+		range: TokenExplorerRange,
+		event: MouseEvent
+	) => void = () => {};
+	export let onTokenExplorerTokenLeave: (range: TokenExplorerRange) => void = () => {};
 
 	const headerComponent = (depth: number) => {
 		return 'h' + depth;
@@ -108,6 +120,11 @@
 				{done}
 				{sourceIds}
 				{onSourceClick}
+				{tokenExplorerEnabled}
+				{activeTokenExplorerRange}
+				{onTokenExplorerTokenEnter}
+				{onTokenExplorerTokenMove}
+				{onTokenExplorerTokenLeave}
 			/>
 		</svelte:element>
 	{:else if token.type === 'code'}
@@ -161,6 +178,11 @@
 												{done}
 												{sourceIds}
 												{onSourceClick}
+												{tokenExplorerEnabled}
+												{activeTokenExplorerRange}
+												{onTokenExplorerTokenEnter}
+												{onTokenExplorerTokenMove}
+												{onTokenExplorerTokenLeave}
 											/>
 										</div>
 									</div>
@@ -187,6 +209,11 @@
 												{done}
 												{sourceIds}
 												{onSourceClick}
+												{tokenExplorerEnabled}
+												{activeTokenExplorerRange}
+												{onTokenExplorerTokenEnter}
+												{onTokenExplorerTokenMove}
+												{onTokenExplorerTokenLeave}
 											/>
 										</div>
 									</td>
@@ -237,6 +264,11 @@
 					{onTaskClick}
 					{sourceIds}
 					{onSourceClick}
+					{tokenExplorerEnabled}
+					{activeTokenExplorerRange}
+					{onTokenExplorerTokenEnter}
+					{onTokenExplorerTokenMove}
+					{onTokenExplorerTokenLeave}
 				/>
 			</blockquote>
 		{/if}
@@ -272,6 +304,11 @@
 							{onTaskClick}
 							{sourceIds}
 							{onSourceClick}
+							{tokenExplorerEnabled}
+							{activeTokenExplorerRange}
+							{onTokenExplorerTokenEnter}
+							{onTokenExplorerTokenMove}
+							{onTokenExplorerTokenLeave}
 						/>
 					</li>
 				{/each}
@@ -307,6 +344,11 @@
 									{onTaskClick}
 									{sourceIds}
 									{onSourceClick}
+									{tokenExplorerEnabled}
+									{activeTokenExplorerRange}
+									{onTokenExplorerTokenEnter}
+									{onTokenExplorerTokenMove}
+									{onTokenExplorerTokenLeave}
 								/>
 							</div>
 						{:else}
@@ -319,6 +361,11 @@
 								{onTaskClick}
 								{sourceIds}
 								{onSourceClick}
+								{tokenExplorerEnabled}
+								{activeTokenExplorerRange}
+								{onTokenExplorerTokenEnter}
+								{onTokenExplorerTokenMove}
+								{onTokenExplorerTokenLeave}
 							/>
 						{/if}
 					</li>
@@ -354,6 +401,11 @@
 						{onTaskClick}
 						{sourceIds}
 						{onSourceClick}
+						{tokenExplorerEnabled}
+						{activeTokenExplorerRange}
+						{onTokenExplorerTokenEnter}
+						{onTokenExplorerTokenMove}
+						{onTokenExplorerTokenLeave}
 					/>
 				</div>
 			</Collapsible>
@@ -391,6 +443,11 @@
 					{done}
 					{sourceIds}
 					{onSourceClick}
+					{tokenExplorerEnabled}
+					{activeTokenExplorerRange}
+					{onTokenExplorerTokenEnter}
+					{onTokenExplorerTokenMove}
+					{onTokenExplorerTokenLeave}
 				/>
 			</span>
 		{:else}
@@ -401,6 +458,11 @@
 					{done}
 					{sourceIds}
 					{onSourceClick}
+					{tokenExplorerEnabled}
+					{activeTokenExplorerRange}
+					{onTokenExplorerTokenEnter}
+					{onTokenExplorerTokenMove}
+					{onTokenExplorerTokenLeave}
 				/>
 			</p>
 		{/if}
@@ -414,6 +476,11 @@
 						{done}
 						{sourceIds}
 						{onSourceClick}
+						{tokenExplorerEnabled}
+						{activeTokenExplorerRange}
+						{onTokenExplorerTokenEnter}
+						{onTokenExplorerTokenMove}
+						{onTokenExplorerTokenLeave}
 					/>
 				{:else}
 					{unescapeHtml(token.text)}
@@ -426,6 +493,11 @@
 				{done}
 				{sourceIds}
 				{onSourceClick}
+				{tokenExplorerEnabled}
+				{activeTokenExplorerRange}
+				{onTokenExplorerTokenEnter}
+				{onTokenExplorerTokenMove}
+				{onTokenExplorerTokenLeave}
 			/>
 		{:else}
 			{unescapeHtml(token.text)}

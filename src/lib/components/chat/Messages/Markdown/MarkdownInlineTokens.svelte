@@ -3,6 +3,7 @@
 	import { toast } from 'svelte-sonner';
 
 	import type { Token } from 'marked';
+	import type { TokenExplorerRange } from '../../tokenExplorer';
 	import { getContext } from 'svelte';
 	import { goto } from '$app/navigation';
 
@@ -26,6 +27,17 @@
 	export let tokens: Token[];
 	export let sourceIds = [];
 	export let onSourceClick: Function = () => {};
+	export let tokenExplorerEnabled = false;
+	export let activeTokenExplorerRange: TokenExplorerRange | null = null;
+	export let onTokenExplorerTokenEnter: (
+		range: TokenExplorerRange,
+		event: MouseEvent
+	) => void = () => {};
+	export let onTokenExplorerTokenMove: (
+		range: TokenExplorerRange,
+		event: MouseEvent
+	) => void = () => {};
+	export let onTokenExplorerTokenLeave: (range: TokenExplorerRange) => void = () => {};
 
 	/**
 	 * Check if a URL is a same-origin note link and return the note ID if so.
@@ -84,7 +96,17 @@
 				title={token.title}
 				on:click={(e) => handleLinkClick(e, token.href)}
 			>
-				<svelte:self id={`${id}-a`} tokens={token.tokens} {onSourceClick} {done} />
+				<svelte:self
+					id={`${id}-a`}
+					tokens={token.tokens}
+					{onSourceClick}
+					{done}
+					{tokenExplorerEnabled}
+					{activeTokenExplorerRange}
+					{onTokenExplorerTokenEnter}
+					{onTokenExplorerTokenMove}
+					{onTokenExplorerTokenLeave}
+				/>
 			</a>
 		{:else}
 			<a
@@ -98,15 +120,48 @@
 	{:else if token.type === 'image'}
 		<Image src={token.href} alt={token.text} />
 	{:else if token.type === 'strong'}
-		<strong><svelte:self id={`${id}-strong`} tokens={token.tokens} {onSourceClick} /></strong>
+		<strong
+			><svelte:self
+				id={`${id}-strong`}
+				tokens={token.tokens}
+				{onSourceClick}
+				{tokenExplorerEnabled}
+				{activeTokenExplorerRange}
+				{onTokenExplorerTokenEnter}
+				{onTokenExplorerTokenMove}
+				{onTokenExplorerTokenLeave}
+			/></strong
+		>
 	{:else if token.type === 'em'}
-		<em><svelte:self id={`${id}-em`} tokens={token.tokens} {onSourceClick} /></em>
+		<em
+			><svelte:self
+				id={`${id}-em`}
+				tokens={token.tokens}
+				{onSourceClick}
+				{tokenExplorerEnabled}
+				{activeTokenExplorerRange}
+				{onTokenExplorerTokenEnter}
+				{onTokenExplorerTokenMove}
+				{onTokenExplorerTokenLeave}
+			/></em
+		>
 	{:else if token.type === 'codespan'}
 		<CodespanToken {token} {done} />
 	{:else if token.type === 'br'}
 		<br />
 	{:else if token.type === 'del'}
-		<del><svelte:self id={`${id}-del`} tokens={token.tokens} {onSourceClick} /></del>
+		<del
+			><svelte:self
+				id={`${id}-del`}
+				tokens={token.tokens}
+				{onSourceClick}
+				{tokenExplorerEnabled}
+				{activeTokenExplorerRange}
+				{onTokenExplorerTokenEnter}
+				{onTokenExplorerTokenMove}
+				{onTokenExplorerTokenLeave}
+			/></del
+		>
 	{:else if token.type === 'inlineKatex'}
 		{#if token.text}
 			<KatexRenderer content={token.text} displayMode={false} />
@@ -137,6 +192,14 @@
 			<TextToken {token} {done} />
 		{/if}
 	{:else if token.type === 'text'}
-		<TextToken {token} {done} />
+		<TextToken
+			{token}
+			{done}
+			{tokenExplorerEnabled}
+			{activeTokenExplorerRange}
+			{onTokenExplorerTokenEnter}
+			{onTokenExplorerTokenMove}
+			{onTokenExplorerTokenLeave}
+		/>
 	{/if}
 {/each}

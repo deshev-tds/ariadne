@@ -33,11 +33,14 @@
 
 	export let editCodeBlock = true;
 	export let topPadding = false;
+	export let tokenExplorerEnabled = false;
+	export let tokenTelemetry = null;
 
 	export let onSave = (e) => {};
 	export let onSourceClick = (e) => {};
 	export let onTaskClick = (e) => {};
 	export let onAddMessages = (e) => {};
+	export let onCreateTokenBranch = (e) => {};
 
 	let contentContainerElement;
 	let floatingButtonsElement;
@@ -167,10 +170,13 @@
 		{done}
 		{editCodeBlock}
 		{topPadding}
+		{tokenExplorerEnabled}
+		{tokenTelemetry}
 		{sourceIds}
 		{onSourceClick}
 		{onTaskClick}
 		{onSave}
+		{onCreateTokenBranch}
 		onUpdate={async (token) => {
 			const { lang, text: code } = token;
 
