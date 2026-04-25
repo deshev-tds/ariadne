@@ -1,0 +1,166 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG BACKEND
+ARG LLAMA_REPO=https://github.com/ggml-org/llama.cpp.git
+ARG LLAMA_BRANCH=master
+ARG LLAMA_REF=
+ARG PATCH_FILE=patches/0001-server-allow-streamed-tool-calls-with-content-logprobs.patch
+ARG ROCM_MAJOR_VER=7
+ARG GFX=gfx1151
+
+USER root
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+COPY patches/ /tmp/ariadne-llama-patches/
+
+RUN if [[ -z "${BACKEND}" ]]; then \
+        echo "BACKEND build arg is required" >&2; exit 2; \
+    fi; \
+    if command -v microdnf >/dev/null 2>&1; then \
+        pkg=microdnf; \
+        install="$pkg -y --nodocs --setopt=install_weak_deps=0 install"; \
+        clean="$pkg clean all"; \
+    elif command -v dnf >/dev/null 2>&1; then \
+        pkg=dnf; \
+        install="$pkg -y --nodocs --setopt=install_weak_deps=False install"; \
+        clean="$pkg clean all"; \
+    else \
+        echo "Neither microdnf nor dnf is available in the base image" >&2; exit 2; \
+    fi; \
+    common_pkgs=( \
+        bash ca-certificates git-core patch cmake ninja-build make \
+        gcc gcc-c++ clang clang-devel lld compiler-rt libcurl-devel \
+        procps-ng findutils diffutils \
+    ); \
+    case "${BACKEND}" in \
+        vulkan-radv) \
+            backend_pkgs=(vulkan-loader-devel vulkaninfo mesa-vulkan-drivers spirv-headers-devel glslc); \
+            ;; \
+        vulkan-amdvlk) \
+            backend_pkgs=(vulkan-loader-devel vulkaninfo spirv-headers-devel glslc); \
+            ;; \
+        rocm-6*) \
+            backend_pkgs=(rocminfo radeontop 'rocm-*' 'rocblas-*' hipblas 'hipblas-*'); \
+            ;; \
+        rocm7-nightlies) \
+            backend_pkgs=(curl tar xz aria2); \
+            ;; \
+        rocm*) \
+            backend_pkgs=( \
+                rocm-llvm rocm-device-libs hip-devel rocblas-devel hipblas-devel \
+                rocm-cmake libomp-devel libomp \
+            ); \
+            ;; \
+        *) \
+            echo "Unsupported BACKEND='${BACKEND}'" >&2; exit 2; \
+            ;; \
+    esac; \
+    $install "${common_pkgs[@]}" "${backend_pkgs[@]}"; \
+    $clean; \
+    rm -rf /var/cache/dnf/*
+
+RUN if [[ "${BACKEND}" == "rocm7-nightlies" ]]; then \
+        if [[ ! -d /opt/rocm-7.0/include || ! -d /opt/rocm-7.0/llvm/include ]]; then \
+            echo "Rehydrating TheRock headers for rocm7-nightlies build"; \
+            mkdir -p /tmp/ariadne-therock /opt/rocm-7.0; \
+            cd /tmp/ariadne-therock; \
+            base="https://therock-nightly-tarball.s3.amazonaws.com"; \
+            prefix="therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}"; \
+            key="$(curl -s "${base}?list-type=2&prefix=${prefix}" \
+                | tr '<' '\n' \
+                | grep -o "therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}\\..*\\.tar\\.gz" \
+                | sort -V \
+                | tail -n1)"; \
+            if [[ -z "${key}" ]]; then \
+                echo "Could not find a TheRock tarball for ${GFX}/${ROCM_MAJOR_VER}" >&2; exit 2; \
+            fi; \
+            echo "Latest TheRock tarball: ${key}"; \
+            aria2c -x 16 -s 16 -j 16 --file-allocation=none "${base}/${key}" -o therock.tar.gz; \
+            tar xzf therock.tar.gz -C /opt/rocm-7.0 --strip-components=1; \
+            rm -rf /tmp/ariadne-therock; \
+        fi; \
+    fi
+
+WORKDIR /opt/ariadne-llama.cpp
+
+RUN git clone --branch "${LLAMA_BRANCH}" --single-branch --recursive "${LLAMA_REPO}" .; \
+    if [[ -n "${LLAMA_REF}" ]]; then \
+        git fetch --depth=1 origin "${LLAMA_REF}"; \
+        git checkout FETCH_HEAD; \
+        git submodule update --init --recursive; \
+    fi; \
+    git apply --check "/tmp/ariadne-llama-patches/$(basename "${PATCH_FILE}")"; \
+    git apply --3way "/tmp/ariadne-llama-patches/$(basename "${PATCH_FILE}")"
+
+RUN cmake_args=( \
+        -S . \
+        -B build \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DGGML_RPC=ON \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=ON \
+        -DLLAMA_BUILD_SERVER=ON \
+    ); \
+    case "${BACKEND}" in \
+        vulkan-radv|vulkan-amdvlk) \
+            cmake_args+=(-DGGML_VULKAN=ON); \
+            ;; \
+        rocm7-nightlies) \
+            export ROCM_PATH="${ROCM_PATH:-/opt/rocm-7.0}"; \
+            export HIP_PATH="${HIP_PATH:-${ROCM_PATH}}"; \
+            export HIP_CLANG_PATH="${HIP_CLANG_PATH:-${ROCM_PATH}/llvm/bin}"; \
+            export HIP_INCLUDE_PATH="${HIP_INCLUDE_PATH:-${ROCM_PATH}/include}"; \
+            export HIP_LIB_PATH="${HIP_LIB_PATH:-${ROCM_PATH}/lib}"; \
+            export HIP_DEVICE_LIB_PATH="${HIP_DEVICE_LIB_PATH:-${ROCM_PATH}/lib/llvm/amdgcn/bitcode}"; \
+            export PATH="${ROCM_PATH}/bin:${ROCM_PATH}/llvm/bin:${PATH}"; \
+            export LD_LIBRARY_PATH="${ROCM_PATH}/lib:${ROCM_PATH}/lib64:${ROCM_PATH}/llvm/lib:${LD_LIBRARY_PATH:-}"; \
+            export LIBRARY_PATH="${ROCM_PATH}/lib:${ROCM_PATH}/lib64:${LIBRARY_PATH:-}"; \
+            export CPATH="${ROCM_PATH}/include:${CPATH:-}"; \
+            cmake_args+=( \
+                -DGGML_HIP=ON \
+                -DAMDGPU_TARGETS=gfx1151 \
+                -DLLAMA_HIP_UMA=ON \
+            ); \
+            ;; \
+        rocm-6*) \
+            export ROCM_PATH="${ROCM_PATH:-/usr}"; \
+            if command -v hipconfig >/dev/null 2>&1; then \
+                export HIPCXX="$(hipconfig -l)/clang"; \
+                export HIP_PATH="$(hipconfig -R)"; \
+            fi; \
+            cmake_args+=( \
+                -DGGML_HIP=ON \
+                -DAMDGPU_TARGETS=gfx1151 \
+                -DLLAMA_HIP_UMA=ON \
+                -DGGML_CUDA_ENABLE_UNIFIED_MEMORY=ON \
+            ); \
+            ;; \
+        rocm*) \
+            export ROCM_PATH="${ROCM_PATH:-/opt/rocm}"; \
+            export HIP_PATH="${HIP_PATH:-${ROCM_PATH}}"; \
+            export HIP_CLANG_PATH="${HIP_CLANG_PATH:-${ROCM_PATH}/llvm/bin}"; \
+            export PATH="${ROCM_PATH}/bin:${ROCM_PATH}/llvm/bin:${PATH}"; \
+            cmake_args+=( \
+                -DGGML_HIP=ON \
+                "-DCMAKE_HIP_FLAGS=--rocm-path=${ROCM_PATH} -mllvm --amdgpu-unroll-threshold-local=600" \
+                -DAMDGPU_TARGETS=gfx1151 \
+                -DLLAMA_HIP_UMA=ON \
+                -DGGML_CUDA_ENABLE_UNIFIED_MEMORY=ON \
+                "-DROCM_PATH=${ROCM_PATH}" \
+                "-DHIP_PATH=${HIP_PATH}" \
+                -DHIP_PLATFORM=amd \
+            ); \
+            ;; \
+    esac; \
+    cmake "${cmake_args[@]}"; \
+    cmake --build build --config Release -- -j"$(nproc)"; \
+    cmake --install build --config Release; \
+    find build -type f -name 'lib*.so*' -exec cp -f {} /usr/lib64/ \; || true; \
+    ldconfig; \
+    /usr/local/bin/llama-server --help >/dev/null
+
+LABEL org.opencontainers.image.title="Ariadne patched llama.cpp toolbox layer"
+LABEL org.opencontainers.image.description="kyuz0 toolbox base with Ariadne llama-server patch for stream+tools+logprobs"

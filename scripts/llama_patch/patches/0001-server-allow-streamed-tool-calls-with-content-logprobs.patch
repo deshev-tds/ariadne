@@ -1,0 +1,55 @@
+From 7708e2bafa82fd53cf8ab8fb17705806dca48286 Mon Sep 17 00:00:00 2001
+From: Ariadne Patch Bot <ariadne@example.invalid>
+Date: Sat, 25 Apr 2026 23:12:29 +0300
+Subject: [PATCH] server: allow streamed tool calls with content logprobs
+
+---
+ tools/server/server-common.cpp |  3 ---
+ tools/server/server-task.cpp   | 17 ++++++++++++++---
+ 2 files changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
+index 21c843c..4afae61 100644
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -1147,9 +1147,6 @@ json oaicompat_chat_params_parse(
+     // Handle "logprobs" field
+     // TODO: The response format of this option is not yet OAI-compatible, but seems like no one really using it; We may need to fix it in the future
+     if (json_value(body, "logprobs", false)) {
+-        if (has_tools && stream) {
+-            throw std::invalid_argument("logprobs is not supported with tools + stream");
+-        }
+         llama_params["n_probs"] = json_value(body, "top_logprobs", 20);
+     } else if (body.contains("top_logprobs") && !body.at("top_logprobs").is_null()) {
+         throw std::invalid_argument("top_logprobs requires logprobs to be set to true");
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index 4c341d7..2487ed7 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -1532,9 +1532,20 @@ json server_task_result_cmpl_partial::to_json_oaicompat_chat() {
+         GGML_ASSERT(last_json.at("choices").size() >= 1);
+ 
+         if (prob_output.probs.size() > 0) {
+-            last_json.at("choices").at(0)["logprobs"] = json {
+-                {"content", completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs)},
+-            };
++            // Tool-call streaming deltas are parser output, not emitted assistant text.
++            // Only attach token logprobs to content chunks where the token text is visible.
++            for (auto it = deltas.rbegin(); it != deltas.rend(); ++it) {
++                json & choice = it->at("choices").at(0);
++                const json & delta = choice.at("delta");
++                if (delta.contains("content")
++                        && delta.at("content").is_string()
++                        && !delta.at("content").get<std::string>().empty()) {
++                    choice["logprobs"] = json {
++                        {"content", completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs)},
++                    };
++                    break;
++                }
++            }
+         }
+ 
+         if (timings.prompt_n >= 0) {
+-- 
+2.52.0
+
