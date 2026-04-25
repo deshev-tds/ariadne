@@ -65,7 +65,7 @@ usage() {
   echo "  ARIADNE_PATCH_NO_CACHE=1   Build patched images with podman --no-cache"
   echo "  ARIADNE_LLAMA_REPO=URL     Override llama.cpp repo"
   echo "  ARIADNE_LLAMA_BRANCH=NAME  Override llama.cpp branch"
-  echo "  ARIADNE_LLAMA_REF=REF      Checkout exact llama.cpp ref after clone"
+  echo "  ARIADNE_LLAMA_REF=REF      Pin exact llama.cpp ref; omitted resolves branch head"
   echo "  ARIADNE_PATCH_LOG_DIR=DIR  Write refresh/build logs under DIR"
   echo "  ARIADNE_PATCH_TRACE=1      Enable bash xtrace"
   exit "$exit_code"
@@ -86,7 +86,7 @@ else
   TOOLBOX_CMD="toolbox"
 fi
 
-DEPENDENCIES=("podman" "$TOOLBOX_CMD")
+DEPENDENCIES=("git" "podman" "$TOOLBOX_CMD")
 for cmd in "${DEPENDENCIES[@]}"; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     if [[ "$cmd" == "distrobox" && "$IS_UBUNTU" == true ]]; then
@@ -121,19 +121,50 @@ fi
 
 log "Selected toolboxes: ${SELECTED_TOOLBOXES[*]}"
 
+resolve_llama_ref() {
+  local repo="$1"
+  local branch="$2"
+  local ref=""
+
+  ref="$(git ls-remote --heads "$repo" "$branch" | awk 'NR == 1 {print $1}')"
+  if [[ -z "$ref" ]]; then
+    ref="$(git ls-remote "$repo" "$branch" | awk 'NR == 1 {print $1}')"
+  fi
+
+  if [[ -z "$ref" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$ref"
+}
+
+LLAMA_REPO="${ARIADNE_LLAMA_REPO:-https://github.com/ggml-org/llama.cpp.git}"
+LLAMA_BRANCH="${ARIADNE_LLAMA_BRANCH:-master}"
+LLAMA_REF="${ARIADNE_LLAMA_REF:-}"
+
+if [[ -z "$LLAMA_REF" ]]; then
+  log "Resolving llama.cpp upstream ref"
+  log "  repo:   $LLAMA_REPO"
+  log "  branch: $LLAMA_BRANCH"
+  if ! LLAMA_REF="$(resolve_llama_ref "$LLAMA_REPO" "$LLAMA_BRANCH")"; then
+    echo "Error: could not resolve llama.cpp ref for $LLAMA_REPO $LLAMA_BRANCH" >&2
+    exit 2
+  fi
+  log "  ref:    $LLAMA_REF"
+else
+  log "Using explicit llama.cpp ref"
+  log "  repo:   $LLAMA_REPO"
+  log "  branch: $LLAMA_BRANCH"
+  log "  ref:    $LLAMA_REF"
+fi
+
 build_args=()
 if [[ "${ARIADNE_PATCH_NO_CACHE:-0}" == "1" ]]; then
   build_args+=(--no-cache)
 fi
-if [[ -n "${ARIADNE_LLAMA_REPO:-}" ]]; then
-  build_args+=(--repo "$ARIADNE_LLAMA_REPO")
-fi
-if [[ -n "${ARIADNE_LLAMA_BRANCH:-}" ]]; then
-  build_args+=(--branch "$ARIADNE_LLAMA_BRANCH")
-fi
-if [[ -n "${ARIADNE_LLAMA_REF:-}" ]]; then
-  build_args+=(--ref "$ARIADNE_LLAMA_REF")
-fi
+build_args+=(--repo "$LLAMA_REPO")
+build_args+=(--branch "$LLAMA_BRANCH")
+build_args+=(--ref "$LLAMA_REF")
 
 REFRESHED_TOOLBOXES=()
 

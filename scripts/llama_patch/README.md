@@ -63,6 +63,15 @@ No arguments means `all`. The script uses kyuz0's toolbox image repository by
 default, pulls the latest configured images, builds local Ariadne-patched
 derivative images, and recreates the toolboxes from those local images.
 
+By default, the script resolves the configured llama.cpp branch to an exact
+upstream SHA before building and passes that SHA into the container build. This
+keeps floating branch builds from silently reusing an older cached clone layer.
+The checked-out upstream SHA is also written inside the image at:
+
+```bash
+/usr/local/share/ariadne-llama-upstream-ref
+```
+
 It supports these llama.cpp toolboxes:
 
 - `llama-vulkan-amdvlk`
@@ -112,6 +121,18 @@ For full shell tracing:
 ```bash
 ARIADNE_PATCH_TRACE=1 bash scripts/llama_patch/refresh-toolboxes.sh
 ```
+
+Optional llama.cpp source overrides:
+
+```bash
+ARIADNE_LLAMA_REPO=https://github.com/ggml-org/llama.cpp.git
+ARIADNE_LLAMA_BRANCH=master
+ARIADNE_LLAMA_REF=<exact-sha-or-ref>
+ARIADNE_PATCH_NO_CACHE=1
+```
+
+When `ARIADNE_LLAMA_REF` is omitted, the refresh script resolves
+`ARIADNE_LLAMA_BRANCH` to an exact SHA automatically.
 
 ## Smoke Test
 

@@ -12,8 +12,6 @@ ARG GFX=gfx1151
 USER root
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-COPY patches/ /tmp/ariadne-llama-patches/
-
 RUN if [[ -z "${BACKEND}" ]]; then \
         echo "BACKEND build arg is required" >&2; exit 2; \
     fi; \
@@ -78,11 +76,12 @@ RUN if [[ "${BACKEND}" == "rocm7-nightlies" ]]; then \
             cd /tmp/ariadne-therock; \
             base="https://therock-nightly-tarball.s3.amazonaws.com"; \
             prefix="therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}"; \
-            key="$(curl -s "${base}?list-type=2&prefix=${prefix}" \
+            listing="$(curl -fsS "${base}?list-type=2&prefix=${prefix}")"; \
+            key="$(printf '%s\n' "${listing}" \
                 | tr '<' '\n' \
                 | grep -o "therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}\\..*\\.tar\\.gz" \
                 | sort -V \
-                | tail -n1)"; \
+                | tail -n1 || true)"; \
             if [[ -z "${key}" ]]; then \
                 echo "Could not find a TheRock tarball for ${GFX}/${ROCM_MAJOR_VER}" >&2; exit 2; \
             fi; \
@@ -95,13 +94,17 @@ RUN if [[ "${BACKEND}" == "rocm7-nightlies" ]]; then \
 
 WORKDIR /opt/ariadne-llama.cpp
 
+COPY patches/ /tmp/ariadne-llama-patches/
+
 RUN git clone --branch "${LLAMA_BRANCH}" --single-branch --recursive "${LLAMA_REPO}" .; \
     if [[ -n "${LLAMA_REF}" ]]; then \
         git fetch --depth=1 origin "${LLAMA_REF}"; \
         git checkout FETCH_HEAD; \
         git submodule update --init --recursive; \
     fi; \
-    git apply --check "/tmp/ariadne-llama-patches/$(basename "${PATCH_FILE}")"; \
+    mkdir -p /usr/local/share; \
+    git rev-parse HEAD | tee /usr/local/share/ariadne-llama-upstream-ref; \
+    git apply --3way --check "/tmp/ariadne-llama-patches/$(basename "${PATCH_FILE}")"; \
     git apply --3way "/tmp/ariadne-llama-patches/$(basename "${PATCH_FILE}")"
 
 RUN cmake_args=( \
