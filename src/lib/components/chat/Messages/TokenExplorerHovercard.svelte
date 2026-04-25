@@ -19,6 +19,18 @@
 	let left = 0;
 	let top = 0;
 
+	const portal = (node: HTMLElement) => {
+		document.body.appendChild(node);
+
+		return {
+			destroy() {
+				if (node.parentNode) {
+					node.parentNode.removeChild(node);
+				}
+			}
+		};
+	};
+
 	$: token = range?.token ?? null;
 	$: alternatives = Array.isArray(token?.alternatives) ? token.alternatives.slice(0, 10) : [];
 
@@ -62,11 +74,12 @@
 
 {#if range && token}
 	<div
+		use:portal
 		bind:this={hovercardElement}
 		role="dialog"
 		aria-label="Token Explorer"
 		tabindex="-1"
-		class="fixed z-50 w-80 max-w-[calc(100vw-24px)] rounded-xl border border-gray-200 bg-white/95 p-2.5 text-gray-900 shadow-2xl backdrop-blur-sm dark:border-gray-700 dark:bg-gray-900/95 dark:text-gray-100"
+		class="fixed z-[10000] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-gray-200 bg-white/95 p-2.5 text-gray-900 shadow-2xl backdrop-blur-sm dark:border-gray-700 dark:bg-gray-900/95 dark:text-gray-100"
 		style={`left: ${left}px; top: ${top}px;`}
 		on:mouseenter={() => onHovercardEnter()}
 		on:mouseleave={() => onHovercardLeave()}
