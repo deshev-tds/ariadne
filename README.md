@@ -69,6 +69,7 @@ The important divergences are not cosmetic.
 - Persona-scoped workflow hooks can now carry narrow domain logic on top of a bound local model, so a persona can do more than restyle a chat without turning the whole app into a generic always-agentic shell.
 - Automatic pre-migration SQLite backups were added before Alembic upgrades so local schema changes do not run without a fresh snapshot.
 - Token explorer support and manual response branching from token alternatives were added so local generation is less of a black box.
+- On 2026-04-25, downstream `llama.cpp` patch tooling was added for the local Strix Halo toolbox workflow, so Ariadne can track kyuz0's prebuilt containers while testing a narrow `stream + native tools + logprobs` server patch without turning the whole deployment into a long-lived runtime fork.
 - On-demand tool journey telemetry was added so agent/tool execution paths can be inspected per request without permanent log bloat.
 - A news lane was added for local-first morning briefings: configurable source registry, RSS fetch and article analysis pipeline, story threading with stability scoring, daily briefing synthesis, and Kokoro TTS playback.
 - Model timeouts in the news pipeline are now configurable and batch-safe, with separate connect, article analysis, and briefing synthesis timeout floors to prevent long batch runs from dying on a single slow call.
@@ -900,6 +901,10 @@ That matters for local workflows because it gives you:
 This is not presented here as "full interpretability". It is a practical debugging and exploration tool for model behavior.
 
 It is also intentionally not implemented as "keep the whole live generation tree resident forever". In this fork, manual branching is driven by bounded token telemetry and a fallback prefix-forcing strategy, which is far more practical on local hardware than pretending every backend will give you infinite branching state for free.
+
+As of 2026-04-25, the repo also carries a small downstream `llama.cpp` patch workflow under `scripts/llama_patch/`. It is not a new model runner and it does not patch compiled binaries in place. It builds local derivative images from kyuz0's Strix Halo toolboxes, applies a narrow upstream-server patch, and keeps logprob telemetry attached only to visible assistant content chunks rather than pretending tool-call deltas have clean OpenAI-compatible token probabilities.
+
+That tooling exists because the practical target stack currently has a real backend boundary: upstream `llama.cpp` accepts streaming token logprobs and streaming native tool calls separately, but blocks the combined `stream + tools + logprobs` shape. Ariadne's local UX needs the token explorer to stay honest while native tools remain usable, so the patch workflow is deliberately fail-closed and operational rather than presented as a universal backend abstraction.
 
 ## Thinking / Reasoning Controls
 
