@@ -477,7 +477,7 @@
 							</div>
 							<div class="mt-1 text-xs text-gray-500">
 								{$i18n.t(
-									'This list follows the models Open WebUI currently exposes to you. Models disabled or hidden in Admin Settings -> Models will not appear here.'
+									'This list follows the models Ariadne currently exposes to you. Models disabled or hidden in Admin Settings -> Models will not appear here.'
 								)}
 							</div>
 						</div>

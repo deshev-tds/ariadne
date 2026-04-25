@@ -206,7 +206,7 @@
 									{$i18n.t('Help')}
 								</div>
 								<div class=" text-xs text-gray-500">
-									{$i18n.t('Discover how to use Open WebUI and seek support from the community.')}
+									{$i18n.t('Ariadne keeps upstream compatibility where useful, with local-first defaults layered on top.')}
 								</div>
 							</div>
 
@@ -215,33 +215,12 @@
 								href="https://docs.openwebui.com/"
 								target="_blank"
 							>
-								{$i18n.t('Documentation')}
+								{$i18n.t('Upstream docs')}
 							</a>
 						</div>
 
-						<div class="mt-1">
-							<div class="flex space-x-1">
-								<a href="https://discord.gg/5rJgQTnV4s" target="_blank">
-									<img
-										alt="Discord"
-										src="https://img.shields.io/badge/Discord-Open_WebUI-blue?logo=discord&logoColor=white"
-									/>
-								</a>
-
-								<a href="https://twitter.com/OpenWebUI" target="_blank">
-									<img
-										alt="X (formerly Twitter) Follow"
-										src="https://img.shields.io/twitter/follow/OpenWebUI"
-									/>
-								</a>
-
-								<a href="https://github.com/open-webui/open-webui" target="_blank">
-									<img
-										alt="Github Repo"
-										src="https://img.shields.io/github/stars/open-webui/open-webui?style=social&label=Star us on Github"
-									/>
-								</a>
-							</div>
+						<div class="mt-1 text-xs text-gray-500">
+							{$i18n.t('Use upstream docs for inherited administration surfaces; Ariadne-specific operational notes live in this repository.')}
 						</div>
 					</div>
 

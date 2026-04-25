@@ -299,7 +299,7 @@
 						<div class=" self-center mr-3">
 							<QuestionMarkCircle className="size-5" />
 						</div>
-						<div class=" self-center truncate">{$i18n.t('Documentation')}</div>
+						<div class=" self-center truncate">{$i18n.t('Upstream docs')}</div>
 					</DropdownMenu.Item>
 
 					<!-- Releases -->
@@ -317,7 +317,7 @@
 						<div class=" self-center mr-3">
 							<Map className="size-5" />
 						</div>
-						<div class=" self-center truncate">{$i18n.t('Releases')}</div>
+						<div class=" self-center truncate">{$i18n.t('Upstream releases')}</div>
 					</DropdownMenu.Item>
 				{/if}
 
