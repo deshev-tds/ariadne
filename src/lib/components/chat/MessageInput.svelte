@@ -1801,7 +1801,7 @@
 													{#each WORKING_MODE_OPTIONS as option}
 														<DropdownMenu.Item
 															class="flex flex-col gap-0.5 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-															on:click={async () => {
+															onSelect={async () => {
 																setChatWorkingMode(option.value);
 																if (option.value !== 'general_science') {
 																	showWorkingModeMenu = false;

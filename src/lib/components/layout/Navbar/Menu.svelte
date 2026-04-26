@@ -316,7 +316,7 @@
 					draggable="false"
 					class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
 					id="chat-artifacts-button"
-					on:click={async () => {
+					onSelect={async () => {
 						await showControls.set(true);
 						await showArtifacts.set(true);
 						await showEmbeds.set(false);
@@ -334,7 +334,7 @@
 					draggable="false"
 					class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
 					id="chat-share-button"
-					on:click={() => {
+					onSelect={() => {
 						shareHandler();
 					}}
 				>
@@ -361,7 +361,7 @@
 						<DropdownMenu.Item
 							draggable="false"
 							class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
-							on:click={() => {
+							onSelect={() => {
 								downloadJSONExport();
 							}}
 						>
@@ -371,7 +371,7 @@
 					<DropdownMenu.Item
 						draggable="false"
 						class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
-						on:click={() => {
+						onSelect={() => {
 							downloadTxt();
 						}}
 					>
@@ -381,7 +381,7 @@
 					<DropdownMenu.Item
 						draggable="false"
 						class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
-						on:click={() => {
+						onSelect={() => {
 							downloadPdf();
 						}}
 					>
@@ -394,7 +394,7 @@
 				draggable="false"
 				class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
 				id="chat-copy-button"
-				on:click={async () => {
+				onSelect={async () => {
 					const res = await copyToClipboard(await getChatAsText()).catch((e) => {
 						console.error(e);
 					});
@@ -431,7 +431,7 @@
 									<DropdownMenu.Item
 										draggable="false"
 										class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl overflow-hidden"
-										on:click={() => {
+										onSelect={() => {
 											moveChatHandler(chat.id, folder.id);
 										}}
 									>
@@ -450,7 +450,7 @@
 				<DropdownMenu.Item
 					draggable="false"
 					class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-					on:click={() => {
+					onSelect={() => {
 						archiveChatHandler();
 					}}
 				>

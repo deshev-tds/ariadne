@@ -58,7 +58,7 @@
 			<DropdownMenu.Item
 				type="button"
 				class="select-none flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition items-center gap-2"
-				on:click={(e) => {
+				onSelect={(e) => {
 					e.stopPropagation();
 					e.preventDefault();
 
@@ -82,7 +82,7 @@
 			type="button"
 			aria-pressed={($settings?.pinnedModels ?? []).includes(model?.id)}
 			class="select-none flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition items-center gap-2"
-			on:click={(e) => {
+			onSelect={(e) => {
 				e.stopPropagation();
 				e.preventDefault();
 
@@ -108,7 +108,7 @@
 		<DropdownMenu.Item
 			type="button"
 			class="select-none flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition items-center gap-2"
-			on:click={(e) => {
+			onSelect={(e) => {
 				e.stopPropagation();
 				e.preventDefault();
 
@@ -127,7 +127,7 @@
 			<DropdownMenu.Item
 				type="button"
 				class="select-none flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition items-center gap-2"
-				on:click={(e) => {
+				onSelect={(e) => {
 					e.stopPropagation();
 					e.preventDefault();
 

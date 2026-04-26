@@ -304,7 +304,7 @@
 				<DropdownMenu.Item
 					draggable="false"
 					class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800  rounded-xl"
-					on:click={() => {
+					onSelect={() => {
 						shareHandler();
 					}}
 				>
@@ -331,7 +331,7 @@
 						<DropdownMenu.Item
 							draggable="false"
 							class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-							on:click={() => {
+							onSelect={() => {
 								downloadJSONExport();
 							}}
 						>
@@ -342,7 +342,7 @@
 					<DropdownMenu.Item
 						draggable="false"
 						class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-						on:click={() => {
+						onSelect={() => {
 							downloadTxt();
 						}}
 					>
@@ -352,7 +352,7 @@
 					<DropdownMenu.Item
 						draggable="false"
 						class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
-						on:click={() => {
+						onSelect={() => {
 							downloadPdf();
 						}}
 					>
@@ -364,7 +364,7 @@
 			<DropdownMenu.Item
 				draggable="false"
 				class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-				on:click={() => {
+				onSelect={() => {
 					renameHandler();
 				}}
 			>
@@ -377,7 +377,7 @@
 			<DropdownMenu.Item
 				draggable="false"
 				class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-				on:click={() => {
+				onSelect={() => {
 					pinHandler();
 				}}
 			>
@@ -393,7 +393,7 @@
 			<DropdownMenu.Item
 				draggable="false"
 				class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-				on:click={() => {
+				onSelect={() => {
 					cloneChatHandler();
 				}}
 			>
@@ -420,7 +420,7 @@
 							<DropdownMenu.Item
 								draggable="false"
 								class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl overflow-hidden"
-								on:click={() => {
+								onSelect={() => {
 									moveChatHandler(chatId, folder.id);
 								}}
 							>
@@ -438,7 +438,7 @@
 			<DropdownMenu.Item
 				draggable="false"
 				class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-				on:click={() => {
+				onSelect={() => {
 					archiveChatHandler();
 				}}
 			>
@@ -449,7 +449,7 @@
 			<DropdownMenu.Item
 				draggable="false"
 				class="flex  gap-2  items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl"
-				on:click={() => {
+				onSelect={() => {
 					deleteHandler();
 				}}
 			>
