@@ -1,5 +1,7 @@
 # Ariadne
 
+Ariadne is a local-first AI workbench for long chats, evidence recall, personas, TTS, and `llama.cpp` debugging.
+
 Ariadne began as a fork of Open WebUI, but it is now built around a different priority set than the upstream project.
 
 That priority set is:
@@ -1031,3 +1033,7 @@ This fork is built on Open WebUI, and upstream remains the base platform.
 The goal here is not to replace upstream, but to diverge where local-first usage benefits from different tradeoffs: tighter context management, bounded recall, better lightweight voice options, and more transparent generation tooling.
 
 Licensing and attribution remain those of the underlying project and this fork's codebase. See [LICENSE](./LICENSE) and [LICENSE_HISTORY](./LICENSE_HISTORY).
+
+---
+
+Maintained by [Damyan Deshev](https://github.com/damyan-deshev) - local-first software, deterministic data paths, retrieval, evaluation, and practical product systems.
