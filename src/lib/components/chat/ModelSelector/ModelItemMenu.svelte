@@ -27,7 +27,6 @@
 
 <DropdownMenu.Root
 	bind:open={show}
-	closeFocus={false}
 	onOpenChange={(state) => {
 		if (state === false) {
 			onClose();
@@ -36,14 +35,18 @@
 	typeahead={false}
 >
 	<DropdownMenu.Trigger>
-		<Tooltip
-			content={$i18n.t('More')}
-			className={($settings?.highContrastMode ?? false)
-				? ''
-				: 'group-hover/item:opacity-100 opacity-0'}
-		>
-			<slot />
-		</Tooltip>
+		{#snippet child({ props })}
+			<div {...props} class="inline-flex">
+				<Tooltip
+					content={$i18n.t('More')}
+					className={($settings?.highContrastMode ?? false)
+						? ''
+						: 'group-hover/item:opacity-100 opacity-0'}
+				>
+					<slot />
+				</Tooltip>
+			</div>
+		{/snippet}
 	</DropdownMenu.Trigger>
 
 	<DropdownMenu.Content

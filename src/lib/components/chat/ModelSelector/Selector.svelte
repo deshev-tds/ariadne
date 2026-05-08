@@ -396,7 +396,6 @@
 
 		resetView();
 	}}
-	closeFocus={false}
 >
 	<DropdownMenu.Trigger
 		class="relative w-full {($settings?.highContrastMode ?? false)

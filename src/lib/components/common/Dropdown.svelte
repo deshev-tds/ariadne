@@ -16,7 +16,6 @@
 
 <DropdownMenu.Root
 	bind:open={show}
-	closeFocus={false}
 	{closeOnOutsideClick}
 	onOpenChange={(state) => {
 		dispatch('change', state);
@@ -24,7 +23,11 @@
 	typeahead={false}
 >
 	<DropdownMenu.Trigger>
-		<slot />
+		{#snippet child({ props })}
+			<div {...props} class="inline-flex">
+				<slot />
+			</div>
+		{/snippet}
 	</DropdownMenu.Trigger>
 
 	<slot name="content">

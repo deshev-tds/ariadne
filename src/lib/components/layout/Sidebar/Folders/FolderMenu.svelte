@@ -34,7 +34,6 @@
 		<button
 			on:click={(e) => {
 				e.stopPropagation();
-				show = !show;
 			}}
 		>
 			<slot />

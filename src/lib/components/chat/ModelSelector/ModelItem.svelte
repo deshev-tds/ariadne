@@ -262,7 +262,6 @@
 				on:click={(e) => {
 					e.preventDefault();
 					e.stopPropagation();
-					showMenu = !showMenu;
 				}}
 			>
 				<EllipsisHorizontal />

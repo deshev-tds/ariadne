@@ -201,7 +201,7 @@
 				return null;
 			});
 
-			if (res && !silent) {
+			if (res && showToast) {
 				toast.success($i18n.t('Model updated successfully'));
 			}
 		}
