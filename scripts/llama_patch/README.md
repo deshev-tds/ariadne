@@ -21,6 +21,8 @@ installed inside the derivative container image layer.
 - `refresh-toolboxes.patched.sh` is a kyuz0-style refresh script that builds
   patched images for every known llama.cpp toolbox before recreating toolboxes.
 - `smoke-test-logprobs-tools.py` validates the OpenAI-compatible streaming API.
+- `ariadne-llama-backend.sh` manages versioned `llama-server` backend builds,
+  canary smoke tests, atomic symlink promotion, and rollback.
 
 ## Build A Patched Image
 
@@ -167,3 +169,44 @@ The patch intentionally does not claim OpenAI-compatible logprobs for tool-call
 delta chunks. It only emits logprobs on visible `delta.content` chunks. Tool
 call chunks either omit logprobs or leave them null, avoiding misleading token
 telemetry.
+
+## Versioned Backend Promotion
+
+The patched toolbox image and the production `llama-server` backend are related
+but intentionally separate. The toolbox refresh updates the ROCm/runtime image.
+The backend manager builds or imports a candidate `llama-server` under:
+
+```bash
+${ARIADNE_LLAMA_STORE:-$HOME/.local/opt/ariadne-llama}
+```
+
+Production should point at:
+
+```bash
+$HOME/.local/opt/ariadne-llama/current/bin/llama-server
+```
+
+`current` and `previous` are symlinks. Promotion and rollback are locked and
+atomic, so a failed candidate build cannot replace the live backend.
+
+Common operations on the inference box:
+
+```bash
+~/models/ariadne-llama-backend.sh status
+~/models/ariadne-llama-backend.sh list
+~/models/ariadne-llama-backend.sh import-current --promote
+~/models/ariadne-llama-backend.sh build --lane pinned --toolbox llama-rocm-7.2.2
+~/models/ariadne-llama-backend.sh smoke --candidate <build-id> --profile dual --port 1235
+~/models/ariadne-llama-backend.sh promote --candidate <build-id>
+~/models/ariadne-llama-backend.sh rollback
+```
+
+The lanes are:
+
+- `pinned`: exact known-good MTP commit, backed by a cached local source copy.
+- `mtp-pr`: floating canary for the current MTP PR branch.
+- `main`: upstream llama.cpp `master`, intended for after MTP lands upstream.
+
+The manager does not auto-promote, does not replace `/usr/local/bin/llama-server`,
+and does not delete promoted builds. Canary smoke tests run on a separate port
+and do not require stopping production.
