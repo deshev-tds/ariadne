@@ -37,9 +37,9 @@ Example for ROCm:
 
 ```bash
 scripts/llama_patch/build-patched-image.sh \
-  --base-image docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.1 \
-  --toolbox-name llama-rocm-7.2.1 \
-  --tag localhost/ariadne-llama-rocm-7.2.1:latest
+  --base-image docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.2 \
+  --toolbox-name llama-rocm-7.2.2 \
+  --tag localhost/ariadne-llama-rocm-7.2.2:latest
 ```
 
 Then create the toolbox from the local patched image instead of the upstream
@@ -81,6 +81,8 @@ It supports these llama.cpp toolboxes:
 - `llama-rocm-7.2`
 - `llama-rocm-7.2.1`
 - `llama-rocm-7.2.1-pr21344`
+- `llama-rocm-7.2.2`
+- `llama-rocm-7.2.2-pr21344`
 - `llama-rocm7-nightlies`
 
 It does not patch non-llama toolboxes such as ComfyUI.

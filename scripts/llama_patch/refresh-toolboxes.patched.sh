@@ -34,21 +34,40 @@ on_error() {
 }
 trap on_error ERR
 
-log "Ariadne patched toolbox refresh started"
-log "Refresh log: $RUN_LOG"
-
 # Known llama.cpp toolboxes and their device/runtime options.
 # Non-llama toolboxes, such as ComfyUI, are intentionally not listed here.
-declare -A TOOLBOXES
+TOOLBOXES=(
+  "llama-vulkan-amdvlk|docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-amdvlk --device /dev/dri --group-add video --security-opt seccomp=unconfined"
+  "llama-vulkan-radv|docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv --device /dev/dri --group-add video --security-opt seccomp=unconfined"
+  "llama-rocm-6.4.4|docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-6.4.4 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+  "llama-rocm-6.4.4-rocwmma|docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-6.4.4-rocwmma --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+  "llama-rocm-7.2|docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+  "llama-rocm-7.2.1|docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.1 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+  "llama-rocm-7.2.1-pr21344|docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.1-pr21344 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+  "llama-rocm-7.2.2|docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.2 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+  "llama-rocm-7.2.2-pr21344|docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.2-pr21344 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+  "llama-rocm7-nightlies|docker.io/kyuz0/amd-strix-halo-toolboxes:rocm7-nightlies --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+)
 
-TOOLBOXES["llama-vulkan-amdvlk"]="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-amdvlk --device /dev/dri --group-add video --security-opt seccomp=unconfined"
-TOOLBOXES["llama-vulkan-radv"]="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv --device /dev/dri --group-add video --security-opt seccomp=unconfined"
-TOOLBOXES["llama-rocm-6.4.4"]="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-6.4.4 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
-TOOLBOXES["llama-rocm-6.4.4-rocwmma"]="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-6.4.4-rocwmma --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
-TOOLBOXES["llama-rocm-7.2"]="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
-TOOLBOXES["llama-rocm-7.2.1"]="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.1 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
-TOOLBOXES["llama-rocm-7.2.1-pr21344"]="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.1-pr21344 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
-TOOLBOXES["llama-rocm7-nightlies"]="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm7-nightlies --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+toolbox_names() {
+  local entry
+  for entry in "${TOOLBOXES[@]}"; do
+    printf '%s\n' "${entry%%|*}"
+  done | sort
+}
+
+toolbox_config() {
+  local name="$1"
+  local entry entry_name
+  for entry in "${TOOLBOXES[@]}"; do
+    entry_name="${entry%%|*}"
+    if [[ "$entry_name" == "$name" ]]; then
+      printf '%s\n' "${entry#*|}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 usage() {
   local exit_code="${1:-0}"
@@ -57,7 +76,7 @@ usage() {
   echo
   echo "With no arguments, refreshes all patched llama.cpp toolboxes."
   echo "Available patched llama.cpp toolboxes:"
-  for name in $(printf '%s\n' "${!TOOLBOXES[@]}" | sort); do
+  for name in $(toolbox_names); do
     echo "  - $name"
   done
   echo
@@ -70,6 +89,13 @@ usage() {
   echo "  ARIADNE_PATCH_TRACE=1      Enable bash xtrace"
   exit "$exit_code"
 }
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage 0
+fi
+
+log "Ariadne patched toolbox refresh started"
+log "Refresh log: $RUN_LOG"
 
 IS_UBUNTU=false
 if [[ -f /etc/os-release ]]; then
@@ -98,19 +124,21 @@ for cmd in "${DEPENDENCIES[@]}"; do
   fi
 done
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  usage 0
-fi
-
 if [[ "$#" -lt 1 ]]; then
   log "No toolbox arguments supplied; defaulting to all patched llama.cpp toolboxes"
-  mapfile -t SELECTED_TOOLBOXES < <(printf '%s\n' "${!TOOLBOXES[@]}" | sort)
+  SELECTED_TOOLBOXES=()
+  while IFS= read -r name; do
+    SELECTED_TOOLBOXES+=("$name")
+  done < <(toolbox_names)
 elif [[ "$1" == "all" ]]; then
-  mapfile -t SELECTED_TOOLBOXES < <(printf '%s\n' "${!TOOLBOXES[@]}" | sort)
+  SELECTED_TOOLBOXES=()
+  while IFS= read -r name; do
+    SELECTED_TOOLBOXES+=("$name")
+  done < <(toolbox_names)
 else
   SELECTED_TOOLBOXES=()
   for arg in "$@"; do
-    if [[ -n "${TOOLBOXES[$arg]+set}" ]]; then
+    if toolbox_config "$arg" >/dev/null; then
       SELECTED_TOOLBOXES+=("$arg")
     else
       echo "Error: Unknown toolbox '$arg'" >&2
@@ -170,7 +198,7 @@ REFRESHED_TOOLBOXES=()
 
 for name in "${SELECTED_TOOLBOXES[@]}"; do
   CURRENT_TOOLBOX="$name"
-  config="${TOOLBOXES[$name]}"
+  config="$(toolbox_config "$name")"
   image="$(awk '{print $1}' <<<"$config")"
   options="${config#* }"
   patched_image="localhost/ariadne-${name}:latest"
